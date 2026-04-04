@@ -1,6 +1,7 @@
 import csv
 import html
 import math
+import os
 import re
 from pathlib import Path
 
@@ -16,6 +17,11 @@ PDF_DIR = BASE_DIR / "static" / "pdfs"
 PER_PAGE = 10
 MAX_SNIPPETS = 3
 
+APP_STATE = {
+    "rows": None,
+    "load_error": None,
+}
+
 
 # =========================
 # Utilities
@@ -24,11 +30,14 @@ MAX_SNIPPETS = 3
 def normalize_space(value):
     return re.sub(r"\s+", " ", str(value or "")).strip()
 
+
 def normalize_text(value):
     return normalize_space(value).lower()
 
+
 def tokenize_query(query):
     return re.findall(r"[A-Za-z0-9\-]+", normalize_text(query))
+
 
 def html_highlight(text, terms):
     escaped = html.escape(str(text or ""))
@@ -41,9 +50,10 @@ def html_highlight(text, terms):
 
     pattern = re.compile(
         r"(" + "|".join(re.escape(t) for t in clean_terms) + r")",
-        re.IGNORECASE
+        re.IGNORECASE,
     )
     return pattern.sub(r"<mark>\1</mark>", escaped)
+
 
 def safe_int(value, default=1):
     try:
@@ -53,7 +63,7 @@ def safe_int(value, default=1):
 
 
 # =========================
-# Snippets (sentence-aware)
+# Snippets
 # =========================
 
 def split_sentences(text):
@@ -62,6 +72,7 @@ def split_sentences(text):
         return []
     parts = re.split(r"(?<=[\.\?!;:])\s+", text)
     return [p.strip() for p in parts if p.strip()]
+
 
 def trim_snippet(text, max_len=260):
     text = normalize_space(text)
@@ -72,6 +83,7 @@ def trim_snippet(text, max_len=260):
     if last_space > int(max_len * 0.7):
         cut = cut[:last_space]
     return cut.rstrip(" ,;:-") + " …"
+
 
 def build_snippets(full_text, query, terms):
     if not full_text:
@@ -123,24 +135,41 @@ def build_snippets(full_text, query, terms):
 
 
 # =========================
-# Load data
+# Data loading
 # =========================
 
 def load_rows():
     rows = []
 
+    print("=== STARTUP PATH CHECK ===")
+    print("BASE_DIR:", BASE_DIR)
+    print("CSV_PATH:", CSV_PATH, "exists:", CSV_PATH.exists())
+    print("PDF_DIR:", PDF_DIR, "exists:", PDF_DIR.exists())
+    if PDF_DIR.exists():
+        try:
+            pdf_count = len(list(PDF_DIR.glob("*.pdf")))
+        except Exception:
+            pdf_count = "unknown"
+        print("PDF_COUNT:", pdf_count)
+    print("==========================")
+
+    if not CSV_PATH.exists():
+        raise FileNotFoundError(f"Missing CSV: {CSV_PATH}")
+
+    if not PDF_DIR.exists():
+        raise FileNotFoundError(f"Missing PDF directory: {PDF_DIR}")
+
     with open(CSV_PATH, "r", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
 
         for i, r in enumerate(reader):
-            case_number = r.get("case_number", "").strip()
+            case_number = normalize_space(r.get("case_number", ""))
 
             pdf_file = None
-            if PDF_DIR.exists():
-                for p in PDF_DIR.glob("*.pdf"):
-                    if p.name.startswith(case_number):
-                        pdf_file = p.name
-                        break
+            for p in PDF_DIR.glob("*.pdf"):
+                if p.name.startswith(case_number):
+                    pdf_file = p.name
+                    break
 
             if not pdf_file:
                 continue
@@ -149,7 +178,7 @@ def load_rows():
             if not title:
                 title = normalize_space(r.get("summary", ""))[:120]
             if not title:
-                title = case_number
+                title = case_number or "Untitled case"
 
             full_text = r.get("full_text", "")
 
@@ -178,7 +207,25 @@ def load_rows():
                 "metadata_blob": metadata_blob,
             })
 
+    print("ROWS_LOADED:", len(rows))
     return rows
+
+
+def get_rows():
+    if APP_STATE["rows"] is not None:
+        return APP_STATE["rows"]
+
+    if APP_STATE["load_error"] is not None:
+        return []
+
+    try:
+        APP_STATE["rows"] = load_rows()
+    except Exception as e:
+        APP_STATE["load_error"] = str(e)
+        print("LOAD ERROR:", repr(e))
+        APP_STATE["rows"] = []
+
+    return APP_STATE["rows"]
 
 
 # =========================
@@ -253,26 +300,27 @@ def paginate(items, page):
 
 
 # =========================
-# App state
+# Routes
 # =========================
 
-try:
-    APP_STATE = {"rows": load_rows()}
-except Exception as e:
-    print("LOAD ERROR:", e)
-    APP_STATE = {"rows": []}
+@app.route("/healthz")
+def healthz():
+    rows = get_rows()
+    return {
+        "ok": True,
+        "rows_loaded": len(rows),
+        "load_error": APP_STATE["load_error"],
+        "csv_exists": CSV_PATH.exists(),
+        "pdf_dir_exists": PDF_DIR.exists(),
+    }
 
-
-# =========================
-# Route
-# =========================
 
 @app.route("/")
 def index():
     query = normalize_space(request.args.get("q", ""))
     page = safe_int(request.args.get("page", "1"))
 
-    rows = APP_STATE["rows"]
+    rows = get_rows()
     filtered = search_rows(rows, query)
     pager = paginate(filtered, page)
     terms = tokenize_query(query)
@@ -304,12 +352,10 @@ def index():
         query=query,
         pager=pager,
         total_loaded=len(rows),
+        load_error=APP_STATE["load_error"],
     )
 
 
-# =========================
-# Run
-# =========================
-
 if __name__ == "__main__":
-    app.run(debug=True)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=False)
