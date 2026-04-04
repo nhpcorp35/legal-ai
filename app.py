@@ -2,19 +2,14 @@ from flask import Flask
 
 app = Flask(__name__)
 
-# --- ROOT TEST ---
 @app.route("/")
 def index():
-    return "OK"
+    return "RAILWAY LIVE TEST"
 
-# --- HEALTH CHECK ---
 @app.route("/healthz")
 def healthz():
-    return "healthy"
+    return "OK HEALTH"
 
-
-# --- IMPORTANT FOR RAILWAY ---
-# Railway uses PORT env var
 if __name__ == "__main__":
     import os
     port = int(os.environ.get("PORT", 5000))
