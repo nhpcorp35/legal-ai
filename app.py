@@ -87,24 +87,25 @@ def build_snippets(full_text, query, terms):
     query_norm = normalize_text(query)
 
     def add(sentence):
+        sentence = normalize_space(sentence)
+        if not sentence:
+            return
         key = sentence[:180].lower()
         if key in seen:
             return
         seen.add(key)
         snippets.append(trim_snippet(sentence))
 
-    # exact phrase
     for s in sentences:
         if query_norm and query_norm in normalize_text(s):
             add(s)
             if len(snippets) >= MAX_SNIPPETS:
                 return snippets
 
-    # term matches
     if not snippets:
         scored = []
         for s in sentences:
-            count = sum(1 for t in terms if t in normalize_text(s))
+            count = sum(1 for t in terms if t and t in normalize_text(s))
             if count > 0:
                 scored.append((count, s))
         scored.sort(key=lambda x: -x[0])
@@ -114,7 +115,6 @@ def build_snippets(full_text, query, terms):
             if len(snippets) >= MAX_SNIPPETS:
                 return snippets
 
-    # fallback
     if not snippets:
         for s in sentences[:2]:
             add(s)
@@ -123,7 +123,7 @@ def build_snippets(full_text, query, terms):
 
 
 # =========================
-# Load data (FIXED TITLE)
+# Load data
 # =========================
 
 def load_rows():
@@ -135,16 +135,16 @@ def load_rows():
         for i, r in enumerate(reader):
             case_number = r.get("case_number", "").strip()
 
-            # find PDF
             pdf_file = None
-            for p in PDF_DIR.glob("*.pdf"):
-                if p.name.startswith(case_number):
-                    pdf_file = p.name
-                    break
+            if PDF_DIR.exists():
+                for p in PDF_DIR.glob("*.pdf"):
+                    if p.name.startswith(case_number):
+                        pdf_file = p.name
+                        break
+
             if not pdf_file:
                 continue
 
-            # FIX: use summary as title fallback
             title = normalize_space(r.get("case_name", ""))
             if not title:
                 title = normalize_space(r.get("summary", ""))[:120]
@@ -252,7 +252,15 @@ def paginate(items, page):
     }
 
 
-APP_STATE = {"rows": load_rows()}
+# =========================
+# App state
+# =========================
+
+try:
+    APP_STATE = {"rows": load_rows()}
+except Exception as e:
+    print("LOAD ERROR:", e)
+    APP_STATE = {"rows": []}
 
 
 # =========================
