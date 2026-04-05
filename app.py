@@ -181,14 +181,22 @@ def load_rows():
                 title = case_number or "Untitled case"
 
             full_text = r.get("full_text", "")
+            facts_text = r.get("facts_excerpt", "")
+            procedure_text = r.get("procedure_text", "")
+            claims_text = r.get("claims_text", "")
+            relief_text = r.get("relief_text", "")
+            summary_text = r.get("summary", "")
+            court_text = r.get("court", "")
+            outcome_text = r.get("outcome", "")
+            judges_text = r.get("judges", "")
 
             metadata_blob = normalize_text(
                 " ".join([
                     title,
-                    r.get("court", ""),
-                    r.get("outcome", ""),
-                    r.get("judges", ""),
-                    r.get("summary", ""),
+                    court_text,
+                    outcome_text,
+                    judges_text,
+                    summary_text,
                     case_number,
                 ])
             )
@@ -197,13 +205,21 @@ def load_rows():
                 "id": i,
                 "case_number": case_number,
                 "title": title,
-                "court": r.get("court", ""),
-                "outcome": r.get("outcome", ""),
-                "judges_text": r.get("judges", ""),
-                "summary": r.get("summary", ""),
+                "court": court_text,
+                "outcome": outcome_text,
+                "judges_text": judges_text,
+                "summary": summary_text,
                 "pdf_filename": pdf_file,
                 "full_text": full_text,
                 "full_text_norm": normalize_text(full_text),
+                "facts_text": facts_text,
+                "facts_text_norm": normalize_text(facts_text),
+                "procedure_text": procedure_text,
+                "procedure_text_norm": normalize_text(procedure_text),
+                "claims_text": claims_text,
+                "claims_text_norm": normalize_text(claims_text),
+                "relief_text": relief_text,
+                "relief_text_norm": normalize_text(relief_text),
                 "metadata_blob": metadata_blob,
             })
 
@@ -237,20 +253,97 @@ def score_row(row, query, terms):
         return 0
 
     q = normalize_text(query)
+    if not q:
+        return 0
+
     full_text = row["full_text_norm"]
+    facts_text = row["facts_text_norm"]
+    procedure_text = row["procedure_text_norm"]
+    claims_text = row["claims_text_norm"]
+    relief_text = row["relief_text_norm"]
     metadata = row["metadata_blob"]
 
     score = 0
 
+    # 1. Exact phrase boost
     if q in full_text:
         score += 1000
 
-    hits = sum(1 for t in terms if t in full_text)
-    score += hits * 100
+    if q in facts_text:
+        score += 450
 
-    if score == 0:
-        meta_hits = sum(1 for t in terms if t in metadata)
-        score += meta_hits * 20
+    if q in procedure_text:
+        score += 350
+
+    if q in claims_text:
+        score += 350
+
+    if q in relief_text:
+        score += 350
+
+    if q in metadata:
+        score += 80
+
+    # 2. Exact phrase frequency by field
+    score += full_text.count(q) * 120
+    score += facts_text.count(q) * 80
+    score += procedure_text.count(q) * 65
+    score += claims_text.count(q) * 65
+    score += relief_text.count(q) * 65
+    score += metadata.count(q) * 10
+
+    # 3. Term hits by field
+    full_hits = sum(1 for t in terms if t and t in full_text)
+    facts_hits = sum(1 for t in terms if t and t in facts_text)
+    procedure_hits = sum(1 for t in terms if t and t in procedure_text)
+    claims_hits = sum(1 for t in terms if t and t in claims_text)
+    relief_hits = sum(1 for t in terms if t and t in relief_text)
+    metadata_hits = sum(1 for t in terms if t and t in metadata)
+
+    score += full_hits * 35
+    score += facts_hits * 22
+    score += procedure_hits * 18
+    score += claims_hits * 18
+    score += relief_hits * 18
+    score += metadata_hits * 4
+
+    # 4. Reward documents matching most/all terms in full text
+    if terms:
+        unique_terms = {t for t in terms if t}
+        matched_terms = sum(1 for t in unique_terms if t in full_text)
+        if matched_terms == len(unique_terms):
+            score += 120
+        elif matched_terms >= max(1, len(unique_terms) - 1):
+            score += 60
+
+    # 5. Legal phrase boost
+    legal_phrases = [
+        "motion to dismiss",
+        "summary judgment",
+        "breach of contract",
+        "breach of fiduciary duty",
+        "tortious interference",
+        "unjust enrichment",
+        "deceptive trade practices",
+        "fraud",
+        "negligence",
+        "damages",
+        "liability",
+        "injunction",
+        "foreclosure",
+        "mandamus",
+    ]
+
+    for phrase in legal_phrases:
+        if phrase in q:
+            if phrase in full_text:
+                score += 180
+            if phrase in facts_text:
+                score += 90
+            if phrase in procedure_text or phrase in claims_text or phrase in relief_text:
+                score += 75
+            if phrase in metadata:
+                score += 20
 
     return score
 
