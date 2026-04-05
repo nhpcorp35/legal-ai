@@ -16,10 +16,12 @@ PDF_DIR = BASE_DIR / "static" / "pdfs"
 
 PER_PAGE = 10
 MAX_SNIPPETS = 3
+SEARCH_CACHE_LIMIT = 100
 
 APP_STATE = {
     "rows": None,
     "load_error": None,
+    "search_cache": {},
 }
 
 
@@ -62,6 +64,18 @@ def safe_int(value, default=1):
         return default
 
 
+def clear_search_cache():
+    APP_STATE["search_cache"] = {}
+
+
+def cache_search_result(query_norm, results):
+    cache = APP_STATE["search_cache"]
+    if len(cache) >= SEARCH_CACHE_LIMIT:
+        oldest_key = next(iter(cache))
+        del cache[oldest_key]
+    cache[query_norm] = results
+
+
 # =========================
 # Snippets
 # =========================
@@ -94,42 +108,39 @@ def build_snippets(full_text, query, terms):
     if not sentences:
         return []
 
-    snippets = []
-    seen = set()
-    query_norm = normalize_text(query)
-
-    def add(sentence):
-        sentence = normalize_space(sentence)
-        if not sentence:
-            return
-        key = sentence[:180].lower()
-        if key in seen:
-            return
-        seen.add(key)
-        snippets.append(trim_snippet(sentence))
+    scored = []
+    q_norm = normalize_text(query)
 
     for s in sentences:
-        if query_norm and query_norm in normalize_text(s):
-            add(s)
-            if len(snippets) >= MAX_SNIPPETS:
-                return snippets
+        s_norm = normalize_text(s)
+        score = 0
 
-    if not snippets:
-        scored = []
-        for s in sentences:
-            count = sum(1 for t in terms if t and t in normalize_text(s))
-            if count > 0:
-                scored.append((count, s))
-        scored.sort(key=lambda x: -x[0])
+        if q_norm and q_norm in s_norm:
+            score += 100
 
-        for _, s in scored:
-            add(s)
-            if len(snippets) >= MAX_SNIPPETS:
-                return snippets
+        score += sum(1 for t in terms if t and t in s_norm) * 10
+        score += max(0, 50 - len(s) // 5)
+
+        if score > 0:
+            scored.append((score, s))
+
+    scored.sort(key=lambda x: -x[0])
+
+    snippets = []
+    seen = set()
+
+    for _, s in scored:
+        key = s[:120].lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        snippets.append(trim_snippet(s))
+        if len(snippets) >= MAX_SNIPPETS:
+            break
 
     if not snippets:
         for s in sentences[:2]:
-            add(s)
+            snippets.append(trim_snippet(s))
 
     return snippets
 
@@ -138,6 +149,18 @@ def build_snippets(full_text, query, terms):
 # Data loading
 # =========================
 
+def build_pdf_index():
+    pdf_index = {}
+
+    for p in PDF_DIR.glob("*.pdf"):
+        name = p.name
+        case_number = name.split("__", 1)[0].strip()
+        if case_number and case_number not in pdf_index:
+            pdf_index[case_number] = name
+
+    return pdf_index
+
+
 def load_rows():
     rows = []
 
@@ -145,12 +168,6 @@ def load_rows():
     print("BASE_DIR:", BASE_DIR)
     print("CSV_PATH:", CSV_PATH, "exists:", CSV_PATH.exists())
     print("PDF_DIR:", PDF_DIR, "exists:", PDF_DIR.exists())
-    if PDF_DIR.exists():
-        try:
-            pdf_count = len(list(PDF_DIR.glob("*.pdf")))
-        except Exception:
-            pdf_count = "unknown"
-        print("PDF_COUNT:", pdf_count)
     print("==========================")
 
     if not CSV_PATH.exists():
@@ -159,18 +176,18 @@ def load_rows():
     if not PDF_DIR.exists():
         raise FileNotFoundError(f"Missing PDF directory: {PDF_DIR}")
 
+    pdf_index = build_pdf_index()
+    print("PDF_INDEX_COUNT:", len(pdf_index))
+
     with open(CSV_PATH, "r", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
 
         for i, r in enumerate(reader):
             case_number = normalize_space(r.get("case_number", ""))
+            if not case_number:
+                continue
 
-            pdf_file = None
-            for p in PDF_DIR.glob("*.pdf"):
-                if p.name.startswith(case_number):
-                    pdf_file = p.name
-                    break
-
+            pdf_file = pdf_index.get(case_number)
             if not pdf_file:
                 continue
 
@@ -190,6 +207,13 @@ def load_rows():
             outcome_text = r.get("outcome", "")
             judges_text = r.get("judges", "")
 
+            title_norm = normalize_text(title)
+            full_text_norm = normalize_text(full_text)
+            facts_text_norm = normalize_text(facts_text)
+            procedure_text_norm = normalize_text(procedure_text)
+            claims_text_norm = normalize_text(claims_text)
+            relief_text_norm = normalize_text(relief_text)
+
             metadata_blob = normalize_text(
                 " ".join([
                     title,
@@ -205,25 +229,27 @@ def load_rows():
                 "id": i,
                 "case_number": case_number,
                 "title": title,
+                "title_norm": title_norm,
                 "court": court_text,
                 "outcome": outcome_text,
                 "judges_text": judges_text,
                 "summary": summary_text,
                 "pdf_filename": pdf_file,
                 "full_text": full_text,
-                "full_text_norm": normalize_text(full_text),
+                "full_text_norm": full_text_norm,
                 "facts_text": facts_text,
-                "facts_text_norm": normalize_text(facts_text),
+                "facts_text_norm": facts_text_norm,
                 "procedure_text": procedure_text,
-                "procedure_text_norm": normalize_text(procedure_text),
+                "procedure_text_norm": procedure_text_norm,
                 "claims_text": claims_text,
-                "claims_text_norm": normalize_text(claims_text),
+                "claims_text_norm": claims_text_norm,
                 "relief_text": relief_text,
-                "relief_text_norm": normalize_text(relief_text),
+                "relief_text_norm": relief_text_norm,
                 "metadata_blob": metadata_blob,
             })
 
     print("ROWS_LOADED:", len(rows))
+    clear_search_cache()
     return rows
 
 
@@ -248,12 +274,8 @@ def get_rows():
 # Ranking
 # =========================
 
-def score_row(row, query, terms):
-    if not query:
-        return 0
-
-    q = normalize_text(query)
-    if not q:
+def score_row(row, query_norm, terms):
+    if not query_norm:
         return 0
 
     full_text = row["full_text_norm"]
@@ -266,31 +288,26 @@ def score_row(row, query, terms):
     score = 0
 
     # 1. Exact phrase boost
-    if q in full_text:
+    if query_norm in full_text:
         score += 1000
-
-    if q in facts_text:
+    if query_norm in facts_text:
         score += 450
-
-    if q in procedure_text:
+    if query_norm in procedure_text:
         score += 350
-
-    if q in claims_text:
+    if query_norm in claims_text:
         score += 350
-
-    if q in relief_text:
+    if query_norm in relief_text:
         score += 350
-
-    if q in metadata:
+    if query_norm in metadata:
         score += 80
 
     # 2. Exact phrase frequency by field
-    score += full_text.count(q) * 120
-    score += facts_text.count(q) * 80
-    score += procedure_text.count(q) * 65
-    score += claims_text.count(q) * 65
-    score += relief_text.count(q) * 65
-    score += metadata.count(q) * 10
+    score += full_text.count(query_norm) * 120
+    score += facts_text.count(query_norm) * 80
+    score += procedure_text.count(query_norm) * 65
+    score += claims_text.count(query_norm) * 65
+    score += relief_text.count(query_norm) * 65
+    score += metadata.count(query_norm) * 10
 
     # 3. Term hits by field
     full_hits = sum(1 for t in terms if t and t in full_text)
@@ -307,7 +324,7 @@ def score_row(row, query, terms):
     score += relief_hits * 18
     score += metadata_hits * 4
 
-    # 4. Reward documents matching most/all terms in full text
+    # 4. Reward all-term coverage
     if terms:
         unique_terms = {t for t in terms if t}
         matched_terms = sum(1 for t in unique_terms if t in full_text)
@@ -335,7 +352,7 @@ def score_row(row, query, terms):
     ]
 
     for phrase in legal_phrases:
-        if phrase in q:
+        if phrase in query_norm:
             if phrase in full_text:
                 score += 180
             if phrase in facts_text:
@@ -352,17 +369,26 @@ def search_rows(rows, query):
     if not query:
         return rows
 
-    terms = tokenize_query(query)
+    query_norm = normalize_text(query)
+    if not query_norm:
+        return rows
+
+    cached = APP_STATE["search_cache"].get(query_norm)
+    if cached is not None:
+        return cached
+
+    terms = tokenize_query(query_norm)
     results = []
 
     for row in rows:
-        s = score_row(row, query, terms)
+        s = score_row(row, query_norm, terms)
         if s > 0:
             r = dict(row)
             r["_score"] = s
             results.append(r)
 
-    results.sort(key=lambda r: (-r["_score"], r["title"]))
+    results.sort(key=lambda r: (-r["_score"], r["title_norm"]))
+    cache_search_result(query_norm, results)
     return results
 
 
@@ -405,6 +431,7 @@ def healthz():
         "load_error": APP_STATE["load_error"],
         "csv_exists": CSV_PATH.exists(),
         "pdf_dir_exists": PDF_DIR.exists(),
+        "search_cache_size": len(APP_STATE["search_cache"]),
     }
 
 
