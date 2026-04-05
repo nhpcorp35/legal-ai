@@ -1,4 +1,5 @@
 <!DOCTYPE html>
+
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -18,173 +19,176 @@
       --radius: 14px;
     }
 
-    * { box-sizing: border-box; }
+```
+* { box-sizing: border-box; }
 
-    body {
-      margin: 0;
-      font-family: Arial, Helvetica, sans-serif;
-      background: var(--bg);
-      color: var(--text);
-      line-height: 1.5;
-    }
+body {
+  margin: 0;
+  font-family: Arial, Helvetica, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.5;
+}
 
-    .page {
-      max-width: 1040px;
-      margin: 0 auto;
-      padding: 28px 18px 48px;
-    }
+.page {
+  max-width: 1040px;
+  margin: 0 auto;
+  padding: 28px 18px 48px;
+}
 
-    .topbar { margin-bottom: 22px; }
+.topbar { margin-bottom: 22px; }
 
-    .title {
-      margin: 0 0 6px 0;
-      font-size: 2rem;
-      font-weight: 700;
-      color: #111827;
-    }
+.title {
+  margin: 0 0 6px 0;
+  font-size: 2rem;
+  font-weight: 700;
+  color: #111827;
+}
 
-    .subtitle {
-      margin: 0;
-      color: var(--muted);
-      font-size: 0.98rem;
-    }
+.subtitle {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.98rem;
+}
 
-    .search-card,
-    .status-card,
-    .result-card {
-      background: var(--card);
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-      box-shadow: var(--shadow);
-    }
+.search-card,
+.status-card,
+.result-card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
 
-    .search-card {
-      padding: 18px;
-      margin-bottom: 18px;
-    }
+.search-card {
+  padding: 18px;
+  margin-bottom: 18px;
+}
 
-    .search-form { display: grid; gap: 12px; }
+.search-form { display: grid; gap: 12px; }
 
-    .search-row {
-      display: flex;
-      gap: 10px;
-      flex-wrap: wrap;
-    }
+.search-row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
 
-    .filter-row {
-      display: flex;
-      gap: 10px;
-      flex-wrap: wrap;
-    }
+.filter-row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
 
-    .search-input,
-    .filter-select {
-      min-width: 220px;
-      padding: 14px 16px;
-      border: 1px solid #cfd6e4;
-      border-radius: 10px;
-      font-size: 1rem;
-      background: #fff;
-    }
+.search-input,
+.filter-select {
+  min-width: 220px;
+  padding: 14px 16px;
+  border: 1px solid #cfd6e4;
+  border-radius: 10px;
+  font-size: 1rem;
+  background: #fff;
+}
 
-    .search-input { flex: 1 1 680px; }
-    .filter-select { flex: 1 1 240px; }
+.search-input { flex: 1 1 680px; }
+.filter-select { flex: 1 1 240px; }
 
-    .search-btn,
-    .clear-btn,
-    .pdf-btn,
-    .page-btn {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      text-decoration: none;
-      border-radius: 10px;
-      font-weight: 600;
-      cursor: pointer;
-    }
+.search-btn,
+.clear-btn,
+.pdf-btn,
+.page-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+  border-radius: 10px;
+  font-weight: 600;
+  cursor: pointer;
+}
 
-    .search-btn {
-      border: none;
-      background: var(--accent);
-      color: white;
-      padding: 14px 18px;
-      min-width: 110px;
-    }
+.search-btn {
+  border: none;
+  background: var(--accent);
+  color: white;
+  padding: 14px 18px;
+  min-width: 110px;
+}
 
-    .clear-btn {
-      border: 1px solid var(--line);
-      background: white;
-      color: var(--text);
-      padding: 13px 16px;
-    }
+.clear-btn {
+  border: 1px solid var(--line);
+  background: white;
+  color: var(--text);
+  padding: 13px 16px;
+}
 
-    .status-card {
-      padding: 14px 18px;
-      margin-bottom: 20px;
-      display: flex;
-      justify-content: space-between;
-      flex-wrap: wrap;
-    }
+.status-card {
+  padding: 14px 18px;
+  margin-bottom: 20px;
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
 
-    .status-pill {
-      padding: 7px 12px;
-      border-radius: 999px;
-      background: #f3f4f6;
-      font-size: 0.92rem;
-      font-weight: 600;
-    }
+.status-pill {
+  padding: 7px 12px;
+  border-radius: 999px;
+  background: #f3f4f6;
+  font-size: 0.92rem;
+  font-weight: 600;
+}
 
-    .results {
-      display: flex;
-      flex-direction: column;
-      gap: 16px;
-    }
+.results {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
 
-    .result-card { padding: 20px; }
+.result-card { padding: 20px; }
 
-    .result-title {
-      margin: 0 0 8px 0;
-      font-size: 1.2rem;
-      font-weight: 700;
-    }
+.result-title {
+  margin: 0 0 8px 0;
+  font-size: 1.2rem;
+  font-weight: 700;
+}
 
-    .meta-row {
-      display: flex;
-      gap: 8px;
-      margin-bottom: 12px;
-      flex-wrap: wrap;
-    }
+.meta-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
 
-    .meta-chip {
-      padding: 5px 10px;
-      border-radius: 999px;
-      background: #f8fafc;
-      border: 1px solid #e5e7eb;
-      font-size: 0.88rem;
-    }
+.meta-chip {
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: #f8fafc;
+  border: 1px solid #e5e7eb;
+  font-size: 0.88rem;
+}
 
-    .meta-line {
-      font-size: 0.93rem;
-      color: var(--muted);
-    }
+.meta-line {
+  font-size: 0.93rem;
+  color: var(--muted);
+}
 
-    .snippet {
-      padding-left: 14px;
-      border-left: 3px solid var(--accent-soft);
-      font-size: 0.97rem;
-    }
+.snippet {
+  padding-left: 14px;
+  border-left: 3px solid var(--accent-soft);
+  font-size: 0.97rem;
+}
 
-    .pagination {
-      margin-top: 22px;
-      display: flex;
-      justify-content: center;
-      gap: 10px;
-    }
+.pagination {
+  margin-top: 22px;
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+}
 
-    mark {
-      background: var(--mark);
-      border-radius: 3px;
-    }
+mark {
+  background: var(--mark);
+  border-radius: 3px;
+}
+```
+
   </style>
 </head>
 
@@ -197,110 +201,127 @@
   </div>
 
   <!-- SEARCH + FILTERS -->
+
   <div class="search-card">
     <form class="search-form" method="get" action="/">
 
-      <div class="search-row">
-        <input
-          class="search-input"
-          type="text"
-          name="q"
-          value="{{ query }}"
-          placeholder="Search cases..."
-          autofocus
-        />
-        <button class="search-btn" type="submit">Search</button>
+```
+  <div class="search-row">
+    <input
+      class="search-input"
+      type="text"
+      name="q"
+      value="{{ query }}"
+      placeholder="Search cases..."
+      autofocus
+    />
+    <button class="search-btn" type="submit">Search</button>
 
-        {% if query or court_filter or outcome_filter or judge_filter %}
-          <a class="clear-btn" href="/">Clear</a>
-        {% endif %}
-      </div>
+    {% if query or court_filter or outcome_filter or judge_filter %}
+      <a class="clear-btn" href="/">Clear</a>
+    {% endif %}
+  </div>
 
-      <div class="filter-row">
-        <!-- COURT -->
-        <select class="filter-select" name="court">
-          <option value="">All courts</option>
-          {% for court in filter_options.courts %}
-            <option value="{{ court }}" {% if court == court_filter %}selected{% endif %}>
-              {{ court }}
-            </option>
-          {% endfor %}
-        </select>
+  <div class="filter-row">
 
-        <!-- OUTCOME -->
-        <select class="filter-select" name="outcome">
-          <option value="">All outcomes</option>
-          {% for outcome in filter_options.outcomes %}
-            <option value="{{ outcome }}" {% if outcome == outcome_filter %}selected{% endif %}>
-              {{ outcome }}
-            </option>
-          {% endfor %}
-        </select>
+    <!-- COURT -->
+    <select class="filter-select" name="court">
+      <option value="">All courts</option>
+      {% for court in filter_options.courts %}
+        <option value="{{ court }}" {% if court == court_filter %}selected{% endif %}>
+          {{ court }}
+        </option>
+      {% endfor %}
+    </select>
 
-        <!-- ✅ JUDGE FILTER -->
-        <select class="filter-select" name="judge">
-          <option value="">All judges</option>
-          {% for judge in filter_options.judges %}
-            <option value="{{ judge }}" {% if judge == judge_filter %}selected{% endif %}>
-              {{ judge }}
-            </option>
-          {% endfor %}
-        </select>
+    <!-- OUTCOME -->
+    <select class="filter-select" name="outcome">
+      <option value="">All outcomes</option>
+      {% for outcome in filter_options.outcomes %}
+        <option value="{{ outcome }}" {% if outcome == outcome_filter %}selected{% endif %}>
+          {{ outcome }}
+        </option>
+      {% endfor %}
+    </select>
 
-      </div>
-    </form>
+    <!-- JUDGE -->
+    <select class="filter-select" name="judge">
+      <option value="">All judges</option>
+      {% for judge in filter_options.judges %}
+        <option value="{{ judge }}" {% if judge == judge_filter %}selected{% endif %}>
+          {{ judge }}
+        </option>
+      {% endfor %}
+    </select>
+
+  </div>
+</form>
+```
+
   </div>
 
   <!-- STATUS -->
+
   <div class="status-card">
     <div>
       <span class="status-pill">Cases: {{ total_loaded }}</span>
       <span class="status-pill">Results: {{ pager.total }}</span>
 
-      {% if court_filter %}
-        <span class="status-pill">Court: {{ court_filter }}</span>
-      {% endif %}
-      {% if outcome_filter %}
-        <span class="status-pill">Outcome: {{ outcome_filter }}</span>
-      {% endif %}
-      {% if judge_filter %}
-        <span class="status-pill">Judge: {{ judge_filter }}</span>
-      {% endif %}
-    </div>
+```
+  {% if court_filter %}
+    <span class="status-pill">Court: {{ court_filter }}</span>
+  {% endif %}
+  {% if outcome_filter %}
+    <span class="status-pill">Outcome: {{ outcome_filter }}</span>
+  {% endif %}
+  {% if judge_filter %}
+    <span class="status-pill">Judge: {{ judge_filter }}</span>
+  {% endif %}
+</div>
+
+<div>
+  {% if pager.total > 0 %}
+    Showing {{ pager.start_index }}–{{ pager.end_index }} of {{ pager.total }}
+  {% endif %}
+</div>
+```
+
   </div>
 
   <!-- RESULTS -->
-  {% if results %}
-    <div class="results">
-      {% for r in results %}
-        <div class="result-card">
 
-          <h2 class="result-title">{{ r.title_html|safe }}</h2>
+{% if results %} <div class="results">
+{% for r in results %} <div class="result-card">
 
-          <div class="meta-row">
-            <span class="meta-chip">{{ r.court_html|safe }}</span>
-            <span class="meta-chip">{{ r.outcome_html|safe }}</span>
-            <span class="meta-chip">{{ r.case_number_html|safe }}</span>
-          </div>
+```
+      <h2 class="result-title">{{ r.title_html|safe }}</h2>
 
-          {% if r.judges_text %}
-            <div class="meta-line">
-              <strong>Judges:</strong> {{ r.judges_html|safe }}
-            </div>
-          {% endif %}
+      <div class="meta-row">
+        <span class="meta-chip">{{ r.court_html|safe }}</span>
+        <span class="meta-chip">{{ r.outcome_html|safe }}</span>
+        <span class="meta-chip">{{ r.case_number_html|safe }}</span>
+      </div>
 
-          {% for snippet in r.snippets %}
-            <p class="snippet">{{ snippet|safe }}</p>
-          {% endfor %}
-
-          <div style="margin-top:12px;">
-            <a class="pdf-btn" href="{{ r.pdf_url }}" target="_blank">Open PDF</a>
-          </div>
-
+      {% if r.judges_text %}
+        <div class="meta-line">
+          <strong>Judges:</strong> {{ r.judges_html|safe }}
         </div>
+      {% endif %}
+
+      {% for snippet in r.snippets %}
+        <p class="snippet">{{ snippet|safe }}</p>
       {% endfor %}
+
+      <div style="margin-top:12px;">
+        <a class="pdf-btn" href="{{ r.pdf_url }}" target="_blank">Open PDF</a>
+      </div>
+
     </div>
-  {% endif %}
+  {% endfor %}
+</div>
+```
+
+{% endif %}
 
 </div>
 </body>
