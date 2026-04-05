@@ -203,8 +203,8 @@ def load_rows():
             claims_text = r.get("claims_text", "")
             relief_text = r.get("relief_text", "")
             summary_text = r.get("summary", "")
-            court_text = r.get("court", "")
-            outcome_text = r.get("outcome", "")
+            court_text = normalize_space(r.get("court", ""))
+            outcome_text = normalize_space(r.get("outcome", ""))
             judges_text = r.get("judges", "")
 
             title_norm = normalize_text(title)
@@ -231,7 +231,9 @@ def load_rows():
                 "title": title,
                 "title_norm": title_norm,
                 "court": court_text,
+                "court_norm": normalize_text(court_text),
                 "outcome": outcome_text,
+                "outcome_norm": normalize_text(outcome_text),
                 "judges_text": judges_text,
                 "summary": summary_text,
                 "pdf_filename": pdf_file,
@@ -488,6 +490,31 @@ def search_rows(rows, query):
 
 
 # =========================
+# Filters
+# =========================
+
+def get_filter_options(rows):
+    courts = sorted({r["court"] for r in rows if normalize_space(r.get("court", ""))})
+    outcomes = sorted({r["outcome"] for r in rows if normalize_space(r.get("outcome", ""))})
+    return courts, outcomes
+
+
+def apply_filters(rows, court_filter, outcome_filter):
+    court_norm = normalize_text(court_filter)
+    outcome_norm = normalize_text(outcome_filter)
+
+    filtered = rows
+
+    if court_norm:
+        filtered = [r for r in filtered if r.get("court_norm", "") == court_norm]
+
+    if outcome_norm:
+        filtered = [r for r in filtered if r.get("outcome_norm", "") == outcome_norm]
+
+    return filtered
+
+
+# =========================
 # Pagination
 # =========================
 
@@ -533,10 +560,15 @@ def healthz():
 @app.route("/")
 def index():
     query = normalize_space(request.args.get("q", ""))
+    court_filter = normalize_space(request.args.get("court", ""))
+    outcome_filter = normalize_space(request.args.get("outcome", ""))
     page = safe_int(request.args.get("page", "1"))
 
     rows = get_rows()
-    filtered = search_rows(rows, query)
+    court_options, outcome_options = get_filter_options(rows)
+
+    searched = search_rows(rows, query)
+    filtered = apply_filters(searched, court_filter, outcome_filter)
     pager = paginate(filtered, page)
     terms = tokenize_query(query)
 
@@ -565,6 +597,10 @@ def index():
         "index.html",
         results=display,
         query=query,
+        court_filter=court_filter,
+        outcome_filter=outcome_filter,
+        court_options=court_options,
+        outcome_options=outcome_options,
         pager=pager,
         total_loaded=len(rows),
         load_error=APP_STATE["load_error"],
