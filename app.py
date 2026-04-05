@@ -271,8 +271,92 @@ def get_rows():
 
 
 # =========================
-# Ranking
+# Ranking v2
 # =========================
+
+def token_positions(text, terms):
+    if not text or not terms:
+        return {}
+
+    words = re.findall(r"[A-Za-z0-9\-]+", text)
+    positions = {t: [] for t in terms}
+
+    for idx, word in enumerate(words):
+        for term in terms:
+            if word == term:
+                positions[term].append(idx)
+
+    return positions
+
+
+def proximity_score(text, terms):
+    unique_terms = [t for t in dict.fromkeys(terms) if t]
+    if len(unique_terms) < 2 or not text:
+        return 0
+
+    positions = token_positions(text, unique_terms)
+    present_terms = [t for t in unique_terms if positions.get(t)]
+
+    if len(present_terms) < 2:
+        return 0
+
+    all_positions = []
+    for term in present_terms:
+        for pos in positions[term]:
+            all_positions.append((pos, term))
+
+    all_positions.sort()
+    best_window = None
+    left = 0
+    counts = {}
+
+    for right in range(len(all_positions)):
+        right_pos, right_term = all_positions[right]
+        counts[right_term] = counts.get(right_term, 0) + 1
+
+        while len(counts) == len(present_terms):
+            left_pos, left_term = all_positions[left]
+            window = right_pos - left_pos + 1
+            if best_window is None or window < best_window:
+                best_window = window
+
+            counts[left_term] -= 1
+            if counts[left_term] == 0:
+                del counts[left_term]
+            left += 1
+
+    if best_window is None:
+        return 0
+
+    if best_window <= 5:
+        return 220
+    if best_window <= 10:
+        return 140
+    if best_window <= 20:
+        return 80
+    if best_window <= 40:
+        return 35
+    return 10
+
+
+def field_coverage_bonus(text, terms):
+    unique_terms = {t for t in terms if t}
+    if not unique_terms or not text:
+        return 0, 0
+
+    matched = sum(1 for t in unique_terms if t in text)
+    coverage_ratio = matched / len(unique_terms)
+
+    if coverage_ratio == 1:
+        return matched, 180
+    if coverage_ratio >= 0.8:
+        return matched, 110
+    if coverage_ratio >= 0.6:
+        return matched, 55
+    if coverage_ratio >= 0.4:
+        return matched, 20
+    return matched, 0
+
 
 def score_row(row, query_norm, terms):
     if not query_norm:
@@ -291,19 +375,19 @@ def score_row(row, query_norm, terms):
     if query_norm in full_text:
         score += 1000
     if query_norm in facts_text:
-        score += 450
+        score += 500
     if query_norm in procedure_text:
-        score += 350
+        score += 380
     if query_norm in claims_text:
-        score += 350
+        score += 380
     if query_norm in relief_text:
-        score += 350
+        score += 380
     if query_norm in metadata:
         score += 80
 
     # 2. Exact phrase frequency by field
     score += full_text.count(query_norm) * 120
-    score += facts_text.count(query_norm) * 80
+    score += facts_text.count(query_norm) * 85
     score += procedure_text.count(query_norm) * 65
     score += claims_text.count(query_norm) * 65
     score += relief_text.count(query_norm) * 65
@@ -318,22 +402,33 @@ def score_row(row, query_norm, terms):
     metadata_hits = sum(1 for t in terms if t and t in metadata)
 
     score += full_hits * 35
-    score += facts_hits * 22
+    score += facts_hits * 24
     score += procedure_hits * 18
     score += claims_hits * 18
     score += relief_hits * 18
     score += metadata_hits * 4
 
-    # 4. Reward all-term coverage
-    if terms:
-        unique_terms = {t for t in terms if t}
-        matched_terms = sum(1 for t in unique_terms if t in full_text)
-        if matched_terms == len(unique_terms):
-            score += 120
-        elif matched_terms >= max(1, len(unique_terms) - 1):
-            score += 60
+    # 4. Coverage bonuses
+    _, full_coverage_bonus = field_coverage_bonus(full_text, terms)
+    _, facts_coverage_bonus = field_coverage_bonus(facts_text, terms)
+    _, procedure_coverage_bonus = field_coverage_bonus(procedure_text, terms)
+    _, claims_coverage_bonus = field_coverage_bonus(claims_text, terms)
+    _, relief_coverage_bonus = field_coverage_bonus(relief_text, terms)
 
-    # 5. Legal phrase boost
+    score += full_coverage_bonus
+    score += int(facts_coverage_bonus * 0.65)
+    score += int(procedure_coverage_bonus * 0.45)
+    score += int(claims_coverage_bonus * 0.45)
+    score += int(relief_coverage_bonus * 0.45)
+
+    # 5. Proximity scoring
+    score += proximity_score(full_text, terms)
+    score += int(proximity_score(facts_text, terms) * 0.6)
+    score += int(proximity_score(procedure_text, terms) * 0.4)
+    score += int(proximity_score(claims_text, terms) * 0.4)
+    score += int(proximity_score(relief_text, terms) * 0.4)
+
+    # 6. Legal phrase boost
     legal_phrases = [
         "motion to dismiss",
         "summary judgment",
@@ -356,7 +451,7 @@ def score_row(row, query_norm, terms):
             if phrase in full_text:
                 score += 180
             if phrase in facts_text:
-                score += 90
+                score += 100
             if phrase in procedure_text or phrase in claims_text or phrase in relief_text:
                 score += 75
             if phrase in metadata:
