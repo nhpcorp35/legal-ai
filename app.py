@@ -1,7 +1,6 @@
 import csv
 import html
 import math
-import os
 import re
 from pathlib import Path
 
@@ -11,16 +10,11 @@ app = Flask(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent
 
-CSV_PATH = BASE_DIR / "output_enriched.csv"
+CSV_PATH = BASE_DIR / "output_clean.csv"
 PDF_DIR = BASE_DIR / "static" / "pdfs"
 
 PER_PAGE = 10
 MAX_SNIPPETS = 3
-
-APP_STATE = {
-    "rows": None,
-    "load_error": None,
-}
 
 
 # =========================
@@ -30,30 +24,22 @@ APP_STATE = {
 def normalize_space(value):
     return re.sub(r"\s+", " ", str(value or "")).strip()
 
-
 def normalize_text(value):
     return normalize_space(value).lower()
 
-
 def tokenize_query(query):
     return re.findall(r"[A-Za-z0-9\-]+", normalize_text(query))
-
 
 def html_highlight(text, terms):
     escaped = html.escape(str(text or ""))
     if not terms:
         return escaped
 
-    clean_terms = [t for t in terms if t]
-    if not clean_terms:
-        return escaped
-
     pattern = re.compile(
-        r"(" + "|".join(re.escape(t) for t in clean_terms) + r")",
-        re.IGNORECASE,
+        r"(" + "|".join(re.escape(t) for t in terms if t) + r")",
+        re.IGNORECASE
     )
     return pattern.sub(r"<mark>\1</mark>", escaped)
-
 
 def safe_int(value, default=1):
     try:
@@ -62,212 +48,111 @@ def safe_int(value, default=1):
         return default
 
 
-def unique_sorted_values(rows, field_name):
-    values = []
-    seen = set()
-
-    for row in rows:
-        value = normalize_space(row.get(field_name, ""))
-        if not value:
-            continue
-
-        key = normalize_text(value)
-        if key in seen:
-            continue
-
-        seen.add(key)
-        values.append(value)
-
-    values.sort(key=lambda v: v.lower())
-    return values
-
-
-def matches_exact_filter(row_value, selected_value):
-    if not selected_value:
-        return True
-    return normalize_text(row_value) == normalize_text(selected_value)
-
-
-def apply_filters(rows, court_filter="", outcome_filter="", judge_filter=""):
-    if not court_filter and not outcome_filter and not judge_filter:
-        return rows
-
-    filtered = []
-
-    for row in rows:
-        if not matches_exact_filter(row.get("court", ""), court_filter):
-            continue
-        if not matches_exact_filter(row.get("outcome", ""), outcome_filter):
-            continue
-        if not matches_exact_filter(row.get("judges_text", ""), judge_filter):
-            continue
-
-        filtered.append(row)
-
-    return filtered
-
-
 # =========================
-# Snippets
+# Snippet logic
 # =========================
-
-def split_sentences(text):
-    text = normalize_space(text)
-    if not text:
-        return []
-    parts = re.split(r"(?<=[\.\?!;:])\s+", text)
-    return [p.strip() for p in parts if p.strip()]
-
-
-def trim_snippet(text, max_len=260):
-    text = normalize_space(text)
-    if len(text) <= max_len:
-        return text
-    cut = text[:max_len].rstrip()
-    last_space = cut.rfind(" ")
-    if last_space > int(max_len * 0.7):
-        cut = cut[:last_space]
-    return cut.rstrip(" ,;:-") + " …"
-
 
 def build_snippets(full_text, query, terms):
     if not full_text:
         return []
 
     text = normalize_space(full_text)
-    sentences = split_sentences(text)
-    if not sentences:
+    if not text:
         return []
 
     snippets = []
     seen = set()
-    query_norm = normalize_text(query)
 
-    def add(sentence):
-        sentence = normalize_space(sentence)
-        if not sentence:
+    def add_snippet(start, end):
+        start = max(0, start)
+        end = min(len(text), end)
+        snippet = text[start:end].strip()
+        if not snippet:
             return
-        key = sentence[:180].lower()
+        key = snippet[:180]
         if key in seen:
             return
         seen.add(key)
-        snippets.append(trim_snippet(sentence))
+        if start > 0:
+            snippet = "… " + snippet
+        if end < len(text):
+            snippet = snippet + " …"
+        snippets.append(snippet)
 
-    for s in sentences:
-        if query_norm and query_norm in normalize_text(s):
-            add(s)
+    # exact phrase first
+    if query:
+        for match in re.finditer(re.escape(query), text, re.IGNORECASE):
+            add_snippet(match.start() - 140, match.end() + 140)
             if len(snippets) >= MAX_SNIPPETS:
-                return snippets
+                return snippets[:MAX_SNIPPETS]
 
+    # fallback: term matches
     if not snippets:
-        scored = []
-        for s in sentences:
-            count = sum(1 for t in terms if t and t in normalize_text(s))
-            if count > 0:
-                scored.append((count, s))
-        scored.sort(key=lambda x: -x[0])
+        for term in terms:
+            if not term:
+                continue
+            for match in re.finditer(re.escape(term), text, re.IGNORECASE):
+                add_snippet(match.start() - 140, match.end() + 140)
+                if len(snippets) >= MAX_SNIPPETS:
+                    return snippets[:MAX_SNIPPETS]
 
-        for _, s in scored:
-            add(s)
-            if len(snippets) >= MAX_SNIPPETS:
-                return snippets
-
+    # final fallback
     if not snippets:
-        for s in sentences[:2]:
-            add(s)
+        add_snippet(0, 300)
 
-    return snippets
+    return snippets[:MAX_SNIPPETS]
 
 
 # =========================
-# Data loading
+# Load data
 # =========================
 
 def load_rows():
     rows = []
 
-    print("=== STARTUP PATH CHECK ===")
-    print("BASE_DIR:", BASE_DIR)
-    print("CSV_PATH:", CSV_PATH, "exists:", CSV_PATH.exists())
-    print("PDF_DIR:", PDF_DIR, "exists:", PDF_DIR.exists())
-    if PDF_DIR.exists():
-        try:
-            pdf_count = len(list(PDF_DIR.glob("*.pdf")))
-        except Exception:
-            pdf_count = "unknown"
-        print("PDF_COUNT:", pdf_count)
-    print("==========================")
+    with open(CSV_PATH, "r", encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
 
-    if not CSV_PATH.exists():
-        raise FileNotFoundError(f"Missing CSV: {CSV_PATH}")
+        for i, r in enumerate(reader):
+            case_number = r.get("case_number", "").strip()
 
-    if not PDF_DIR.exists():
-        raise FileNotFoundError(f"Missing PDF directory: {PDF_DIR}")
+            pdf_file = None
+            for p in PDF_DIR.glob("*.pdf"):
+                if p.name.startswith(case_number):
+                    pdf_file = p.name
+                    break
 
-    for i, r in enumerate(csv.DictReader(open(CSV_PATH, "r", encoding="utf-8-sig"))):
-        case_number = normalize_space(r.get("case_number", ""))
+            if not pdf_file:
+                continue
 
-        pdf_file = None
-        for p in PDF_DIR.glob("*.pdf"):
-            if p.name.startswith(case_number):
-                pdf_file = p.name
-                break
+            full_text = r.get("full_text", "")
 
-        if not pdf_file:
-            continue
+            metadata_blob = normalize_text(
+                " ".join([
+                    r.get("case_name", ""),
+                    r.get("court", ""),
+                    r.get("outcome", ""),
+                    r.get("judges", ""),
+                    r.get("summary", ""),
+                    case_number,
+                ])
+            )
 
-        title = normalize_space(r.get("case_name", ""))
-        if not title:
-            title = normalize_space(r.get("summary", ""))[:120]
-        if not title:
-            title = case_number or "Untitled case"
+            rows.append({
+                "id": i,
+                "case_number": case_number,
+                "title": r.get("case_name", ""),
+                "court": r.get("court", ""),
+                "outcome": r.get("outcome", ""),
+                "judges_text": r.get("judges", ""),
+                "summary": r.get("summary", ""),
+                "pdf_filename": pdf_file,
+                "full_text": full_text,
+                "full_text_norm": normalize_text(full_text),
+                "metadata_blob": metadata_blob,
+            })
 
-        full_text = r.get("full_text", "")
-
-        metadata_blob = normalize_text(
-            " ".join([
-                title,
-                r.get("court", ""),
-                r.get("outcome", ""),
-                r.get("judges", ""),
-                r.get("summary", ""),
-                case_number,
-            ])
-        )
-
-        rows.append({
-            "id": i,
-            "case_number": case_number,
-            "title": title,
-            "court": normalize_space(r.get("court", "")),
-            "outcome": normalize_space(r.get("outcome", "")),
-            "judges_text": normalize_space(r.get("judges", "")),
-            "summary": r.get("summary", ""),
-            "pdf_filename": pdf_file,
-            "full_text": full_text,
-            "full_text_norm": normalize_text(full_text),
-            "metadata_blob": metadata_blob,
-        })
-
-    print("ROWS_LOADED:", len(rows))
     return rows
-
-
-def get_rows():
-    if APP_STATE["rows"] is not None:
-        return APP_STATE["rows"]
-
-    if APP_STATE["load_error"] is not None:
-        return []
-
-    try:
-        APP_STATE["rows"] = load_rows()
-    except Exception as e:
-        APP_STATE["load_error"] = str(e)
-        print("LOAD ERROR:", repr(e))
-        APP_STATE["rows"] = []
-
-    return APP_STATE["rows"]
 
 
 # =========================
@@ -284,15 +169,16 @@ def score_row(row, query, terms):
 
     score = 0
 
-    if q in full_text:
+    if q and q in full_text:
         score += 1000
 
-    hits = sum(1 for t in terms if t in full_text)
-    score += hits * 100
+    if terms:
+        hits = sum(1 for t in terms if t in full_text)
+        score += hits * 100
 
-    if score == 0:
-        meta_hits = sum(1 for t in terms if t in metadata)
-        score += meta_hits * 20
+    if score == 0 and terms:
+        if any(t in metadata for t in terms):
+            score += 50
 
     return score
 
@@ -334,54 +220,28 @@ def paginate(items, page):
         "total_pages": total_pages,
         "start_index": start + 1 if total else 0,
         "end_index": min(end, total),
-        "has_prev": page > 1,
-        "has_next": page < total_pages,
-        "prev_page": page - 1,
-        "next_page": page + 1,
     }
+
+
+# =========================
+# App state
+# =========================
+
+APP_STATE = {"rows": load_rows()}
 
 
 # =========================
 # Routes
 # =========================
 
-@app.route("/healthz")
-def healthz():
-    rows = get_rows()
-    return {
-        "ok": True,
-        "rows_loaded": len(rows),
-        "load_error": APP_STATE["load_error"],
-        "csv_exists": CSV_PATH.exists(),
-        "pdf_dir_exists": PDF_DIR.exists(),
-    }
-
-
 @app.route("/")
 def index():
     query = normalize_space(request.args.get("q", ""))
-    court_filter = normalize_space(request.args.get("court", ""))
-    outcome_filter = normalize_space(request.args.get("outcome", ""))
-    judge_filter = normalize_space(request.args.get("judge", ""))
     page = safe_int(request.args.get("page", "1"))
 
-    rows = get_rows()
-
-    filter_options = {
-        "courts": unique_sorted_values(rows, "court"),
-        "outcomes": unique_sorted_values(rows, "outcome"),
-        "judges": unique_sorted_values(rows, "judges_text"),
-    }
-
-    filtered_rows = apply_filters(
-        rows,
-        court_filter=court_filter,
-        outcome_filter=outcome_filter,
-        judge_filter=judge_filter,
-    )
-
-    matched_rows = search_rows(filtered_rows, query)
-    pager = paginate(matched_rows, page)
+    rows = APP_STATE["rows"]
+    filtered = search_rows(rows, query)
+    pager = paginate(filtered, page)
     terms = tokenize_query(query)
 
     display = []
@@ -390,9 +250,9 @@ def index():
         snippets = build_snippets(r["full_text"], query, terms) if query else []
 
         if query and not snippets:
-            fallback = normalize_space(r.get("summary", ""))[:260]
+            fallback = normalize_space(r.get("summary", "")) or normalize_space(r.get("full_text", ""))[:300]
             if fallback:
-                snippets = [fallback]
+                snippets = [fallback + " …"]
 
         display.append({
             **r,
@@ -411,14 +271,12 @@ def index():
         query=query,
         pager=pager,
         total_loaded=len(rows),
-        load_error=APP_STATE["load_error"],
-        court_filter=court_filter,
-        outcome_filter=outcome_filter,
-        judge_filter=judge_filter,
-        filter_options=filter_options,
     )
 
 
+# =========================
+# Run
+# =========================
+
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, debug=False)
+    app.run(debug=True)

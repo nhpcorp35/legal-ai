@@ -1,328 +1,351 @@
 <!DOCTYPE html>
-
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Legal AI Search</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Cargo Viewer</title>
   <style>
     :root {
-      --bg: #f6f7fb;
+      --bg: #f7f7f8;
       --card: #ffffff;
       --text: #1f2937;
       --muted: #6b7280;
-      --line: #e5e7eb;
-      --accent: #1d4ed8;
-      --accent-soft: #dbeafe;
-      --mark: #fff3b0;
-      --shadow: 0 6px 18px rgba(15, 23, 42, 0.06);
-      --radius: 14px;
+      --border: #e5e7eb;
+      --link: #1d4ed8;
+      --mark: #fff3a3;
     }
 
-```
-* { box-sizing: border-box; }
+    * {
+      box-sizing: border-box;
+    }
 
-body {
-  margin: 0;
-  font-family: Arial, Helvetica, sans-serif;
-  background: var(--bg);
-  color: var(--text);
-  line-height: 1.5;
-}
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+      line-height: 1.45;
+    }
 
-.page {
-  max-width: 1040px;
-  margin: 0 auto;
-  padding: 28px 18px 48px;
-}
+    .wrap {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 24px 16px 40px;
+    }
 
-.topbar { margin-bottom: 22px; }
+    h1 {
+      margin: 0 0 14px;
+      font-size: 28px;
+      line-height: 1.2;
+    }
 
-.title {
-  margin: 0 0 6px 0;
-  font-size: 2rem;
-  font-weight: 700;
-  color: #111827;
-}
+    .sub {
+      color: var(--muted);
+      margin-bottom: 18px;
+      font-size: 14px;
+    }
 
-.subtitle {
-  margin: 0;
-  color: var(--muted);
-  font-size: 0.98rem;
-}
+    .search-card,
+    .result-card,
+    .pager-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 16px;
+    }
 
-.search-card,
-.status-card,
-.result-card {
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow);
-}
+    .search-form {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
 
-.search-card {
-  padding: 18px;
-  margin-bottom: 18px;
-}
+    .search-input {
+      flex: 1 1 420px;
+      min-width: 240px;
+      padding: 12px 14px;
+      font-size: 16px;
+      border: 1px solid #cfd4dc;
+      border-radius: 10px;
+      outline: none;
+    }
 
-.search-form { display: grid; gap: 12px; }
+    .search-input:focus {
+      border-color: #7aa2ff;
+      box-shadow: 0 0 0 3px rgba(122, 162, 255, 0.15);
+    }
 
-.search-row {
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
-}
+    .search-btn,
+    .clear-btn,
+    .page-link {
+      display: inline-block;
+      text-decoration: none;
+      border-radius: 10px;
+      border: 1px solid #cfd4dc;
+      background: #fff;
+      color: var(--text);
+      padding: 11px 14px;
+      font-size: 15px;
+      cursor: pointer;
+    }
 
-.filter-row {
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
-}
+    .search-btn:hover,
+    .clear-btn:hover,
+    .page-link:hover {
+      background: #f3f4f6;
+    }
 
-.search-input,
-.filter-select {
-  min-width: 220px;
-  padding: 14px 16px;
-  border: 1px solid #cfd6e4;
-  border-radius: 10px;
-  font-size: 1rem;
-  background: #fff;
-}
+    .meta-row {
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 14px;
+    }
 
-.search-input { flex: 1 1 680px; }
-.filter-select { flex: 1 1 240px; }
+    .result-title {
+      margin: 0 0 8px;
+      font-size: 20px;
+      line-height: 1.3;
+    }
 
-.search-btn,
-.clear-btn,
-.pdf-btn,
-.page-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  text-decoration: none;
-  border-radius: 10px;
-  font-weight: 600;
-  cursor: pointer;
-}
+    .case-number {
+      font-weight: 700;
+      margin-bottom: 8px;
+      font-size: 15px;
+    }
 
-.search-btn {
-  border: none;
-  background: var(--accent);
-  color: white;
-  padding: 14px 18px;
-  min-width: 110px;
-}
+    .grid {
+      display: grid;
+      grid-template-columns: 160px 1fr;
+      gap: 8px 12px;
+      margin: 12px 0;
+    }
 
-.clear-btn {
-  border: 1px solid var(--line);
-  background: white;
-  color: var(--text);
-  padding: 13px 16px;
-}
+    .label {
+      color: var(--muted);
+      font-weight: 600;
+    }
 
-.status-card {
-  padding: 14px 18px;
-  margin-bottom: 20px;
-  display: flex;
-  justify-content: space-between;
-  flex-wrap: wrap;
-}
+    .value {
+      color: var(--text);
+    }
 
-.status-pill {
-  padding: 7px 12px;
-  border-radius: 999px;
-  background: #f3f4f6;
-  font-size: 0.92rem;
-  font-weight: 600;
-}
+    .summary {
+      margin-top: 12px;
+    }
 
-.results {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
+    .pdf-link {
+      display: inline-block;
+      margin-top: 12px;
+      font-weight: 600;
+      color: var(--link);
+      text-decoration: none;
+    }
 
-.result-card { padding: 20px; }
+    .pdf-link:hover {
+      text-decoration: underline;
+    }
 
-.result-title {
-  margin: 0 0 8px 0;
-  font-size: 1.2rem;
-  font-weight: 700;
-}
+    mark {
+      background: var(--mark);
+      padding: 0 2px;
+      border-radius: 3px;
+    }
 
-.meta-row {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 12px;
-  flex-wrap: wrap;
-}
+    .similar-box {
+      margin-top: 16px;
+      padding-top: 14px;
+      border-top: 1px solid var(--border);
+    }
 
-.meta-chip {
-  padding: 5px 10px;
-  border-radius: 999px;
-  background: #f8fafc;
-  border: 1px solid #e5e7eb;
-  font-size: 0.88rem;
-}
+    .similar-title {
+      font-size: 15px;
+      font-weight: 700;
+      margin-bottom: 10px;
+    }
 
-.meta-line {
-  font-size: 0.93rem;
-  color: var(--muted);
-}
+    .similar-list {
+      margin: 0;
+      padding-left: 18px;
+    }
 
-.snippet {
-  padding-left: 14px;
-  border-left: 3px solid var(--accent-soft);
-  font-size: 0.97rem;
-}
+    .similar-list li {
+      margin-bottom: 10px;
+    }
 
-.pagination {
-  margin-top: 22px;
-  display: flex;
-  justify-content: center;
-  gap: 10px;
-}
+    .similar-link {
+      color: var(--link);
+      text-decoration: none;
+      font-weight: 600;
+    }
 
-mark {
-  background: var(--mark);
-  border-radius: 3px;
-}
-```
+    .similar-link:hover {
+      text-decoration: underline;
+    }
 
+    .similar-meta {
+      color: var(--muted);
+      font-size: 14px;
+      margin-top: 2px;
+    }
+
+    .pager {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .pager-links {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .empty {
+      color: var(--muted);
+      font-size: 16px;
+    }
+
+    @media (max-width: 700px) {
+      .grid {
+        grid-template-columns: 1fr;
+      }
+
+      .label {
+        margin-top: 4px;
+      }
+    }
   </style>
 </head>
-
 <body>
-<div class="page">
+  <div class="wrap">
+    <h1>Cargo Viewer</h1>
+    <div class="sub">Simple case search with PDF access.</div>
 
-  <div class="topbar">
-    <h1 class="title">Legal AI Search</h1>
-    <p class="subtitle">Search appellate cases by legal phrase, facts, procedure, judges, and outcome.</p>
-  </div>
-
-  <!-- SEARCH + FILTERS -->
-
-  <div class="search-card">
-    <form class="search-form" method="get" action="/">
-
-```
-  <div class="search-row">
-    <input
-      class="search-input"
-      type="text"
-      name="q"
-      value="{{ query }}"
-      placeholder="Search cases..."
-      autofocus
-    />
-    <button class="search-btn" type="submit">Search</button>
-
-    {% if query or court_filter or outcome_filter or judge_filter %}
-      <a class="clear-btn" href="/">Clear</a>
-    {% endif %}
-  </div>
-
-  <div class="filter-row">
-
-    <!-- COURT -->
-    <select class="filter-select" name="court">
-      <option value="">All courts</option>
-      {% for court in filter_options.courts %}
-        <option value="{{ court }}" {% if court == court_filter %}selected{% endif %}>
-          {{ court }}
-        </option>
-      {% endfor %}
-    </select>
-
-    <!-- OUTCOME -->
-    <select class="filter-select" name="outcome">
-      <option value="">All outcomes</option>
-      {% for outcome in filter_options.outcomes %}
-        <option value="{{ outcome }}" {% if outcome == outcome_filter %}selected{% endif %}>
-          {{ outcome }}
-        </option>
-      {% endfor %}
-    </select>
-
-    <!-- JUDGE -->
-    <select class="filter-select" name="judge">
-      <option value="">All judges</option>
-      {% for judge in filter_options.judges %}
-        <option value="{{ judge }}" {% if judge == judge_filter %}selected{% endif %}>
-          {{ judge }}
-        </option>
-      {% endfor %}
-    </select>
-
-  </div>
-</form>
-```
-
-  </div>
-
-  <!-- STATUS -->
-
-  <div class="status-card">
-    <div>
-      <span class="status-pill">Cases: {{ total_loaded }}</span>
-      <span class="status-pill">Results: {{ pager.total }}</span>
-
-```
-  {% if court_filter %}
-    <span class="status-pill">Court: {{ court_filter }}</span>
-  {% endif %}
-  {% if outcome_filter %}
-    <span class="status-pill">Outcome: {{ outcome_filter }}</span>
-  {% endif %}
-  {% if judge_filter %}
-    <span class="status-pill">Judge: {{ judge_filter }}</span>
-  {% endif %}
-</div>
-
-<div>
-  {% if pager.total > 0 %}
-    Showing {{ pager.start_index }}–{{ pager.end_index }} of {{ pager.total }}
-  {% endif %}
-</div>
-```
-
-  </div>
-
-  <!-- RESULTS -->
-
-{% if results %} <div class="results">
-{% for r in results %} <div class="result-card">
-
-```
-      <h2 class="result-title">{{ r.title_html|safe }}</h2>
+    <div class="search-card">
+      <form class="search-form" method="get" action="/">
+        <input
+          class="search-input"
+          type="text"
+          name="q"
+          value="{{ query }}"
+          placeholder="Search by case number, title, court, outcome, or judge"
+          autofocus
+        />
+        <button class="search-btn" type="submit">Search</button>
+        {% if query %}
+          <a class="clear-btn" href="/">Clear</a>
+        {% endif %}
+      </form>
 
       <div class="meta-row">
-        <span class="meta-chip">{{ r.court_html|safe }}</span>
-        <span class="meta-chip">{{ r.outcome_html|safe }}</span>
-        <span class="meta-chip">{{ r.case_number_html|safe }}</span>
+        {% if query %}
+          Showing {{ pager.start_index }}–{{ pager.end_index }} of {{ pager.total }} result{{ '' if pager.total == 1 else 's' }}
+          for “{{ query }}”
+        {% else %}
+          Showing {{ pager.start_index }}–{{ pager.end_index }} of {{ pager.total }} case{{ '' if pager.total == 1 else 's' }} loaded
+        {% endif %}
       </div>
+    </div>
 
-      {% if r.judges_text %}
-        <div class="meta-line">
-          <strong>Judges:</strong> {{ r.judges_html|safe }}
-        </div>
-      {% endif %}
+    {% if results %}
+      {% for row in results %}
+        <div class="result-card">
+          <h2 class="result-title">{{ row.title_html|safe }}</h2>
 
-      {% for snippet in r.snippets %}
-        <p class="snippet">{{ snippet|safe }}</p>
-      {% endfor %}
+          <div class="case-number">{{ row.case_number_html|safe }}</div>
 
-      <div style="margin-top:12px;">
-        <a class="pdf-btn" href="{{ r.pdf_url }}" target="_blank">Open PDF</a>
-      </div>
+          <div class="grid">
+            <div class="label">Court</div>
+            <div class="value">{{ row.court_html|safe or "—" }}</div>
 
+            <div class="label">Outcome</div>
+            <div class="value">{{ row.outcome_html|safe or "—" }}</div>
+
+            <div class="label">Judges</div>
+            <div class="value">{{ row.judges_html|safe or "—" }}</div>
+
+            <div class="label">Date</div>
+            <div class="value">{{ row.date or "—" }}</div>
+          </div>
+
+          <!-- ✅ FIXED: now checks summary_html -->
+          {% if row.snippets %}
+            <div class="summary">
+              <div class="label" style="margin-bottom: 4px;">Summary</div>
+             <div class="value">
+  {% for s in row.snippets %}
+    <div style="margin-bottom:10px;">
+      {{ s|safe }}
     </div>
   {% endfor %}
 </div>
-```
+            </div>
+          {% endif %}
 
-{% endif %}
+          {% if row.pdf_url %}
+            <a class="pdf-link" href="{{ row.pdf_url }}" target="_blank" rel="noopener noreferrer">
+              Open PDF
+            </a>
+          {% endif %}
 
-</div>
+          {% if row.similar_cases %}
+            <div class="similar-box">
+              <div class="similar-title">Similar cases</div>
+              <ul class="similar-list">
+                {% for sim in row.similar_cases %}
+                  <li>
+                    {% if sim.pdf_url %}
+                      <a class="similar-link" href="{{ sim.pdf_url }}" target="_blank" rel="noopener noreferrer">
+                        {{ sim.case_number }} — {{ sim.title }}
+                      </a>
+                    {% else %}
+                      <span class="similar-link" style="font-weight:600; color:var(--text); text-decoration:none;">
+                        {{ sim.case_number }} — {{ sim.title }}
+                      </span>
+                    {% endif %}
+                    <div class="similar-meta">
+                      {{ sim.court or "Court unknown" }}
+                      {% if sim.outcome %} · {{ sim.outcome }}{% endif %}
+                      {% if sim.reason %} · {{ sim.reason }}{% endif %}
+                    </div>
+                  </li>
+                {% endfor %}
+              </ul>
+            </div>
+          {% endif %}
+        </div>
+      {% endfor %}
+
+      <div class="pager-card">
+        <div class="pager">
+          <div>
+            Page {{ pager.page }} of {{ pager.total_pages }}
+          </div>
+
+          <div class="pager-links">
+            {% if pager.has_prev %}
+              <a class="page-link" href="{{ url_for('index', q=query, page=1) }}">First</a>
+              <a class="page-link" href="{{ url_for('index', q=query, page=pager.prev_page) }}">Previous</a>
+            {% endif %}
+
+            {% if pager.has_next %}
+              <a class="page-link" href="{{ url_for('index', q=query, page=pager.next_page) }}">Next</a>
+              <a class="page-link" href="{{ url_for('index', q=query, page=pager.total_pages) }}">Last</a>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    {% else %}
+      <div class="result-card">
+        <div class="empty">
+          No results found.
+        </div>
+      </div>
+    {% endif %}
+  </div>
 </body>
 </html>
