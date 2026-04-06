@@ -1,0 +1,12 @@
+# macOS
+.DS_Store
+
+# logs
+pipeline/logs/
+
+# temp backups
+*.before_*.csv
+
+# generated intermediate files
+static/pdfs/output_clean.csv
+static/pdfs/output_v3.json
