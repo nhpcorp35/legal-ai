@@ -7,24 +7,32 @@
 
 <body style="font-family: Arial, sans-serif; background:#f7f7f7; margin:0; padding:20px;">
 
-  <!-- Header -->
   <div style="margin-bottom:20px;">
     <h2 style="margin:0;">Legal AI Search</h2>
   </div>
 
-  <!-- Search Form -->
-  <form method="get" action="/" style="margin-bottom:20px;">
-    <input type="text" name="q" value="{{ query }}" placeholder="Search cases..."
-           style="padding:8px; width:300px;">
+  <form method="get" action="/" autocomplete="off" style="margin-bottom:20px;">
+    <input
+      type="text"
+      id="search_q"
+      name="q"
+      value="{{ query }}"
+      placeholder="Search cases..."
+      autocomplete="off"
+      autocapitalize="off"
+      autocorrect="off"
+      spellcheck="false"
+      style="padding:8px; width:300px;"
+    >
 
-    <select name="court" style="padding:8px;">
+    <select name="court" autocomplete="off" style="padding:8px;">
       <option value="">All Courts</option>
       {% for c in court_options %}
         <option value="{{ c }}" {% if c == court_filter %}selected{% endif %}>{{ c }}</option>
       {% endfor %}
     </select>
 
-    <select name="outcome" style="padding:8px;">
+    <select name="outcome" autocomplete="off" style="padding:8px;">
       <option value="">All Outcomes</option>
       {% for o in outcome_options %}
         <option value="{{ o }}" {% if o == outcome_filter %}selected{% endif %}>{{ o }}</option>
@@ -34,26 +42,22 @@
     <button type="submit" style="padding:8px;">Search</button>
   </form>
 
-  <!-- Results -->
   {% for r in results %}
     <div style="background:#fff; padding:15px; margin-bottom:15px; border-radius:6px; border:1px solid #ddd;">
 
-      <!-- Title -->
       <div style="font-size:1.05em; font-weight:600;">
         <a href="{{ r.pdf_url }}" target="_blank" style="text-decoration:none; color:#1a0dab;">
-          {{ r.title_html }}
+          {{ r.title_html|safe }}
         </a>
       </div>
 
-      <!-- Meta -->
       <div style="font-size:0.85em; color:#666; margin-top:4px;">
-        {{ r.court_html }} · {{ r.outcome_html }}
+        {{ r.court_html|safe }} · {{ r.outcome_html|safe }}
         {% if r.case_number %}
-          · {{ r.case_number_html }}
+          · {{ r.case_number_html|safe }}
         {% endif %}
       </div>
 
-      <!-- Snippets -->
       {% if r.snippets %}
         <div style="margin-top:10px; font-size:0.92em; line-height:1.5;">
           {% for s in r.snippets %}
@@ -62,27 +66,23 @@
         </div>
       {% endif %}
 
-      <!-- Similar Cases -->
       {% if r.similar_cases %}
         <div style="margin-top:12px; padding:10px; background:#fafafa; border:1px solid #eee; border-radius:6px;">
-          
           <div style="font-weight:600; font-size:0.95em; margin-bottom:8px;">
             Similar Cases
           </div>
 
           {% for sc in r.similar_cases %}
             <div style="margin-bottom:10px; padding-bottom:8px; border-bottom:1px solid #eee;">
-              
-              <!-- Title -->
+
               <div style="font-size:0.92em;">
                 <a href="{{ sc.pdf_url }}" target="_blank" style="text-decoration:none; color:#1a0dab;">
                   {{ sc.title }}
                 </a>
               </div>
 
-              <!-- Trust Badges -->
               <div style="margin-top:4px; font-size:0.75em;">
-                
+
                 {% if sc._similarity_score >= 90 %}
                   <span style="background:#e6f4ea; color:#137333; padding:2px 6px; border-radius:4px; margin-right:4px;">
                     Highly Similar
@@ -90,7 +90,6 @@
                 {% endif %}
 
                 {% if sc.reason %}
-                  
                   {% if "shared legal phrases" in sc.reason %}
                     <span style="background:#eef3ff; color:#1a3dc1; padding:2px 6px; border-radius:4px; margin-right:4px;">
                       Same Issue
@@ -108,20 +107,17 @@
                       Same Court
                     </span>
                   {% endif %}
-
                 {% endif %}
               </div>
 
             </div>
           {% endfor %}
-
         </div>
       {% endif %}
 
     </div>
   {% endfor %}
 
-  <!-- Pagination -->
   <div style="margin-top:20px; font-size:0.9em;">
     {% if pager.has_prev %}
       <a href="?q={{ query }}&court={{ court_filter }}&outcome={{ outcome_filter }}&page={{ pager.prev_page }}">← Prev</a>
