@@ -560,7 +560,8 @@ def index():
         load_error=APP_STATE["load_error"],
     )
 
+import os
 
 if __name__ == "__main__":
-    port = int(os.environ["PORT"])
-    app.run(host="0.0.0.0", port=port)
+    port = int(os.environ.get("PORT", 5001))  # fallback for local
+    app.run(host="0.0.0.0", port=port, debug=True)
