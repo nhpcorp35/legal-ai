@@ -65,6 +65,135 @@ def safe_int(value, default=1):
 
 
 # =========================
+# Structured extraction
+# =========================
+
+def normalize_court_label(court_text):
+    c = normalize_text(court_text)
+
+    if "appellate division" in c:
+        if "first" in c or "1st" in c or "department 1" in c:
+            return "ad1"
+        if "second" in c or "2nd" in c or "department 2" in c:
+            return "ad2"
+        if "third" in c or "3rd" in c or "department 3" in c:
+            return "ad3"
+        if "fourth" in c or "4th" in c or "department 4" in c:
+            return "ad4"
+        return "ad"
+
+    if "court of appeals" in c:
+        return "coa"
+
+    if "supreme court" in c or c == "supreme":
+        return "supreme"
+
+    if "civil court" in c:
+        return "civil"
+
+    return "other"
+
+
+def court_priority_value(court_text):
+    label = normalize_court_label(court_text)
+    priorities = {
+        "ad1": 420,
+        "ad2": 400,
+        "coa": 360,
+        "ad3": 260,
+        "ad4": 240,
+        "ad": 220,
+        "supreme": 160,
+        "civil": 100,
+        "other": 0,
+    }
+    return priorities.get(label, 0)
+
+
+def extract_motion(text):
+    t = normalize_text(text)
+
+    if "summary judgment" in t or "motion for summary judgment" in t:
+        return "summary_judgment"
+    if "motion to dismiss" in t or "dismissal" in t or "3211" in t or "dismiss" in t:
+        return "dismissal"
+    if "preliminary injunction" in t or "injunction" in t:
+        return "injunction"
+    if "leave to amend" in t or "motion for leave to amend" in t:
+        return "leave_to_amend"
+    if "motion to compel" in t or "compel" in t:
+        return "compel"
+    return None
+
+
+def extract_causes(text):
+    t = normalize_text(text)
+    causes = []
+
+    if "gross negligence" in t:
+        causes.append("gross_negligence")
+    if "negligence" in t:
+        causes.append("negligence")
+    if "conversion" in t:
+        causes.append("conversion")
+    if "breach of contract" in t:
+        causes.append("breach_of_contract")
+    if "fraudulent inducement" in t:
+        causes.append("fraud")
+    elif "fraud" in t:
+        causes.append("fraud")
+    if "breach of fiduciary duty" in t:
+        causes.append("breach_of_fiduciary_duty")
+    if "unjust enrichment" in t:
+        causes.append("unjust_enrichment")
+    if "tortious interference" in t:
+        causes.append("tortious_interference")
+
+    return sorted(set(causes))
+
+
+def extract_outcome_label(text):
+    t = normalize_text(text)
+
+    if "reversed in part" in t and "affirmed in part" in t:
+        return "reversed_in_part_affirmed_in_part"
+    if "modified" in t:
+        return "modified"
+    if "affirmed" in t:
+        return "affirmed"
+    if "reversed" in t:
+        return "reversed"
+    if "vacated" in t:
+        return "vacated"
+    if "dismissed" in t or "dismissal granted" in t:
+        return "dismissed"
+    if "granted" in t:
+        return "granted"
+    if "denied" in t:
+        return "denied"
+
+    return None
+
+
+def extract_query_structure(query):
+    q = normalize_text(query)
+    return {
+        "court": normalize_court_label(q),
+        "motion": extract_motion(q),
+        "causes": set(extract_causes(q)),
+        "outcome": extract_outcome_label(q),
+    }
+
+
+def classify_match_strength(score):
+    if score >= 180:
+        return "green"
+    if score >= 90:
+        return "yellow"
+    return "red"
+
+
+# =========================
 # Snippets
 # =========================
 
@@ -137,7 +266,7 @@ def build_snippets(full_text, query, terms):
 
 
 # =========================
-# Similar Cases v2.1
+# Similar Cases
 # =========================
 
 STOPWORDS = set([
@@ -164,15 +293,12 @@ LEGAL_PHRASES = [
     "breach of fiduciary duty",
     "tortious interference",
     "unjust enrichment",
-    "labor law",
     "constructive trust",
     "fraudulent inducement",
     "specific performance",
-    "wrongful termination",
     "motion for summary judgment",
     "motion for leave to amend",
     "motion to compel",
-    "motion for a preliminary injunction",
 ]
 
 
@@ -191,17 +317,21 @@ def extract_phrases(text):
     return found
 
 
-def classify_reason(shared_phrases, same_outcome, same_court, token_score):
+def classify_reason(shared_phrases, same_outcome, same_court, same_motion, cause_overlap):
     reasons = []
-    if shared_phrases:
-        reasons.append("shared legal phrases")
-    if same_outcome:
-        reasons.append("same outcome")
+
     if same_court:
         reasons.append("same court")
-    if token_score >= 6 and not shared_phrases:
-        reasons.append("related legal language")
-    return " · ".join(reasons[:2])
+    if same_motion:
+        reasons.append("same motion")
+    if cause_overlap:
+        reasons.append("same cause")
+    if same_outcome:
+        reasons.append("same outcome")
+    if shared_phrases and len(reasons) < 3:
+        reasons.append("shared legal phrases")
+
+    return " · ".join(reasons[:3])
 
 
 def similarity_score(base_text, other_text, base_row=None, other_row=None):
@@ -225,33 +355,47 @@ def similarity_score(base_text, other_text, base_row=None, other_row=None):
     base_phrases = set(extract_phrases(base_text))
     other_phrases = set(extract_phrases(other_text))
     shared_phrases = sorted(base_phrases & other_phrases)
-
-    score += len(shared_phrases) * 25
+    score += len(shared_phrases) * 20
 
     same_outcome = False
     same_court = False
+    same_motion = False
+    cause_overlap = []
+
+    base_motion = extract_motion(base_text)
+    other_motion = extract_motion(other_text)
+    if base_motion and other_motion and base_motion == other_motion:
+        score += 90
+        same_motion = True
+
+    base_causes = set(extract_causes(base_text))
+    other_causes = set(extract_causes(other_text))
+    cause_overlap = sorted(base_causes & other_causes)
+    if cause_overlap:
+        score += 50 * len(cause_overlap)
 
     if base_row is not None and other_row is not None:
-        base_outcome = normalize_text(base_row.get("outcome", ""))
-        other_outcome = normalize_text(other_row.get("outcome", ""))
-        base_court = normalize_text(base_row.get("court", ""))
-        other_court = normalize_text(other_row.get("court", ""))
+        base_outcome = extract_outcome_label(base_row.get("outcome", "") or base_text)
+        other_outcome = extract_outcome_label(other_row.get("outcome", "") or other_text)
+
+        base_court = normalize_court_label(base_row.get("court", ""))
+        other_court = normalize_court_label(other_row.get("court", ""))
 
         if base_outcome and other_outcome and base_outcome == other_outcome:
-            score += 10
+            score += 40
             same_outcome = True
 
-        if base_court and other_court and base_court == other_court:
-            score += 5
+        if base_court != "other" and base_court == other_court:
+            score += 80
             same_court = True
 
-    if token_score > 0 and not shared_phrases:
+    if token_score > 0 and not shared_phrases and not same_motion and not cause_overlap:
         score *= 0.6
 
-    if token_score < 2 and not shared_phrases:
+    if token_score < 2 and not shared_phrases and not same_motion and not cause_overlap and not same_outcome:
         score = 0
 
-    reason = classify_reason(shared_phrases, same_outcome, same_court, token_score)
+    reason = classify_reason(shared_phrases, same_outcome, same_court, same_motion, cause_overlap)
     return score, reason, shared_phrases
 
 
@@ -280,6 +424,7 @@ def get_similar_cases(target_row, all_rows, top_n=SIMILAR_CASES_LIMIT):
             r["_similarity_score"] = score
             r["reason"] = reason
             r["shared_phrases"] = shared_phrases
+            r["trust_signal"] = classify_match_strength(score)
             scored.append(r)
 
     scored.sort(key=lambda r: (-r["_similarity_score"], r.get("title", "")))
@@ -405,21 +550,71 @@ def score_row(row, query, terms):
     if not query:
         return 0
 
+    print("NEW RANKING ACTIVE", query)
+
     q = normalize_text(query)
     full_text = row["full_text_norm"]
     metadata = row["metadata_blob"]
+    row_text = " ".join([
+        row.get("title", ""),
+        row.get("summary", ""),
+        row.get("full_text", ""),
+        row.get("court", ""),
+        row.get("outcome", ""),
+    ])
+
+    query_struct = extract_query_structure(query)
+    row_court_norm = normalize_court_label(row.get("court", ""))
+    row_motion = extract_motion(row_text)
+    row_causes = set(extract_causes(row_text))
+    row_outcome = extract_outcome_label(row.get("outcome", "") or row_text)
 
     score = 0
 
+    # Base text relevance
     if q in full_text:
-        score += 1000
+        score += 180
 
     hits = sum(1 for t in terms if t in full_text)
-    score += hits * 100
+    score += hits * 30
 
-    if score == 0:
-        meta_hits = sum(1 for t in terms if t in metadata)
-        score += meta_hits * 20
+    meta_hits = sum(1 for t in terms if t in metadata)
+    score += meta_hits * 20
+
+    # Court hierarchy
+    if query_struct["court"] != "other":
+        if row_court_norm == query_struct["court"]:
+            score += 700
+        elif row_court_norm in ("ad1", "ad2"):
+            score += 120
+    else:
+        score += court_priority_value(row.get("court", ""))
+
+    # Outcome matching: this is the key fix for queries like "reversed"
+    if query_struct["outcome"]:
+        if row_outcome == query_struct["outcome"]:
+            score += 700
+        elif query_struct["outcome"] in normalize_text(row.get("outcome", "")):
+            score += 350
+
+    # Motion / relief
+    if query_struct["motion"] and row_motion:
+        if query_struct["motion"] == row_motion:
+            score += 320
+        else:
+            score += 40
+
+    # Causes of action
+    overlap = row_causes & query_struct["causes"]
+    if overlap:
+        score += 150 * len(overlap)
+
+    # Tie-breakers for strongest legal matches
+    if query_struct["outcome"] and row_outcome == query_struct["outcome"] and row_court_norm in ("ad1", "ad2"):
+        score += 120
+
+    if query_struct["motion"] and row_motion == query_struct["motion"] and row_court_norm in ("ad1", "ad2"):
+        score += 80
 
     return score
 
@@ -452,7 +647,7 @@ def search_rows(rows, query):
             r["_score"] = s
             results.append(r)
 
-    results.sort(key=lambda r: (-r["_score"], r["title"]))
+    results.sort(key=lambda r: (-r["_score"], r.get("court", ""), r["title"]))
     return results
 
 
@@ -532,6 +727,7 @@ def index():
             similar_cases.append({
                 **sim,
                 "pdf_url": url_for("static", filename=f"pdfs/{sim['pdf_filename']}") if sim.get("pdf_filename") else None,
+                "trust_signal": sim.get("trust_signal", "red"),
             })
 
         display.append({
