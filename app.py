@@ -108,6 +108,10 @@ def first_nonempty(case, keys, default=""):
     return default
 
 
+def clean_text(value):
+    return " ".join(str(value or "").split()).strip()
+
+
 def looks_like_docket(value):
     if not value:
         return False
@@ -118,8 +122,37 @@ def looks_like_docket(value):
     return all(ch in allowed for ch in value) and any(ch.isdigit() for ch in value)
 
 
-def clean_text(value):
-    return " ".join(str(value or "").split()).strip()
+def looks_like_reporter_citation(value):
+    if not value:
+        return False
+    value = clean_text(value).lower()
+    reporter_markers = [" ad2d ", " ad3d ", " misc ", " ny2d ", " ny3d ", " nys2d ", " nys3d "]
+    return any(marker in f" {value} " for marker in reporter_markers)
+
+
+def looks_like_slip_op(value):
+    if not value:
+        return False
+    value = clean_text(value).lower()
+    return "slip op" in value
+
+
+def looks_like_case_name(value):
+    if not value:
+        return False
+    text = clean_text(value)
+    lowered = text.lower()
+
+    if looks_like_docket(text):
+        return False
+    if looks_like_reporter_citation(text):
+        return False
+    if looks_like_slip_op(text):
+        return False
+    if lowered in {"untitled case", "unknown court", "none", "null", "n/a"}:
+        return False
+
+    return " v. " in f" {lowered} " or " vs. " in f" {lowered} " or " versus " in f" {lowered} "
 
 
 def shorten_court_name(court):
@@ -152,10 +185,14 @@ def flatten_citation(case):
         reporters = citations.get("reporters") or []
 
         if slip_ops and isinstance(slip_ops, list):
-            return clean_text(slip_ops[0])
+            first_slip = clean_text(slip_ops[0])
+            if first_slip:
+                return first_slip
 
         if reporters and isinstance(reporters, list):
-            return clean_text(reporters[0])
+            first_reporter = clean_text(reporters[0])
+            if first_reporter:
+                return first_reporter
 
     return ""
 
@@ -195,7 +232,8 @@ def has_real_value(value):
 # NORMALIZATION
 # =========================
 
-def derive_title(case, summary, docket):
+def derive_title(case, docket):
+    # Only trust explicit title-like fields if they actually look like case names
     direct_title = first_nonempty(case, [
         "title",
         "case_title",
@@ -209,27 +247,16 @@ def derive_title(case, summary, docket):
         "short_title",
     ], "")
 
-    if direct_title and not looks_like_docket(direct_title):
+    if direct_title and looks_like_case_name(direct_title):
         return clean_text(direct_title)
 
-    parties = case.get("parties")
-    if isinstance(parties, list) and len(parties) >= 2:
-        p1 = clean_text(parties[0])
-        p2 = clean_text(parties[1])
-        if p1 and p2:
-            return f"{p1} v. {p2}"
-    elif isinstance(parties, list) and len(parties) == 1:
-        p1 = clean_text(parties[0])
-        if p1 and not looks_like_docket(p1):
-            return p1
+    # Do NOT use `parties` to build the title for this dataset.
+    # It can produce misleading captions like "Anders v. California"
+    # from sparse/non-caption metadata.
 
-    if summary:
-        first_sentence = summary.split(". ")[0].strip()
-        if first_sentence and len(first_sentence) <= 180 and not looks_like_docket(first_sentence):
-            return clean_text(first_sentence)
-
+    # Final fallback: synthetic case label
     case_number = clean_text(first_nonempty(case, [
-        "case_number", "docket", "docket_number", "index_number", "case_number", "id", "case_id"
+        "case_number", "docket", "docket_number", "index_number", "id", "case_id"
     ], docket))
 
     court = shorten_court_name(first_nonempty(case, [
@@ -246,9 +273,6 @@ def derive_title(case, summary, docket):
         return f"Case {case_number} ({court})"
     if case_number:
         return f"Case {case_number}"
-
-    if direct_title:
-        return clean_text(direct_title)
 
     return "Untitled Case"
 
@@ -286,7 +310,7 @@ def normalize_case(raw):
         "text", "body", "decision_text", "opinion", "summary"
     ], ""))
 
-    title = derive_title(case, summary, docket)
+    title = derive_title(case, docket)
 
     normalized = dict(case)
     normalized["title"] = title
@@ -586,31 +610,26 @@ def compute_similarity(case, target):
     case_outcome = clean_text(case.get("outcome", ""))
     target_outcome = clean_text(target.get("outcome", ""))
 
-    # Court: only score if both are real
     if has_real_value(case_court) and has_real_value(target_court):
         if case_court == target_court:
             score += 3
 
-    # Motion: only score if both are real and match
     if has_real_value(case_motion) and has_real_value(target_motion):
         if case_motion == target_motion:
             score += 2
         else:
             score -= 1
 
-    # Cause: only score if both are real and match
     if has_real_value(case_cause) and has_real_value(target_cause):
         if case_cause == target_cause:
             score += 4
         else:
             score -= 2
 
-    # Outcome: only score if both are real and match
     if has_real_value(case_outcome) and has_real_value(target_outcome):
         if case_outcome == target_outcome:
             score += 1
 
-    # Penalize very sparse records a bit so fake-ties drop down
     sparse_penalty = 0
     if not has_real_value(case_motion):
         sparse_penalty += 0.5
