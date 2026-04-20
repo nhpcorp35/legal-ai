@@ -10,3 +10,11 @@ pipeline/logs/
 # generated intermediate files
 static/pdfs/output_clean.csv
 static/pdfs/output_v3.json
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# secrets / local config
+openclaw.json
+.env
