@@ -3,198 +3,40 @@ import json
 import math
 import os
 import csv
+import re
 from types import SimpleNamespace
 
 app = Flask(__name__)
 
-# =========================
-# PATHS
-# =========================
-
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 PREFERRED_JSON_PATHS = [
+    os.path.join(BASE_DIR, "data", "output_v4.json"),
     os.path.join(BASE_DIR, "data", "output_v3.json"),
     os.path.join(BASE_DIR, "output_v1.json"),
 ]
 
 PREFERRED_CSV_PATHS = [
     os.path.join(BASE_DIR, "data", "output_v3.csv"),
-    os.path.join(BASE_DIR, "output_enriched.csv"),
-    os.path.join(BASE_DIR, "output_clean.csv"),
 ]
-
-TXT_FALLBACK_PATHS = [
-    os.path.join(BASE_DIR, "cases.txt"),
-    os.path.join(BASE_DIR, "pdf_cases.txt"),
-]
-
-# =========================
-# CONFIG
-# =========================
-
-COURT_PRIORITY = {
-    "Appellate Division, First Department": 5,
-    "Appellate Division, Second Department": 5,
-    "Appellate Division": 4,
-    "Supreme Court": 3,
-    "Civil Court": 2,
-}
-
-CAUSE_MAP = {
-    "negligence": [
-        "negligence", "negligent", "duty", "breach", "reasonable care"
-    ],
-    "contract": [
-        "breach of contract", "contract", "agreement", "breach"
-    ],
-    "fraud": [
-        "fraud", "fraudulent", "misrepresentation", "intentional misrepresentation"
-    ],
-    "labor law": [
-        "labor law", "labor law 240", "labor law 241", "construction accident"
-    ],
-    "conversion": [
-        "conversion", "wrongful possession", "unauthorized control"
-    ],
-    "premises liability": [
-        "premises liability", "dangerous condition", "slip and fall"
-    ],
-}
 
 PER_PAGE = 10
 
-FALLBACK_CASES = [
-    {
-        "title": "Negligence Summary Judgment Example",
-        "court": "Appellate Division, First Department",
-        "summary": "The court granted plaintiff partial summary judgment in a negligence action.",
-        "snippet": "Plaintiff established duty and breach, and defendants failed to raise a triable issue of fact.",
-        "outcome": "granted",
-        "citation": "",
-        "docket": "",
-        "date": "",
-        "text": "",
-    },
-    {
-        "title": "Contract Dismissal Example",
-        "court": "Supreme Court",
-        "summary": "The court denied defendant's motion to dismiss a breach of contract claim.",
-        "snippet": "The complaint sufficiently alleged the agreement, plaintiff's performance, breach, and damages.",
-        "outcome": "denied",
-        "citation": "",
-        "docket": "",
-        "date": "",
-        "text": "",
-    },
-]
 
 # =========================
-# BASIC HELPERS
+# HELPERS
 # =========================
-
-def safe_int(value, default):
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
-
-
-def first_nonempty(case, keys, default=""):
-    for key in keys:
-        value = case.get(key)
-        if value is not None and str(value).strip() != "":
-            return str(value).strip()
-    return default
-
 
 def clean_text(value):
     return " ".join(str(value or "").split()).strip()
 
 
-def looks_like_docket(value):
-    if not value:
-        return False
-    value = str(value).strip()
-    if len(value) > 30:
-        return False
-    allowed = set("0123456789-/.")
-    return all(ch in allowed for ch in value) and any(ch.isdigit() for ch in value)
-
-
-def looks_like_reporter_citation(value):
-    if not value:
-        return False
-    value = clean_text(value).lower()
-    reporter_markers = [" ad2d ", " ad3d ", " misc ", " ny2d ", " ny3d ", " nys2d ", " nys3d "]
-    return any(marker in f" {value} " for marker in reporter_markers)
-
-
-def looks_like_slip_op(value):
-    if not value:
-        return False
-    value = clean_text(value).lower()
-    return "slip op" in value
-
-
-def looks_like_case_name(value):
-    if not value:
-        return False
-    text = clean_text(value)
-    lowered = text.lower()
-
-    if looks_like_docket(text):
-        return False
-    if looks_like_reporter_citation(text):
-        return False
-    if looks_like_slip_op(text):
-        return False
-    if lowered in {"untitled case", "unknown court", "none", "null", "n/a"}:
-        return False
-
-    return " v. " in f" {lowered} " or " vs. " in f" {lowered} " or " versus " in f" {lowered} "
-
-
-def shorten_court_name(court):
-    court = clean_text(court)
-
-    if court == "Appellate Division, First Department":
-        return "App Div 1st Dept"
-    if court == "Appellate Division, Second Department":
-        return "App Div 2nd Dept"
-    if court == "Appellate Division":
-        return "App Div"
-    if court == "Supreme Court":
-        return "Sup Ct"
-    if court == "Civil Court":
-        return "Civ Ct"
-
-    return court
-
-
-def flatten_citation(case):
-    direct = first_nonempty(case, [
-        "citation", "cite", "reporter_citation", "slip_op", "slip_op_citation"
-    ], "")
-    if direct:
-        return clean_text(direct)
-
-    citations = case.get("citations")
-    if isinstance(citations, dict):
-        slip_ops = citations.get("slip_op") or []
-        reporters = citations.get("reporters") or []
-
-        if slip_ops and isinstance(slip_ops, list):
-            first_slip = clean_text(slip_ops[0])
-            if first_slip:
-                return first_slip
-
-        if reporters and isinstance(reporters, list):
-            first_reporter = clean_text(reporters[0])
-            if first_reporter:
-                return first_reporter
-
-    return ""
+def normalize_for_search(value):
+    value = str(value or "").lower()
+    value = value.replace("§", " section ")
+    value = re.sub(r"[^a-z0-9\s]", " ", value)
+    value = re.sub(r"\s+", " ", value).strip()
+    return value
 
 
 def build_pager(page, per_page, total_count):
@@ -217,55 +59,141 @@ def build_pager(page, per_page, total_count):
     )
 
 
-def has_real_value(value):
-    if value is None:
-        return False
-    text = clean_text(value)
+def flatten_citation(case):
+    direct = clean_text(
+        case.get("citation")
+        or case.get("cite")
+        or case.get("reporter_citation")
+        or case.get("slip_op")
+        or case.get("slip_op_citation")
+    )
+    if direct:
+        return direct
+
+    citations = case.get("citations")
+    if isinstance(citations, dict):
+        slip_ops = citations.get("slip_op") or []
+        reporters = citations.get("reporters") or []
+
+        if isinstance(slip_ops, list) and slip_ops:
+            first_slip = clean_text(slip_ops[0])
+            if first_slip:
+                return first_slip
+
+        if isinstance(reporters, list) and reporters:
+            first_reporter = clean_text(reporters[0])
+            if first_reporter:
+                return first_reporter
+
+    return ""
+
+
+def looks_like_bad_title(line):
+    if not line:
+        return True
+
+    low = line.lower().strip()
+
+    junk_phrases = [
+        "appellate division",
+        "first judicial department",
+        "motion no",
+        "index no",
+        "case no",
+        "order,",
+        "entered ",
+        "entered on",
+        "unanimously",
+        "appealed from",
+        "to the extent appealed",
+        "plaintiff-appellant",
+        "defendant-appellant",
+        "petitioner-respondent",
+        "respondent-appellant",
+        "plaintiff-respondent",
+        "defendant-respondent",
+    ]
+    if any(p in low for p in junk_phrases):
+        return True
+
+    fragment_starts = [
+        "to dismiss",
+        "against him",
+        "against her",
+        "against it",
+        "motion as sought",
+        "motion pursuant",
+        "which granted",
+        "which denied",
+        "which, to the extent",
+        "s motion",
+        "cross motion",
+    ]
+    if any(low.startswith(p) for p in fragment_starts):
+        return True
+
+    if len(line) < 12:
+        return True
+    if len(line) > 140:
+        return True
+
+    words = line.split()
+    if len(words) < 3:
+        return True
+
+    lowercase_words = sum(1 for w in words if w[:1].islower())
+    if lowercase_words >= max(2, len(words) // 2):
+        return True
+
+    return False
+
+
+def extract_caption_from_text(text):
     if not text:
-        return False
-    lowered = text.lower()
-    if lowered in {"unknown court", "untitled case", "none", "null", "n/a"}:
-        return False
-    return True
+        return ""
 
-# =========================
-# NORMALIZATION
-# =========================
+    raw = str(text)
+    lines = [clean_text(line) for line in raw.splitlines() if clean_text(line)]
+    if not lines:
+        return ""
 
-def derive_title(case, docket):
-    # Only trust explicit title-like fields if they actually look like case names
-    direct_title = first_nonempty(case, [
-        "title",
-        "case_title",
-        "decision_title",
-        "caption",
-        "case_name",
-        "matter_name",
-        "matter",
-        "name",
-        "full_title",
-        "short_title",
-    ], "")
+    joined = " ".join(lines[:30])
 
-    if direct_title and looks_like_case_name(direct_title):
-        return clean_text(direct_title)
+    patterns = [
+        r"([A-Z][A-Za-z0-9&'.,\- ]+ v\. [A-Z][A-Za-z0-9&'.,\- ]+)",
+        r"([A-Z][A-Za-z0-9&'.,\- ]+ against [A-Z][A-Za-z0-9&'.,\- ]+)",
+        r"(In the Matter of [A-Z][A-Za-z0-9&'.,\- ]+)",
+    ]
 
-    # Do NOT use `parties` to build the title for this dataset.
-    # It can produce misleading captions like "Anders v. California"
-    # from sparse/non-caption metadata.
+    for pat in patterns:
+        m = re.search(pat, joined, re.IGNORECASE)
+        if m:
+            candidate = clean_text(m.group(1))
+            if not looks_like_bad_title(candidate):
+                return candidate
 
-    # Final fallback: synthetic case label
-    case_number = clean_text(first_nonempty(case, [
-        "case_number", "docket", "docket_number", "index_number", "id", "case_id"
-    ], docket))
+    for line in lines[:12]:
+        if looks_like_bad_title(line):
+            continue
+        if re.search(r"[A-Za-z]", line):
+            return line
 
-    court = shorten_court_name(first_nonempty(case, [
-        "court", "court_name", "jurisdiction", "tribunal"
-    ], ""))
+    return ""
 
-    date = clean_text(first_nonempty(case, [
-        "date", "decision_date", "filed_date", "published_date"
-    ], ""))
+
+def build_safe_title(case):
+    direct_title = clean_text(case.get("title"))
+    if direct_title and direct_title.lower() not in {"untitled case", "case record"}:
+        if not looks_like_bad_title(direct_title):
+            return direct_title
+
+    caption = extract_caption_from_text(case.get("text", ""))
+    if caption:
+        return caption
+
+    case_number = clean_text(case.get("case_number") or case.get("docket"))
+    court = clean_text(case.get("court"))
+    date = clean_text(case.get("date"))
 
     if case_number and court and date:
         return f"Case {case_number} ({court}, {date})"
@@ -274,56 +202,26 @@ def derive_title(case, docket):
     if case_number:
         return f"Case {case_number}"
 
-    return "Untitled Case"
+    return "Case Record"
 
 
-def normalize_case(raw):
-    case = dict(raw)
+def detect_record_type(case):
+    file_name = clean_text(case.get("file")).lower()
+    text = normalize_for_search(" ".join([
+        case.get("title", ""),
+        case.get("summary", ""),
+        case.get("snippet", ""),
+        case.get("text", "")[:1200],
+    ]))
 
-    court = first_nonempty(case, [
-        "court", "court_name", "jurisdiction", "tribunal"
-    ], "Unknown Court")
+    if "__motion_order__" in file_name:
+        return "motion_order"
 
-    summary = clean_text(first_nonempty(case, [
-        "summary", "decision_text", "body", "text", "opinion", "headnote", "abstract"
-    ], ""))
+    if "motion no" in text and "case no" in text and "index no" in text:
+        return "motion_order"
 
-    snippet = clean_text(first_nonempty(case, [
-        "snippet", "excerpt", "preview", "summary", "headnote"
-    ], summary[:300]))
+    return "decision"
 
-    outcome = clean_text(first_nonempty(case, [
-        "outcome", "result", "disposition"
-    ], ""))
-
-    citation = flatten_citation(case)
-
-    docket = clean_text(first_nonempty(case, [
-        "docket", "docket_number", "index_number", "case_number", "id", "case_id"
-    ], ""))
-
-    date = clean_text(first_nonempty(case, [
-        "date", "decision_date", "filed_date", "published_date"
-    ], ""))
-
-    text = clean_text(first_nonempty(case, [
-        "text", "body", "decision_text", "opinion", "summary"
-    ], ""))
-
-    title = derive_title(case, docket)
-
-    normalized = dict(case)
-    normalized["title"] = title
-    normalized["court"] = court
-    normalized["summary"] = summary
-    normalized["snippet"] = snippet
-    normalized["outcome"] = outcome
-    normalized["citation"] = citation
-    normalized["docket"] = docket
-    normalized["date"] = date
-    normalized["text"] = text
-
-    return normalized
 
 # =========================
 # LOADERS
@@ -342,402 +240,459 @@ def load_json_cases(path):
             if isinstance(value, list):
                 return value
 
-    raise ValueError(f"Unsupported JSON structure in {path}")
+    return []
 
 
 def load_csv_cases(path):
     rows = []
-    with open(path, "r", encoding="utf-8-sig", newline="") as f:
+    with open(path, "r", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
         for row in reader:
             rows.append(dict(row))
     return rows
 
 
-def parse_txt_blocks(path):
-    with open(path, "r", encoding="utf-8") as f:
-        raw = f.read().strip()
-
-    if not raw:
-        return []
-
-    blocks = [b.strip() for b in raw.split("\n\n") if b.strip()]
-    rows = []
-
-    for block in blocks:
-        lines = [line.strip() for line in block.splitlines() if line.strip()]
-        if not lines:
-            continue
-
-        rows.append({
-            "title": lines[0][:120],
-            "court": "Unknown Court",
-            "summary": " ".join(lines)[:1200],
-            "snippet": " ".join(lines)[:300],
-            "outcome": "",
-            "citation": "",
-            "docket": lines[0] if len(lines[0]) <= 60 else "",
-            "date": "",
-            "text": block,
-        })
-
-    return rows
-
-
 def load_cases():
     for path in PREFERRED_JSON_PATHS:
         if os.path.exists(path):
-            try:
-                rows = load_json_cases(path)
-                if rows:
-                    print(f"✅ Loaded {len(rows)} structured JSON cases from {path}")
-                    return [normalize_case(r) for r in rows]
-            except Exception as e:
-                print(f"❌ Failed loading JSON {path}: {e}")
+            rows = load_json_cases(path)
+            if rows:
+                print(f"✅ Loaded {len(rows)} cases from {path}")
+                return [normalize_case(r) for r in rows]
 
     for path in PREFERRED_CSV_PATHS:
         if os.path.exists(path):
-            try:
-                rows = load_csv_cases(path)
-                if rows:
-                    print(f"✅ Loaded {len(rows)} structured CSV rows from {path}")
-                    return [normalize_case(r) for r in rows]
-            except Exception as e:
-                print(f"❌ Failed loading CSV {path}: {e}")
+            rows = load_csv_cases(path)
+            if rows:
+                print(f"⚠️ Loaded CSV fallback {len(rows)} rows from {path}")
+                return [normalize_case(r) for r in rows]
 
-    for path in TXT_FALLBACK_PATHS:
-        if os.path.exists(path):
-            try:
-                rows = parse_txt_blocks(path)
-                if rows:
-                    print(f"⚠️ Loaded {len(rows)} text fallback cases from {path}")
-                    return [normalize_case(r) for r in rows]
-            except Exception as e:
-                print(f"❌ Failed loading TXT {path}: {e}")
+    print("⚠️ No data found")
+    return []
 
-    print("⚠️ No usable data files found. Using fallback cases.")
-    return [normalize_case(r) for r in FALLBACK_CASES]
 
 # =========================
-# DETECTION
+# PHRASE ALIASES / DETECTION
 # =========================
 
-def detect_cause(text):
-    text = (text or "").lower()
-    for cause, keywords in CAUSE_MAP.items():
-        for kw in keywords:
-            if kw in text:
-                return cause
-    return None
+PHRASE_ALIASES = {
+    "labor law": [
+        "labor law",
+        "labor law 200",
+        "labor law 240",
+        "labor law 241",
+        "labor law section 200",
+        "labor law section 240",
+        "labor law section 241",
+        "scaffold law",
+    ],
+    "breach of contract": [
+        "breach of contract",
+        "material breach",
+        "written agreement",
+        "oral agreement",
+        "contractual breach",
+    ],
+    "contract": [
+        "breach of contract",
+        "contract",
+        "agreement",
+        "material breach",
+        "written agreement",
+        "oral agreement",
+    ],
+    "summary judgment": [
+        "summary judgment",
+        "partial summary judgment",
+    ],
+    "motion to dismiss": [
+        "motion to dismiss",
+        "dismissal",
+        "dismiss",
+    ],
+    "negligence": [
+        "negligence",
+        "negligent",
+        "duty of care",
+        "breach of duty",
+        "proximate cause",
+    ],
+    "fraud": [
+        "fraud",
+        "fraudulent",
+        "misrepresentation",
+        "fraudulent inducement",
+        "concealment",
+    ],
+    "conversion": [
+        "conversion",
+        "dominion and control",
+        "wrongful possession",
+        "unauthorized control",
+    ],
+}
+
+STRICT_PHRASE_QUERIES = set(PHRASE_ALIASES.keys())
 
 
-def detect_case_cause(case):
-    text = " ".join([
-        case.get("title", ""),
-        case.get("summary", ""),
-        case.get("snippet", ""),
-        case.get("text", ""),
-    ]).lower()
-
-    for cause, keywords in CAUSE_MAP.items():
-        for kw in keywords:
-            if kw in text:
-                return cause
-    return None
-
-
-def detect_motion(text):
-    text = (text or "").lower()
-
-    if "summary judgment" in text:
-        return "summary judgment"
-    if "motion to dismiss" in text or "dismiss" in text:
-        return "dismissal"
-    if "preliminary injunction" in text:
-        return "preliminary injunction"
-    if "default judgment" in text:
-        return "default judgment"
-
-    return None
-
-
-def detect_outcome(case):
-    explicit = (case.get("outcome") or "").lower().strip()
-    if explicit:
-        if "affirm" in explicit:
-            return "affirmed"
-        if "revers" in explicit:
-            return "reversed"
-        if "grant" in explicit:
-            return "granted"
-        if "deni" in explicit:
-            return "denied"
-
-    text = " ".join([
-        case.get("summary", ""),
-        case.get("snippet", ""),
-        case.get("text", ""),
-    ]).lower()
-
-    if "reversed" in text:
-        return "reversed"
-    if "unanimously affirmed" in text or " affirmed" in text or text.startswith("affirmed"):
-        return "affirmed"
-    if "granted" in text:
-        return "granted"
-    if "denied" in text:
-        return "denied"
-
-    return None
-
-
-def get_court_score(court):
-    return COURT_PRIORITY.get(court, 1)
-
-# =========================
-# SEARCH / FILTERS
-# =========================
-
-def text_for_search(case):
-    return " ".join([
-        case.get("title", ""),
-        case.get("court", ""),
-        case.get("summary", ""),
-        case.get("snippet", ""),
-        case.get("citation", ""),
-        case.get("docket", ""),
-        case.get("date", ""),
-        case.get("text", ""),
-    ]).lower()
-
-
-def matches_query(case, query):
-    query = (query or "").strip().lower()
-    if not query:
-        return True
-
-    haystack = text_for_search(case)
-    terms = [term for term in query.split() if term.strip()]
-    return all(term in haystack for term in terms)
-
-
-def matches_filters(case, selected_court, selected_outcome):
-    if selected_court and selected_court != "All Courts":
-        if case.get("court") != selected_court:
-            return False
-
-    case_outcome = case.get("outcome") or detect_outcome(case) or ""
-    if selected_outcome and selected_outcome != "All Outcomes":
-        if case_outcome.lower() != selected_outcome.lower():
-            return False
-
-    return True
-
-# =========================
-# RANKING
-# =========================
-
-def score_case(case, user_query):
-    score = 0
-
-    query_cause = detect_cause(user_query)
-    case_cause = detect_case_cause(case)
-
-    query_motion = detect_motion(user_query)
-    case_motion = detect_motion(" ".join([
+def detect_motion(case):
+    text = normalize_for_search(" ".join([
         case.get("title", ""),
         case.get("summary", ""),
         case.get("snippet", ""),
         case.get("text", ""),
     ]))
 
-    case_outcome = detect_outcome(case)
+    if "partial summary judgment" in text:
+        return "partial summary judgment"
+    if "summary judgment" in text:
+        return "summary judgment"
+    if "motion to dismiss" in text:
+        return "motion to dismiss"
+    if "dismiss" in text:
+        return "dismissal"
+    return ""
 
-    score += get_court_score(case.get("court"))
 
-    if user_query:
-        haystack = text_for_search(case)
-        for term in user_query.lower().split():
+def detect_primary_cause(case):
+    text = normalize_for_search(" ".join([
+        case.get("title", ""),
+        case.get("summary", ""),
+        case.get("snippet", ""),
+        case.get("text", ""),
+    ]))
+
+    if any(alias in text for alias in PHRASE_ALIASES["labor law"]):
+        return "labor law"
+    if any(alias in text for alias in PHRASE_ALIASES["breach of contract"]):
+        return "breach of contract"
+    if any(alias in text for alias in PHRASE_ALIASES["fraud"]):
+        return "fraud"
+    if any(alias in text for alias in PHRASE_ALIASES["conversion"]):
+        return "conversion"
+    if any(alias in text for alias in PHRASE_ALIASES["negligence"]):
+        return "negligence"
+
+    return ""
+
+
+# =========================
+# NORMALIZE
+# =========================
+
+def normalize_case(case):
+    case = dict(case)
+
+    case["court"] = clean_text(case.get("court"))
+    case["summary"] = clean_text(case.get("summary"))
+    case["snippet"] = clean_text(case.get("snippet"))
+    case["outcome"] = clean_text(case.get("outcome")).lower()
+    case["citation"] = flatten_citation(case)
+    case["docket"] = clean_text(case.get("case_number") or case.get("docket"))
+    case["case_number"] = clean_text(case.get("case_number"))
+    case["date"] = clean_text(case.get("date"))
+    case["text"] = clean_text(case.get("text"))
+    case["file"] = clean_text(case.get("file"))
+    case["record_type"] = detect_record_type(case)
+    case["motion"] = detect_motion(case)
+    case["primary_cause"] = detect_primary_cause(case)
+    case["title"] = build_safe_title(case)
+
+    return case
+
+
+# =========================
+# SEARCH
+# =========================
+
+def text_for_search(case):
+    return normalize_for_search(" ".join([
+        case.get("title", ""),
+        case.get("summary", ""),
+        case.get("snippet", ""),
+        case.get("text", ""),
+        case.get("court", ""),
+        case.get("citation", ""),
+        case.get("docket", ""),
+        case.get("date", ""),
+        case.get("outcome", ""),
+        case.get("motion", ""),
+        case.get("primary_cause", ""),
+        case.get("record_type", ""),
+    ]))
+
+
+def best_snippet(case, query):
+    snippet = clean_text(case.get("snippet"))
+    text = clean_text(case.get("text"))
+
+    if not query:
+        if snippet:
+            return snippet[:900]
+        return text[:900]
+
+    hay_query = normalize_for_search(query)
+    terms = [t for t in hay_query.split() if t]
+
+    if text:
+        paragraphs = [clean_text(p) for p in re.split(r"[\n\r]+", text) if clean_text(p)]
+        if not paragraphs:
+            paragraphs = [text]
+
+        best_para = ""
+        best_score = -1
+
+        for para in paragraphs:
+            pl = normalize_for_search(para)
+            score = 0
+
+            if hay_query and hay_query in pl:
+                score += 10
+
+            for term in terms:
+                if term in pl:
+                    score += 2
+
+            if score > best_score:
+                best_score = score
+                best_para = para
+
+        if best_para and best_score > 0:
+            return best_para[:900]
+
+    if snippet:
+        return snippet[:900]
+
+    return text[:900]
+
+
+def query_aliases(query):
+    q = normalize_for_search(query)
+    if q in PHRASE_ALIASES:
+        return PHRASE_ALIASES[q]
+    return [q] if q else []
+
+
+def matches_query(case, query):
+    if not query:
+        return True
+
+    haystack = text_for_search(case)
+    q = normalize_for_search(query)
+
+    if not q:
+        return True
+
+    aliases = query_aliases(query)
+
+    if q in STRICT_PHRASE_QUERIES:
+        return any(alias in haystack for alias in aliases)
+
+    if q in haystack:
+        return True
+
+    terms = [t for t in q.split() if t]
+
+    if len(terms) == 1:
+        return terms[0] in haystack
+
+    return all(term in haystack for term in terms)
+
+
+def matches_filters(case, selected_court, selected_outcome):
+    if selected_court != "All Courts":
+        if case.get("court") != selected_court:
+            return False
+
+    if selected_outcome != "All Outcomes":
+        if case.get("outcome", "").lower() != selected_outcome.lower():
+            return False
+
+    return True
+
+
+# =========================
+# RANKING
+# =========================
+
+def score_case(case, query):
+    score = 0
+    haystack = text_for_search(case)
+    q = normalize_for_search(query)
+
+    aliases = query_aliases(query)
+
+    if q in STRICT_PHRASE_QUERIES:
+        alias_hits = sum(1 for alias in aliases if alias in haystack)
+        if alias_hits:
+            score += 18 + (alias_hits * 2)
+    else:
+        if q and q in haystack:
+            score += 10
+
+        terms = [t for t in q.split() if t]
+        matched_terms = 0
+        for term in terms:
             if term in haystack:
+                matched_terms += 1
                 score += 2
 
-    if query_motion:
-        if case_motion == query_motion:
-            score += 15
-        elif case_motion:
-            score -= 5
+        if len(terms) > 1 and matched_terms == len(terms):
+            score += 4
 
-    if query_cause:
-        if case_cause == query_cause:
-            score += 25
-            case["cause_match"] = "green"
-        elif case_cause:
-            score -= 15
-            case["cause_match"] = "red"
-        else:
-            score -= 5
-            case["cause_match"] = "yellow"
-    else:
-        case["cause_match"] = "yellow"
+    if case.get("court") == "Appellate Division, First Department":
+        score += 2
 
-    if case_outcome == "granted":
-        score += 3
-    elif case_outcome == "affirmed":
+    if len(case.get("text", "")) > 3000:
         score += 2
-    elif case_outcome == "reversed":
-        score += 2
+
+    if case.get("outcome") in {"affirmed", "reversed", "granted", "denied"}:
+        score += 1
+
+    if case.get("record_type") == "motion_order":
+        score -= 10
+
+    useful_len = len(case.get("snippet", "")) + len(case.get("text", ""))
+    if useful_len < 120:
+        score -= 8
+    elif useful_len < 300:
+        score -= 4
+
+    if looks_like_bad_title(case.get("title", "")):
+        score -= 6
 
     case["score"] = score
-    case["cause"] = case_cause
-    case["motion"] = case_motion
-    case["outcome"] = case_outcome
-
     return score
+
 
 # =========================
 # SIMILAR CASES
 # =========================
 
-def compute_similarity(case, target):
-    score = 0
-
-    case_court = clean_text(case.get("court", ""))
-    target_court = clean_text(target.get("court", ""))
-    case_motion = clean_text(case.get("motion", ""))
-    target_motion = clean_text(target.get("motion", ""))
-    case_cause = clean_text(case.get("cause", ""))
-    target_cause = clean_text(target.get("cause", ""))
-    case_outcome = clean_text(case.get("outcome", ""))
-    target_outcome = clean_text(target.get("outcome", ""))
-
-    if has_real_value(case_court) and has_real_value(target_court):
-        if case_court == target_court:
-            score += 3
-
-    if has_real_value(case_motion) and has_real_value(target_motion):
-        if case_motion == target_motion:
-            score += 2
-        else:
-            score -= 1
-
-    if has_real_value(case_cause) and has_real_value(target_cause):
-        if case_cause == target_cause:
-            score += 4
-        else:
-            score -= 2
-
-    if has_real_value(case_outcome) and has_real_value(target_outcome):
-        if case_outcome == target_outcome:
-            score += 1
-
-    sparse_penalty = 0
-    if not has_real_value(case_motion):
-        sparse_penalty += 0.5
-    if not has_real_value(case_cause):
-        sparse_penalty += 0.5
-
-    return score - sparse_penalty
+SIMILAR_STOPWORDS = {
+    "the", "and", "for", "that", "with", "from", "this", "into", "their", "there",
+    "which", "were", "been", "have", "has", "had", "under", "over", "upon", "without",
+    "costs", "order", "entered", "about", "appealed", "limited", "briefs", "branch",
+    "motion", "court", "county", "state", "york", "law", "plaintiff", "defendant",
+    "defendants", "respondent", "appellant", "appellants", "respondents", "issue",
+    "against", "denied", "granted", "affirmed", "reversed", "summary", "judgment",
+    "complaint", "claims", "claim", "action", "matter", "extent", "sought", "cross",
+    "appeal", "appealed", "appeals", "without", "hearing"
+}
 
 
-def attach_match_labels(case, target_case):
-    same_court = False
-    same_motion = False
-    same_cause = False
-    same_outcome = False
-
-    case_court = clean_text(case.get("court", ""))
-    target_court = clean_text(target_case.get("court", ""))
-    case_motion = clean_text(case.get("motion", ""))
-    target_motion = clean_text(target_case.get("motion", ""))
-    case_cause = clean_text(case.get("cause", ""))
-    target_cause = clean_text(target_case.get("cause", ""))
-    case_outcome = clean_text(case.get("outcome", ""))
-    target_outcome = clean_text(target_case.get("outcome", ""))
-
-    if has_real_value(case_court) and has_real_value(target_court):
-        same_court = case_court == target_court
-
-    if has_real_value(case_motion) and has_real_value(target_motion):
-        same_motion = case_motion == target_motion
-
-    if has_real_value(case_cause) and has_real_value(target_cause):
-        same_cause = case_cause == target_cause
-
-    if has_real_value(case_outcome) and has_real_value(target_outcome):
-        same_outcome = case_outcome == target_outcome
-
-    case["match_labels"] = {
-        "court": (
-            "green" if same_court else
-            "red" if has_real_value(case_court) and has_real_value(target_court) else
-            "yellow"
-        ),
-        "motion": (
-            "green" if same_motion else
-            "red" if has_real_value(case_motion) and has_real_value(target_motion) else
-            "yellow"
-        ),
-        "cause": (
-            "green" if same_cause else
-            "red" if has_real_value(case_cause) and has_real_value(target_cause) else
-            "yellow"
-        ),
-        "outcome": (
-            "green" if same_outcome else
-            "red" if has_real_value(case_outcome) and has_real_value(target_outcome) else
-            "yellow"
-        ),
+def token_set(text):
+    raw = normalize_for_search(text).split()
+    return {
+        tok for tok in raw
+        if len(tok) > 2 and tok not in SIMILAR_STOPWORDS and not tok.isdigit()
     }
 
-    badges = []
-    if same_court:
-        badges.append("Same Court")
-    if same_motion:
-        badges.append("Same Motion")
-    if same_cause:
-        badges.append("Same Cause")
-    if same_outcome:
-        badges.append("Same Outcome")
 
-    case["match_badges"] = badges
+def substantive_text(case):
+    return " ".join([
+        case.get("summary", ""),
+        case.get("snippet", ""),
+        case.get("text", "")[:5000],
+        case.get("motion", ""),
+        case.get("primary_cause", ""),
+    ])
+
+
+def similar_score(a, b):
+    score = 0
+
+    if a.get("court") and a.get("court") == b.get("court"):
+        score += 3
+
+    if a.get("outcome") and a.get("outcome") == b.get("outcome"):
+        score += 1
+
+    if a.get("motion") and a.get("motion") == b.get("motion"):
+        score += 4
+
+    if a.get("primary_cause") and a.get("primary_cause") == b.get("primary_cause"):
+        score += 8
+
+    a_tokens = token_set(substantive_text(a))
+    b_tokens = token_set(substantive_text(b))
+    overlap = len(a_tokens & b_tokens)
+
+    score += min(overlap, 10)
+
+    if overlap < 2:
+        score -= 4
+
+    if a.get("record_type") == "motion_order":
+        score -= 8
+
+    return score
 
 
 def get_similar_cases(target_case, all_cases, limit=5):
     scored = []
 
+    target_cause = target_case.get("primary_cause", "")
+    target_motion = target_case.get("motion", "")
+    target_tokens = token_set(substantive_text(target_case))
+
     for case in all_cases:
         if case is target_case:
             continue
 
+        if (
+            case.get("case_number")
+            and target_case.get("case_number")
+            and case.get("case_number") == target_case.get("case_number")
+        ):
+            continue
+
+        if target_case.get("record_type") != "motion_order" and case.get("record_type") == "motion_order":
+            continue
+
+        case_tokens = token_set(substantive_text(case))
+        overlap = len(target_tokens & case_tokens)
+
+        if target_cause:
+            if case.get("primary_cause") != target_cause:
+                continue
+
+        if target_motion and case.get("motion") and target_motion != case.get("motion"):
+            if overlap < 8:
+                continue
+
+        sim_value = similar_score(case, target_case)
+        if sim_value <= 0:
+            continue
+
         sim_case = dict(case)
-        sim_case["similarity"] = compute_similarity(sim_case, target_case)
-        attach_match_labels(sim_case, target_case)
+        sim_case["similarity"] = sim_value
         scored.append(sim_case)
 
-    scored.sort(key=lambda x: x["similarity"], reverse=True)
+    scored.sort(
+        key=lambda x: (
+            x.get("similarity", 0),
+            x.get("date", ""),
+            x.get("title", ""),
+        ),
+        reverse=True,
+    )
     return scored[:limit]
+
 
 # =========================
 # DROPDOWNS
 # =========================
 
-def build_court_options(cases):
-    courts = sorted({case.get("court", "").strip() for case in cases if case.get("court")})
+def build_courts(cases):
+    courts = sorted({c.get("court") for c in cases if c.get("court")})
     return ["All Courts"] + courts
 
 
-def build_outcome_options(cases):
-    outcomes = []
-    seen = set()
-
-    for case in cases:
-        outcome = detect_outcome(case)
-        if outcome and outcome not in seen:
-            outcomes.append(outcome)
-            seen.add(outcome)
-
-    outcomes = sorted(outcomes)
+def build_outcomes(cases):
+    outcomes = sorted({c.get("outcome") for c in cases if c.get("outcome")})
     return ["All Outcomes"] + outcomes
+
 
 # =========================
 # ROUTE
@@ -745,53 +700,64 @@ def build_outcome_options(cases):
 
 @app.route("/", methods=["GET", "POST"])
 def index():
-    page = safe_int(request.args.get("page"), 1)
+    try:
+        page = int(request.args.get("page", 1))
+    except ValueError:
+        page = 1
 
     if request.method == "POST":
-        query = (request.form.get("query") or "").strip()
-        selected_court = (request.form.get("court") or "All Courts").strip()
-        selected_outcome = (request.form.get("outcome") or "All Outcomes").strip()
+        query = clean_text(request.form.get("query", ""))
+        court = clean_text(request.form.get("court", "All Courts")) or "All Courts"
+        outcome = clean_text(request.form.get("outcome", "All Outcomes")) or "All Outcomes"
         page = 1
     else:
-        query = (request.args.get("query") or "").strip()
-        selected_court = (request.args.get("court") or "All Courts").strip()
-        selected_outcome = (request.args.get("outcome") or "All Outcomes").strip()
+        query = clean_text(request.args.get("query", ""))
+        court = clean_text(request.args.get("court", "All Courts")) or "All Courts"
+        outcome = clean_text(request.args.get("outcome", "All Outcomes")) or "All Outcomes"
 
-    all_cases = load_cases()
+    cases = load_cases()
 
-    courts = build_court_options(all_cases)
-    outcomes = build_outcome_options(all_cases)
+    for case in cases:
+        score_case(case, query)
+        case["display_snippet"] = best_snippet(case, query)
 
-    filtered_cases = []
-    for case in all_cases:
-        if matches_query(case, query) and matches_filters(case, selected_court, selected_outcome):
-            score_case(case, query)
-            filtered_cases.append(case)
-
-    if query:
-        filtered_cases.sort(key=lambda x: x.get("score", 0), reverse=True)
+    if not query:
+        filtered = []
     else:
-        filtered_cases.sort(key=lambda x: (-get_court_score(x.get("court")), x.get("title", "")))
+        filtered = [
+            c for c in cases
+            if matches_query(c, query) and matches_filters(c, court, outcome)
+        ]
 
-    pager = build_pager(page, PER_PAGE, len(filtered_cases))
+        filtered.sort(
+            key=lambda x: (
+                x.get("score", 0),
+                x.get("date", ""),
+                x.get("title", ""),
+            ),
+            reverse=True,
+        )
 
-    start = (pager.page - 1) * pager.per_page
-    end = start + pager.per_page
-    results = filtered_cases[start:end]
+    pager = build_pager(page, PER_PAGE, len(filtered))
+
+    start = (pager.page - 1) * PER_PAGE
+    end = start + PER_PAGE
+    results = filtered[start:end]
 
     for case in results:
-        case["similar_cases"] = get_similar_cases(case, filtered_cases, limit=5)
+        case["similar_cases"] = get_similar_cases(case, filtered, limit=5)
 
     return render_template(
         "index.html",
         results=results,
-        query=query,
         pager=pager,
-        courts=courts,
-        outcomes=outcomes,
-        selected_court=selected_court,
-        selected_outcome=selected_outcome,
+        query=query,
+        courts=build_courts(cases),
+        outcomes=build_outcomes(cases),
+        selected_court=court,
+        selected_outcome=outcome,
     )
+
 
 # =========================
 # RUN
