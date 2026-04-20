@@ -179,6 +179,18 @@ def build_pager(page, per_page, total_count):
         next_num=page + 1 if page < total_pages else None,
     )
 
+
+def has_real_value(value):
+    if value is None:
+        return False
+    text = clean_text(value)
+    if not text:
+        return False
+    lowered = text.lower()
+    if lowered in {"unknown court", "untitled case", "none", "null", "n/a"}:
+        return False
+    return True
+
 # =========================
 # NORMALIZATION
 # =========================
@@ -565,29 +577,97 @@ def score_case(case, user_query):
 def compute_similarity(case, target):
     score = 0
 
-    if case.get("court") == target.get("court"):
-        score += 3
-    if case.get("motion") == target.get("motion"):
-        score += 2
-    if case.get("cause") == target.get("cause"):
-        score += 4
-    if case.get("outcome") == target.get("outcome"):
-        score += 1
+    case_court = clean_text(case.get("court", ""))
+    target_court = clean_text(target.get("court", ""))
+    case_motion = clean_text(case.get("motion", ""))
+    target_motion = clean_text(target.get("motion", ""))
+    case_cause = clean_text(case.get("cause", ""))
+    target_cause = clean_text(target.get("cause", ""))
+    case_outcome = clean_text(case.get("outcome", ""))
+    target_outcome = clean_text(target.get("outcome", ""))
 
-    return score
+    # Court: only score if both are real
+    if has_real_value(case_court) and has_real_value(target_court):
+        if case_court == target_court:
+            score += 3
+
+    # Motion: only score if both are real and match
+    if has_real_value(case_motion) and has_real_value(target_motion):
+        if case_motion == target_motion:
+            score += 2
+        else:
+            score -= 1
+
+    # Cause: only score if both are real and match
+    if has_real_value(case_cause) and has_real_value(target_cause):
+        if case_cause == target_cause:
+            score += 4
+        else:
+            score -= 2
+
+    # Outcome: only score if both are real and match
+    if has_real_value(case_outcome) and has_real_value(target_outcome):
+        if case_outcome == target_outcome:
+            score += 1
+
+    # Penalize very sparse records a bit so fake-ties drop down
+    sparse_penalty = 0
+    if not has_real_value(case_motion):
+        sparse_penalty += 0.5
+    if not has_real_value(case_cause):
+        sparse_penalty += 0.5
+
+    return score - sparse_penalty
 
 
 def attach_match_labels(case, target_case):
-    same_court = case.get("court") == target_case.get("court")
-    same_motion = case.get("motion") == target_case.get("motion")
-    same_cause = case.get("cause") == target_case.get("cause")
-    same_outcome = case.get("outcome") == target_case.get("outcome")
+    same_court = False
+    same_motion = False
+    same_cause = False
+    same_outcome = False
+
+    case_court = clean_text(case.get("court", ""))
+    target_court = clean_text(target_case.get("court", ""))
+    case_motion = clean_text(case.get("motion", ""))
+    target_motion = clean_text(target_case.get("motion", ""))
+    case_cause = clean_text(case.get("cause", ""))
+    target_cause = clean_text(target_case.get("cause", ""))
+    case_outcome = clean_text(case.get("outcome", ""))
+    target_outcome = clean_text(target_case.get("outcome", ""))
+
+    if has_real_value(case_court) and has_real_value(target_court):
+        same_court = case_court == target_court
+
+    if has_real_value(case_motion) and has_real_value(target_motion):
+        same_motion = case_motion == target_motion
+
+    if has_real_value(case_cause) and has_real_value(target_cause):
+        same_cause = case_cause == target_cause
+
+    if has_real_value(case_outcome) and has_real_value(target_outcome):
+        same_outcome = case_outcome == target_outcome
 
     case["match_labels"] = {
-        "court": "green" if same_court else "yellow",
-        "motion": "green" if same_motion else "yellow",
-        "cause": "green" if same_cause else ("red" if case.get("cause") and target_case.get("cause") else "yellow"),
-        "outcome": "green" if same_outcome else "yellow",
+        "court": (
+            "green" if same_court else
+            "red" if has_real_value(case_court) and has_real_value(target_court) else
+            "yellow"
+        ),
+        "motion": (
+            "green" if same_motion else
+            "red" if has_real_value(case_motion) and has_real_value(target_motion) else
+            "yellow"
+        ),
+        "cause": (
+            "green" if same_cause else
+            "red" if has_real_value(case_cause) and has_real_value(target_cause) else
+            "yellow"
+        ),
+        "outcome": (
+            "green" if same_outcome else
+            "red" if has_real_value(case_outcome) and has_real_value(target_outcome) else
+            "yellow"
+        ),
     }
 
     badges = []
