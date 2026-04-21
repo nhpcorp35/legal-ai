@@ -227,6 +227,8 @@ def court_rank(court_name):
     court = clean_text(court_name)
     if court == "Appellate Division, First Department":
         return 100
+    if court == "Court of Appeals":
+        return 95
     if court == "Appellate Division, Second Department":
         return 90
     if court == "Appellate Division, Third Department":
@@ -235,8 +237,6 @@ def court_rank(court_name):
         return 80
     if court == "Appellate Division":
         return 70
-    if court == "Court of Appeals":
-        return 95
     if court == "Supreme Court":
         return 50
     if court == "Civil Court":
@@ -372,14 +372,28 @@ def detect_motion(case):
         case.get("text", ""),
     ]))
 
+    if not text:
+        return ""
+
     if "partial summary judgment" in text:
         return "partial summary judgment"
+
     if "summary judgment" in text:
         return "summary judgment"
-    if "motion to dismiss" in text:
+
+    dismiss_motion_patterns = [
+        "motion to dismiss",
+        "motions to dismiss",
+        "cross motion to dismiss",
+        "cross-motion to dismiss",
+        "dismiss the complaint",
+        "dismissing the complaint",
+        "seeking dismissal",
+        "for dismissal of the complaint",
+    ]
+    if any(p in text for p in dismiss_motion_patterns):
         return "motion to dismiss"
-    if "dismiss" in text:
-        return "dismissal"
+
     return ""
 
 
@@ -421,14 +435,12 @@ def detect_query_motion(query):
         return "summary judgment"
     if "motion to dismiss" in q:
         return "motion to dismiss"
-    if "dismissal" in q or q == "dismiss":
-        return "dismissal"
     return ""
 
 
 def detect_query_cause(query):
     q = normalize_for_search(query)
-    for phrase in STRICT_PHRASE_QUERIES:
+    for phrase in sorted(STRICT_PHRASE_QUERIES, key=len, reverse=True):
         aliases = PHRASE_ALIASES.get(phrase, [])
         if phrase == q:
             return phrase
@@ -464,6 +476,8 @@ def normalize_case(case):
     case["title"] = build_safe_title(case)
     case["court_rank"] = court_rank(case["court"])
     case["case_id"] = build_case_id(case)
+    case["trust_signals"] = []
+    case["similarity_signals"] = []
 
     return case
 
@@ -579,44 +593,74 @@ def matches_filters(case, selected_court, selected_outcome):
 
 
 # =========================
-# RANKING
+# RANKING / TRUST SIGNALS
 # =========================
 
 def structured_query_data(query):
+    normalized = normalize_for_search(query)
     return {
-        "normalized": normalize_for_search(query),
+        "normalized": normalized,
         "aliases": query_aliases(query),
-        "strict_phrase": normalize_for_search(query) in STRICT_PHRASE_QUERIES,
+        "strict_phrase": normalized in STRICT_PHRASE_QUERIES,
         "query_cause": detect_query_cause(query),
         "query_motion": detect_query_motion(query),
         "query_outcome": detect_query_outcome(query),
-        "terms": [t for t in normalize_for_search(query).split() if t],
+        "terms": [t for t in normalized.split() if t],
     }
 
 
-def score_case(case, query):
+def build_trust_signals(case, query, selected_court="All Courts", selected_outcome="All Outcomes"):
+    signals = []
+    qd = structured_query_data(query)
+
+    if selected_court != "All Courts" and case.get("court") == selected_court:
+        signals.append("Same Court")
+
+    if qd["query_motion"]:
+        case_motion = case.get("motion", "")
+        if qd["query_motion"] == case_motion:
+            signals.append("Same Motion")
+        elif qd["query_motion"] == "summary judgment" and case_motion == "partial summary judgment":
+            signals.append("Same Motion")
+
+    if qd["query_cause"] and case.get("primary_cause") == qd["query_cause"]:
+        signals.append("Same Cause")
+
+    if (
+        qd["query_outcome"]
+        and case.get("outcome") == qd["query_outcome"]
+        and selected_outcome == "All Outcomes"
+    ):
+        signals.append("Same Outcome")
+
+    if selected_outcome != "All Outcomes" and case.get("outcome") == selected_outcome.lower():
+        if "Same Outcome" not in signals:
+            signals.append("Same Outcome")
+
+    return signals
+
+
+def score_case(case, query, selected_court="All Courts", selected_outcome="All Outcomes"):
     score = 0
     haystack = text_for_search(case)
     qd = structured_query_data(query)
 
     score += case.get("court_rank", 0) / 10.0
 
-    if qd["strict_phrase"]:
-        alias_hits = sum(1 for alias in qd["aliases"] if alias in haystack)
-        if alias_hits:
-            score += 24 + (alias_hits * 3)
-    else:
-        if qd["normalized"] and qd["normalized"] in haystack:
-            score += 14
+    if selected_court != "All Courts":
+        if case.get("court") == selected_court:
+            score += 32
+        else:
+            score -= 8
 
-        matched_terms = 0
-        for term in qd["terms"]:
-            if term in haystack:
-                matched_terms += 1
-                score += 1.5
-
-        if len(qd["terms"]) > 1 and matched_terms == len(qd["terms"]):
-            score += 4
+    if qd["query_motion"]:
+        case_motion = case.get("motion", "")
+        if qd["query_motion"] == case_motion:
+            score += 32
+        elif qd["query_motion"] == "summary judgment" and case_motion == "partial summary judgment":
+            score += 26
+        elif case_motion:
+            score -= 28
 
     if qd["query_cause"]:
         if case.get("primary_cause") == qd["query_cause"]:
@@ -624,19 +668,28 @@ def score_case(case, query):
         elif case.get("primary_cause"):
             score -= 12
 
-    if qd["query_motion"]:
-        if case.get("motion") == qd["query_motion"]:
-            score += 20
-        elif qd["query_motion"] == "summary judgment" and case.get("motion") == "partial summary judgment":
-            score += 16
-        elif case.get("motion"):
-            score -= 15
-
     if qd["query_outcome"]:
         if case.get("outcome") == qd["query_outcome"]:
-            score += 8
+            score += 10
         elif case.get("outcome"):
-            score -= 2
+            score -= 4
+
+    if qd["strict_phrase"]:
+        alias_hits = sum(1 for alias in qd["aliases"] if alias in haystack)
+        if alias_hits:
+            score += 8 + (alias_hits * 2)
+    else:
+        if qd["normalized"] and qd["normalized"] in haystack:
+            score += 6
+
+        matched_terms = 0
+        for term in qd["terms"]:
+            if term in haystack:
+                matched_terms += 1
+                score += 1.0
+
+        if len(qd["terms"]) > 1 and matched_terms == len(qd["terms"]):
+            score += 2
 
     if len(case.get("text", "")) > 5000:
         score += 3
@@ -655,6 +708,7 @@ def score_case(case, query):
     if looks_like_bad_title(case.get("title", "")):
         score -= 6
 
+    case["trust_signals"] = build_trust_signals(case, query, selected_court, selected_outcome)
     case["score"] = round(score, 2)
     return case["score"]
 
@@ -693,11 +747,34 @@ def substantive_text(case):
     ])
 
 
+def build_similarity_signals(a, b):
+    signals = []
+
+    if a.get("court") and a.get("court") == b.get("court"):
+        signals.append("Same Court")
+
+    if a.get("motion") and b.get("motion"):
+        if a.get("motion") == b.get("motion"):
+            signals.append("Same Motion")
+        elif a.get("motion") == "summary judgment" and b.get("motion") == "partial summary judgment":
+            signals.append("Same Motion")
+        elif a.get("motion") == "partial summary judgment" and b.get("motion") == "summary judgment":
+            signals.append("Same Motion")
+
+    if a.get("primary_cause") and b.get("primary_cause") and a.get("primary_cause") == b.get("primary_cause"):
+        signals.append("Same Cause")
+
+    if a.get("outcome") and b.get("outcome") and a.get("outcome") == b.get("outcome"):
+        signals.append("Same Outcome")
+
+    return signals
+
+
 def similar_score(a, b):
     score = 0
 
     if a.get("court") and a.get("court") == b.get("court"):
-        score += 12
+        score += 18
     else:
         score += min(a.get("court_rank", 0), b.get("court_rank", 0)) / 20.0
 
@@ -708,19 +785,24 @@ def similar_score(a, b):
             score -= 14
 
     if a.get("motion") and b.get("motion"):
-        if a.get("motion") == b.get("motion"):
-            score += 10
+        same_motion = (
+            a.get("motion") == b.get("motion")
+            or (a.get("motion") == "summary judgment" and b.get("motion") == "partial summary judgment")
+            or (a.get("motion") == "partial summary judgment" and b.get("motion") == "summary judgment")
+        )
+        if same_motion:
+            score += 16
         else:
-            score -= 4
+            score -= 10
 
     if a.get("outcome") and b.get("outcome"):
         if a.get("outcome") == b.get("outcome"):
-            score += 5
+            score += 6
 
     a_tokens = token_set(substantive_text(a))
     b_tokens = token_set(substantive_text(b))
     overlap = len(a_tokens & b_tokens)
-    score += min(overlap, 12)
+    score += min(overlap, 10)
 
     if overlap < 2:
         score -= 4
@@ -751,12 +833,16 @@ def get_similar_cases(target_case, all_cases, limit=5):
         case_tokens = token_set(substantive_text(case))
         overlap = len(target_tokens & case_tokens)
 
-        if target_cause:
-            if case.get("primary_cause") != target_cause:
-                continue
+        if target_cause and case.get("primary_cause") != target_cause:
+            continue
 
-        if target_motion and case.get("motion") and target_motion != case.get("motion"):
-            if overlap < 8:
+        if target_motion and case.get("motion"):
+            same_motion = (
+                target_motion == case.get("motion")
+                or (target_motion == "summary judgment" and case.get("motion") == "partial summary judgment")
+                or (target_motion == "partial summary judgment" and case.get("motion") == "summary judgment")
+            )
+            if not same_motion and overlap < 8:
                 continue
 
         sim_value = similar_score(case, target_case)
@@ -765,6 +851,7 @@ def get_similar_cases(target_case, all_cases, limit=5):
 
         sim_case = dict(case)
         sim_case["similarity"] = sim_value
+        sim_case["similarity_signals"] = build_similarity_signals(target_case, case)
         scored.append(sim_case)
 
     scored.sort(
@@ -829,7 +916,7 @@ def index():
     cases = load_cases()
 
     for case in cases:
-        score_case(case, query)
+        score_case(case, query, court, outcome)
         case["display_snippet"] = best_snippet(case, query)
 
     if not query:
@@ -878,7 +965,7 @@ def case_detail(case_id):
     if not case:
         abort(404)
 
-    score_case(case, "")
+    score_case(case, "", "All Courts", "All Outcomes")
     case["display_snippet"] = case.get("text") or case.get("snippet") or ""
     case["similar_cases"] = get_similar_cases(case, cases, limit=8)
 
