@@ -7,6 +7,7 @@
             font-family: Arial, sans-serif;
             margin: 40px;
             color: #111;
+            max-width: 1050px;
         }
 
         a {
@@ -18,34 +19,81 @@
             text-decoration: underline;
         }
 
+        .back-link {
+            margin-bottom: 14px;
+        }
+
         .title {
             font-size: 24px;
             font-weight: bold;
+            line-height: 1.35;
             margin-bottom: 8px;
         }
 
         .meta {
             color: #666;
             margin: 6px 0;
+            font-size: 14px;
         }
 
         .block {
-            margin-top: 24px;
+            margin-top: 28px;
+        }
+
+        .block-title {
+            font-size: 15px;
+            font-weight: 700;
+            margin-bottom: 10px;
+            color: #222;
         }
 
         .text {
             white-space: pre-wrap;
-            line-height: 1.5;
+            line-height: 1.58;
+            color: #222;
+        }
+
+        .similar-list {
+            border-left: 2px solid #f0f0f0;
+            padding-left: 14px;
         }
 
         .similar-case {
-            margin: 8px 0;
+            margin: 12px 0;
+            line-height: 1.45;
+        }
+
+        .similar-case a {
+            font-weight: 600;
+        }
+
+        .similar-meta {
+            color: #666;
+            margin-top: 2px;
+            font-size: 13px;
+        }
+
+        .signals {
+            margin-top: 5px;
+        }
+
+        .signal {
+            display: inline-block;
+            padding: 3px 8px;
+            margin-right: 6px;
+            margin-bottom: 6px;
+            border-radius: 999px;
+            font-size: 11px;
+            font-weight: 600;
+            background: #eef6ff;
+            color: #2557a7;
+            border: 1px solid #cfe0ff;
         }
     </style>
 </head>
 <body>
 
-<div><a href="{{ url_for('index') }}">← Back to search</a></div>
+<div class="back-link"><a href="{{ url_for('index') }}">← Back to search</a></div>
 
 <div class="title">{{ case.title }}</div>
 
@@ -54,25 +102,40 @@
 </div>
 
 <div class="meta">
-    {% if case.motion %}Motion: {{ case.motion }} · {% endif %}
-    {% if case.outcome %}Outcome: {{ case.outcome }} · {% endif %}
-    {% if case.primary_cause %}Cause: {{ case.primary_cause }}{% endif %}
+    {% if case.motion %}Motion: {{ case.motion }}{% endif %}
+    {% if case.outcome %}{% if case.motion %} · {% endif %}Outcome: {{ case.outcome }}{% endif %}
+    {% if case.primary_cause %}{% if case.motion or case.outcome %} · {% endif %}Cause: {{ case.primary_cause }}{% endif %}
 </div>
 
 <div class="block">
-    <strong>Case Text</strong>
+    <div class="block-title">Case Text</div>
     <div class="text">{{ case.text }}</div>
 </div>
 
 {% if case.similar_cases %}
     <div class="block">
-        <strong>Similar Cases</strong>
-        {% for s in case.similar_cases %}
-            <div class="similar-case">
-                <a href="{{ url_for('case_detail', case_id=s.case_id) }}">{{ s.title }}</a>
-                · {{ s.outcome }} · Similarity: {{ s.similarity }}
-            </div>
-        {% endfor %}
+        <div class="block-title">Similar Cases</div>
+        <div class="similar-list">
+            {% for s in case.similar_cases %}
+                <div class="similar-case">
+                    <div>
+                        <a href="{{ url_for('case_detail', case_id=s.case_id) }}">{{ s.title }}</a>
+                    </div>
+
+                    <div class="similar-meta">
+                        {% if s.outcome %}{{ s.outcome }} · {% endif %}Similarity: {{ s.similarity }}
+                    </div>
+
+                    {% if s.similarity_signals %}
+                        <div class="signals">
+                            {% for sig in s.similarity_signals %}
+                                <span class="signal">{{ sig }}</span>
+                            {% endfor %}
+                        </div>
+                    {% endif %}
+                </div>
+            {% endfor %}
+        </div>
     </div>
 {% endif %}
 

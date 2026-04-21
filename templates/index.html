@@ -7,6 +7,11 @@
             font-family: Arial, sans-serif;
             margin: 40px;
             color: #111;
+            max-width: 1100px;
+        }
+
+        h2 {
+            margin-bottom: 18px;
         }
 
         form {
@@ -16,20 +21,37 @@
         input, select {
             padding: 8px;
             margin-right: 10px;
+            font-size: 14px;
+        }
+
+        input[type="text"] {
+            min-width: 320px;
         }
 
         button {
             padding: 8px 14px;
+            font-size: 14px;
+            cursor: pointer;
+        }
+
+        .results-header {
+            margin-bottom: 18px;
+            color: #444;
         }
 
         .case {
-            border-bottom: 1px solid #ddd;
-            padding: 15px 0;
+            border-bottom: 1px solid #eee;
+            padding: 18px 0 20px 0;
+        }
+
+        .case-title {
+            margin-bottom: 4px;
         }
 
         .case-title a {
             font-weight: bold;
             font-size: 18px;
+            line-height: 1.35;
             text-decoration: none;
             color: #111;
         }
@@ -41,48 +63,73 @@
         .meta {
             color: #666;
             margin: 5px 0;
+            font-size: 14px;
         }
 
         .score {
             color: #888;
             font-size: 13px;
-            margin-top: 4px;
+            margin-top: 5px;
         }
 
         .signals {
-            margin-top: 8px;
+            margin-top: 9px;
+            margin-bottom: 8px;
         }
 
         .signal {
             display: inline-block;
-            padding: 4px 8px;
+            padding: 5px 10px;
             margin-right: 6px;
             margin-bottom: 6px;
             border-radius: 999px;
             font-size: 12px;
-            font-weight: 600;
-            background: #e8f7ec;
-            color: #1f7a3d;
-            border: 1px solid #b7e4c3;
+            font-weight: 700;
+            background: #e6f4ea;
+            color: #137333;
+            border: 1px solid #c8e6c9;
+        }
+
+        .snippet {
+            margin-top: 10px;
+            line-height: 1.5;
+            color: #222;
         }
 
         .similar {
-            margin-top: 10px;
-            padding-left: 15px;
+            margin-top: 14px;
+            padding-left: 14px;
+            border-left: 2px solid #f0f0f0;
+        }
+
+        .similar-title {
+            font-size: 13px;
+            font-weight: 700;
+            color: #444;
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.02em;
         }
 
         .similar-case {
             font-size: 13px;
-            margin: 8px 0;
+            margin: 10px 0;
+            line-height: 1.4;
         }
 
         .similar-case a {
             color: #1a0dab;
             text-decoration: none;
+            font-weight: 600;
         }
 
         .similar-case a:hover {
             text-decoration: underline;
+        }
+
+        .similar-meta {
+            color: #666;
+            margin-top: 2px;
         }
 
         .similar-signals {
@@ -114,7 +161,8 @@
         }
 
         .pagination {
-            margin-top: 20px;
+            margin-top: 24px;
+            color: #444;
         }
 
         .pagination a {
@@ -146,7 +194,7 @@
 </form>
 
 {% if results %}
-    <div>
+    <div class="results-header">
         <strong>{{ pager.total }} results</strong><br>
         Page {{ pager.page }} of {{ pager.total_pages }}
     </div>
@@ -161,13 +209,6 @@
                 {{ case.court }} · {{ case.date }}{% if case.citation %} · {{ case.citation }}{% endif %}
             </div>
 
-            <div class="score">
-                Score: {{ case.score }}
-                {% if case.motion %} · Motion: {{ case.motion }}{% endif %}
-                {% if case.outcome %} · Outcome: {{ case.outcome }}{% endif %}
-                {% if case.primary_cause %} · Cause: {{ case.primary_cause }}{% endif %}
-            </div>
-
             {% if case.trust_signals %}
                 <div class="signals">
                     {% for sig in case.trust_signals %}
@@ -176,15 +217,27 @@
                 </div>
             {% endif %}
 
-            <div>{{ case.display_snippet }}</div>
+            <div class="score">
+                {% if case.motion %}Motion: {{ case.motion }}{% endif %}
+                {% if case.outcome %}{% if case.motion %} · {% endif %}Outcome: {{ case.outcome }}{% endif %}
+                {% if case.primary_cause %}{% if case.motion or case.outcome %} · {% endif %}Cause: {{ case.primary_cause }}{% endif %}
+                · Score: {{ case.score }}
+            </div>
+
+            <div class="snippet">{{ case.display_snippet }}</div>
 
             {% if case.similar_cases %}
                 <div class="similar">
-                    <strong>Similar Cases</strong>
+                    <div class="similar-title">Similar Cases</div>
                     {% for s in case.similar_cases %}
                         <div class="similar-case">
-                            <a href="{{ url_for('case_detail', case_id=s.case_id) }}">{{ s.title }}</a>
-                            · {{ s.outcome }} · Similarity: {{ s.similarity }}
+                            <div>
+                                <a href="{{ url_for('case_detail', case_id=s.case_id) }}">{{ s.title }}</a>
+                            </div>
+
+                            <div class="similar-meta">
+                                {% if s.outcome %}{{ s.outcome }}{% endif %}{% if s.outcome %} · {% endif %}Similarity: {{ s.similarity }}
+                            </div>
 
                             {% if s.similarity_signals %}
                                 <div class="similar-signals">
