@@ -244,6 +244,167 @@ def court_rank(court_name):
     return 20
 
 
+def format_case_text(text):
+    raw = str(text or "")
+    if not raw.strip():
+        return ""
+
+    txt = raw.replace("\r\n", "\n").replace("\r", "\n")
+    txt = txt.replace("\u00a0", " ")
+
+    txt = re.sub(r"([A-Za-z])-\s+([A-Za-z])", r"\1-\2", txt)
+    txt = re.sub(r"\s+", " ", txt).strip()
+
+    start_markers = [
+        r"\bOrder, Supreme Court,",
+        r"\bJudgment, Supreme Court,",
+        r"\bOrder and judgment, Supreme Court,",
+        r"\bDecision and order, Supreme Court,",
+        r"\bOpinion of the Court\b",
+        r"\bPlaintiff appeals from\b",
+        r"\bDefendant appeals from\b",
+        r"\bPetitioner appeals from\b",
+    ]
+    for marker in start_markers:
+        m = re.search(marker, txt)
+        if m:
+            txt = txt[m.start():]
+            break
+
+    txt = re.sub(r"\s+\d+\s+(?=[A-Z])", " ", txt)
+
+    txt = re.sub(
+        r"\s*THIS CONSTITUTES THE DECISION AND ORDER OF THE SUPREME COURT, APPELLATE DIVISION, FIRST DEPARTMENT\.\s*ENTERED:\s*[A-Za-z]+\s+\d{1,2},\s+\d{4}\s*\d*\s*$",
+        "",
+        txt,
+        flags=re.IGNORECASE,
+    )
+
+    paragraph_markers = [
+        "However,",
+        "In opposition,",
+        "In light of",
+        "On the merits,",
+        "On appeal,",
+        "Here,",
+        "Moreover,",
+        "By contrast,",
+        "Separately,",
+        "Finally,",
+        "Supreme Court correctly",
+        "Supreme Court should have",
+        "Plaintiff failed",
+        "Plaintiff established",
+        "Defendant failed",
+        "Defendants failed",
+        "Defendant established",
+        "Defendants established",
+        "We do not reach",
+        "We reject",
+        "We agree",
+        "We have considered",
+    ]
+
+    for marker in paragraph_markers:
+        txt = txt.replace(" " + marker, "\n\n" + marker)
+
+    txt = re.sub(
+        r"(\bwithout costs\.)\s+(?=[A-Z])",
+        r"\1\n\n",
+        txt,
+        count=1,
+    )
+
+    txt = re.sub(r"\.\s+(?=Although\b)", ".\n\n", txt)
+    txt = re.sub(r"\.\s+(?=Because\b)", ".\n\n", txt)
+    txt = re.sub(r"\.\s+(?=Given\b)", ".\n\n", txt)
+
+    txt = re.sub(r" *\n *", "\n", txt)
+    txt = re.sub(r"\n{3,}", "\n\n", txt).strip()
+
+    return txt
+
+
+def extract_holding_and_key_points(formatted_text):
+    text = str(formatted_text or "").strip()
+    if not text:
+        return "", []
+
+    paragraphs = [clean_text(p) for p in text.split("\n\n") if clean_text(p)]
+    if not paragraphs:
+        return "", []
+
+    holding = paragraphs[0]
+    if len(holding) > 700:
+        holding = holding[:700].rsplit(" ", 1)[0] + "..."
+
+    preferred_starts = (
+        "Supreme Court correctly",
+        "Supreme Court should have",
+        "In opposition,",
+        "On the merits,",
+        "We reject",
+        "We agree",
+        "Plaintiff failed",
+        "Plaintiff established",
+        "Defendant failed",
+        "Defendants failed",
+        "Defendant established",
+        "Defendants established",
+    )
+
+    banned_exact = {
+        "nevertheless,",
+        "however,",
+        "further,",
+        "accordingly,",
+        "moreover,",
+        "finally,",
+        "by contrast,",
+        "separately,",
+    }
+
+    candidates = []
+
+    for para in paragraphs[1:]:
+        low = para.strip().lower()
+
+        if len(para) < 120:
+            continue
+
+        if low in banned_exact:
+            continue
+
+        if para.startswith(preferred_starts):
+            if len(para) > 700:
+                para = para[:700].rsplit(" ", 1)[0] + "..."
+            candidates.append(para)
+
+    if len(candidates) < 2:
+        for para in paragraphs[1:]:
+            low = para.strip().lower()
+
+            if len(para) < 120:
+                continue
+
+            if low in banned_exact:
+                continue
+
+            if para in candidates:
+                continue
+
+            if len(para) > 700:
+                para = para[:700].rsplit(" ", 1)[0] + "..."
+
+            candidates.append(para)
+
+            if len(candidates) >= 2:
+                break
+
+    key_points = candidates[:2]
+    return holding, key_points
+
+
 # =========================
 # LOADERS
 # =========================
@@ -469,6 +630,8 @@ def normalize_case(case):
     case["case_number"] = clean_text(case.get("case_number"))
     case["date"] = clean_text(case.get("date"))
     case["text"] = clean_text(case.get("text"))
+    case["formatted_text"] = format_case_text(case.get("text"))
+    case["holding"], case["key_points"] = extract_holding_and_key_points(case["formatted_text"])
     case["file"] = clean_text(case.get("file"))
     case["record_type"] = detect_record_type(case)
     case["motion"] = detect_motion(case)
@@ -505,7 +668,7 @@ def text_for_search(case):
 
 def best_snippet(case, query):
     snippet = clean_text(case.get("snippet"))
-    text = clean_text(case.get("text"))
+    text = clean_text(case.get("formatted_text") or case.get("text"))
 
     if not query:
         if snippet:
@@ -747,19 +910,45 @@ def substantive_text(case):
     ])
 
 
+def same_motion_family(a_motion, b_motion):
+    if not a_motion or not b_motion:
+        return False
+
+    if a_motion == b_motion:
+        return True
+
+    family = {"summary judgment", "partial summary judgment"}
+    if a_motion in family and b_motion in family:
+        return True
+
+    return False
+
+
+def ordered_unique_signals(signals):
+    order = {
+        "Same Court": 0,
+        "Same Motion": 1,
+        "Same Cause": 2,
+        "Same Outcome": 3,
+    }
+    deduped = []
+    seen = set()
+    for sig in signals:
+        if sig and sig not in seen:
+            seen.add(sig)
+            deduped.append(sig)
+    deduped.sort(key=lambda s: order.get(s, 99))
+    return deduped
+
+
 def build_similarity_signals(a, b):
     signals = []
 
     if a.get("court") and a.get("court") == b.get("court"):
         signals.append("Same Court")
 
-    if a.get("motion") and b.get("motion"):
-        if a.get("motion") == b.get("motion"):
-            signals.append("Same Motion")
-        elif a.get("motion") == "summary judgment" and b.get("motion") == "partial summary judgment":
-            signals.append("Same Motion")
-        elif a.get("motion") == "partial summary judgment" and b.get("motion") == "summary judgment":
-            signals.append("Same Motion")
+    if same_motion_family(a.get("motion"), b.get("motion")):
+        signals.append("Same Motion")
 
     if a.get("primary_cause") and b.get("primary_cause") and a.get("primary_cause") == b.get("primary_cause"):
         signals.append("Same Cause")
@@ -767,48 +956,108 @@ def build_similarity_signals(a, b):
     if a.get("outcome") and b.get("outcome") and a.get("outcome") == b.get("outcome"):
         signals.append("Same Outcome")
 
-    return signals
+    return ordered_unique_signals(signals)
+
+
+def title_signature(case):
+    title = clean_text(case.get("title", ""))
+    norm = normalize_for_search(title)
+    tokens = [t for t in norm.split() if len(t) > 2 and t not in SIMILAR_STOPWORDS]
+    return " ".join(tokens[:8])
+
+
+def jaccard_similarity(set_a, set_b):
+    if not set_a and not set_b:
+        return 1.0
+    if not set_a or not set_b:
+        return 0.0
+    union = set_a | set_b
+    if not union:
+        return 0.0
+    return len(set_a & set_b) / len(union)
+
+
+def similar_cluster_key(case):
+    return (
+        case.get("court", ""),
+        case.get("motion", ""),
+        case.get("primary_cause", ""),
+        case.get("outcome", ""),
+    )
+
+
+def is_near_duplicate_similar(candidate_case, chosen_cases):
+    cand_title_sig = title_signature(candidate_case)
+    cand_tokens = token_set(substantive_text(candidate_case))
+
+    for chosen in chosen_cases:
+        if cand_title_sig and cand_title_sig == title_signature(chosen):
+            return True
+
+        chosen_tokens = token_set(substantive_text(chosen))
+        overlap_ratio = jaccard_similarity(cand_tokens, chosen_tokens)
+        if overlap_ratio >= 0.82:
+            return True
+
+        if (
+            candidate_case.get("court") == chosen.get("court")
+            and candidate_case.get("motion") == chosen.get("motion")
+            and candidate_case.get("primary_cause") == chosen.get("primary_cause")
+            and candidate_case.get("outcome") == chosen.get("outcome")
+            and overlap_ratio >= 0.62
+        ):
+            return True
+
+    return False
 
 
 def similar_score(a, b):
     score = 0
 
     if a.get("court") and a.get("court") == b.get("court"):
-        score += 18
+        score += 28
     else:
-        score += min(a.get("court_rank", 0), b.get("court_rank", 0)) / 20.0
+        score += min(a.get("court_rank", 0), b.get("court_rank", 0)) / 25.0
 
     if a.get("primary_cause") and b.get("primary_cause"):
         if a.get("primary_cause") == b.get("primary_cause"):
-            score += 20
+            score += 24
         else:
-            score -= 14
+            score -= 22
 
     if a.get("motion") and b.get("motion"):
-        same_motion = (
-            a.get("motion") == b.get("motion")
-            or (a.get("motion") == "summary judgment" and b.get("motion") == "partial summary judgment")
-            or (a.get("motion") == "partial summary judgment" and b.get("motion") == "summary judgment")
-        )
-        if same_motion:
-            score += 16
+        if same_motion_family(a.get("motion"), b.get("motion")):
+            if a.get("motion") == b.get("motion"):
+                score += 22
+            else:
+                score += 16
         else:
-            score -= 10
+            score -= 18
 
     if a.get("outcome") and b.get("outcome"):
         if a.get("outcome") == b.get("outcome"):
-            score += 6
+            score += 8
+        else:
+            score -= 2
 
     a_tokens = token_set(substantive_text(a))
     b_tokens = token_set(substantive_text(b))
     overlap = len(a_tokens & b_tokens)
+    overlap_ratio = jaccard_similarity(a_tokens, b_tokens)
+
     score += min(overlap, 10)
+    score += round(overlap_ratio * 18, 2)
 
     if overlap < 2:
-        score -= 4
+        score -= 8
+    elif overlap < 4:
+        score -= 3
 
     if a.get("record_type") == "motion_order":
-        score -= 10
+        score -= 12
+
+    if looks_like_bad_title(a.get("title", "")):
+        score -= 6
 
     return round(score, 2)
 
@@ -832,21 +1081,26 @@ def get_similar_cases(target_case, all_cases, limit=5):
 
         case_tokens = token_set(substantive_text(case))
         overlap = len(target_tokens & case_tokens)
+        overlap_ratio = jaccard_similarity(target_tokens, case_tokens)
 
-        if target_cause and case.get("primary_cause") != target_cause:
-            continue
+        if target_cause:
+            if case.get("primary_cause") != target_cause:
+                continue
 
         if target_motion and case.get("motion"):
-            same_motion = (
-                target_motion == case.get("motion")
-                or (target_motion == "summary judgment" and case.get("motion") == "partial summary judgment")
-                or (target_motion == "partial summary judgment" and case.get("motion") == "summary judgment")
-            )
-            if not same_motion and overlap < 8:
+            if not same_motion_family(target_motion, case.get("motion")):
+                if overlap < 10 or overlap_ratio < 0.25:
+                    continue
+        elif target_motion and not case.get("motion"):
+            if overlap < 12:
+                continue
+
+        if target_case.get("court") and case.get("court") and target_case.get("court") != case.get("court"):
+            if overlap < 6 and overlap_ratio < 0.18:
                 continue
 
         sim_value = similar_score(case, target_case)
-        if sim_value <= 0:
+        if sim_value <= 10:
             continue
 
         sim_case = dict(case)
@@ -857,13 +1111,50 @@ def get_similar_cases(target_case, all_cases, limit=5):
     scored.sort(
         key=lambda x: (
             x.get("similarity", 0),
+            len(x.get("similarity_signals", [])),
             x.get("court_rank", 0),
             x.get("date", ""),
             x.get("title", ""),
         ),
         reverse=True,
     )
-    return scored[:limit]
+
+    final_cases = []
+    outcome_counts = {}
+    cluster_counts = {}
+
+    for sim_case in scored:
+        outcome = sim_case.get("outcome", "") or "unknown"
+        cluster = similar_cluster_key(sim_case)
+
+        if outcome_counts.get(outcome, 0) >= 2:
+            continue
+
+        if cluster_counts.get(cluster, 0) >= 2:
+            continue
+
+        if is_near_duplicate_similar(sim_case, final_cases):
+            continue
+
+        final_cases.append(sim_case)
+        outcome_counts[outcome] = outcome_counts.get(outcome, 0) + 1
+        cluster_counts[cluster] = cluster_counts.get(cluster, 0) + 1
+
+        if len(final_cases) >= limit:
+            break
+
+    if len(final_cases) < limit:
+        for sim_case in scored:
+            if sim_case in final_cases:
+                continue
+            if is_near_duplicate_similar(sim_case, final_cases):
+                continue
+
+            final_cases.append(sim_case)
+            if len(final_cases) >= limit:
+                break
+
+    return final_cases
 
 
 # =========================
@@ -944,7 +1235,7 @@ def index():
     results = filtered[start:end]
 
     for case in results:
-        case["similar_cases"] = get_similar_cases(case, filtered, limit=5)
+        case["similar_cases"] = get_similar_cases(case, filtered, limit=3)
 
     return render_template(
         "index.html",
@@ -966,7 +1257,7 @@ def case_detail(case_id):
         abort(404)
 
     score_case(case, "", "All Courts", "All Outcomes")
-    case["display_snippet"] = case.get("text") or case.get("snippet") or ""
+    case["display_snippet"] = case.get("formatted_text") or case.get("text") or ""
     case["similar_cases"] = get_similar_cases(case, cases, limit=8)
 
     return render_template("case_detail.html", case=case)
