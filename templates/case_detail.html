@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>{{ case.title }}</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 40px;
+            color: #111;
+        }
+
+        a {
+            color: #1a0dab;
+            text-decoration: none;
+        }
+
+        a:hover {
+            text-decoration: underline;
+        }
+
+        .title {
+            font-size: 24px;
+            font-weight: bold;
+            margin-bottom: 8px;
+        }
+
+        .meta {
+            color: #666;
+            margin: 6px 0;
+        }
+
+        .block {
+            margin-top: 24px;
+        }
+
+        .text {
+            white-space: pre-wrap;
+            line-height: 1.5;
+        }
+
+        .similar-case {
+            margin: 8px 0;
+        }
+    </style>
+</head>
+<body>
+
+<div><a href="{{ url_for('index') }}">← Back to search</a></div>
+
+<div class="title">{{ case.title }}</div>
+
+<div class="meta">
+    {{ case.court }} · {{ case.date }}{% if case.citation %} · {{ case.citation }}{% endif %}
+</div>
+
+<div class="meta">
+    {% if case.motion %}Motion: {{ case.motion }} · {% endif %}
+    {% if case.outcome %}Outcome: {{ case.outcome }} · {% endif %}
+    {% if case.primary_cause %}Cause: {{ case.primary_cause }}{% endif %}
+</div>
+
+<div class="block">
+    <strong>Case Text</strong>
+    <div class="text">{{ case.text }}</div>
+</div>
+
+{% if case.similar_cases %}
+    <div class="block">
+        <strong>Similar Cases</strong>
+        {% for s in case.similar_cases %}
+            <div class="similar-case">
+                <a href="{{ url_for('case_detail', case_id=s.case_id) }}">{{ s.title }}</a>
+                · {{ s.outcome }} · Similarity: {{ s.similarity }}
+            </div>
+        {% endfor %}
+    </div>
+{% endif %}
+
+</body>
+</html>

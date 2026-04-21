@@ -1,4 +1,4 @@
-from flask import Flask, request, render_template
+from flask import Flask, request, render_template, abort
 import json
 import math
 import os
@@ -441,6 +441,10 @@ def detect_query_cause(query):
 # NORMALIZE
 # =========================
 
+def build_case_id(case):
+    return clean_text(case.get("case_number") or case.get("file") or case.get("title"))
+
+
 def normalize_case(case):
     case = dict(case)
 
@@ -459,6 +463,7 @@ def normalize_case(case):
     case["primary_cause"] = detect_primary_cause(case)
     case["title"] = build_safe_title(case)
     case["court_rank"] = court_rank(case["court"])
+    case["case_id"] = build_case_id(case)
 
     return case
 
@@ -594,15 +599,12 @@ def score_case(case, query):
     haystack = text_for_search(case)
     qd = structured_query_data(query)
 
-    # Major factor: court hierarchy
     score += case.get("court_rank", 0) / 10.0
 
-    # Query-aware scoring
     if qd["strict_phrase"]:
         alias_hits = sum(1 for alias in qd["aliases"] if alias in haystack)
         if alias_hits:
             score += 24 + (alias_hits * 3)
-
     else:
         if qd["normalized"] and qd["normalized"] in haystack:
             score += 14
@@ -616,34 +618,31 @@ def score_case(case, query):
         if len(qd["terms"]) > 1 and matched_terms == len(qd["terms"]):
             score += 4
 
-    # Major factor: cause match
     if qd["query_cause"]:
         if case.get("primary_cause") == qd["query_cause"]:
             score += 18
         elif case.get("primary_cause"):
             score -= 12
 
-    # Major factor: motion match
     if qd["query_motion"]:
         if case.get("motion") == qd["query_motion"]:
-            score += 12
+            score += 20
+        elif qd["query_motion"] == "summary judgment" and case.get("motion") == "partial summary judgment":
+            score += 16
         elif case.get("motion"):
-            score -= 5
+            score -= 15
 
-    # Outcome match
     if qd["query_outcome"]:
         if case.get("outcome") == qd["query_outcome"]:
             score += 8
         elif case.get("outcome"):
             score -= 2
 
-    # Slight boost for text-rich opinions
     if len(case.get("text", "")) > 5000:
         score += 3
     elif len(case.get("text", "")) > 3000:
         score += 2
 
-    # Penalize junk / motion-order style records
     if case.get("record_type") == "motion_order":
         score -= 10
 
@@ -697,32 +696,27 @@ def substantive_text(case):
 def similar_score(a, b):
     score = 0
 
-    # Court hierarchy / same court
     if a.get("court") and a.get("court") == b.get("court"):
         score += 12
     else:
         score += min(a.get("court_rank", 0), b.get("court_rank", 0)) / 20.0
 
-    # Cause match is primary
     if a.get("primary_cause") and b.get("primary_cause"):
         if a.get("primary_cause") == b.get("primary_cause"):
             score += 20
         else:
             score -= 14
 
-    # Motion match is secondary but important
     if a.get("motion") and b.get("motion"):
         if a.get("motion") == b.get("motion"):
             score += 10
         else:
             score -= 4
 
-    # Outcome match is light
     if a.get("outcome") and b.get("outcome"):
         if a.get("outcome") == b.get("outcome"):
             score += 5
 
-    # Text overlap
     a_tokens = token_set(substantive_text(a))
     b_tokens = token_set(substantive_text(b))
     overlap = len(a_tokens & b_tokens)
@@ -748,11 +742,7 @@ def get_similar_cases(target_case, all_cases, limit=5):
         if case is target_case:
             continue
 
-        if (
-            case.get("case_number")
-            and target_case.get("case_number")
-            and case.get("case_number") == target_case.get("case_number")
-        ):
+        if case.get("case_id") == target_case.get("case_id"):
             continue
 
         if target_case.get("record_type") != "motion_order" and case.get("record_type") == "motion_order":
@@ -761,12 +751,10 @@ def get_similar_cases(target_case, all_cases, limit=5):
         case_tokens = token_set(substantive_text(case))
         overlap = len(target_tokens & case_tokens)
 
-        # Hard gate by cause where available
         if target_cause:
             if case.get("primary_cause") != target_cause:
                 continue
 
-        # Motion mismatch can survive only with strong factual overlap
         if target_motion and case.get("motion") and target_motion != case.get("motion"):
             if overlap < 8:
                 continue
@@ -806,7 +794,19 @@ def build_outcomes(cases):
 
 
 # =========================
-# ROUTE
+# CASE LOOKUP
+# =========================
+
+def find_case_by_id(case_id, cases):
+    case_id = clean_text(case_id)
+    for case in cases:
+        if case.get("case_id") == case_id:
+            return case
+    return None
+
+
+# =========================
+# ROUTES
 # =========================
 
 @app.route("/", methods=["GET", "POST"])
@@ -869,6 +869,20 @@ def index():
         selected_court=court,
         selected_outcome=outcome,
     )
+
+
+@app.route("/case/<path:case_id>")
+def case_detail(case_id):
+    cases = load_cases()
+    case = find_case_by_id(case_id, cases)
+    if not case:
+        abort(404)
+
+    score_case(case, "")
+    case["display_snippet"] = case.get("text") or case.get("snippet") or ""
+    case["similar_cases"] = get_similar_cases(case, cases, limit=8)
+
+    return render_template("case_detail.html", case=case)
 
 
 # =========================
