@@ -46,6 +46,24 @@
         .score {
             color: #888;
             font-size: 13px;
+            margin-top: 4px;
+        }
+
+        .signals {
+            margin-top: 8px;
+        }
+
+        .signal {
+            display: inline-block;
+            padding: 4px 8px;
+            margin-right: 6px;
+            margin-bottom: 6px;
+            border-radius: 999px;
+            font-size: 12px;
+            font-weight: 600;
+            background: #e8f7ec;
+            color: #1f7a3d;
+            border: 1px solid #b7e4c3;
         }
 
         .similar {
@@ -55,7 +73,7 @@
 
         .similar-case {
             font-size: 13px;
-            margin: 6px 0;
+            margin: 8px 0;
         }
 
         .similar-case a {
@@ -65,6 +83,23 @@
 
         .similar-case a:hover {
             text-decoration: underline;
+        }
+
+        .similar-signals {
+            margin-top: 4px;
+        }
+
+        .similar-signal {
+            display: inline-block;
+            padding: 2px 7px;
+            margin-right: 5px;
+            margin-top: 3px;
+            border-radius: 999px;
+            font-size: 11px;
+            font-weight: 600;
+            background: #eef6ff;
+            color: #2557a7;
+            border: 1px solid #cfe0ff;
         }
 
         .empty-state {
@@ -130,10 +165,15 @@
                 Score: {{ case.score }}
                 {% if case.motion %} · Motion: {{ case.motion }}{% endif %}
                 {% if case.outcome %} · Outcome: {{ case.outcome }}{% endif %}
+                {% if case.primary_cause %} · Cause: {{ case.primary_cause }}{% endif %}
             </div>
 
-            {% if case.primary_cause %}
-                <div class="meta">Cause Match</div>
+            {% if case.trust_signals %}
+                <div class="signals">
+                    {% for sig in case.trust_signals %}
+                        <span class="signal">{{ sig }}</span>
+                    {% endfor %}
+                </div>
             {% endif %}
 
             <div>{{ case.display_snippet }}</div>
@@ -145,6 +185,14 @@
                         <div class="similar-case">
                             <a href="{{ url_for('case_detail', case_id=s.case_id) }}">{{ s.title }}</a>
                             · {{ s.outcome }} · Similarity: {{ s.similarity }}
+
+                            {% if s.similarity_signals %}
+                                <div class="similar-signals">
+                                    {% for sig in s.similarity_signals %}
+                                        <span class="similar-signal">{{ sig }}</span>
+                                    {% endfor %}
+                                </div>
+                            {% endif %}
                         </div>
                     {% endfor %}
                 </div>
