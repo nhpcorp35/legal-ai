@@ -132,6 +132,20 @@
             padding: 20px 22px;
         }
 
+        .rule-panel {
+            border: 1px solid #e6efe3;
+            background: #f8fcf7;
+            border-radius: 10px;
+            padding: 20px 22px;
+        }
+
+        .rule-text {
+            line-height: 1.7;
+            color: #1f2a1f;
+            font-size: 16px;
+            font-weight: 600;
+        }
+
         .bullet-list {
             margin: 0;
             padding-left: 20px;
@@ -288,6 +302,15 @@
         <div class="section-title">Holding</div>
         <div class="summary-panel">
             <div class="text">{{ case.holding }}</div>
+        </div>
+    </div>
+    {% endif %}
+
+    {% if case.rule %}
+    <div class="section opinion-wrap">
+        <div class="section-title">Rule / Takeaway</div>
+        <div class="rule-panel">
+            <div class="rule-text">{{ case.rule }}</div>
         </div>
     </div>
     {% endif %}

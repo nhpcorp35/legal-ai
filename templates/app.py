@@ -454,8 +454,68 @@ def clean_sentence_for_rule(sentence):
     s = re.sub(r"\s+as against\s+[A-Z][A-Za-z0-9&.,()' \-]+", "", s)
     s = re.sub(r"\([A-Z][A-Z0-9&.,' \-]{1,30}\)", "", s)
     s = re.sub(r"\s+", " ", s).strip(" ,.;")
+    s = s.replace("Labor §", "Labor Law §")
 
     return s
+
+
+def generalize_party_phrasing(text):
+    s = clean_text(text)
+    if not s:
+        return ""
+
+    replacements = [
+        (r"\bplaintiff’s\b", "a plaintiff’s"),
+        (r"\bplaintiff's\b", "a plaintiff’s"),
+        (r"\bthe plaintiff’s\b", "a plaintiff’s"),
+        (r"\bthe plaintiff's\b", "a plaintiff’s"),
+        (r"\bdefendant’s\b", "a defendant’s"),
+        (r"\bdefendant's\b", "a defendant’s"),
+        (r"\bthe defendant’s\b", "a defendant’s"),
+        (r"\bthe defendant's\b", "a defendant’s"),
+        (r"\bplaintiff\b", "a plaintiff"),
+        (r"\bthe plaintiff\b", "a plaintiff"),
+        (r"\bdefendant\b", "a defendant"),
+        (r"\bthe defendant\b", "a defendant"),
+    ]
+    for pattern, repl in replacements:
+        s = re.sub(pattern, repl, s, flags=re.IGNORECASE)
+
+    s = re.sub(
+        r"as to whether\s+[A-Z][A-Z0-9&]{1,20}\s+actually directed or controlled\s+[A-Za-z’']+\s+injury-producing work",
+        "that the defendant directed or controlled the injury-producing work",
+        s,
+        flags=re.IGNORECASE,
+    )
+    s = re.sub(
+        r"as to whether\s+[A-Z][A-Za-z0-9&.,'() \-]{1,60}\s+actually directed or controlled\s+[A-Za-z’']+\s+injury-producing work",
+        "that the defendant directed or controlled the injury-producing work",
+        s,
+        flags=re.IGNORECASE,
+    )
+    s = re.sub(
+        r"as to whether\s+[A-Za-z’']+\s+actually directed or controlled\s+[A-Za-z’']+\s+injury-producing work",
+        "that the defendant directed or controlled the injury-producing work",
+        s,
+        flags=re.IGNORECASE,
+    )
+    s = re.sub(r"\s+", " ", s).strip(" ,.;")
+    return s
+
+
+def extract_claim_phrase(sentence):
+    s = clean_sentence_for_rule(sentence)
+    patterns = [
+        r"should have dismissed\s+(?:a plaintiff’s|the plaintiff’s|plaintiff’s|plaintiff's)\s+(.+?)\s+claims?",
+        r"correctly declined to dismiss\s+(?:a plaintiff’s|the plaintiff’s|plaintiff’s|plaintiff's)\s+(.+?)\s+claims?",
+    ]
+    for pat in patterns:
+        m = re.search(pat, s, flags=re.IGNORECASE)
+        if m:
+            phrase = clean_text(m.group(1))
+            phrase = phrase.replace("Labor §", "Labor Law §")
+            return phrase
+    return ""
 
 
 def rule_template_labor_200_control(sentence):
@@ -483,6 +543,16 @@ def rule_template_labor_200_control(sentence):
     return ""
 
 
+def rule_template_labor_240_241(sentence):
+    low = sentence.lower()
+    if "labor law § 240" in low and "241" in low and "declined to dismiss" in low:
+        return (
+            "Labor Law § 240(1) and § 241(6) claims should not be dismissed where the record presents "
+            "triable issues of fact as to the defendant’s statutory responsibility."
+        )
+    return ""
+
+
 def rule_template_summary_judgment(sentence):
     low = sentence.lower()
 
@@ -506,22 +576,20 @@ def rule_template_summary_judgment(sentence):
     return ""
 
 
-def rule_template_dismissal(sentence):
-    low = sentence.lower()
+def rule_template_claim_dismissal(sentence):
+    s = clean_sentence_for_rule(sentence)
+    low = s.lower()
+    claim_phrase = extract_claim_phrase(s)
 
-    if "correctly declined to dismiss" in low and "labor law § 240" in low and "241" in low:
+    if claim_phrase and ("no evidence" in low or "triable issue" in low):
+        if "directed or controlled" in low and "injury-producing work" in low:
+            return (
+                f"{claim_phrase} claims should be dismissed absent evidence raising a triable issue of fact "
+                "that the defendant directed or controlled the injury-producing work."
+            )
         return (
-            "Labor Law § 240(1) and § 241(6) claims should not be dismissed where the record presents "
-            "triable issues of fact as to the defendant’s statutory responsibility."
+            f"{claim_phrase} claims should be dismissed absent evidence raising a triable issue of fact."
         )
-
-    if "should have dismissed" in low and "no evidence" in low:
-        cleaned = clean_sentence_for_rule(sentence)
-        cleaned = re.sub(r"^dismissed\s+", "", cleaned, flags=re.IGNORECASE)
-        if len(cleaned) > 220:
-            cleaned = cleaned[:220].rsplit(" ", 1)[0] + "..."
-        if cleaned:
-            return cleaned[0].upper() + cleaned[1:] + "."
 
     return ""
 
@@ -531,18 +599,7 @@ def fallback_rule(sentence):
     if not s:
         return ""
 
-    s = s.replace("Labor §", "Labor Law §")
-
-    replacements = [
-        (r"\bplaintiff’s\b", "a plaintiff’s"),
-        (r"\bplaintiff's\b", "a plaintiff’s"),
-        (r"\bdefendant’s\b", "a defendant’s"),
-        (r"\bdefendant's\b", "a defendant’s"),
-        (r"\bdefendants’\b", "defendants’"),
-        (r"\bdefendants'\b", "defendants’"),
-    ]
-    for pattern, repl in replacements:
-        s = re.sub(pattern, repl, s, flags=re.IGNORECASE)
+    s = generalize_party_phrasing(s)
 
     if "as there is no evidence" in s:
         s = s.replace("as there is no evidence", "absent evidence")
@@ -568,14 +625,14 @@ def fallback_rule(sentence):
 
 
 def generate_rule(best_sentence, backup_sentence=""):
-    for candidate in [best_sentence, backup_sentence]:
-        if not candidate:
-            continue
+    candidates = [c for c in [best_sentence, backup_sentence] if c]
 
+    for candidate in candidates:
         for fn in [
             rule_template_labor_200_control,
+            rule_template_labor_240_241,
             rule_template_summary_judgment,
-            rule_template_dismissal,
+            rule_template_claim_dismissal,
         ]:
             rule = fn(candidate)
             if rule:
