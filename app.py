@@ -1,4 +1,4 @@
-from flask import Flask, request, render_template, abort
+from flask import Flask, request, render_template, abort, send_from_directory
 import json
 import math
 import os
@@ -1941,6 +1941,11 @@ def index():
         selected_court=court,
         selected_outcome=outcome,
     )
+
+
+@app.route("/pdf/<path:filename>")
+def serve_pdf(filename):
+    return send_from_directory(os.path.join(BASE_DIR, "data", "pdfs"), filename)
 
 
 @app.route("/case/<path:case_id>")
