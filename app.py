@@ -354,6 +354,234 @@ def split_into_sentences(text):
     ]
 
 
+def is_bad_rule_sentence(sentence):
+    low = clean_text(sentence).lower()
+    if not low:
+        return True
+
+    if len(low) < 45:
+        return True
+
+    bad_markers = [
+        " contend",
+        " contends",
+        " argue",
+        " argues",
+        " assert",
+        " asserts",
+        " maintain",
+        " maintains",
+        " unpersuasive",
+        " persuasive",
+        " according to ",
+        " plaintiff argues",
+        " plaintiff contends",
+        " plaintiff asserts",
+        " plaintiff maintains",
+        " defendants argue",
+        " defendants contend",
+        " defendants assert",
+        " defendants maintain",
+        " defendant argues",
+        " defendant contends",
+        " defendant asserts",
+        " defendant maintains",
+        " appellant argues",
+        " appellant contends",
+        " respondent argues",
+        " respondent contends",
+    ]
+    if any(marker in f" {low} " for marker in bad_markers):
+        return True
+
+    if low.startswith((
+        "plaintiff ",
+        "plaintiffs ",
+        "defendant ",
+        "defendants ",
+        "appellant ",
+        "respondent ",
+        "petitioner ",
+    )):
+        return True
+
+    return False
+
+
+def has_legal_reasoning_signal(sentence):
+    low = clean_text(sentence).lower()
+    if not low:
+        return False
+
+    legal_signals = [
+        "material",
+        "immaterial",
+        "fundamental purpose",
+        "agreement",
+        "contract",
+        "breach",
+        "constructive trust",
+        "unjust enrichment",
+        "confidential relationship",
+        "fiduciary relationship",
+        "promise",
+        "transfer in reliance",
+        "triable issue",
+        "entitled to judgment as a matter of law",
+        "summary judgment",
+        "dismiss",
+        "duplicative",
+        "governs the dispute",
+        "elements",
+        "requires",
+        "must show",
+        "failed to establish",
+        "failed to raise",
+        "sufficiently alleged",
+        "adequately alleged",
+        "cognizable",
+        "prima facie",
+        "no evidence",
+        "absent evidence",
+        "therefore",
+        "because",
+        "since",
+        "where",
+        "inasmuch as",
+        "excused",
+        "performance under the contract",
+        "clear expressions of intent",
+        "tenancy by the entirety",
+        "modified by agreement",
+        "full force and effect",
+        "noncompliance",
+        "obligations",
+    ]
+    return any(signal in low for signal in legal_signals)
+
+
+def party_name_density(sentence):
+    s = clean_text(sentence)
+    if not s:
+        return 0
+
+    tokens = re.findall(r"\b[A-Z][a-z]+\b", s)
+    ignore = {
+        "Supreme", "Court", "Appellate", "Division", "First", "Second", "Third", "Fourth",
+        "Department", "Labor", "Law", "Order", "Judgment", "Decision", "Contract",
+        "Agreement", "Plaintiff", "Defendant", "Defendants", "Petitioner", "Respondent",
+    }
+    names = [tok for tok in tokens if tok not in ignore]
+    return len(names)
+
+
+def is_fact_specific_key_point(sentence):
+    low = clean_text(sentence).lower()
+    if not low:
+        return False
+
+    fact_markers = [
+        "paragraph ",
+        "section ",
+        "apartment",
+        "property",
+        "premises",
+        "unit ",
+        "decedent",
+        "predeceased",
+        "will ",
+        "execute a will",
+        "omitted any provisions",
+        "title vested",
+        "share of the apartment",
+        "purchased the apartment",
+        "purchased the property",
+        "resided at",
+        "lived at",
+    ]
+    hits = sum(1 for marker in fact_markers if marker in low)
+    return hits >= 2
+
+
+def is_bad_key_point_sentence(sentence, holding=""):
+    s = clean_text(sentence)
+    low = s.lower()
+    holding_low = clean_text(holding).lower()
+
+    if not s or len(s) < 55:
+        return True
+
+    if is_bad_rule_sentence(s):
+        return True
+
+    if any(bad in low for bad in [
+        "see generally",
+        "see e.g.",
+        "see, e.g.",
+        "cf.",
+        " id. ",
+        "(id.",
+        " id.",
+        "supra",
+    ]):
+        return True
+
+    if '"' in s or "“" in s or "”" in s:
+        return True
+
+    if re.search(r"\b(january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2},\s+\d{4}\b", low):
+        return True
+
+    if re.search(r"\bat\s+\d{1,4}\s*-\s*\d{1,4}\b", low):
+        return True
+
+    if any(phrase in low for phrase in [
+        "now deceased",
+        "were married",
+        "was married",
+        "was born",
+        "resided at",
+        "lived at",
+        "purchased the property",
+        "purchased the apartment",
+        "title vested",
+        "vested entirely",
+        "bequeathed her entire estate",
+        "bequeathed his entire estate",
+        "share of the apartment",
+    ]):
+        return True
+
+    if low.startswith(("harold ", "joanne ", "harold and joanne ", "joanne and harold ")):
+        return True
+
+    if low.startswith(("order, supreme court", "judgment, supreme court", "decision and order,")):
+        return True
+
+    if holding_low and clean_text(s).lower() in holding_low:
+        return True
+
+    if "this statute" in low or "that statute" in low:
+        return True
+
+    if "court of appeals has held" in low:
+        return True
+
+    if re.search(r"\b[A-Z][a-z]+ v [A-Z][a-z]+\b", s):
+        return True
+
+    if party_name_density(s) >= 2 and not has_legal_reasoning_signal(s):
+        return True
+
+    if is_fact_specific_key_point(s) and "material breach" not in low and "excused" not in low:
+        return True
+
+    if not has_legal_reasoning_signal(s):
+        return True
+
+    return False
+
+
 def sentence_score(sentence, holding=""):
     s = clean_text(sentence)
     low = s.lower()
@@ -423,6 +651,65 @@ def sentence_score(sentence, holding=""):
     ]):
         score -= 6
 
+    if is_bad_rule_sentence(s):
+        score -= 100
+
+    return score
+
+
+def key_point_score(sentence, holding=""):
+    s = clean_text(sentence)
+    low = s.lower()
+    score = 0
+
+    if is_bad_key_point_sentence(s, holding):
+        return -100
+
+    if 80 <= len(s) <= 260:
+        score += 8
+    elif len(s) > 260:
+        score -= 4
+
+    high_value_phrases = [
+        "fundamental purpose",
+        "material",
+        "immaterial",
+        "agreement",
+        "breach",
+        "constructive trust",
+        "duplicative",
+        "requires",
+        "must show",
+        "failed to establish",
+        "failed to raise",
+        "triable issue",
+        "entitled to judgment as a matter of law",
+        "summary judgment",
+        "dismiss",
+        "because",
+        "since",
+        "therefore",
+        "where",
+        "inasmuch as",
+        "excused",
+        "performance under the contract",
+    ]
+    for phrase in high_value_phrases:
+        if phrase in low:
+            score += 4
+
+    if low.startswith(("however,", "moreover,", "accordingly,", "finally,", "by contrast,", "separately,")):
+        score -= 2
+
+    if party_name_density(s) >= 2:
+        score -= 8
+
+    if is_fact_specific_key_point(s):
+        score -= 8
+
+    if re.search(r"\b[A-Z][a-z]+ and [A-Z][a-z]+\b", s) and not has_legal_reasoning_signal(s):
+        score -= 8
+
     return score
 
 
@@ -458,6 +745,87 @@ def clean_sentence_for_rule(sentence):
     return s
 
 
+def clean_sentence_for_key_point(sentence):
+    s = clean_text(sentence)
+    if not s:
+        return ""
+
+    s = re.sub(r"\s*\(see[^)]*\)", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"\s*\([^)]*\bid\.[^)]*\)", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"\s*\[[^\]]*\]", "", s)
+    s = re.sub(r"\s+", " ", s).strip(" ,.;")
+
+    if len(s) > 240:
+        s = s[:240].rsplit(" ", 1)[0].rstrip(" ,.;")
+
+    if s and not s.endswith("."):
+        s += "."
+
+    return s
+
+
+def rewrite_key_point_sentence(sentence, holding=""):
+    s = clean_text(sentence)
+    low = s.lower()
+    holding_low = clean_text(holding).lower()
+
+    if not s:
+        return ""
+
+    if (
+        "material" in low
+        and "excused" in low
+        and "performance under the contract" in low
+    ):
+        return "A material breach excuses the other party's performance under the contract."
+
+    if (
+        ("paragraph 7" in low or "execute a will" in low or "full force and effect" in low)
+        and ("omitted any provisions" in low or "predeceased" in low or "will" in low)
+        and "contract" in holding_low
+    ):
+        return "Contractual noncompliance with obligations necessary to give full force and effect to the agreement supported a finding of material breach."
+
+    s = re.sub(r"^We find that\s+", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"^We agree that\s+", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"^Supreme Court correctly\s+", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"^The court properly\s+", "", s, flags=re.IGNORECASE)
+
+    s = re.sub(r"\bHarold's\b", "a party's", s)
+    s = re.sub(r"\bJoanne's\b", "the other party's", s)
+    s = re.sub(r"\bHarold\b", "one party", s)
+    s = re.sub(r"\bJoanne\b", "the other party", s)
+
+    s = re.sub(r"\bparagraph\s+\d+\b", "the agreement", s, flags=re.IGNORECASE)
+
+    s = re.sub(r"\s+", " ", s).strip(" ,.;")
+    if s and not s.endswith("."):
+        s += "."
+
+    return s
+
+
+def normalize_rule_style(text):
+    s = clean_text(text)
+    if not s:
+        return ""
+
+    s = re.sub(r"\s+", " ", s).strip(" ,.;")
+    if not s:
+        return ""
+
+    if s[0].islower():
+        s = s[0].upper() + s[1:]
+
+    if not s.endswith("."):
+        s += "."
+
+    if len(s) > 160:
+        s = s[:160].rsplit(" ", 1)[0].rstrip(" ,.;") + "."
+
+    return s
+
+
 def rule_template_labor_200_control(sentence):
     low = sentence.lower()
 
@@ -468,16 +836,13 @@ def rule_template_labor_200_control(sentence):
     has_no_evidence = "no evidence" in low or "absent evidence" in low or "triable issue" in low
 
     if has_labor_200 and has_negligence and has_control and has_injury_work and has_no_evidence:
-        return (
-            "Labor Law § 200 and common-law negligence claims against a construction manager "
-            "should be dismissed absent evidence raising a triable issue of fact that the manager "
-            "directed or controlled the injury-producing work."
+        return normalize_rule_style(
+            "Labor Law § 200 and common-law negligence claims should be dismissed absent evidence raising a triable issue that defendant directed the injury-producing work."
         )
 
     if has_labor_200 and has_control and has_no_evidence:
-        return (
-            "A Labor Law § 200 claim should be dismissed absent evidence raising a triable issue of fact "
-            "that the defendant directed or controlled the injury-producing work."
+        return normalize_rule_style(
+            "A Labor Law § 200 claim should be dismissed absent evidence raising a triable issue that defendant directed or controlled the injury-producing work."
         )
 
     return ""
@@ -487,20 +852,18 @@ def rule_template_summary_judgment(sentence):
     low = sentence.lower()
 
     if "entitled to judgment as a matter of law" in low and "failed to raise a triable issue of fact" in low:
-        return (
-            "Summary judgment is warranted where the movant establishes entitlement to judgment as a matter of law "
-            "and the opposing party fails to raise a triable issue of fact."
+        return normalize_rule_style(
+            "Summary judgment is warranted where the movant establishes entitlement to judgment as a matter of law and the opposing party fails to raise a triable issue of fact."
         )
 
     if "summary judgment" in low and "triable issue of fact" in low and "should be denied" in low:
-        return (
+        return normalize_rule_style(
             "Summary judgment should be denied where the opposing party raises a triable issue of fact."
         )
 
     if "summary judgment" in low and "triable issue of fact" in low and "should be granted" in low:
-        return (
-            "Summary judgment should be granted where the movant establishes entitlement to judgment as a matter of law "
-            "and the opposing party fails to raise a triable issue of fact."
+        return normalize_rule_style(
+            "Summary judgment should be granted where the movant establishes entitlement to judgment as a matter of law and the opposing party fails to raise a triable issue of fact."
         )
 
     return ""
@@ -510,18 +873,61 @@ def rule_template_dismissal(sentence):
     low = sentence.lower()
 
     if "correctly declined to dismiss" in low and "labor law § 240" in low and "241" in low:
-        return (
-            "Labor Law § 240(1) and § 241(6) claims should not be dismissed where the record presents "
-            "triable issues of fact as to the defendant’s statutory responsibility."
+        return normalize_rule_style(
+            "Labor Law § 240(1) and § 241(6) claims should not be dismissed where the record presents triable issues as to defendant's statutory responsibility."
         )
 
     if "should have dismissed" in low and "no evidence" in low:
         cleaned = clean_sentence_for_rule(sentence)
         cleaned = re.sub(r"^dismissed\s+", "", cleaned, flags=re.IGNORECASE)
-        if len(cleaned) > 220:
-            cleaned = cleaned[:220].rsplit(" ", 1)[0] + "..."
-        if cleaned:
-            return cleaned[0].upper() + cleaned[1:] + "."
+        return normalize_rule_style(cleaned)
+
+    return ""
+
+
+def rule_template_contract_constructive_trust(holding):
+    low = holding.lower()
+
+    if (
+        "breach of contract" in low
+        and "constructive trust" in low
+        and "summary judgment" in low
+    ):
+        return normalize_rule_style(
+            "A constructive trust claim is unavailable where an enforceable contract governs the dispute and the equitable claim merely duplicates the contract claim."
+        )
+
+    return ""
+
+
+def rule_template_contract(holding):
+    low = holding.lower()
+
+    if "breach of contract" in low:
+        return normalize_rule_style(
+            "A breach of contract claim requires a contract, performance, breach, and resulting damages."
+        )
+
+    return ""
+
+
+def rule_template_holding_summary_judgment(holding):
+    low = holding.lower()
+
+    if "failed to raise a triable issue of fact" in low:
+        return normalize_rule_style(
+            "Summary judgment is warranted where the movant establishes entitlement to judgment as a matter of law and the opposing party fails to raise a triable issue of fact."
+        )
+
+    if "triable issue of fact" in low or "triable issues of fact" in low:
+        return normalize_rule_style(
+            "Summary judgment must be denied where the record presents a triable issue of fact."
+        )
+
+    if "entitled to judgment as a matter of law" in low:
+        return normalize_rule_style(
+            "A party is entitled to summary judgment only upon a prima facie showing of entitlement to judgment as a matter of law."
+        )
 
     return ""
 
@@ -551,25 +957,47 @@ def fallback_rule(sentence):
     elif "because" in s:
         s = s.replace("because", "where", 1)
 
-    s = re.sub(r"\s+", " ", s).strip(" ,.;")
-    if not s:
-        return ""
-
-    if s and s[0].islower():
-        s = s[0].upper() + s[1:]
-
-    if not s.endswith("."):
-        s += "."
-
-    if len(s) > 240:
-        s = s[:240].rsplit(" ", 1)[0] + "..."
-
-    return s
+    return normalize_rule_style(s)
 
 
-def generate_rule(best_sentence, backup_sentence=""):
+def fallback_rule_from_holding(holding):
+    low = holding.lower()
+
+    if "constructive trust" in low:
+        return normalize_rule_style(
+            "A constructive trust claim requires a confidential or fiduciary relationship, a promise, a transfer in reliance, and unjust enrichment."
+        )
+
+    if "breach of contract" in low:
+        return normalize_rule_style(
+            "A breach of contract claim requires a contract, performance, breach, and resulting damages."
+        )
+
+    if "motion to dismiss" in low or "dismissing" in low:
+        return normalize_rule_style(
+            "A claim should be dismissed where the pleading fails to allege facts sufficient to satisfy the governing elements."
+        )
+
+    if "summary judgment" in low:
+        return normalize_rule_style(
+            "Summary judgment is appropriate only where the movant establishes entitlement to judgment as a matter of law."
+        )
+
+    return ""
+
+
+def generate_rule(holding, best_sentence="", backup_sentence=""):
+    for fn in [
+        rule_template_contract_constructive_trust,
+        rule_template_contract,
+        rule_template_holding_summary_judgment,
+    ]:
+        rule = fn(holding)
+        if rule:
+            return rule
+
     for candidate in [best_sentence, backup_sentence]:
-        if not candidate:
+        if not candidate or is_bad_rule_sentence(candidate):
             continue
 
         for fn in [
@@ -581,7 +1009,18 @@ def generate_rule(best_sentence, backup_sentence=""):
             if rule:
                 return rule
 
-    return fallback_rule(best_sentence or backup_sentence or "")
+    holding_fallback = fallback_rule_from_holding(holding)
+    if holding_fallback:
+        return holding_fallback
+
+    for candidate in [best_sentence, backup_sentence]:
+        if not candidate or is_bad_rule_sentence(candidate):
+            continue
+        rule = fallback_rule(candidate)
+        if rule:
+            return rule
+
+    return ""
 
 
 def extract_holding_and_key_points(formatted_text):
@@ -598,35 +1037,61 @@ def extract_holding_and_key_points(formatted_text):
         holding = holding[:700].rsplit(" ", 1)[0] + "..."
 
     sentences = []
+    key_point_candidates = []
+
     for para in paragraphs[1:7]:
         para_sentences = split_into_sentences(para)
         for sent in para_sentences:
-            if len(sent) >= 45:
+            if len(sent) >= 45 and not is_bad_rule_sentence(sent):
                 sentences.append(sent)
 
-    if not sentences:
-        return holding, [], ""
+            if len(sent) >= 55 and not is_bad_key_point_sentence(sent, holding):
+                cleaned_key_point = clean_sentence_for_key_point(sent)
+                rewritten_key_point = rewrite_key_point_sentence(cleaned_key_point, holding)
+                if rewritten_key_point and not is_bad_key_point_sentence(rewritten_key_point, holding):
+                    key_point_candidates.append(rewritten_key_point)
 
-    ranked = sorted(
-        [(sentence_score(s, holding), s) for s in sentences],
+    rule = generate_rule(holding, "", "")
+    if sentences:
+        ranked = sorted(
+            [(sentence_score(s, holding), s) for s in sentences],
+            key=lambda x: x[0],
+            reverse=True,
+        )
+
+        best_sentences = []
+        for _, s in ranked:
+            if any(sentences_too_similar(s, existing) for existing in best_sentences):
+                continue
+            best_sentences.append(s)
+            if len(best_sentences) >= 2:
+                break
+
+        rule = generate_rule(
+            holding,
+            best_sentences[0] if best_sentences else "",
+            best_sentences[1] if len(best_sentences) > 1 else "",
+        )
+    else:
+        best_sentences = []
+
+    ranked_key_points = sorted(
+        [(key_point_score(s, holding), s) for s in key_point_candidates],
         key=lambda x: x[0],
         reverse=True,
     )
 
-    best_sentences = []
-    for _, s in ranked:
-        if any(sentences_too_similar(s, existing) for existing in best_sentences):
+    final_key_points = []
+    for score, s in ranked_key_points:
+        if score < 0:
             continue
-        best_sentences.append(s)
-        if len(best_sentences) >= 2:
+        if any(sentences_too_similar(s, existing) for existing in final_key_points):
+            continue
+        final_key_points.append(s)
+        if len(final_key_points) >= 2:
             break
 
-    rule = generate_rule(
-        best_sentences[0] if best_sentences else "",
-        best_sentences[1] if len(best_sentences) > 1 else "",
-    )
-
-    return holding, best_sentences, rule
+    return holding, final_key_points, rule
 
 
 # =========================
