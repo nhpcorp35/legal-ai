@@ -1502,42 +1502,45 @@ def score_case(case, query, selected_court="All Courts", selected_outcome="All O
     haystack = text_for_search(case)
     qd = structured_query_data(query)
 
-    score += case.get("court_rank", 0) / 10.0
+    # Court hierarchy should matter even without an explicit court filter.
+    score += case.get("court_rank", 0) / 8.0
 
     if selected_court != "All Courts":
         if case.get("court") == selected_court:
-            score += 32
+            score += 45
         else:
-            score -= 8
+            score -= 20
 
     if qd["query_motion"]:
         case_motion = case.get("motion", "")
         if qd["query_motion"] == case_motion:
-            score += 32
+            score += 38
         elif qd["query_motion"] == "summary judgment" and case_motion == "partial summary judgment":
-            score += 26
+            score += 32
         elif case_motion:
-            score -= 28
+            score -= 32
 
     if qd["query_cause"]:
         if case.get("primary_cause") == qd["query_cause"]:
-            score += 18
+            score += 32
         elif case.get("primary_cause"):
-            score -= 12
+            score -= 24
 
     if qd["query_outcome"]:
         if case.get("outcome") == qd["query_outcome"]:
-            score += 10
+            score += 14
         elif case.get("outcome"):
-            score -= 4
+            score -= 8
 
     if qd["strict_phrase"]:
         alias_hits = sum(1 for alias in qd["aliases"] if alias in haystack)
         if alias_hits:
-            score += 8 + (alias_hits * 2)
+            score += 12 + (alias_hits * 3)
+        else:
+            score -= 15
     else:
         if qd["normalized"] and qd["normalized"] in haystack:
-            score += 6
+            score += 8
 
         matched_terms = 0
         for term in qd["terms"]:
@@ -1546,7 +1549,7 @@ def score_case(case, query, selected_court="All Courts", selected_outcome="All O
                 score += 1.0
 
         if len(qd["terms"]) > 1 and matched_terms == len(qd["terms"]):
-            score += 2
+            score += 4
 
     if len(case.get("text", "")) > 5000:
         score += 3
@@ -1554,16 +1557,16 @@ def score_case(case, query, selected_court="All Courts", selected_outcome="All O
         score += 2
 
     if case.get("record_type") == "motion_order":
-        score -= 10
+        score -= 14
 
     useful_len = len(case.get("snippet", "")) + len(case.get("text", ""))
     if useful_len < 120:
-        score -= 8
+        score -= 10
     elif useful_len < 300:
-        score -= 4
+        score -= 5
 
     if looks_like_bad_title(case.get("title", "")):
-        score -= 6
+        score -= 8
 
     case["trust_signals"] = build_trust_signals(case, query, selected_court, selected_outcome)
     case["score"] = round(score, 2)
@@ -1708,50 +1711,46 @@ def is_near_duplicate_similar(candidate_case, chosen_cases):
 def similar_score(a, b):
     score = 0
 
-    if a.get("court") and a.get("court") == b.get("court"):
-        score += 28
+    same_court = a.get("court") and a.get("court") == b.get("court")
+    same_cause = a.get("primary_cause") and a.get("primary_cause") == b.get("primary_cause")
+    same_motion = same_motion_family(a.get("motion"), b.get("motion"))
+    same_outcome = a.get("outcome") and a.get("outcome") == b.get("outcome")
+
+    if same_court:
+        score += 36
     else:
-        score += min(a.get("court_rank", 0), b.get("court_rank", 0)) / 25.0
+        score += min(a.get("court_rank", 0), b.get("court_rank", 0)) / 30.0
 
     if a.get("primary_cause") and b.get("primary_cause"):
-        if a.get("primary_cause") == b.get("primary_cause"):
-            score += 24
-        else:
-            score -= 22
+        score += 34 if same_cause else -30
 
     if a.get("motion") and b.get("motion"):
-        if same_motion_family(a.get("motion"), b.get("motion")):
-            if a.get("motion") == b.get("motion"):
-                score += 22
-            else:
-                score += 16
+        if same_motion:
+            score += 28 if a.get("motion") == b.get("motion") else 20
         else:
-            score -= 18
+            score -= 24
 
     if a.get("outcome") and b.get("outcome"):
-        if a.get("outcome") == b.get("outcome"):
-            score += 8
-        else:
-            score -= 2
+        score += 10 if same_outcome else -4
 
     a_tokens = token_set(substantive_text(a))
     b_tokens = token_set(substantive_text(b))
     overlap = len(a_tokens & b_tokens)
     overlap_ratio = jaccard_similarity(a_tokens, b_tokens)
 
-    score += min(overlap, 10)
-    score += round(overlap_ratio * 18, 2)
+    score += min(overlap, 8)
+    score += round(overlap_ratio * 14, 2)
 
-    if overlap < 2:
-        score -= 8
-    elif overlap < 4:
-        score -= 3
+    if overlap < 3:
+        score -= 10
+    elif overlap < 5:
+        score -= 4
 
     if a.get("record_type") == "motion_order":
-        score -= 12
+        score -= 14
 
     if looks_like_bad_title(a.get("title", "")):
-        score -= 6
+        score -= 8
 
     return round(score, 2)
 
@@ -1777,24 +1776,30 @@ def get_similar_cases(target_case, all_cases, limit=5):
         overlap = len(target_tokens & case_tokens)
         overlap_ratio = jaccard_similarity(target_tokens, case_tokens)
 
-        if target_cause:
-            if case.get("primary_cause") != target_cause:
+        same_court = target_case.get("court") and case.get("court") == target_case.get("court")
+        same_cause = target_cause and case.get("primary_cause") == target_cause
+        same_motion = target_motion and same_motion_family(target_motion, case.get("motion"))
+        same_outcome = target_case.get("outcome") and case.get("outcome") == target_case.get("outcome")
+
+        structured_hits = sum([
+            bool(same_court),
+            bool(same_cause),
+            bool(same_motion),
+            bool(same_outcome),
+        ])
+
+        if target_cause and not same_cause:
+            continue
+
+        if target_motion and not same_motion:
+            if overlap < 10 or overlap_ratio < 0.25:
                 continue
 
-        if target_motion and case.get("motion"):
-            if not same_motion_family(target_motion, case.get("motion")):
-                if overlap < 10 or overlap_ratio < 0.25:
-                    continue
-        elif target_motion and not case.get("motion"):
-            if overlap < 12:
-                continue
-
-        if target_case.get("court") and case.get("court") and target_case.get("court") != case.get("court"):
-            if overlap < 6 and overlap_ratio < 0.18:
-                continue
+        if structured_hits < 2 and overlap_ratio < 0.22:
+            continue
 
         sim_value = similar_score(case, target_case)
-        if sim_value <= 10:
+        if sim_value <= 18:
             continue
 
         sim_case = dict(case)
@@ -1804,8 +1809,8 @@ def get_similar_cases(target_case, all_cases, limit=5):
 
     scored.sort(
         key=lambda x: (
-            x.get("similarity", 0),
             len(x.get("similarity_signals", [])),
+            x.get("similarity", 0),
             x.get("court_rank", 0),
             x.get("date", ""),
             x.get("title", ""),
