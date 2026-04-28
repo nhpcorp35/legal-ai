@@ -378,7 +378,7 @@
 
     {% if case.similar_cases %}
     <div class="section">
-        <div class="section-title">Similar Cases</div>
+        <div class="section-title">Why this case matches</div>
         <div class="similar-list">
             {% for s in case.similar_cases %}
                 <div class="similar-case">
@@ -390,7 +390,6 @@
                         {% if s.court %}{{ s.court }}{% endif %}
                         {% if s.date %} · {{ s.date }}{% endif %}
                         {% if s.outcome %} · {{ s.outcome }}{% endif %}
-                        · Similarity: {{ s.similarity }}
                     </div>
 
                     {% if s.similarity_signals %}

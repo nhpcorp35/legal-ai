@@ -66,10 +66,10 @@
             font-size: 14px;
         }
 
-        .score {
-            color: #888;
+        .details {
+            color: #555;
             font-size: 13px;
-            margin-top: 5px;
+            margin-top: 6px;
         }
 
         .signals {
@@ -217,18 +217,18 @@
                 </div>
             {% endif %}
 
-            <div class="score">
+            <div class="details">
                 {% if case.motion %}Motion: {{ case.motion }}{% endif %}
                 {% if case.outcome %}{% if case.motion %} · {% endif %}Outcome: {{ case.outcome }}{% endif %}
                 {% if case.primary_cause %}{% if case.motion or case.outcome %} · {% endif %}Cause: {{ case.primary_cause }}{% endif %}
-                · Score: {{ case.score }}
             </div>
 
             <div class="snippet">{{ case.display_snippet }}</div>
 
             {% if case.similar_cases %}
                 <div class="similar">
-                    <div class="similar-title">Similar Cases</div>
+                    <div class="similar-title">Why this case matches</div>
+
                     {% for s in case.similar_cases %}
                         <div class="similar-case">
                             <div>
@@ -236,7 +236,7 @@
                             </div>
 
                             <div class="similar-meta">
-                                {% if s.outcome %}{{ s.outcome }}{% endif %}{% if s.outcome %} · {% endif %}Similarity: {{ s.similarity }}
+                                {% if s.outcome %}{{ s.outcome }}{% endif %}
                             </div>
 
                             {% if s.similarity_signals %}
