@@ -1,6 +1,16 @@
 # matter_builder.py
 from pathlib import Path
 
+try:
+    from pypdf import PdfReader
+except Exception:
+    PdfReader = None
+
+try:
+    from docx import Document
+except Exception:
+    Document = None
+
 
 DEFAULT_MATTER_FOLDER = Path("matter_docs")
 
@@ -48,14 +58,62 @@ def classify_by_filename(filename):
     return "other"
 
 
-def extract_text_placeholder(path):
+def extract_txt(path):
+    try:
+        return path.read_text(errors="ignore")
+    except Exception:
+        return ""
+
+
+def extract_pdf(path):
+    if PdfReader is None:
+        return ""
+
+    try:
+        reader = PdfReader(str(path))
+        pages = []
+
+        for page in reader.pages[:20]:
+            text = page.extract_text() or ""
+            if text.strip():
+                pages.append(text)
+
+        return "\n".join(pages)
+
+    except Exception:
+        return ""
+
+
+def extract_docx(path):
+    if Document is None:
+        return ""
+
+    try:
+        doc = Document(str(path))
+        paragraphs = []
+
+        for paragraph in doc.paragraphs:
+            text = paragraph.text.strip()
+            if text:
+                paragraphs.append(text)
+
+        return "\n".join(paragraphs)
+
+    except Exception:
+        return ""
+
+
+def extract_text(path):
     suffix = path.suffix.lower()
 
     if suffix == ".txt":
-        try:
-            return path.read_text(errors="ignore")
-        except Exception:
-            return ""
+        return extract_txt(path)
+
+    if suffix == ".pdf":
+        return extract_pdf(path)
+
+    if suffix == ".docx":
+        return extract_docx(path)
 
     return ""
 
@@ -66,7 +124,13 @@ def read_matter_folder(folder_path=DEFAULT_MATTER_FOLDER):
     if not folder.exists() or not folder.is_dir():
         return []
 
-    allowed_extensions = {".pdf", ".docx", ".doc", ".txt", ".rtf"}
+    allowed_extensions = {
+        ".pdf",
+        ".docx",
+        ".doc",
+        ".txt",
+        ".rtf",
+    }
 
     documents = []
 
@@ -78,6 +142,7 @@ def read_matter_folder(folder_path=DEFAULT_MATTER_FOLDER):
             continue
 
         doc_type = classify_by_filename(path.name)
+        extracted_text = clean_text(extract_text(path))
 
         documents.append(
             {
@@ -87,7 +152,8 @@ def read_matter_folder(folder_path=DEFAULT_MATTER_FOLDER):
                 "type": doc_type,
                 "category": doc_type,
                 "group": DOCUMENT_GROUPS.get(doc_type, DOCUMENT_GROUPS["other"]),
-                "text": clean_text(extract_text_placeholder(path)),
+                "text": extracted_text,
+                "preview": extracted_text[:800],
                 "source": "folder",
             }
         )
@@ -103,8 +169,14 @@ def normalize_document(document):
         or "Untitled Document"
     )
 
-    doc_type = document.get("type") or document.get("category") or classify_by_filename(filename)
+    doc_type = (
+        document.get("type")
+        or document.get("category")
+        or classify_by_filename(filename)
+    )
+
     group = DOCUMENT_GROUPS.get(doc_type, DOCUMENT_GROUPS["other"])
+    text = clean_text(document.get("text", ""))
 
     return {
         "filename": filename,
@@ -113,7 +185,8 @@ def normalize_document(document):
         "type": doc_type,
         "category": doc_type,
         "group": group,
-        "text": clean_text(document.get("text", "")),
+        "text": text,
+        "preview": text[:800],
         "source": document.get("source", "manual"),
     }
 
@@ -139,10 +212,7 @@ def get_matter(documents=None, matter_folder=DEFAULT_MATTER_FOLDER):
         "matter_name": "Matter Builder",
         "document_count": len(normalized_documents),
         "documents": normalized_documents,
-
-        # v2.2 compatibility for matter.html
         "groups": grouped_documents,
         "grouped_documents": grouped_documents,
-
         "folder": str(matter_folder),
     }
