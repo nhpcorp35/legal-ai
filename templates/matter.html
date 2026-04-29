@@ -35,6 +35,11 @@
             margin-bottom: 26px;
         }
 
+        .selected-case-panel {
+            border: 2px solid #111;
+            background: #fbfbfb;
+        }
+
         .panel-title {
             font-size: 15px;
             font-weight: 800;
@@ -42,6 +47,12 @@
             letter-spacing: .04em;
             text-transform: uppercase;
             margin-bottom: 16px;
+        }
+
+        .selected-title {
+            font-size: 24px;
+            font-weight: 900;
+            margin-bottom: 14px;
         }
 
         .overview-grid {
@@ -56,11 +67,26 @@
             gap: 16px;
         }
 
+        .selected-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 16px;
+            margin-bottom: 16px;
+        }
+
         .box {
             border: 1px solid #e8e8e8;
             border-radius: 9px;
             padding: 16px;
             background: #fafafa;
+        }
+
+        .selected-box {
+            background: #fff;
+        }
+
+        .wide-box {
+            grid-column: 1 / -1;
         }
 
         .label {
@@ -81,6 +107,12 @@
             font-size: 16px;
             font-weight: 600;
             line-height: 1.4;
+        }
+
+        .long-value {
+            font-size: 16px;
+            font-weight: 600;
+            line-height: 1.55;
         }
 
         .groups-grid {
@@ -136,6 +168,17 @@
             color: #666;
             font-size: 14px;
         }
+
+        .proof-badge {
+            display: inline-block;
+            background: #111;
+            color: #fff;
+            border-radius: 999px;
+            padding: 5px 10px;
+            font-size: 13px;
+            font-weight: 800;
+            margin-bottom: 14px;
+        }
     </style>
 </head>
 <body>
@@ -149,6 +192,66 @@
         oppositions, declarations, exhibits, memoranda of law, prior orders, and decisions.
     </div>
 
+    {% if matter.selected_case %}
+        <div class="panel selected-case-panel">
+            <div class="panel-title">Selected Case</div>
+            <div class="proof-badge">Build Matter selected case injected</div>
+
+            <div class="selected-title">
+                {{ matter.selected_case.title or "Selected Case" }}
+            </div>
+
+            <div class="selected-grid">
+                <div class="box selected-box">
+                    <div class="label">Court</div>
+                    <div class="summary-value">{{ matter.selected_case.court or "—" }}</div>
+                </div>
+
+                <div class="box selected-box">
+                    <div class="label">Date</div>
+                    <div class="summary-value">{{ matter.selected_case.date or "—" }}</div>
+                </div>
+
+                <div class="box selected-box">
+                    <div class="label">Citation</div>
+                    <div class="summary-value">{{ matter.selected_case.citation or "—" }}</div>
+                </div>
+
+                <div class="box selected-box">
+                    <div class="label">Motion</div>
+                    <div class="summary-value">{{ matter.selected_case.motion or "—" }}</div>
+                </div>
+
+                <div class="box selected-box">
+                    <div class="label">Outcome</div>
+                    <div class="summary-value">{{ matter.selected_case.outcome or "—" }}</div>
+                </div>
+
+                <div class="box selected-box">
+                    <div class="label">Case ID</div>
+                    <div class="summary-value">{{ matter.selected_case.case_id or "—" }}</div>
+                </div>
+
+                <div class="box selected-box wide-box">
+                    <div class="label">Rule / Takeaway</div>
+                    <div class="long-value">{{ matter.selected_case.rule or "—" }}</div>
+                </div>
+
+                <div class="box selected-box wide-box">
+                    <div class="label">Holding</div>
+                    <div class="long-value">{{ matter.selected_case.holding or "—" }}</div>
+                </div>
+            </div>
+        </div>
+    {% else %}
+        <div class="panel">
+            <div class="panel-title">Selected Case</div>
+            <div class="empty">
+                No selected case was injected. Open a search result and click Build Matter to test v2.5.3.
+            </div>
+        </div>
+    {% endif %}
+
     <div class="panel">
         <div class="panel-title">Matter Overview</div>
 
@@ -160,7 +263,7 @@
 
             <div class="box">
                 <div class="label">Version</div>
-                <div class="value">v2.4</div>
+                <div class="value">v2.5.3</div>
             </div>
 
             <div class="box">
