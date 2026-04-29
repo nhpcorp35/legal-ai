@@ -48,8 +48,40 @@ SKIP_FOLDERS = {
 }
 
 
+COURT_HEADER_WORDS = {
+    "supreme court",
+    "civil court",
+    "county court",
+    "surrogate",
+    "appellate division",
+    "state of new york",
+    "united states",
+}
+
+
 def clean_text(value):
     return " ".join(str(value or "").split()).strip()
+
+
+def clean_case_party(value):
+    value = clean_text(value)
+
+    value = re.sub(r"(?i)\bSUPREME COURT OF THE STATE OF NEW YORK\b", "", value)
+    value = re.sub(r"(?i)\bSTATE OF NEW YORK\b", "", value)
+    value = re.sub(r"(?i)\bCOUNTY OF [A-Z\s]+\b", "", value)
+    value = re.sub(r"(?i)\bINDEX\s*(NO\.?|NUMBER)?\s*[:#]?\s*[0-9]{4,8}/?[0-9]{0,4}\b", "", value)
+    value = re.sub(r"(?i)\bPlaintiff[s]?\b", "", value)
+    value = re.sub(r"(?i)\bDefendant[s]?\b", "", value)
+    value = re.sub(r"(?i)\bPetitioner[s]?\b", "", value)
+    value = re.sub(r"(?i)\bRespondent[s]?\b", "", value)
+
+    value = value.replace(" -against- ", " ")
+    value = value.replace(" against ", " ")
+
+    value = re.sub(r"[_|]+", " ", value)
+    value = re.sub(r"\s+", " ", value)
+
+    return value.strip(" ,.-")
 
 
 def classify_by_filename(filename):
@@ -263,6 +295,23 @@ def combined_text(documents, limit=50000):
     return clean_text(" ".join(chunks))[:limit]
 
 
+def get_text_lines(text):
+    raw_lines = re.split(r"[\r\n]+", str(text or ""))
+    lines = []
+
+    for line in raw_lines:
+        cleaned = clean_text(line)
+        if cleaned:
+            lines.append(cleaned)
+
+    return lines
+
+
+def is_court_header_line(line):
+    lower = line.lower()
+    return any(word in lower for word in COURT_HEADER_WORDS)
+
+
 def extract_index_number(text):
     patterns = [
         r"index\s*(?:no\.?|number)?\s*[:#]?\s*([0-9]{4,8}/[0-9]{4})",
@@ -278,18 +327,63 @@ def extract_index_number(text):
     return "—"
 
 
+def extract_case_name_from_lines(text):
+    lines = get_text_lines(text)
+
+    for line in lines[:80]:
+        if is_court_header_line(line):
+            continue
+
+        if re.search(r"\bv\.?\b", line, re.IGNORECASE):
+            match = re.search(
+                r"(.{2,120}?)\s+\bv\.?\b\s+(.{2,120})",
+                line,
+                re.IGNORECASE,
+            )
+
+            if match:
+                left = clean_case_party(match.group(1))
+                right = clean_case_party(match.group(2))
+
+                if left and right:
+                    return f"{left} v. {right}"
+
+        if re.search(r"(?i)-against-| against ", line):
+            parts = re.split(r"(?i)-against-| against ", line, maxsplit=1)
+            if len(parts) == 2:
+                left = clean_case_party(parts[0])
+                right = clean_case_party(parts[1])
+
+                if left and right:
+                    return f"{left} v. {right}"
+
+    return ""
+
+
 def extract_case_name(text):
+    line_case_name = extract_case_name_from_lines(text)
+    if line_case_name:
+        return line_case_name
+
+    cleaned = re.sub(
+        r"(?i)SUPREME COURT OF THE STATE OF NEW YORK|STATE OF NEW YORK|COUNTY OF [A-Z\s]+",
+        " ",
+        text,
+    )
+
     patterns = [
-        r"([A-Z][A-Za-z0-9&.,'\-\s]+)\s+v\.?\s+([A-Z][A-Za-z0-9&.,'\-\s]+)",
-        r"([A-Z][A-Za-z0-9&.,'\-\s]+)\s+against\s+([A-Z][A-Za-z0-9&.,'\-\s]+)",
+        r"([A-Z][A-Za-z0-9&.,'\-\s]{2,80})\s+v\.?\s+([A-Z][A-Za-z0-9&.,'\-\s]{2,80})",
+        r"([A-Z][A-Za-z0-9&.,'\-\s]{2,80})\s+against\s+([A-Z][A-Za-z0-9&.,'\-\s]{2,80})",
     ]
 
     for pattern in patterns:
-        match = re.search(pattern, text)
+        match = re.search(pattern, cleaned)
         if match:
-            left = clean_text(match.group(1))[:80]
-            right = clean_text(match.group(2))[:80]
-            return f"{left} v. {right}"
+            left = clean_case_party(match.group(1))
+            right = clean_case_party(match.group(2))
+
+            if left and right:
+                return f"{left} v. {right}"
 
     return "Matter Builder"
 
@@ -301,8 +395,8 @@ def extract_parties(case_name):
     left, right = case_name.split(" v. ", 1)
 
     return {
-        "plaintiff": clean_text(left),
-        "defendant": clean_text(right),
+        "plaintiff": clean_case_party(left) or "—",
+        "defendant": clean_case_party(right) or "—",
     }
 
 
