@@ -45,6 +45,11 @@
             background: #fcfcfc;
         }
 
+        .draft-panel {
+            border: 3px solid #111;
+            background: #fff;
+        }
+
         .panel-title {
             font-size: 15px;
             font-weight: 800;
@@ -85,6 +90,12 @@
             gap: 18px;
         }
 
+        .draft-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 18px;
+        }
+
         .box {
             border: 1px solid #e8e8e8;
             border-radius: 9px;
@@ -99,6 +110,11 @@
         .work-box {
             background: #fff;
             min-height: 140px;
+        }
+
+        .draft-box {
+            background: #fff;
+            min-height: 160px;
         }
 
         .wide-box {
@@ -185,18 +201,9 @@
             font-size: 14px;
         }
 
-        .proof-badge {
-            display: inline-block;
-            background: #111;
-            color: #fff;
-            border-radius: 999px;
-            padding: 5px 10px;
-            font-size: 13px;
-            font-weight: 800;
-            margin-bottom: 14px;
-        }
-
-        .work-badge {
+        .proof-badge,
+        .work-badge,
+        .draft-badge {
             display: inline-block;
             background: #111;
             color: #fff;
@@ -231,6 +238,45 @@
         .authority-detail {
             line-height: 1.45;
         }
+
+        .draft-title {
+            font-size: 22px;
+            font-weight: 900;
+            margin-bottom: 12px;
+        }
+
+        .draft-text {
+            white-space: pre-wrap;
+            line-height: 1.6;
+            font-size: 16px;
+            font-weight: 600;
+        }
+
+        .draft-heading {
+            font-size: 18px;
+            font-weight: 900;
+            margin-bottom: 8px;
+        }
+
+        textarea.draft-editable {
+            width: 100%;
+            min-height: 180px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 14px;
+            font-family: Arial, sans-serif;
+            font-size: 15px;
+            line-height: 1.55;
+            resize: vertical;
+            box-sizing: border-box;
+        }
+
+        .editable-note {
+            color: #666;
+            font-size: 14px;
+            margin-bottom: 14px;
+            line-height: 1.4;
+        }
     </style>
 </head>
 <body>
@@ -241,7 +287,8 @@
 
     <div class="subtitle">
         Build one organized matter page from complaints, answers, motions, affirmations,
-        oppositions, declarations, exhibits, memoranda of law, prior orders, and decisions.
+        oppositions, declarations, exhibits, memoranda of law, prior orders, decisions,
+        attorney work product, and draft-ready opposition sections.
     </div>
 
     {% if matter.selected_case %}
@@ -299,7 +346,7 @@
         <div class="panel">
             <div class="panel-title">Selected Case</div>
             <div class="empty">
-                No selected case was injected. Open a search result and click Build Matter to test v2.6.
+                No selected case was injected. Open a search result and click Build Matter to test selected case injection.
             </div>
         </div>
     {% endif %}
@@ -315,7 +362,7 @@
 
             <div class="box">
                 <div class="label">Version</div>
-                <div class="value">v2.6</div>
+                <div class="value">v2.7</div>
             </div>
 
             <div class="box">
@@ -462,6 +509,86 @@
             </div>
         {% else %}
             <div class="empty">Attorney work product has not been generated.</div>
+        {% endif %}
+    </div>
+
+    <div class="panel draft-panel">
+        <div class="panel-title">Draft Generation Engine</div>
+        <div class="draft-badge">v2.7 Drafting Engine</div>
+
+        {% if matter.draft_generation %}
+            <div class="draft-grid">
+                <div class="box draft-box wide-box">
+                    <div class="label">Preliminary Statement</div>
+                    <div class="draft-text">{{ matter.draft_generation.preliminary_statement }}</div>
+                </div>
+
+                <div class="box draft-box wide-box">
+                    <div class="label">Statement of Facts</div>
+                    <div class="draft-text">{{ matter.draft_generation.statement_of_facts }}</div>
+                </div>
+
+                <div class="box draft-box">
+                    <div class="label">Point Headings</div>
+                    {% if matter.draft_generation.point_headings %}
+                        <ol>
+                            {% for heading in matter.draft_generation.point_headings %}
+                                <li><strong>{{ heading }}</strong></li>
+                            {% endfor %}
+                        </ol>
+                    {% else %}
+                        <div class="empty">No point headings generated.</div>
+                    {% endif %}
+                </div>
+
+                <div class="box draft-box">
+                    <div class="label">Opposition Starter Paragraphs</div>
+                    {% if matter.draft_generation.starter_paragraphs %}
+                        {% for paragraph in matter.draft_generation.starter_paragraphs %}
+                            <p>{{ paragraph }}</p>
+                        {% endfor %}
+                    {% else %}
+                        <div class="empty">No starter paragraphs generated.</div>
+                    {% endif %}
+                </div>
+
+                <div class="box draft-box wide-box">
+                    <div class="label">Argument Section Skeleton</div>
+                    {% if matter.draft_generation.argument_skeleton %}
+                        {% for section in matter.draft_generation.argument_skeleton %}
+                            <div class="strong-doc">
+                                <div class="draft-heading">{{ section.heading }}</div>
+                                <div class="authority-detail">{{ section.body }}</div>
+                            </div>
+                        {% endfor %}
+                    {% else %}
+                        <div class="empty">No argument skeleton generated.</div>
+                    {% endif %}
+                </div>
+            </div>
+        {% else %}
+            <div class="empty">Draft generation has not been generated.</div>
+        {% endif %}
+    </div>
+
+    <div class="panel draft-panel">
+        <div class="panel-title">Attorney-Editable Draft Blocks</div>
+        <div class="draft-badge">Editable Draft Workspace</div>
+
+        <div class="editable-note">
+            These draft blocks are generated from the selected case, strongest motion documents,
+            detected weaknesses, and recommended opposition strategy. Edit directly in the boxes.
+        </div>
+
+        {% if matter.draft_generation and matter.draft_generation.editable_blocks %}
+            {% for block in matter.draft_generation.editable_blocks %}
+                <div class="box draft-box wide-box">
+                    <div class="label">{{ block.title }}</div>
+                    <textarea class="draft-editable">{{ block.content }}</textarea>
+                </div>
+            {% endfor %}
+        {% else %}
+            <div class="empty">No editable draft blocks generated.</div>
         {% endif %}
     </div>
 

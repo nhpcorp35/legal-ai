@@ -874,6 +874,236 @@ def build_recommended_outline(summary, documents):
     ]
 
 
+def best_doc_title(documents, types):
+    for doc_type in types:
+        for doc in documents:
+            if doc.get("type") == doc_type:
+                return clean_text(doc.get("filename"))
+    return ""
+
+
+def draft_party_label(summary, role):
+    value = clean_text(summary.get(role))
+    if value and value != "—":
+        return value
+    if role == "plaintiff":
+        return "Plaintiff"
+    return "Defendant"
+
+
+def build_preliminary_statement(summary, documents):
+    motion = clean_text(summary.get("motion_posture"))
+    case_name = clean_text(summary.get("case_name")) or "this matter"
+    plaintiff = draft_party_label(summary, "plaintiff")
+    defendant = draft_party_label(summary, "defendant")
+    selected_case = summary.get("selected_case") or {}
+    rule = clean_text(selected_case.get("rule"))
+    holding = clean_text(selected_case.get("holding"))
+
+    if not motion or motion == "—":
+        motion = "the pending motion"
+
+    paragraph_one = (
+        f"{defendant} respectfully submits this opposition to {motion.lower()} in {case_name}. "
+        f"The motion should be denied because the moving papers do not establish entitlement to the relief requested, "
+        f"and the available record supports material factual and legal disputes requiring denial or narrowing of the motion."
+    )
+
+    paragraph_two = (
+        f"The record should be reviewed in light of the parties' actual proof, the procedural posture, "
+        f"and the governing burden applicable to {motion.lower()}."
+    )
+
+    if rule:
+        paragraph_two += f" The selected authority provides the controlling drafting anchor: {rule}"
+
+    paragraph_three = (
+        f"At minimum, {plaintiff} has not eliminated the factual and legal issues identified in the opposition record. "
+        f"Accordingly, the Court should deny the motion in its entirety, or grant only such limited relief as is supported by admissible proof."
+    )
+
+    if holding:
+        paragraph_three += f" The selected holding further supports careful comparison between the movant's proof and the actual record before the Court."
+
+    return "\n\n".join([paragraph_one, paragraph_two, paragraph_three])
+
+
+def build_statement_of_facts(summary, documents):
+    case_name = clean_text(summary.get("case_name")) or "this matter"
+    motion_doc = best_doc_title(documents, ["motion", "memo", "affirmation"])
+    opposition_doc = best_doc_title(documents, ["opposition", "affirmation", "memo"])
+    complaint_doc = best_doc_title(documents, ["complaint"])
+    answer_doc = best_doc_title(documents, ["answer"])
+    order_doc = best_doc_title(documents, ["order"])
+
+    lines = [
+        f"This matter, {case_name}, arises from the claims and defenses reflected in the pleadings and motion record.",
+    ]
+
+    if complaint_doc:
+        lines.append(f"The pleadings include {complaint_doc}, which supplies the factual allegations and claims at issue.")
+
+    if answer_doc:
+        lines.append(f"The record also includes {answer_doc}, which frames the responsive position and any asserted defenses.")
+
+    if motion_doc:
+        lines.append(f"The pending application is reflected in {motion_doc}, which should be used to identify the precise relief requested and the movant's burden.")
+
+    if opposition_doc:
+        lines.append(f"The opposition record includes {opposition_doc}, which should be used to develop the factual disputes, evidentiary objections, and legal responses.")
+
+    if order_doc:
+        lines.append(f"The matter file also includes {order_doc}, which should be reviewed for any prior rulings, procedural limits, or law-of-the-case issues.")
+
+    lines.append(
+        "The attorney should replace this starter section with record-specific facts, citations to exhibits, affidavit references, and procedural dates."
+    )
+
+    return "\n\n".join(lines)
+
+
+def build_point_headings(summary, documents):
+    motion = clean_text(summary.get("motion_posture")).lower()
+    selected_case = summary.get("selected_case") or {}
+    rule = clean_text(selected_case.get("rule"))
+
+    if "summary judgment" in motion:
+        headings = [
+            "POINT I: THE MOTION SHOULD BE DENIED BECAUSE THE MOVANT FAILED TO ESTABLISH PRIMA FACIE ENTITLEMENT TO JUDGMENT.",
+            "POINT II: TRIABLE ISSUES OF FACT REQUIRE DENIAL OF SUMMARY JUDGMENT.",
+            "POINT III: THE MOVING PAPERS RELY ON INCOMPLETE, INADMISSIBLE, OR DISPUTED PROOF.",
+            "POINT IV: THE SELECTED AUTHORITY SUPPORTS DENIAL OR, AT MINIMUM, NARROWING OF THE REQUESTED RELIEF.",
+        ]
+    elif "dismiss" in motion:
+        headings = [
+            "POINT I: THE MOTION SHOULD BE DENIED BECAUSE THE PLEADING STATES VIABLE CLAIMS.",
+            "POINT II: THE COURT MUST ACCEPT THE ALLEGATIONS AS TRUE AND DRAW FAVORABLE INFERENCES FOR THE NONMOVING PARTY.",
+            "POINT III: DOCUMENTARY EVIDENCE DOES NOT CONCLUSIVELY DISPOSE OF THE CLAIMS.",
+            "POINT IV: DISMISSAL IS PREMATURE OR SHOULD BE LIMITED.",
+        ]
+    else:
+        headings = [
+            "POINT I: THE MOVING PARTY HAS NOT SATISFIED ITS BURDEN.",
+            "POINT II: THE RECORD PRESENTS FACTUAL AND LEGAL ISSUES REQUIRING DENIAL.",
+            "POINT III: THE SELECTED AUTHORITY SUPPORTS THE OPPOSITION POSITION.",
+            "POINT IV: THE REQUESTED RELIEF SHOULD BE DENIED OR NARROWED.",
+        ]
+
+    if rule:
+        headings.append("POINT V: THE SELECTED RULE CONFIRMS THAT THE MOVANT'S SHOWING IS INSUFFICIENT ON THIS RECORD.")
+
+    return headings
+
+
+def build_argument_skeleton(summary, documents):
+    headings = build_point_headings(summary, documents)
+    skeleton = []
+
+    for heading in headings:
+        skeleton.append(
+            {
+                "heading": heading,
+                "body": (
+                    "Attorney drafting note: Insert governing standard, record facts, exhibit citations, "
+                    "and application of the selected authority to the motion record."
+                ),
+            }
+        )
+
+    return skeleton
+
+
+def build_starter_paragraphs(summary, documents):
+    motion = clean_text(summary.get("motion_posture")).lower()
+    selected_case = summary.get("selected_case") or {}
+    rule = clean_text(selected_case.get("rule"))
+    holding = clean_text(selected_case.get("holding"))
+    paragraphs = []
+
+    if "summary judgment" in motion:
+        paragraphs.extend(
+            [
+                "Summary judgment is a drastic remedy and should not be granted where the moving party fails to make a prima facie showing or where the record presents triable issues of fact.",
+                "Here, the moving papers do not eliminate factual disputes, evidentiary issues, or competing inferences that must be resolved by the trier of fact rather than on motion practice.",
+                "The opposition should first attack the movant's initial burden before addressing whether the opposing proof independently raises triable issues.",
+            ]
+        )
+    elif "dismiss" in motion:
+        paragraphs.extend(
+            [
+                "On a motion to dismiss, the pleading must be liberally construed, the allegations accepted as true, and the nonmoving party afforded every favorable inference.",
+                "The motion should be denied where the pleading states a legally cognizable claim or where documentary evidence does not conclusively dispose of the allegations.",
+                "The opposition should emphasize that factual disputes, incomplete records, and unresolved discovery issues cannot be resolved at the pleading stage.",
+            ]
+        )
+    else:
+        paragraphs.extend(
+            [
+                "The moving party bears the burden of establishing entitlement to the requested relief under the applicable procedural standard.",
+                "The present record does not support the requested relief because key factual, legal, and evidentiary issues remain unresolved.",
+                "The opposition should organize the response around burden, record defects, factual disputes, and the selected authority.",
+            ]
+        )
+
+    if rule:
+        paragraphs.append(f"The selected rule should be used as the principal legal anchor: {rule}")
+
+    if holding:
+        paragraphs.append(f"The selected holding should be compared directly against the facts and proof in this matter: {holding}")
+
+    return paragraphs[:6]
+
+
+def build_editable_draft_blocks(summary, documents):
+    preliminary = build_preliminary_statement(summary, documents)
+    facts = build_statement_of_facts(summary, documents)
+    argument_skeleton = build_argument_skeleton(summary, documents)
+    starter_paragraphs = build_starter_paragraphs(summary, documents)
+
+    blocks = [
+        {
+            "title": "Preliminary Statement",
+            "type": "textarea",
+            "content": preliminary,
+        },
+        {
+            "title": "Statement of Facts",
+            "type": "textarea",
+            "content": facts,
+        },
+    ]
+
+    for item in argument_skeleton:
+        blocks.append(
+            {
+                "title": item["heading"],
+                "type": "textarea",
+                "content": item["body"],
+            }
+        )
+
+    blocks.append(
+        {
+            "title": "Opposition Starter Paragraphs",
+            "type": "textarea",
+            "content": "\n\n".join(starter_paragraphs),
+        }
+    )
+
+    return blocks
+
+
+def build_draft_generation(summary, documents):
+    return {
+        "preliminary_statement": build_preliminary_statement(summary, documents),
+        "statement_of_facts": build_statement_of_facts(summary, documents),
+        "point_headings": build_point_headings(summary, documents),
+        "argument_skeleton": build_argument_skeleton(summary, documents),
+        "starter_paragraphs": build_starter_paragraphs(summary, documents),
+        "editable_blocks": build_editable_draft_blocks(summary, documents),
+    }
+
+
 def build_attorney_work_product(summary, documents):
     selected_case = summary.get("selected_case") or {}
 
@@ -884,6 +1114,7 @@ def build_attorney_work_product(summary, documents):
         "weaknesses": build_weaknesses(summary, documents),
         "drafting_strategy": build_drafting_strategy(summary, documents),
         "recommended_outline": build_recommended_outline(summary, documents),
+        "draft_generation": build_draft_generation(summary, documents),
         "selected_rule": clean_text(selected_case.get("rule")),
         "selected_holding": clean_text(selected_case.get("holding")),
     }
@@ -950,4 +1181,5 @@ def get_matter(selected_case=None, documents=None, matter_folder=DEFAULT_MATTER_
         "summary": summary,
         "selected_case": summary.get("selected_case"),
         "attorney_work_product": summary.get("attorney_work_product", {}),
+        "draft_generation": summary.get("attorney_work_product", {}).get("draft_generation", {}),
     }
