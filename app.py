@@ -1504,7 +1504,6 @@ def score_case(case, query, selected_court="All Courts", selected_outcome="All O
     haystack = text_for_search(case)
     qd = structured_query_data(query)
 
-    # Court hierarchy should matter even without an explicit court filter.
     score += case.get("court_rank", 0) / 8.0
 
     if selected_court != "All Courts":
@@ -1952,7 +1951,15 @@ def index():
 
 @app.route("/matter", methods=["GET", "POST"])
 def matter():
-    matter_data = get_matter()
+    cases = load_cases()
+
+    case_id = clean_text(request.args.get("case_id", ""))
+    selected_case = None
+
+    if case_id:
+        selected_case = find_case_by_id(case_id, cases)
+
+    matter_data = get_matter(selected_case)
 
     return render_template(
         "matter.html",

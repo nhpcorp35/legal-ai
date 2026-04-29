@@ -96,6 +96,27 @@
             color: #222;
         }
 
+        .build-action {
+            margin-top: 14px;
+            margin-bottom: 10px;
+        }
+
+        .build-button {
+            display: inline-block;
+            padding: 9px 14px;
+            border: 1px solid #d9d9d9;
+            border-radius: 8px;
+            text-decoration: none;
+            color: #111;
+            font-size: 14px;
+            font-weight: 700;
+            background: #fafafa;
+        }
+
+        .build-button:hover {
+            background: #f3f3f3;
+        }
+
         .similar {
             margin-top: 14px;
             padding-left: 14px;
@@ -248,6 +269,15 @@
             </div>
 
             <div class="snippet">{{ case.display_snippet }}</div>
+
+            <div class="build-action">
+                <a
+                    class="build-button"
+                    href="{{ url_for('matter', case_id=case.case_id) }}"
+                >
+                    Build Matter →
+                </a>
+            </div>
 
             {% if case.similar_cases %}
                 <div class="similar">

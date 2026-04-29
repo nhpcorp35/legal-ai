@@ -17,6 +17,7 @@ DEFAULT_MATTER_FOLDER = Path("matter_docs")
 
 
 DOCUMENT_GROUPS = {
+    "selected_case": "Selected Case",
     "complaint": "Complaint",
     "answer": "Answer",
     "motion": "Motions",
@@ -86,6 +87,9 @@ def clean_case_party(value):
 
 def classify_by_filename(filename):
     name = filename.lower()
+
+    if "selected case" in name or "search result" in name:
+        return "selected_case"
 
     if "complaint" in name:
         return "complaint"
@@ -242,6 +246,74 @@ def read_matter_folder(folder_path=DEFAULT_MATTER_FOLDER):
     return documents
 
 
+def selected_case_to_document(selected_case):
+    if not selected_case:
+        return None
+
+    title = clean_text(selected_case.get("title") or selected_case.get("case_name") or "Selected Case")
+    court = clean_text(selected_case.get("court"))
+    date = clean_text(selected_case.get("date"))
+    citation = clean_text(selected_case.get("citation"))
+    outcome = clean_text(selected_case.get("outcome"))
+    motion = clean_text(selected_case.get("motion"))
+    cause = clean_text(selected_case.get("primary_cause"))
+    holding = clean_text(selected_case.get("holding"))
+    rule = clean_text(selected_case.get("rule"))
+    text = clean_text(
+        selected_case.get("formatted_text")
+        or selected_case.get("text")
+        or selected_case.get("summary")
+        or selected_case.get("snippet")
+        or ""
+    )
+
+    metadata_lines = []
+
+    if title:
+        metadata_lines.append(title)
+    if court:
+        metadata_lines.append(f"Court: {court}")
+    if date:
+        metadata_lines.append(f"Date: {date}")
+    if citation:
+        metadata_lines.append(f"Citation: {citation}")
+    if motion:
+        metadata_lines.append(f"Motion: {motion}")
+    if outcome:
+        metadata_lines.append(f"Outcome: {outcome}")
+    if cause:
+        metadata_lines.append(f"Cause: {cause}")
+    if rule:
+        metadata_lines.append(f"Rule: {rule}")
+    if holding:
+        metadata_lines.append(f"Holding: {holding}")
+
+    combined = clean_text("\n".join(metadata_lines + [text]))
+
+    return {
+        "filename": f"Selected Case - {title}",
+        "title": title,
+        "path": "",
+        "relative_path": "Selected from search results",
+        "folder": "",
+        "type": "selected_case",
+        "category": "selected_case",
+        "group": DOCUMENT_GROUPS["selected_case"],
+        "text": combined,
+        "preview": combined[:800],
+        "source": "selected_case",
+        "court": court,
+        "date": date,
+        "citation": citation,
+        "motion": motion,
+        "outcome": outcome,
+        "primary_cause": cause,
+        "holding": holding,
+        "rule": rule,
+        "case_id": clean_text(selected_case.get("case_id")),
+    }
+
+
 def normalize_document(document):
     filename = clean_text(
         document.get("filename")
@@ -261,7 +333,7 @@ def normalize_document(document):
 
     return {
         "filename": filename,
-        "title": filename,
+        "title": clean_text(document.get("title") or filename),
         "path": document.get("path", ""),
         "relative_path": document.get("relative_path", document.get("path", "")),
         "folder": document.get("folder", ""),
@@ -271,6 +343,15 @@ def normalize_document(document):
         "text": text,
         "preview": text[:800],
         "source": document.get("source", "manual"),
+        "court": document.get("court", ""),
+        "date": document.get("date", ""),
+        "citation": document.get("citation", ""),
+        "motion": document.get("motion", ""),
+        "outcome": document.get("outcome", ""),
+        "primary_cause": document.get("primary_cause", ""),
+        "holding": document.get("holding", ""),
+        "rule": document.get("rule", ""),
+        "case_id": document.get("case_id", ""),
     }
 
 
@@ -401,6 +482,13 @@ def extract_parties(case_name):
 
 
 def detect_motion_posture(documents, text):
+    selected_case_docs = [doc for doc in documents if doc.get("type") == "selected_case"]
+
+    for doc in selected_case_docs:
+        motion = clean_text(doc.get("motion"))
+        if motion:
+            return motion.title()
+
     names = " ".join(doc.get("filename", "") for doc in documents).lower()
     haystack = f"{names} {text.lower()}"
 
@@ -425,6 +513,9 @@ def detect_motion_posture(documents, text):
 def detect_procedural_posture(text):
     lower = text.lower()
 
+    if "selected case" in lower and "complaint" in lower and "motion" in lower:
+        return "Selected case and matter folder documents are present."
+
     if "complaint" in lower and "answer" in lower and "motion" in lower:
         return "Pleadings and motion papers are present."
 
@@ -444,6 +535,7 @@ def strongest_motion_documents(documents):
     ranked = []
 
     weights = {
+        "selected_case": 120,
         "motion": 100,
         "opposition": 90,
         "affirmation": 80,
@@ -484,10 +576,34 @@ def strongest_motion_documents(documents):
     return ranked[:5]
 
 
+def selected_case_summary(documents):
+    for doc in documents:
+        if doc.get("type") == "selected_case":
+            return {
+                "title": doc.get("title", ""),
+                "court": doc.get("court", ""),
+                "date": doc.get("date", ""),
+                "citation": doc.get("citation", ""),
+                "motion": doc.get("motion", ""),
+                "outcome": doc.get("outcome", ""),
+                "primary_cause": doc.get("primary_cause", ""),
+                "holding": doc.get("holding", ""),
+                "rule": doc.get("rule", ""),
+                "case_id": doc.get("case_id", ""),
+            }
+
+    return None
+
+
 def build_matter_summary(documents):
+    selected = selected_case_summary(documents)
     text = combined_text(documents)
 
-    case_name = extract_case_name(text)
+    if selected and selected.get("title"):
+        case_name = selected["title"]
+    else:
+        case_name = extract_case_name(text)
+
     parties = extract_parties(case_name)
 
     return {
@@ -498,14 +614,29 @@ def build_matter_summary(documents):
         "motion_posture": detect_motion_posture(documents, text),
         "procedural_posture": detect_procedural_posture(text),
         "strongest_motion_documents": strongest_motion_documents(documents),
+        "selected_case": selected,
     }
 
 
-def get_matter(documents=None, matter_folder=DEFAULT_MATTER_FOLDER):
-    if documents is None:
-        documents = read_matter_folder(matter_folder)
+def get_matter(selected_case=None, documents=None, matter_folder=DEFAULT_MATTER_FOLDER):
+    folder_documents = read_matter_folder(matter_folder)
 
-    normalized_documents = [normalize_document(doc) for doc in documents]
+    selected_case_document = None
+    if isinstance(selected_case, dict):
+        selected_case_document = selected_case_to_document(selected_case)
+
+    if documents is None:
+        documents = []
+
+    all_documents = []
+
+    if selected_case_document:
+        all_documents.append(selected_case_document)
+
+    all_documents.extend(folder_documents)
+    all_documents.extend(documents)
+
+    normalized_documents = [normalize_document(doc) for doc in all_documents]
     grouped_documents = group_documents(normalized_documents)
     summary = build_matter_summary(normalized_documents)
 
@@ -519,4 +650,5 @@ def get_matter(documents=None, matter_folder=DEFAULT_MATTER_FOLDER):
         "grouped_documents": grouped_documents,
         "folder": str(matter_folder),
         "summary": summary,
+        "selected_case": summary.get("selected_case"),
     }
