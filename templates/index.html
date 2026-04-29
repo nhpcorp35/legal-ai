@@ -169,11 +169,35 @@
             margin: 0 5px;
             text-decoration: none;
         }
+
+        .top-actions {
+            margin-bottom: 18px;
+        }
+
+        .top-actions a {
+            display: inline-block;
+            padding: 8px 12px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            text-decoration: none;
+            color: #111;
+            font-size: 14px;
+            font-weight: 700;
+            background: #fafafa;
+        }
+
+        .top-actions a:hover {
+            background: #f3f3f3;
+        }
     </style>
 </head>
 <body>
 
 <h2>Legal AI Search</h2>
+
+<div class="top-actions">
+    <a href="{{ url_for('matter') }}">Matter Builder →</a>
+</div>
 
 <form method="POST">
     <input type="text" name="query" placeholder="Search cases..." value="{{ query }}">

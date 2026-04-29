@@ -6,6 +6,8 @@ import csv
 import re
 from types import SimpleNamespace
 
+from matter_builder import get_matter
+
 app = Flask(__name__)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -1945,6 +1947,21 @@ def index():
         outcomes=build_outcomes(cases),
         selected_court=court,
         selected_outcome=outcome,
+    )
+
+
+@app.route("/matter", methods=["GET", "POST"])
+def matter():
+    if request.method == "POST":
+        matter_query = clean_text(request.form.get("matter_query", ""))
+    else:
+        matter_query = clean_text(request.args.get("q", ""))
+
+    matter_data = get_matter(matter_query)
+
+    return render_template(
+        "matter.html",
+        matter=matter_data,
     )
 
 
