@@ -1,222 +1,254 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>{{ matter.matter_name }}</title>
+    <title>Matter Builder</title>
     <style>
         body {
             font-family: Arial, sans-serif;
-            margin: 40px;
+            margin: 32px;
             color: #111;
-            max-width: 1100px;
         }
 
         a {
-            color: #1a0dab;
             text-decoration: none;
         }
 
-        a:hover {
-            text-decoration: underline;
+        .page-title {
+            font-size: 30px;
+            font-weight: 800;
+            margin-top: 28px;
+            margin-bottom: 10px;
         }
 
-        h2 {
-            margin-bottom: 8px;
-        }
-
-        .subhead {
+        .subtitle {
+            font-size: 18px;
             color: #555;
-            margin-bottom: 22px;
             line-height: 1.5;
+            max-width: 1200px;
+            margin-bottom: 28px;
         }
 
-        .back-link {
-            margin-bottom: 18px;
-            font-size: 14px;
-        }
-
-        .card {
-            border: 1px solid #e8e8e8;
+        .panel {
+            border: 1px solid #e3e3e3;
             border-radius: 10px;
-            padding: 18px 20px;
-            margin-bottom: 22px;
-            background: #fff;
+            padding: 22px;
+            margin-bottom: 26px;
         }
 
-        .meta-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
-            gap: 14px;
-        }
-
-        .meta-box {
-            border: 1px solid #eeeeee;
-            border-radius: 9px;
-            padding: 12px 14px;
-            background: #fafafa;
-        }
-
-        .meta-label {
-            font-size: 12px;
-            text-transform: uppercase;
-            letter-spacing: 0.04em;
-            color: #666;
-            font-weight: 700;
-            margin-bottom: 6px;
-        }
-
-        .meta-value {
+        .panel-title {
             font-size: 15px;
-            font-weight: 700;
-            color: #111;
-        }
-
-        .section-title {
-            font-size: 13px;
-            font-weight: 700;
-            letter-spacing: 0.04em;
-            text-transform: uppercase;
+            font-weight: 800;
             color: #555;
-            margin-bottom: 12px;
+            letter-spacing: .04em;
+            text-transform: uppercase;
+            margin-bottom: 16px;
         }
 
-        .groups {
+        .overview-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(290px, 1fr));
+            grid-template-columns: repeat(4, 1fr);
             gap: 16px;
         }
 
+        .summary-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 16px;
+        }
+
+        .box {
+            border: 1px solid #e8e8e8;
+            border-radius: 9px;
+            padding: 16px;
+            background: #fafafa;
+        }
+
+        .label {
+            color: #666;
+            font-size: 13px;
+            font-weight: 800;
+            letter-spacing: .04em;
+            text-transform: uppercase;
+            margin-bottom: 8px;
+        }
+
+        .value {
+            font-size: 18px;
+            font-weight: 800;
+        }
+
+        .summary-value {
+            font-size: 16px;
+            font-weight: 600;
+            line-height: 1.4;
+        }
+
+        .groups-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 18px;
+        }
+
         .group-card {
-            border: 1px solid #ececec;
+            border: 1px solid #e8e8e8;
             border-radius: 10px;
-            padding: 15px 16px;
-            background: #fff;
+            padding: 18px;
+            min-height: 120px;
         }
 
         .group-title {
-            font-weight: 700;
-            margin-bottom: 8px;
-            text-transform: capitalize;
+            font-size: 20px;
+            font-weight: 800;
+            margin-bottom: 10px;
         }
 
-        .group-count {
+        .count {
             display: inline-block;
-            margin-left: 6px;
-            padding: 2px 7px;
+            font-size: 13px;
+            padding: 3px 8px;
             border-radius: 999px;
-            background: #f1f1f1;
-            color: #555;
-            font-size: 12px;
-            font-weight: 700;
+            background: #eee;
+            color: #666;
+            margin-left: 8px;
+        }
+
+        .doc-name {
+            font-size: 18px;
+            font-weight: 800;
+            line-height: 1.35;
+        }
+
+        .doc-type {
+            color: #666;
+            margin-top: 6px;
         }
 
         .empty {
             color: #777;
             font-style: italic;
-            font-size: 14px;
-            line-height: 1.5;
         }
 
-        .doc-list {
-            margin: 0;
-            padding-left: 18px;
+        .strong-doc {
+            margin-bottom: 10px;
         }
 
-        .doc-list li {
-            margin-bottom: 9px;
-            line-height: 1.45;
-        }
-
-        .doc-title {
-            font-weight: 700;
-        }
-
-        .doc-meta {
+        .small {
             color: #666;
-            font-size: 13px;
-            margin-top: 2px;
+            font-size: 14px;
         }
     </style>
 </head>
 <body>
 
-<div class="back-link">
-    <a href="{{ url_for('index') }}">← Back to search</a>
-</div>
+    <a href="/">← Back to search</a>
 
-<h2>Matter Builder</h2>
+    <div class="page-title">Matter Builder</div>
 
-<div class="subhead">
-    Build one organized matter page from complaints, answers, motions,
-    affirmations, oppositions, declarations, exhibits, memoranda of law,
-    prior orders, and decisions.
-</div>
+    <div class="subtitle">
+        Build one organized matter page from complaints, answers, motions, affirmations,
+        oppositions, declarations, exhibits, memoranda of law, prior orders, and decisions.
+    </div>
 
-<div class="card">
-    <div class="section-title">Matter Overview</div>
+    <div class="panel">
+        <div class="panel-title">Matter Overview</div>
 
-    <div class="meta-grid">
-        <div class="meta-box">
-            <div class="meta-label">Matter Name</div>
-            <div class="meta-value">{{ matter.matter_name }}</div>
-        </div>
+        <div class="overview-grid">
+            <div class="box">
+                <div class="label">Matter Name</div>
+                <div class="value">{{ matter.matter_name }}</div>
+            </div>
 
-        <div class="meta-box">
-            <div class="meta-label">Version</div>
-            <div class="meta-value">{{ matter.version }}</div>
-        </div>
+            <div class="box">
+                <div class="label">Version</div>
+                <div class="value">v2.4</div>
+            </div>
 
-        <div class="meta-box">
-            <div class="meta-label">Documents</div>
-            <div class="meta-value">{{ matter.document_count }}</div>
-        </div>
+            <div class="box">
+                <div class="label">Documents</div>
+                <div class="value">{{ matter.document_count }}</div>
+            </div>
 
-        <div class="meta-box">
-            <div class="meta-label">Index Number</div>
-            <div class="meta-value">
-                {% if matter.documents and matter.documents[0].index_number %}
-                    {{ matter.documents[0].index_number }}
-                {% else %}
-                    —
-                {% endif %}
+            <div class="box">
+                <div class="label">Index Number</div>
+                <div class="value">{{ matter.index_number }}</div>
             </div>
         </div>
     </div>
-</div>
 
-<div class="card">
-    <div class="section-title">Document Groups</div>
+    <div class="panel">
+        <div class="panel-title">Auto Matter Summary</div>
 
-    <div class="groups">
-        {% for group_name, docs in matter.groups.items() %}
-            <div class="group-card">
-                <div class="group-title">
-                    {{ group_name.replace("_", " ") }}
-                    <span class="group-count">{{ docs|length }}</span>
+        <div class="summary-grid">
+            <div class="box">
+                <div class="label">Case Name</div>
+                <div class="summary-value">{{ matter.summary.case_name }}</div>
+            </div>
+
+            <div class="box">
+                <div class="label">Parties</div>
+                <div class="summary-value">
+                    Plaintiff: {{ matter.summary.plaintiff }}<br>
+                    Defendant: {{ matter.summary.defendant }}
                 </div>
-
-                {% if docs %}
-                    <ul class="doc-list">
-                        {% for doc in docs %}
-                            <li>
-                                <div class="doc-title">{{ doc.title }}</div>
-                                <div class="doc-meta">
-                                    Type: {{ doc.type }}
-                                    {% if doc.confidence %}
-                                        · Score: {{ doc.confidence }}
-                                    {% endif %}
-                                </div>
-                            </li>
-                        {% endfor %}
-                    </ul>
-                {% else %}
-                    <div class="empty">
-                        No documents classified.
-                    </div>
-                {% endif %}
             </div>
-        {% endfor %}
+
+            <div class="box">
+                <div class="label">Motion Posture</div>
+                <div class="summary-value">{{ matter.summary.motion_posture }}</div>
+            </div>
+
+            <div class="box">
+                <div class="label">Procedural Posture</div>
+                <div class="summary-value">{{ matter.summary.procedural_posture }}</div>
+            </div>
+        </div>
     </div>
-</div>
+
+    <div class="panel">
+        <div class="panel-title">Strongest Motion Documents</div>
+
+        {% if matter.summary.strongest_motion_documents %}
+            {% for doc in matter.summary.strongest_motion_documents %}
+                <div class="strong-doc">
+                    <strong>{{ doc.filename }}</strong>
+                    <span class="small"> — {{ doc.group }} / score {{ doc.score }}</span>
+                </div>
+            {% endfor %}
+        {% else %}
+            <div class="empty">No motion documents detected.</div>
+        {% endif %}
+    </div>
+
+    <div class="panel">
+        <div class="panel-title">Document Groups</div>
+
+        <div class="groups-grid">
+            {% for group_name, docs in matter.groups.items() %}
+                <div class="group-card">
+                    <div class="group-title">
+                        {{ group_name }}
+                        <span class="count">{{ docs|length }}</span>
+                    </div>
+
+                    {% if docs %}
+                        <ul>
+                            {% for doc in docs %}
+                                <li>
+                                    <div class="doc-name">{{ doc.filename }}</div>
+                                    <div class="doc-type">Type: {{ doc.type }}</div>
+                                    {% if doc.relative_path %}
+                                        <div class="small">{{ doc.relative_path }}</div>
+                                    {% endif %}
+                                </li>
+                            {% endfor %}
+                        </ul>
+                    {% else %}
+                        <div class="empty">No documents classified.</div>
+                    {% endif %}
+                </div>
+            {% endfor %}
+        </div>
+    </div>
 
 </body>
 </html>

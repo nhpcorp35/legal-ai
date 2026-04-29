@@ -1,5 +1,6 @@
 # matter_builder.py
 from pathlib import Path
+import re
 
 try:
     from pypdf import PdfReader
@@ -251,18 +252,177 @@ def group_documents(documents):
     return grouped
 
 
+def combined_text(documents, limit=50000):
+    chunks = []
+
+    for doc in documents:
+        text = clean_text(doc.get("text", ""))
+        if text:
+            chunks.append(text)
+
+    return clean_text(" ".join(chunks))[:limit]
+
+
+def extract_index_number(text):
+    patterns = [
+        r"index\s*(?:no\.?|number)?\s*[:#]?\s*([0-9]{4,8}/[0-9]{4})",
+        r"index\s*(?:no\.?|number)?\s*[:#]?\s*([0-9]{5,8})",
+        r"idx\s*(?:no\.?)?\s*[:#]?\s*([0-9]{4,8}/[0-9]{4})",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            return clean_text(match.group(1))
+
+    return "—"
+
+
+def extract_case_name(text):
+    patterns = [
+        r"([A-Z][A-Za-z0-9&.,'\-\s]+)\s+v\.?\s+([A-Z][A-Za-z0-9&.,'\-\s]+)",
+        r"([A-Z][A-Za-z0-9&.,'\-\s]+)\s+against\s+([A-Z][A-Za-z0-9&.,'\-\s]+)",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            left = clean_text(match.group(1))[:80]
+            right = clean_text(match.group(2))[:80]
+            return f"{left} v. {right}"
+
+    return "Matter Builder"
+
+
+def extract_parties(case_name):
+    if " v. " not in case_name:
+        return {"plaintiff": "—", "defendant": "—"}
+
+    left, right = case_name.split(" v. ", 1)
+
+    return {
+        "plaintiff": clean_text(left),
+        "defendant": clean_text(right),
+    }
+
+
+def detect_motion_posture(documents, text):
+    names = " ".join(doc.get("filename", "") for doc in documents).lower()
+    haystack = f"{names} {text.lower()}"
+
+    if "summary judgment" in haystack:
+        return "Summary judgment motion"
+
+    if "dismiss" in haystack or "3211" in haystack:
+        return "Motion to dismiss"
+
+    if "default judgment" in haystack:
+        return "Default judgment motion"
+
+    if "discovery" in haystack or "compel" in haystack:
+        return "Discovery motion"
+
+    if "opposition" in haystack:
+        return "Opposition papers"
+
+    return "—"
+
+
+def detect_procedural_posture(text):
+    lower = text.lower()
+
+    if "complaint" in lower and "answer" in lower and "motion" in lower:
+        return "Pleadings and motion papers are present."
+
+    if "complaint" in lower and "motion" in lower:
+        return "Complaint and motion papers are present."
+
+    if "answer" in lower and "counterclaim" in lower:
+        return "Answer with counterclaims appears to be present."
+
+    if "order" in lower or "decision" in lower:
+        return "Prior order or decision appears to be present."
+
+    return "Procedural posture not yet detected from extracted text."
+
+
+def strongest_motion_documents(documents):
+    ranked = []
+
+    weights = {
+        "motion": 100,
+        "opposition": 90,
+        "affirmation": 80,
+        "memo": 75,
+        "reply": 70,
+        "order": 60,
+        "complaint": 40,
+        "answer": 35,
+        "exhibit": 20,
+        "other": 10,
+    }
+
+    for doc in documents:
+        doc_type = doc.get("type", "other")
+        score = weights.get(doc_type, 0)
+
+        filename = doc.get("filename", "").lower()
+
+        if "summary judgment" in filename:
+            score += 25
+        if "motion" in filename:
+            score += 15
+        if "opposition" in filename:
+            score += 15
+        if "memo" in filename or "memorandum" in filename:
+            score += 10
+
+        ranked.append(
+            {
+                "filename": doc.get("filename", ""),
+                "type": doc_type,
+                "group": doc.get("group", ""),
+                "score": score,
+            }
+        )
+
+    ranked.sort(key=lambda item: item["score"], reverse=True)
+    return ranked[:5]
+
+
+def build_matter_summary(documents):
+    text = combined_text(documents)
+
+    case_name = extract_case_name(text)
+    parties = extract_parties(case_name)
+
+    return {
+        "case_name": case_name,
+        "index_number": extract_index_number(text),
+        "plaintiff": parties["plaintiff"],
+        "defendant": parties["defendant"],
+        "motion_posture": detect_motion_posture(documents, text),
+        "procedural_posture": detect_procedural_posture(text),
+        "strongest_motion_documents": strongest_motion_documents(documents),
+    }
+
+
 def get_matter(documents=None, matter_folder=DEFAULT_MATTER_FOLDER):
     if documents is None:
         documents = read_matter_folder(matter_folder)
 
     normalized_documents = [normalize_document(doc) for doc in documents]
     grouped_documents = group_documents(normalized_documents)
+    summary = build_matter_summary(normalized_documents)
 
     return {
-        "matter_name": "Matter Builder",
+        "matter_name": summary["case_name"],
+        "case_name": summary["case_name"],
+        "index_number": summary["index_number"],
         "document_count": len(normalized_documents),
         "documents": normalized_documents,
         "groups": grouped_documents,
         "grouped_documents": grouped_documents,
         "folder": str(matter_folder),
+        "summary": summary,
     }

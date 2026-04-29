@@ -1952,17 +1952,7 @@ def index():
 
 @app.route("/matter", methods=["GET", "POST"])
 def matter():
-    documents = [
-        {"filename": "Verified Complaint.pdf"},
-        {"filename": "Answer with Counterclaims.pdf"},
-        {"filename": "Notice of Motion for Summary Judgment.pdf"},
-        {"filename": "Attorney Affirmation in Opposition.pdf"},
-        {"filename": "Memorandum of Law in Opposition.pdf"},
-        {"filename": "Exhibit A - Contract.pdf"},
-        {"filename": "Decision and Order.pdf"},
-    ]
-
-    matter_data = get_matter(documents)
+    matter_data = get_matter()
 
     return render_template(
         "matter.html",
