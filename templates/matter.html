@@ -40,6 +40,11 @@
             background: #fbfbfb;
         }
 
+        .work-product-panel {
+            border: 2px solid #111;
+            background: #fcfcfc;
+        }
+
         .panel-title {
             font-size: 15px;
             font-weight: 800;
@@ -74,6 +79,12 @@
             margin-bottom: 16px;
         }
 
+        .work-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 18px;
+        }
+
         .box {
             border: 1px solid #e8e8e8;
             border-radius: 9px;
@@ -83,6 +94,11 @@
 
         .selected-box {
             background: #fff;
+        }
+
+        .work-box {
+            background: #fff;
+            min-height: 140px;
         }
 
         .wide-box {
@@ -179,6 +195,42 @@
             font-weight: 800;
             margin-bottom: 14px;
         }
+
+        .work-badge {
+            display: inline-block;
+            background: #111;
+            color: #fff;
+            border-radius: 999px;
+            padding: 5px 10px;
+            font-size: 13px;
+            font-weight: 800;
+            margin-bottom: 14px;
+        }
+
+        ul {
+            margin-top: 8px;
+            margin-bottom: 0;
+        }
+
+        li {
+            margin-bottom: 8px;
+            line-height: 1.4;
+        }
+
+        .authority-title {
+            font-weight: 800;
+            margin-bottom: 3px;
+        }
+
+        .authority-source {
+            color: #666;
+            font-size: 14px;
+            margin-bottom: 4px;
+        }
+
+        .authority-detail {
+            line-height: 1.45;
+        }
     </style>
 </head>
 <body>
@@ -247,7 +299,7 @@
         <div class="panel">
             <div class="panel-title">Selected Case</div>
             <div class="empty">
-                No selected case was injected. Open a search result and click Build Matter to test v2.5.3.
+                No selected case was injected. Open a search result and click Build Matter to test v2.6.
             </div>
         </div>
     {% endif %}
@@ -263,7 +315,7 @@
 
             <div class="box">
                 <div class="label">Version</div>
-                <div class="value">v2.5.3</div>
+                <div class="value">v2.6</div>
             </div>
 
             <div class="box">
@@ -319,6 +371,97 @@
             {% endfor %}
         {% else %}
             <div class="empty">No motion documents detected.</div>
+        {% endif %}
+    </div>
+
+    <div class="panel work-product-panel">
+        <div class="panel-title">Attorney Work Product</div>
+        <div class="work-badge">v2.6 Attorney Workflow Engine</div>
+
+        {% if matter.attorney_work_product %}
+            <div class="work-grid">
+                <div class="box work-box">
+                    <div class="label">Plaintiff Core Arguments</div>
+                    {% if matter.attorney_work_product.plaintiff_core_arguments %}
+                        <ul>
+                            {% for item in matter.attorney_work_product.plaintiff_core_arguments %}
+                                <li>{{ item }}</li>
+                            {% endfor %}
+                        </ul>
+                    {% else %}
+                        <div class="empty">No plaintiff arguments detected.</div>
+                    {% endif %}
+                </div>
+
+                <div class="box work-box">
+                    <div class="label">Defense Core Arguments</div>
+                    {% if matter.attorney_work_product.defense_core_arguments %}
+                        <ul>
+                            {% for item in matter.attorney_work_product.defense_core_arguments %}
+                                <li>{{ item }}</li>
+                            {% endfor %}
+                        </ul>
+                    {% else %}
+                        <div class="empty">No defense arguments detected.</div>
+                    {% endif %}
+                </div>
+
+                <div class="box work-box">
+                    <div class="label">Weakness / Contradiction Detection</div>
+                    {% if matter.attorney_work_product.weaknesses %}
+                        <ul>
+                            {% for item in matter.attorney_work_product.weaknesses %}
+                                <li>{{ item }}</li>
+                            {% endfor %}
+                        </ul>
+                    {% else %}
+                        <div class="empty">No weaknesses detected.</div>
+                    {% endif %}
+                </div>
+
+                <div class="box work-box">
+                    <div class="label">Drafting Strategy</div>
+                    {% if matter.attorney_work_product.drafting_strategy %}
+                        <ul>
+                            {% for item in matter.attorney_work_product.drafting_strategy %}
+                                <li>{{ item }}</li>
+                            {% endfor %}
+                        </ul>
+                    {% else %}
+                        <div class="empty">No drafting strategy generated.</div>
+                    {% endif %}
+                </div>
+
+                <div class="box work-box wide-box">
+                    <div class="label">Strongest Authorities</div>
+                    {% if matter.attorney_work_product.strongest_authorities %}
+                        {% for authority in matter.attorney_work_product.strongest_authorities %}
+                            <div class="strong-doc">
+                                <div class="authority-title">{{ authority.title }}</div>
+                                <div class="authority-source">{{ authority.source }}</div>
+                                <div class="authority-detail">{{ authority.detail }}</div>
+                            </div>
+                        {% endfor %}
+                    {% else %}
+                        <div class="empty">No authorities identified.</div>
+                    {% endif %}
+                </div>
+
+                <div class="box work-box wide-box">
+                    <div class="label">Recommended Opposition Outline</div>
+                    {% if matter.attorney_work_product.recommended_outline %}
+                        <ol>
+                            {% for item in matter.attorney_work_product.recommended_outline %}
+                                <li>{{ item }}</li>
+                            {% endfor %}
+                        </ol>
+                    {% else %}
+                        <div class="empty">No outline generated.</div>
+                    {% endif %}
+                </div>
+            </div>
+        {% else %}
+            <div class="empty">Attorney work product has not been generated.</div>
         {% endif %}
     </div>
 

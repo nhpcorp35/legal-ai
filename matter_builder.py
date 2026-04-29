@@ -595,6 +595,300 @@ def selected_case_summary(documents):
     return None
 
 
+def document_type_counts(documents):
+    counts = {}
+
+    for doc in documents:
+        doc_type = doc.get("type") or "other"
+        counts[doc_type] = counts.get(doc_type, 0) + 1
+
+    return counts
+
+
+def docs_by_type(documents, doc_type):
+    return [doc for doc in documents if doc.get("type") == doc_type]
+
+
+def first_available_preview(documents, preferred_types=None, limit=220):
+    preferred_types = preferred_types or []
+
+    ordered_docs = []
+
+    for doc_type in preferred_types:
+        ordered_docs.extend(docs_by_type(documents, doc_type))
+
+    for doc in documents:
+        if doc not in ordered_docs:
+            ordered_docs.append(doc)
+
+    for doc in ordered_docs:
+        preview = clean_text(doc.get("preview") or doc.get("text"))
+        if preview:
+            return preview[:limit]
+
+    return ""
+
+
+def has_any_document_type(documents, types):
+    return any(doc.get("type") in types for doc in documents)
+
+
+def build_authority_list(summary, documents):
+    selected_case = summary.get("selected_case") or {}
+    strongest_docs = summary.get("strongest_motion_documents", [])
+    authorities = []
+
+    if selected_case.get("title"):
+        rule = clean_text(selected_case.get("rule"))
+        authority = {
+            "title": selected_case.get("title"),
+            "source": "Selected Case",
+            "detail": rule or selected_case.get("holding") or "Selected from search results.",
+        }
+        authorities.append(authority)
+
+    for doc in strongest_docs[:4]:
+        filename = clean_text(doc.get("filename"))
+        group = clean_text(doc.get("group"))
+        if filename:
+            authorities.append(
+                {
+                    "title": filename,
+                    "source": group or "Matter Document",
+                    "detail": f"Ranked as a strong matter document for attorney review. Score: {doc.get('score', 0)}.",
+                }
+            )
+
+    if not authorities:
+        authorities.append(
+            {
+                "title": "No authority identified yet",
+                "source": "Matter Builder",
+                "detail": "Add motion papers, opposition papers, memoranda, orders, or selected cases to strengthen this section.",
+            }
+        )
+
+    return authorities
+
+
+def build_plaintiff_arguments(summary, documents):
+    motion = clean_text(summary.get("motion_posture")).lower()
+    counts = document_type_counts(documents)
+    arguments = []
+
+    if "summary judgment" in motion:
+        arguments.extend(
+            [
+                "Plaintiff is likely arguing entitlement to judgment as a matter of law.",
+                "Plaintiff will try to show that the record contains no triable issue of fact.",
+                "Plaintiff will rely on motion papers, affirmations, exhibits, and selected authority to shift the burden to the opposition.",
+            ]
+        )
+    elif "dismiss" in motion:
+        arguments.extend(
+            [
+                "Movant is likely attacking the legal sufficiency of the pleading.",
+                "Movant may argue that required elements are missing or that claims are duplicative.",
+                "Movant may rely on documentary evidence or procedural defects to seek dismissal.",
+            ]
+        )
+    elif "opposition" in motion:
+        arguments.extend(
+            [
+                "The opposing party is likely focused on preserving factual disputes and defeating the requested relief.",
+                "The opposition should emphasize burden allocation, admissibility, and gaps in the moving papers.",
+            ]
+        )
+    else:
+        arguments.extend(
+            [
+                "The core moving argument should be identified from the notice of motion, memorandum, and supporting affirmation.",
+                "The first legal issue is burden allocation: who must prove what, and at what procedural stage.",
+            ]
+        )
+
+    if counts.get("complaint"):
+        arguments.append("The complaint supplies the pleaded claims and factual theory that the motion must confront.")
+
+    if counts.get("motion"):
+        arguments.append("The motion papers likely define the relief requested and the movant's legal theory.")
+
+    if counts.get("memo"):
+        arguments.append("The memorandum of law likely contains the movant's most organized legal argument.")
+
+    return arguments[:6]
+
+
+def build_defense_arguments(summary, documents):
+    motion = clean_text(summary.get("motion_posture")).lower()
+    selected_case = summary.get("selected_case") or {}
+    rule = clean_text(selected_case.get("rule"))
+    arguments = []
+
+    if "summary judgment" in motion:
+        arguments.extend(
+            [
+                "Attack the movant's prima facie showing before reaching the sufficiency of opposition proof.",
+                "Identify triable issues of fact that require denial.",
+                "Challenge admissibility, foundation, personal knowledge, and completeness of the movant's proof.",
+                "Argue that credibility disputes cannot be resolved on summary judgment.",
+            ]
+        )
+    elif "dismiss" in motion:
+        arguments.extend(
+            [
+                "Argue that the pleading must be liberally construed and accepted as true at this stage.",
+                "Show that the complaint alleges each required element or that factual development is needed.",
+                "Distinguish duplicative claims only where necessary and preserve viable alternative theories.",
+                "Argue that documentary evidence does not conclusively dispose of the claim.",
+            ]
+        )
+    else:
+        arguments.extend(
+            [
+                "Lead with the burden of proof and procedural standard.",
+                "Use missing documents, incomplete proof, and factual disputes to resist the requested relief.",
+                "Frame the selected case as the court's rule for what proof matters.",
+            ]
+        )
+
+    if rule:
+        arguments.insert(0, f"Use the selected rule as the anchor: {rule}")
+
+    if has_any_document_type(documents, ["opposition", "affirmation", "memo"]):
+        arguments.append("Use opposition papers, affirmations, and memoranda to build a fact-supported attorney argument.")
+
+    return arguments[:7]
+
+
+def build_weaknesses(summary, documents):
+    motion = clean_text(summary.get("motion_posture")).lower()
+    selected_case = summary.get("selected_case") or {}
+    holding = clean_text(selected_case.get("holding"))
+    counts = document_type_counts(documents)
+    weaknesses = []
+
+    if "summary judgment" in motion:
+        weaknesses.extend(
+            [
+                "Movant may have failed to establish prima facie entitlement to judgment.",
+                "The record may contain triable issues of fact.",
+                "Affidavits may lack foundation, personal knowledge, or admissible support.",
+                "Causation, damages, notice, control, or contractual breach proof may be incomplete.",
+            ]
+        )
+    elif "dismiss" in motion:
+        weaknesses.extend(
+            [
+                "The motion may improperly contest facts instead of testing pleading sufficiency.",
+                "Documentary evidence may not conclusively defeat the allegations.",
+                "Dismissal may be premature if facts require discovery.",
+                "Duplicative or equitable claims should be narrowed carefully rather than overconceded.",
+            ]
+        )
+    else:
+        weaknesses.extend(
+            [
+                "Procedural posture is not fully detected from available documents.",
+                "The matter may be missing key motion papers or opposition papers.",
+                "The strongest legal theory may depend on documents not yet ingested.",
+            ]
+        )
+
+    if not counts.get("motion"):
+        weaknesses.append("No motion document detected; the exact requested relief may be incomplete.")
+
+    if not counts.get("opposition"):
+        weaknesses.append("No opposition document detected; responsive arguments may need to be drafted from scratch.")
+
+    if not counts.get("memo"):
+        weaknesses.append("No memorandum of law detected; legal argument structure may be underdeveloped.")
+
+    if holding:
+        weaknesses.append("Compare the current record against the selected case holding to identify missing proof or distinguishing facts.")
+
+    return weaknesses[:8]
+
+
+def build_drafting_strategy(summary, documents):
+    motion = clean_text(summary.get("motion_posture"))
+    selected_case = summary.get("selected_case") or {}
+    rule = clean_text(selected_case.get("rule"))
+    strategy = []
+
+    if rule:
+        strategy.append(f"Anchor the opening argument to the selected rule: {rule}")
+
+    if motion and motion != "—":
+        strategy.append(f"Frame the brief around the detected posture: {motion}.")
+
+    strategy.extend(
+        [
+            "Start with the legal standard and burden allocation.",
+            "Then attack the moving party's proof before making alternative factual arguments.",
+            "Use the strongest matter documents as record support.",
+            "Keep the selected case visible as the rule-and-holding comparison point.",
+        ]
+    )
+
+    preview = first_available_preview(documents, ["motion", "opposition", "memo", "affirmation"])
+    if preview:
+        strategy.append("Use the extracted document previews to pull record-specific facts into the draft.")
+
+    return strategy[:7]
+
+
+def build_recommended_outline(summary, documents):
+    motion = clean_text(summary.get("motion_posture")).lower()
+
+    if "summary judgment" in motion:
+        return [
+            "I. Preliminary Statement",
+            "II. Procedural Background and Relevant Record",
+            "III. Plaintiff/Movant Failed to Establish Prima Facie Entitlement to Judgment",
+            "IV. Triable Issues of Fact Require Denial",
+            "V. The Moving Proof Is Incomplete, Inadmissible, or Contradicted",
+            "VI. The Selected Authority Supports Denial or Narrowing of Relief",
+            "VII. Conclusion",
+        ]
+
+    if "dismiss" in motion:
+        return [
+            "I. Preliminary Statement",
+            "II. Procedural Background",
+            "III. Governing Motion to Dismiss Standard",
+            "IV. The Pleading States Viable Claims",
+            "V. Documentary Evidence Does Not Conclusively Defeat the Claims",
+            "VI. Dismissal Is Premature or Should Be Limited",
+            "VII. Conclusion",
+        ]
+
+    return [
+        "I. Preliminary Statement",
+        "II. Procedural Background",
+        "III. Governing Legal Standard",
+        "IV. Record-Based Argument",
+        "V. Authority and Case Comparison",
+        "VI. Relief Requested",
+        "VII. Conclusion",
+    ]
+
+
+def build_attorney_work_product(summary, documents):
+    selected_case = summary.get("selected_case") or {}
+
+    return {
+        "plaintiff_core_arguments": build_plaintiff_arguments(summary, documents),
+        "defense_core_arguments": build_defense_arguments(summary, documents),
+        "strongest_authorities": build_authority_list(summary, documents),
+        "weaknesses": build_weaknesses(summary, documents),
+        "drafting_strategy": build_drafting_strategy(summary, documents),
+        "recommended_outline": build_recommended_outline(summary, documents),
+        "selected_rule": clean_text(selected_case.get("rule")),
+        "selected_holding": clean_text(selected_case.get("holding")),
+    }
+
+
 def build_matter_summary(documents):
     selected = selected_case_summary(documents)
     text = combined_text(documents)
@@ -606,7 +900,7 @@ def build_matter_summary(documents):
 
     parties = extract_parties(case_name)
 
-    return {
+    summary = {
         "case_name": case_name,
         "index_number": extract_index_number(text),
         "plaintiff": parties["plaintiff"],
@@ -616,6 +910,10 @@ def build_matter_summary(documents):
         "strongest_motion_documents": strongest_motion_documents(documents),
         "selected_case": selected,
     }
+
+    summary["attorney_work_product"] = build_attorney_work_product(summary, documents)
+
+    return summary
 
 
 def get_matter(selected_case=None, documents=None, matter_folder=DEFAULT_MATTER_FOLDER):
@@ -651,4 +949,5 @@ def get_matter(selected_case=None, documents=None, matter_folder=DEFAULT_MATTER_
         "folder": str(matter_folder),
         "summary": summary,
         "selected_case": summary.get("selected_case"),
+        "attorney_work_product": summary.get("attorney_work_product", {}),
     }
