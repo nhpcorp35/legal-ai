@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>{{ matter.title }}</title>
+    <title>{{ matter.matter_name }}</title>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -42,33 +42,6 @@
             background: #fff;
         }
 
-        form {
-            display: flex;
-            gap: 10px;
-            flex-wrap: wrap;
-            margin: 0;
-        }
-
-        input[type="text"] {
-            min-width: 360px;
-            flex: 1;
-            padding: 10px;
-            font-size: 14px;
-            border: 1px solid #ccc;
-            border-radius: 8px;
-        }
-
-        button {
-            padding: 10px 15px;
-            font-size: 14px;
-            cursor: pointer;
-            border: 1px solid #111;
-            border-radius: 8px;
-            background: #111;
-            color: #fff;
-            font-weight: 700;
-        }
-
         .meta-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
@@ -106,15 +79,6 @@
             margin-bottom: 12px;
         }
 
-        .message {
-            padding: 12px 14px;
-            border-radius: 8px;
-            background: #f8fbff;
-            border: 1px solid #e7edf8;
-            color: #333;
-            line-height: 1.5;
-        }
-
         .groups {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(290px, 1fr));
@@ -131,6 +95,7 @@
         .group-title {
             font-weight: 700;
             margin-bottom: 8px;
+            text-transform: capitalize;
         }
 
         .group-count {
@@ -170,42 +135,20 @@
             font-size: 13px;
             margin-top: 2px;
         }
-
-        @media (max-width: 700px) {
-            body {
-                margin: 24px;
-            }
-
-            input[type="text"] {
-                min-width: 100%;
-            }
-
-            button {
-                width: 100%;
-            }
-        }
     </style>
 </head>
 <body>
 
-<div class="back-link"><a href="{{ url_for('index') }}">← Back to search</a></div>
-
-<h2>Matter Builder</h2>
-<div class="subhead">
-    Build one organized matter page from complaints, answers, motions, affirmations, oppositions,
-    declarations, exhibits, memoranda of law, prior orders, and decisions.
+<div class="back-link">
+    <a href="{{ url_for('index') }}">← Back to search</a>
 </div>
 
-<div class="card">
-    <form method="POST">
-        <input
-            type="text"
-            name="matter_query"
-            placeholder="Enter index number or case name..."
-            value="{{ matter.query }}"
-        >
-        <button type="submit">Build Matter</button>
-    </form>
+<h2>Matter Builder</h2>
+
+<div class="subhead">
+    Build one organized matter page from complaints, answers, motions,
+    affirmations, oppositions, declarations, exhibits, memoranda of law,
+    prior orders, and decisions.
 </div>
 
 <div class="card">
@@ -214,69 +157,61 @@
     <div class="meta-grid">
         <div class="meta-box">
             <div class="meta-label">Matter Name</div>
-            <div class="meta-value">{{ matter.matter_name or "—" }}</div>
+            <div class="meta-value">{{ matter.matter_name }}</div>
         </div>
 
         <div class="meta-box">
-            <div class="meta-label">Index Number</div>
-            <div class="meta-value">{{ matter.index_number or "—" }}</div>
-        </div>
-
-        <div class="meta-box">
-            <div class="meta-label">Court</div>
-            <div class="meta-value">{{ matter.court or "—" }}</div>
-        </div>
-
-        <div class="meta-box">
-            <div class="meta-label">Judge</div>
-            <div class="meta-value">{{ matter.judge or "—" }}</div>
-        </div>
-
-        <div class="meta-box">
-            <div class="meta-label">Status</div>
-            <div class="meta-value">{{ matter.status or "—" }}</div>
+            <div class="meta-label">Version</div>
+            <div class="meta-value">{{ matter.version }}</div>
         </div>
 
         <div class="meta-box">
             <div class="meta-label">Documents</div>
-            <div class="meta-value">{{ matter.total_documents }}</div>
+            <div class="meta-value">{{ matter.document_count }}</div>
+        </div>
+
+        <div class="meta-box">
+            <div class="meta-label">Index Number</div>
+            <div class="meta-value">
+                {% if matter.documents and matter.documents[0].index_number %}
+                    {{ matter.documents[0].index_number }}
+                {% else %}
+                    —
+                {% endif %}
+            </div>
         </div>
     </div>
-</div>
-
-<div class="card">
-    <div class="section-title">Builder Status</div>
-    <div class="message">{{ matter.message }}</div>
 </div>
 
 <div class="card">
     <div class="section-title">Document Groups</div>
 
     <div class="groups">
-        {% for group_key, group_label in matter.document_groups %}
+        {% for group_name, docs in matter.groups.items() %}
             <div class="group-card">
                 <div class="group-title">
-                    {{ group_label }}
-                    <span class="group-count">{{ matter.groups[group_key]|length }}</span>
+                    {{ group_name.replace("_", " ") }}
+                    <span class="group-count">{{ docs|length }}</span>
                 </div>
 
-                {% if matter.groups[group_key] %}
+                {% if docs %}
                     <ul class="doc-list">
-                        {% for doc in matter.groups[group_key] %}
+                        {% for doc in docs %}
                             <li>
                                 <div class="doc-title">{{ doc.title }}</div>
-                                {% if doc.date or doc.source or doc.description %}
-                                    <div class="doc-meta">
-                                        {% if doc.date %}{{ doc.date }}{% endif %}
-                                        {% if doc.source %}{% if doc.date %} · {% endif %}{{ doc.source }}{% endif %}
-                                        {% if doc.description %}{% if doc.date or doc.source %} · {% endif %}{{ doc.description }}{% endif %}
-                                    </div>
-                                {% endif %}
+                                <div class="doc-meta">
+                                    Type: {{ doc.type }}
+                                    {% if doc.confidence %}
+                                        · Score: {{ doc.confidence }}
+                                    {% endif %}
+                                </div>
                             </li>
                         {% endfor %}
                     </ul>
                 {% else %}
-                    <div class="empty">No documents loaded yet.</div>
+                    <div class="empty">
+                        No documents classified.
+                    </div>
                 {% endif %}
             </div>
         {% endfor %}

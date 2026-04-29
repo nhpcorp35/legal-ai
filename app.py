@@ -1952,12 +1952,17 @@ def index():
 
 @app.route("/matter", methods=["GET", "POST"])
 def matter():
-    if request.method == "POST":
-        matter_query = clean_text(request.form.get("matter_query", ""))
-    else:
-        matter_query = clean_text(request.args.get("q", ""))
+    documents = [
+        {"filename": "Verified Complaint.pdf"},
+        {"filename": "Answer with Counterclaims.pdf"},
+        {"filename": "Notice of Motion for Summary Judgment.pdf"},
+        {"filename": "Attorney Affirmation in Opposition.pdf"},
+        {"filename": "Memorandum of Law in Opposition.pdf"},
+        {"filename": "Exhibit A - Contract.pdf"},
+        {"filename": "Decision and Order.pdf"},
+    ]
 
-    matter_data = get_matter(matter_query)
+    matter_data = get_matter(documents)
 
     return render_template(
         "matter.html",
