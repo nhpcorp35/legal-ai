@@ -23,7 +23,27 @@ DOCUMENT_GROUPS = {
     "opposition": "Oppositions",
     "reply": "Replies",
     "exhibit": "Exhibits",
+    "memo": "Memoranda of Law",
+    "order": "Orders / Decisions",
     "other": "Other Documents",
+}
+
+
+ALLOWED_EXTENSIONS = {
+    ".pdf",
+    ".docx",
+    ".doc",
+    ".txt",
+    ".rtf",
+}
+
+
+SKIP_FOLDERS = {
+    "__pycache__",
+    ".git",
+    ".venv",
+    "venv",
+    "node_modules",
 }
 
 
@@ -43,7 +63,7 @@ def classify_by_filename(filename):
     if "notice of motion" in name or "motion" in name:
         return "motion"
 
-    if "affirmation" in name or "affidavit" in name:
+    if "affirmation" in name or "affidavit" in name or "declaration" in name:
         return "affirmation"
 
     if "opposition" in name or "opp" in name:
@@ -54,6 +74,12 @@ def classify_by_filename(filename):
 
     if "exhibit" in name or "exh" in name:
         return "exhibit"
+
+    if "memo" in name or "memorandum" in name or "memorandum of law" in name:
+        return "memo"
+
+    if "order" in name or "decision" in name or "judgment" in name:
+        return "order"
 
     return "other"
 
@@ -118,29 +144,49 @@ def extract_text(path):
     return ""
 
 
-def read_matter_folder(folder_path=DEFAULT_MATTER_FOLDER):
+def should_skip_path(path):
+    parts = set(path.parts)
+
+    for folder in SKIP_FOLDERS:
+        if folder in parts:
+            return True
+
+    if path.name.startswith("."):
+        return True
+
+    return False
+
+
+def find_matter_files(folder_path):
     folder = Path(folder_path)
 
     if not folder.exists() or not folder.is_dir():
         return []
 
-    allowed_extensions = {
-        ".pdf",
-        ".docx",
-        ".doc",
-        ".txt",
-        ".rtf",
-    }
+    files = []
 
-    documents = []
+    for path in folder.rglob("*"):
+        if should_skip_path(path):
+            continue
 
-    for path in sorted(folder.iterdir()):
         if not path.is_file():
             continue
 
-        if path.suffix.lower() not in allowed_extensions:
+        if path.suffix.lower() not in ALLOWED_EXTENSIONS:
             continue
 
+        files.append(path)
+
+    return sorted(files, key=lambda p: str(p).lower())
+
+
+def read_matter_folder(folder_path=DEFAULT_MATTER_FOLDER):
+    folder = Path(folder_path)
+    files = find_matter_files(folder)
+
+    documents = []
+
+    for path in files:
         doc_type = classify_by_filename(path.name)
         extracted_text = clean_text(extract_text(path))
 
@@ -149,6 +195,8 @@ def read_matter_folder(folder_path=DEFAULT_MATTER_FOLDER):
                 "filename": path.name,
                 "title": path.name,
                 "path": str(path),
+                "relative_path": str(path.relative_to(folder)) if folder.exists() else str(path),
+                "folder": str(path.parent),
                 "type": doc_type,
                 "category": doc_type,
                 "group": DOCUMENT_GROUPS.get(doc_type, DOCUMENT_GROUPS["other"]),
@@ -182,6 +230,8 @@ def normalize_document(document):
         "filename": filename,
         "title": filename,
         "path": document.get("path", ""),
+        "relative_path": document.get("relative_path", document.get("path", "")),
+        "folder": document.get("folder", ""),
         "type": doc_type,
         "category": doc_type,
         "group": group,
