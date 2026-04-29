@@ -277,6 +277,46 @@
             margin-bottom: 14px;
             line-height: 1.4;
         }
+
+        .citation-panel {
+            border: 3px solid #111;
+            background: #fffdf7;
+        }
+
+        .citation-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 18px;
+        }
+
+        .citation-box {
+            background: #fff;
+            min-height: 140px;
+        }
+
+        .citation-text {
+            font-size: 15px;
+            line-height: 1.5;
+            font-weight: 600;
+        }
+
+        .citation-card {
+            border-top: 1px solid #eee;
+            padding-top: 12px;
+            margin-top: 12px;
+        }
+
+        .citation-card:first-child {
+            border-top: 0;
+            padding-top: 0;
+            margin-top: 0;
+        }
+
+        .citation-line {
+            font-weight: 900;
+            margin-top: 5px;
+        }
+
     </style>
 </head>
 <body>
@@ -288,7 +328,7 @@
     <div class="subtitle">
         Build one organized matter page from complaints, answers, motions, affirmations,
         oppositions, declarations, exhibits, memoranda of law, prior orders, decisions,
-        attorney work product, and draft-ready opposition sections.
+        attorney work product, draft-ready opposition sections, citation support, and exhibit mapping.
     </div>
 
     {% if matter.selected_case %}
@@ -362,7 +402,7 @@
 
             <div class="box">
                 <div class="label">Version</div>
-                <div class="value">v2.7</div>
+                <div class="value">v2.8</div>
             </div>
 
             <div class="box">
@@ -568,6 +608,125 @@
             </div>
         {% else %}
             <div class="empty">Draft generation has not been generated.</div>
+        {% endif %}
+    </div>
+
+
+    <div class="panel citation-panel">
+        <div class="panel-title">Citation + Exhibit Engine</div>
+        <div class="draft-badge">v2.8 Citation Support</div>
+
+        <div class="editable-note">
+            Suggested citations are drafting aids only. Verify exhibit lettering, NYSCEF document numbers,
+            page pins, paragraph numbers, and admissibility before filing.
+        </div>
+
+        {% if matter.citation_exhibit_engine %}
+            <div class="citation-grid">
+                <div class="box citation-box">
+                    <div class="label">Exhibit Detection</div>
+                    {% if matter.citation_exhibit_engine.exhibit_inventory %}
+                        {% for exhibit in matter.citation_exhibit_engine.exhibit_inventory %}
+                            <div class="citation-card">
+                                <div class="authority-title">Exhibit {{ exhibit.label }}</div>
+                                <div class="authority-source">{{ exhibit.filename }}</div>
+                                <div class="citation-line">{{ exhibit.citation }}</div>
+                                {% if exhibit.preview %}
+                                    <div class="authority-detail">{{ exhibit.preview }}</div>
+                                {% endif %}
+                            </div>
+                        {% endfor %}
+                    {% else %}
+                        <div class="empty">No exhibit documents detected yet.</div>
+                    {% endif %}
+                </div>
+
+                <div class="box citation-box">
+                    <div class="label">Affidavit / Affirmation Support</div>
+                    {% if matter.citation_exhibit_engine.affidavit_support %}
+                        {% for item in matter.citation_exhibit_engine.affidavit_support %}
+                            <div class="citation-card">
+                                <div class="authority-title">{{ item.filename }}</div>
+                                <div class="citation-line">{{ item.citation }}</div>
+                                <ul>
+                                    {% for point in item.support_points %}
+                                        <li>{{ point }}</li>
+                                    {% endfor %}
+                                </ul>
+                            </div>
+                        {% endfor %}
+                    {% else %}
+                        <div class="empty">No affidavit or affirmation support detected yet.</div>
+                    {% endif %}
+                </div>
+
+                <div class="box citation-box wide-box">
+                    <div class="label">Fact-to-Document Support Map</div>
+                    {% if matter.citation_exhibit_engine.fact_support_map %}
+                        {% for item in matter.citation_exhibit_engine.fact_support_map %}
+                            <div class="citation-card">
+                                <div class="citation-text">{{ item.fact }}</div>
+                                <div class="citation-line">Suggested: {{ item.suggested_citation }}</div>
+                                <div class="authority-source">Source: {{ item.source_document }}</div>
+                                {% if item.supporting_documents %}
+                                    <ul>
+                                        {% for support in item.supporting_documents %}
+                                            <li>
+                                                <strong>{{ support.filename }}</strong>
+                                                — {{ support.citation }}
+                                            </li>
+                                        {% endfor %}
+                                    </ul>
+                                {% endif %}
+                            </div>
+                        {% endfor %}
+                    {% else %}
+                        <div class="empty">No fact support map generated yet.</div>
+                    {% endif %}
+                </div>
+
+                <div class="box citation-box wide-box">
+                    <div class="label">Contradiction / Weakness Support Links</div>
+                    {% if matter.citation_exhibit_engine.contradiction_support_links %}
+                        {% for item in matter.citation_exhibit_engine.contradiction_support_links %}
+                            <div class="citation-card">
+                                <div class="citation-text">{{ item.weakness }}</div>
+                                {% if item.supporting_documents %}
+                                    <ul>
+                                        {% for support in item.supporting_documents %}
+                                            <li>
+                                                <strong>{{ support.filename }}</strong>
+                                                — {{ support.citation }}
+                                            </li>
+                                        {% endfor %}
+                                    </ul>
+                                {% else %}
+                                    <div class="empty">No direct supporting document detected. Attorney review required.</div>
+                                {% endif %}
+                            </div>
+                        {% endfor %}
+                    {% else %}
+                        <div class="empty">No contradiction support links generated yet.</div>
+                    {% endif %}
+                </div>
+
+                <div class="box citation-box wide-box">
+                    <div class="label">Suggested Draft Citations</div>
+                    {% if matter.citation_exhibit_engine.citation_suggestions %}
+                        {% for item in matter.citation_exhibit_engine.citation_suggestions %}
+                            <div class="citation-card">
+                                <div class="citation-text">{{ item.draft_fact }}</div>
+                                <div class="citation-line">{{ item.suggested_citation }}</div>
+                                <div class="authority-source">{{ item.source_document }}</div>
+                            </div>
+                        {% endfor %}
+                    {% else %}
+                        <div class="empty">No citation suggestions generated yet.</div>
+                    {% endif %}
+                </div>
+            </div>
+        {% else %}
+            <div class="empty">Citation + Exhibit Engine has not generated support yet.</div>
         {% endif %}
     </div>
 

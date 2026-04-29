@@ -633,6 +633,255 @@ def has_any_document_type(documents, types):
     return any(doc.get("type") in types for doc in documents)
 
 
+
+def extract_nyscef_doc_no(document):
+    text = clean_text(document.get("text") or document.get("preview") or "")
+    filename = clean_text(document.get("filename"))
+    haystack = f"{filename} {text[:2000]}"
+
+    patterns = [
+        r"NYSCEF\s*(?:Doc\.?|Document)?\s*(?:No\.?|Number)?\s*[:#]?\s*(\d+)",
+        r"Doc\.?\s*No\.?\s*[:#]?\s*(\d+)",
+        r"Document\s+No\.?\s*[:#]?\s*(\d+)",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, haystack, re.IGNORECASE)
+        if match:
+            return clean_text(match.group(1))
+
+    return "__"
+
+
+def normalize_exhibit_label(value):
+    value = clean_text(value).upper()
+    value = value.replace("EXHIBIT", "").replace("EXH.", "").replace("EXH", "")
+    value = re.sub(r"[^A-Z0-9]", "", value)
+    if value:
+        return value[:8]
+    return "__"
+
+
+def detect_exhibit_label(document, fallback_index=1):
+    filename = clean_text(document.get("filename"))
+    text = clean_text(document.get("text") or document.get("preview") or "")
+    haystack = f"{filename} {text[:1200]}"
+
+    patterns = [
+        r"Exhibit\s+([A-Z0-9]{1,4})",
+        r"Exh\.?\s+([A-Z0-9]{1,4})",
+        r"Ex\.\s+([A-Z0-9]{1,4})",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, haystack, re.IGNORECASE)
+        if match:
+            return normalize_exhibit_label(match.group(1))
+
+    if document.get("type") == "exhibit":
+        return chr(64 + fallback_index) if 1 <= fallback_index <= 26 else str(fallback_index)
+
+    return "__"
+
+
+def citation_text_for_document(document, exhibit_label=None):
+    doc_no = extract_nyscef_doc_no(document)
+    label = exhibit_label or detect_exhibit_label(document)
+
+    if label and label != "__":
+        return f"See Exhibit {label}; NYSCEF Doc. No. {doc_no}."
+
+    return f"See NYSCEF Doc. No. {doc_no}."
+
+
+def split_support_sentences(text, limit=18):
+    cleaned = clean_text(text)
+    if not cleaned:
+        return []
+
+    rough_sentences = re.split(r"(?<=[.!?])\s+", cleaned)
+    sentences = []
+
+    for sentence in rough_sentences:
+        sentence = clean_text(sentence)
+        if len(sentence) < 45:
+            continue
+        if len(sentence) > 360:
+            sentence = sentence[:357].rstrip() + "..."
+        sentences.append(sentence)
+        if len(sentences) >= limit:
+            break
+
+    return sentences
+
+
+def support_keywords_for_sentence(sentence):
+    words = re.findall(r"[A-Za-z][A-Za-z0-9'\-]{3,}", sentence.lower())
+    stop_words = {
+        "that", "this", "with", "from", "were", "have", "been", "will", "would", "could",
+        "should", "there", "their", "where", "which", "when", "what", "into", "upon",
+        "here", "court", "plaintiff", "defendant", "motion", "matter", "record",
+    }
+    unique = []
+    for word in words:
+        if word in stop_words:
+            continue
+        if word not in unique:
+            unique.append(word)
+    return unique[:8]
+
+
+def rank_supporting_documents(sentence, documents, max_results=3):
+    keywords = support_keywords_for_sentence(sentence)
+    ranked = []
+
+    for doc in documents:
+        text = clean_text(doc.get("text") or doc.get("preview") or "").lower()
+        if not text:
+            continue
+
+        score = 0
+        for keyword in keywords:
+            if keyword in text:
+                score += 5
+
+        doc_type = doc.get("type") or "other"
+        if doc_type in {"exhibit", "affirmation", "opposition", "motion", "complaint", "answer"}:
+            score += 4
+        if doc_type in {"selected_case", "memo", "order"}:
+            score += 1
+
+        if score > 0:
+            ranked.append(
+                {
+                    "filename": doc.get("filename", ""),
+                    "type": doc_type,
+                    "group": doc.get("group", ""),
+                    "score": score,
+                    "citation": citation_text_for_document(doc),
+                }
+            )
+
+    ranked.sort(key=lambda item: item["score"], reverse=True)
+    return ranked[:max_results]
+
+
+def build_exhibit_inventory(documents):
+    inventory = []
+    exhibit_docs = [doc for doc in documents if doc.get("type") == "exhibit"]
+
+    for index, doc in enumerate(exhibit_docs, start=1):
+        label = detect_exhibit_label(doc, index)
+        preview = clean_text(doc.get("preview") or doc.get("text"))[:260]
+        inventory.append(
+            {
+                "label": label,
+                "filename": doc.get("filename", ""),
+                "doc_no": extract_nyscef_doc_no(doc),
+                "citation": citation_text_for_document(doc, label),
+                "preview": preview,
+            }
+        )
+
+    return inventory
+
+
+def build_affidavit_support(documents):
+    support = []
+    affidavit_docs = [doc for doc in documents if doc.get("type") == "affirmation"]
+
+    for doc in affidavit_docs[:8]:
+        sentences = split_support_sentences(doc.get("text") or doc.get("preview"), limit=4)
+        support.append(
+            {
+                "filename": doc.get("filename", ""),
+                "doc_no": extract_nyscef_doc_no(doc),
+                "citation": citation_text_for_document(doc),
+                "support_points": sentences or ["Review this affirmation or affidavit for record-supported factual assertions."],
+            }
+        )
+
+    return support
+
+
+def candidate_fact_sentences(documents):
+    preferred = ["complaint", "answer", "motion", "opposition", "affirmation", "exhibit"]
+    facts = []
+
+    for doc_type in preferred:
+        for doc in documents:
+            if doc.get("type") != doc_type:
+                continue
+            for sentence in split_support_sentences(doc.get("text") or doc.get("preview"), limit=6):
+                if re.search(r"\b(argue|contend|therefore|wherefore|respectfully|pursuant)\b", sentence, re.IGNORECASE):
+                    continue
+                facts.append(
+                    {
+                        "fact": sentence,
+                        "source_document": doc.get("filename", ""),
+                        "source_type": doc.get("type", ""),
+                        "suggested_citation": citation_text_for_document(doc),
+                        "supporting_documents": rank_supporting_documents(sentence, documents, max_results=3),
+                    }
+                )
+                if len(facts) >= 10:
+                    return facts
+
+    return facts
+
+
+def build_contradiction_support_links(summary, documents):
+    weaknesses = build_weaknesses(summary, documents)
+    links = []
+
+    for weakness in weaknesses:
+        supporting = rank_supporting_documents(weakness, documents, max_results=3)
+        links.append(
+            {
+                "weakness": weakness,
+                "supporting_documents": supporting,
+                "note": "Use these documents to confirm, narrow, or contradict the weakness before finalizing the draft.",
+            }
+        )
+
+    return links
+
+
+def build_citation_exhibit_engine(summary, documents):
+    fact_map = candidate_fact_sentences(documents)
+    exhibit_inventory = build_exhibit_inventory(documents)
+    affidavit_support = build_affidavit_support(documents)
+    contradiction_links = build_contradiction_support_links(summary, documents)
+
+    citation_suggestions = []
+    for fact in fact_map[:6]:
+        citation_suggestions.append(
+            {
+                "draft_fact": fact.get("fact"),
+                "suggested_citation": fact.get("suggested_citation"),
+                "source_document": fact.get("source_document"),
+            }
+        )
+
+    if not citation_suggestions and exhibit_inventory:
+        for exhibit in exhibit_inventory[:6]:
+            citation_suggestions.append(
+                {
+                    "draft_fact": "Use this exhibit as record support after attorney review.",
+                    "suggested_citation": exhibit.get("citation"),
+                    "source_document": exhibit.get("filename"),
+                }
+            )
+
+    return {
+        "exhibit_inventory": exhibit_inventory,
+        "affidavit_support": affidavit_support,
+        "fact_support_map": fact_map,
+        "contradiction_support_links": contradiction_links,
+        "citation_suggestions": citation_suggestions,
+        "drafting_note": "Attorney must verify exhibit labels, NYSCEF numbers, paragraph numbers, page pins, and admissibility before filing.",
+    }
+
 def build_authority_list(summary, documents):
     selected_case = summary.get("selected_case") or {}
     strongest_docs = summary.get("strongest_motion_documents", [])
@@ -956,7 +1205,7 @@ def build_statement_of_facts(summary, documents):
         lines.append(f"The matter file also includes {order_doc}, which should be reviewed for any prior rulings, procedural limits, or law-of-the-case issues.")
 
     lines.append(
-        "The attorney should replace this starter section with record-specific facts, citations to exhibits, affidavit references, and procedural dates."
+        "The attorney should replace this starter section with record-specific facts, exhibit citations, affidavit paragraph references, NYSCEF document numbers, and procedural dates."
     )
 
     return "\n\n".join(lines)
@@ -1005,7 +1254,7 @@ def build_argument_skeleton(summary, documents):
                 "heading": heading,
                 "body": (
                     "Attorney drafting note: Insert governing standard, record facts, exhibit citations, "
-                    "and application of the selected authority to the motion record."
+                    "NYSCEF Doc. No. citations, affidavit support, and application of the selected authority to the motion record."
                 ),
             }
         )
@@ -1115,6 +1364,7 @@ def build_attorney_work_product(summary, documents):
         "drafting_strategy": build_drafting_strategy(summary, documents),
         "recommended_outline": build_recommended_outline(summary, documents),
         "draft_generation": build_draft_generation(summary, documents),
+        "citation_exhibit_engine": build_citation_exhibit_engine(summary, documents),
         "selected_rule": clean_text(selected_case.get("rule")),
         "selected_holding": clean_text(selected_case.get("holding")),
     }
@@ -1182,4 +1432,5 @@ def get_matter(selected_case=None, documents=None, matter_folder=DEFAULT_MATTER_
         "selected_case": summary.get("selected_case"),
         "attorney_work_product": summary.get("attorney_work_product", {}),
         "draft_generation": summary.get("attorney_work_product", {}).get("draft_generation", {}),
+        "citation_exhibit_engine": summary.get("attorney_work_product", {}).get("citation_exhibit_engine", {}),
     }
