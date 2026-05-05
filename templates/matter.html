@@ -1,103 +1,132 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Matter Builder Debug</title>
+    <title>Authority Engine</title>
     <style>
         body {
             font-family: Arial, sans-serif;
-            margin: 32px;
+            margin: 30px;
             color: #111;
         }
 
-        .panel {
-            border: 2px solid #111;
-            border-radius: 10px;
-            padding: 22px;
-            margin-bottom: 24px;
-        }
-
-        .label {
-            font-size: 13px;
-            color: #666;
-            font-weight: 800;
-            text-transform: uppercase;
-        }
-
-        .value {
-            font-size: 20px;
-            font-weight: 800;
-            margin-bottom: 14px;
+        h1 {
+            font-size: 34px;
+            margin-bottom: 20px;
         }
 
         .badge {
             display: inline-block;
             background: #111;
             color: #fff;
-            padding: 6px 10px;
             border-radius: 999px;
+            padding: 6px 10px;
             font-weight: 800;
             font-size: 13px;
+            margin-bottom: 12px;
         }
 
         .card {
             border: 1px solid #ddd;
             border-radius: 8px;
-            padding: 14px;
-            margin-top: 12px;
+            padding: 14px 16px;
+            margin-bottom: 14px;
+        }
+
+        .case-title {
+            font-weight: 900;
+            font-size: 20px;
+        }
+
+        .meta {
+            color: #555;
+            margin-top: 4px;
+        }
+
+        .tag {
+            display: inline-block;
+            background: #111;
+            color: #fff;
+            border-radius: 4px;
+            padding: 4px 7px;
+            font-size: 12px;
+            font-weight: 800;
+            margin-right: 6px;
+            margin-top: 8px;
+        }
+
+        .context {
+            margin-top: 10px;
+            background: #f5f5f5;
+            border-radius: 7px;
+            padding: 10px;
+            line-height: 1.45;
         }
 
         .empty {
             color: #777;
             font-style: italic;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 16px;
         }
     </style>
 </head>
 <body>
 
-<h1>Matter Builder Debug</h1>
+<h1>Authority Engine</h1>
 
-<div class="panel">
-    <div class="label">Matter</div>
-    <div class="value">{{ matter.matter_name }}</div>
+<div class="badge">{{ matter.real_authority_layer.version }}</div>
 
-    <div class="label">Documents Loaded</div>
-    <div class="value">{{ matter.document_count }}</div>
-</div>
+<p>{{ matter.real_authority_layer.verification_warning }}</p>
 
-<div class="panel">
-    <h2>Authority Engine</h2>
-    <span class="badge">{{ matter.real_authority_layer.version }}</span>
+<h2>Jurisdiction</h2>
+<p>
+    <strong>{{ matter.real_authority_layer.jurisdiction.state }}</strong>
+    —
+    <strong>{{ matter.real_authority_layer.jurisdiction.court }}</strong>
+</p>
 
-    <p>{{ matter.real_authority_layer.verification_warning }}</p>
+<h2>Detected Issues</h2>
+<ul>
+    {% for issue in matter.real_authority_layer.issues_detected %}
+        <li>{{ issue.issue }} ({{ issue.hits }} signal)</li>
+    {% endfor %}
+</ul>
 
-    <div class="label">Jurisdiction</div>
-    <div class="value">
-        {{ matter.real_authority_layer.jurisdiction.state }} —
-        {{ matter.real_authority_layer.jurisdiction.court }}
-    </div>
+<h2>Ranked Authorities</h2>
 
-    <h3>Detected Issues</h3>
-    <ul>
-        {% for issue in matter.real_authority_layer.issues_detected %}
-            <li>{{ issue.issue }} ({{ issue.hits }} signal)</li>
-        {% endfor %}
-    </ul>
+{% if matter.real_authority_layer.authorities %}
+    {% for a in matter.real_authority_layer.authorities %}
+        <div class="card">
+            <div class="case-title">{{ a.case_name }}</div>
 
-    <h3>Ranked Authorities</h3>
-
-    {% if matter.real_authority_layer.authorities %}
-        {% for a in matter.real_authority_layer.authorities %}
-            <div class="card">
-                <strong>{{ a.case_name }}</strong><br>
-                {{ a.authority_rank }} — score {{ a.relevance_score }}<br>
-                <p>{{ a.quote }}</p>
-                <small>{{ a.verification_status }}</small>
+            <div class="meta">
+                {{ a.authority_rank }} — score {{ a.relevance_score }}
             </div>
-        {% endfor %}
-    {% else %}
-        <div class="empty">No real citations found yet.</div>
-    {% endif %}
-</div>
+
+            <div>
+                <span class="tag">{{ a.side }}</span>
+                <span class="tag">{{ a.used_for }}</span>
+            </div>
+
+            <div class="context">
+                {{ a.context }}
+            </div>
+
+            <div class="meta">
+                {{ a.full_citation }}
+            </div>
+
+            <div class="meta">
+                {{ a.verification_status }}
+            </div>
+        </div>
+    {% endfor %}
+{% else %}
+    <div class="empty">
+        No authorities found. Check terminal output for LOADED, TEXT SAMPLE, CHECK SENTENCE, and AUTHORITIES RETURNED.
+    </div>
+{% endif %}
 
 </body>
 </html>
