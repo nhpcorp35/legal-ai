@@ -14,6 +14,16 @@ try:
 except Exception:
     Document = None
 
+try:
+    import pytesseract
+except Exception:
+    pytesseract = None
+
+try:
+    from pdf2image import convert_from_path
+except Exception:
+    convert_from_path = None
+
 
 DEFAULT_MATTER_FOLDER = Path("matter_docs")
 
@@ -60,6 +70,10 @@ COURT_HEADER_WORDS = {
     "state of new york",
     "united states",
 }
+
+
+OCR_MIN_TEXT_LENGTH = 120
+OCR_MAX_PAGES = 8
 
 
 def clean_text(value):
@@ -130,7 +144,7 @@ def extract_txt(path):
         return ""
 
 
-def extract_pdf(path):
+def extract_pdf_native(path):
     if PdfReader is None:
         return ""
 
@@ -140,13 +154,75 @@ def extract_pdf(path):
 
         for page in reader.pages[:20]:
             text = page.extract_text() or ""
+
             if text.strip():
                 pages.append(text)
 
-        return "\n".join(pages)
+        extracted = "\n".join(pages)
 
-    except Exception:
+        print(f"PDF NATIVE [{path.name}] chars={len(extracted)}")
+
+        return extracted
+
+    except Exception as e:
+        print(f"PDF NATIVE FAILED [{path.name}] -> {e}")
         return ""
+
+
+def extract_pdf_ocr(path):
+    if pytesseract is None or convert_from_path is None:
+        print(f"OCR UNAVAILABLE [{path.name}]")
+        return ""
+
+    try:
+        print(f"OCR START [{path.name}]")
+
+        images = convert_from_path(
+            str(path),
+            dpi=250,
+            first_page=1,
+            last_page=OCR_MAX_PAGES,
+        )
+
+        pages = []
+
+        for index, image in enumerate(images, start=1):
+            print(f"OCR PAGE {index} [{path.name}]")
+
+            text = pytesseract.image_to_string(image)
+
+            if text.strip():
+                pages.append(text)
+
+        extracted = "\n".join(pages)
+
+        print(f"OCR COMPLETE [{path.name}] chars={len(extracted)}")
+
+        return extracted
+
+    except Exception as e:
+        print(f"OCR FAILED [{path.name}] -> {e}")
+        return ""
+
+
+def extract_pdf(path):
+    native_text = clean_text(extract_pdf_native(path))
+
+    if len(native_text) >= OCR_MIN_TEXT_LENGTH:
+        print(f"PDF OK [{path.name}] using native extraction")
+        return native_text
+
+    print(f"PDF LOW TEXT [{path.name}] attempting OCR fallback")
+
+    ocr_text = clean_text(extract_pdf_ocr(path))
+
+    if len(ocr_text) > len(native_text):
+        print(f"PDF OCR SUCCESS [{path.name}]")
+        return ocr_text
+
+    print(f"PDF OCR NO IMPROVEMENT [{path.name}]")
+
+    return native_text
 
 
 def extract_docx(path):
@@ -159,6 +235,7 @@ def extract_docx(path):
 
         for paragraph in doc.paragraphs:
             text = paragraph.text.strip()
+
             if text:
                 paragraphs.append(text)
 
@@ -226,8 +303,17 @@ def read_matter_folder(folder_path=DEFAULT_MATTER_FOLDER):
     documents = []
 
     for path in files:
+        print(f"\nPROCESSING FILE: {path.name}")
+
         doc_type = classify_by_filename(path.name)
+
         extracted_text = clean_text(extract_text(path))
+
+        print(
+            f"CLASSIFIED [{path.name}] "
+            f"type={doc_type} "
+            f"chars={len(extracted_text)}"
+        )
 
         documents.append(
             {
@@ -261,6 +347,7 @@ def selected_case_to_document(selected_case):
     cause = clean_text(selected_case.get("primary_cause"))
     holding = clean_text(selected_case.get("holding"))
     rule = clean_text(selected_case.get("rule"))
+
     text = clean_text(
         selected_case.get("formatted_text")
         or selected_case.get("text")
@@ -273,20 +360,28 @@ def selected_case_to_document(selected_case):
 
     if title:
         metadata_lines.append(title)
+
     if court:
         metadata_lines.append(f"Court: {court}")
+
     if date:
         metadata_lines.append(f"Date: {date}")
+
     if citation:
         metadata_lines.append(f"Citation: {citation}")
+
     if motion:
         metadata_lines.append(f"Motion: {motion}")
+
     if outcome:
         metadata_lines.append(f"Outcome: {outcome}")
+
     if cause:
         metadata_lines.append(f"Cause: {cause}")
+
     if rule:
         metadata_lines.append(f"Rule: {rule}")
+
     if holding:
         metadata_lines.append(f"Holding: {holding}")
 
@@ -331,6 +426,7 @@ def normalize_document(document):
     )
 
     group = DOCUMENT_GROUPS.get(doc_type, DOCUMENT_GROUPS["other"])
+
     text = clean_text(document.get("text", ""))
 
     return {
@@ -372,6 +468,7 @@ def combined_text(documents, limit=50000):
 
     for doc in documents:
         text = clean_text(doc.get("text", ""))
+
         if text:
             chunks.append(text)
 
@@ -386,6 +483,7 @@ def extract_index_number(text):
 
     for pattern in patterns:
         match = re.search(pattern, text, re.IGNORECASE)
+
         if match:
             return clean_text(match.group(1))
 
@@ -400,6 +498,7 @@ def extract_case_name(text):
 
     for pattern in patterns:
         match = re.search(pattern, text)
+
         if match:
             left = clean_case_party(match.group(1))
             right = clean_case_party(match.group(2))
@@ -424,6 +523,7 @@ def extract_parties(case_name):
 
 def detect_motion_posture(documents, text):
     names = " ".join(doc.get("filename", "") for doc in documents).lower()
+
     haystack = f"{names} {text.lower()}"
 
     if "summary judgment" in haystack:
@@ -490,6 +590,7 @@ def strongest_motion_documents(documents):
         )
 
     ranked.sort(key=lambda item: item["score"], reverse=True)
+
     return ranked[:5]
 
 
@@ -527,6 +628,7 @@ def build_attorney_work_product(summary, documents):
 
 def build_matter_summary(documents):
     selected = selected_case_summary(documents)
+
     text = combined_text(documents)
 
     if selected and selected.get("title"):
@@ -561,6 +663,7 @@ def get_matter(selected_case=None, documents=None, matter_folder=DEFAULT_MATTER_
     folder_documents = read_matter_folder(matter_folder)
 
     selected_case_document = None
+
     if isinstance(selected_case, dict):
         selected_case_document = selected_case_to_document(selected_case)
 
@@ -576,7 +679,9 @@ def get_matter(selected_case=None, documents=None, matter_folder=DEFAULT_MATTER_
     all_documents.extend(documents)
 
     normalized_documents = [normalize_document(doc) for doc in all_documents]
+
     grouped_documents = group_documents(normalized_documents)
+
     summary = build_matter_summary(normalized_documents)
 
     return {

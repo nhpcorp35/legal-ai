@@ -3,7 +3,7 @@
 import re
 
 
-ENGINE_VERSION = "Issue Engine v3.3"
+ENGINE_VERSION = "Issue Engine v3.4 — Source Traceability"
 
 
 REQUIRED_DOCUMENT_TYPES = {
@@ -120,6 +120,111 @@ def split_sentences(text):
     return re.split(r'(?<=[.!?])\s+', clean_text(text))
 
 
+def get_doc_text(doc):
+    return clean_text(doc.get("text") or doc.get("preview"))
+
+
+def get_doc_name(doc):
+    return clean_text(doc.get("filename") or doc.get("title") or "Unknown Document")
+
+
+def get_doc_type(doc):
+    return clean_text(doc.get("type") or doc.get("category") or "other")
+
+
+def first_text_document(documents):
+    for doc in documents:
+        if get_doc_text(doc):
+            return doc
+    return documents[0] if documents else {}
+
+
+def find_snippet(text, needle="", limit=420):
+    text = clean_text(text)
+    needle = clean_text(needle)
+
+    if not text:
+        return ""
+
+    if needle:
+        lower_text = text.lower()
+        lower_needle = needle.lower()
+        index = lower_text.find(lower_needle)
+
+        if index >= 0:
+            start = max(0, index - 140)
+            end = min(len(text), index + len(needle) + 260)
+            return clean_text(text[start:end])[:limit]
+
+    return text[:limit]
+
+
+def find_sentence_with_term(text, term):
+    term = clean_text(term).lower()
+
+    for sentence in split_sentences(text):
+        if term and term in sentence.lower():
+            return sentence[:500]
+
+    return find_snippet(text, term)
+
+
+def find_document_with_term(documents, term):
+    term = clean_text(term).lower()
+
+    for doc in documents:
+        text = get_doc_text(doc).lower()
+        if term and term in text:
+            return doc
+
+    return first_text_document(documents)
+
+
+def build_issue_object(
+    issue,
+    category="general",
+    source_doc=None,
+    source_snippet="",
+    supporting_allegation="",
+    supporting_source_doc=None,
+    risk_level="medium",
+    recommended_focus="Review underlying record support.",
+    reason="General litigation concern detected.",
+):
+    source_doc = source_doc or {}
+    supporting_source_doc = supporting_source_doc or {}
+
+    scored = calculate_issue_score(issue)
+
+    if scored.get("score", 40) >= 85:
+        risk_level = "high"
+    elif scored.get("score", 40) >= 65:
+        risk_level = "medium"
+    else:
+        risk_level = risk_level or "low"
+
+    if scored.get("recommended_focus"):
+        recommended_focus = scored["recommended_focus"]
+
+    if scored.get("reason"):
+        reason = scored["reason"]
+
+    return {
+        "issue": clean_text(issue),
+        "category": category,
+        "score": scored.get("score", 40),
+        "risk_level": risk_level,
+        "reason": reason,
+        "recommended_focus": recommended_focus,
+        "source_document": get_doc_name(source_doc),
+        "source_type": get_doc_type(source_doc),
+        "source_snippet": clean_text(source_snippet),
+        "supporting_allegation": clean_text(supporting_allegation),
+        "supporting_source_document": get_doc_name(supporting_source_doc) if supporting_source_doc else "",
+        "supporting_source_type": get_doc_type(supporting_source_doc) if supporting_source_doc else "",
+    }
+
+
 def detect_motion_type(selected_case, documents):
     selected_motion = clean_text((selected_case or {}).get("motion")).lower()
 
@@ -163,15 +268,45 @@ def detect_missing_documents(documents, motion_type):
 
     missing = []
 
+    source_doc = first_text_document(documents)
+
     for item in required:
         if item not in existing:
-            missing.append(f"Missing expected document category: {item}.")
+            missing.append(
+                build_issue_object(
+                    issue=f"Missing expected document category: {item}.",
+                    category="missing_document",
+                    source_doc=source_doc,
+                    source_snippet="Document inventory does not include this expected filing category.",
+                    risk_level="medium",
+                    recommended_focus="Confirm whether the matter folder is complete before drafting.",
+                    reason=f"Expected {item} for {motion_type}, but none was classified.",
+                )
+            )
 
     return missing
 
 
-def detect_burden_issues(motion_type):
-    return BURDEN_RULES.get(motion_type, [])
+def detect_burden_issues(motion_type, documents):
+    source_doc = first_text_document(documents)
+    rules = BURDEN_RULES.get(motion_type, [])
+
+    issues = []
+
+    for rule in rules:
+        issues.append(
+            build_issue_object(
+                issue=rule,
+                category="burden",
+                source_doc=source_doc,
+                source_snippet=f"Motion type detected: {motion_type}.",
+                risk_level="high",
+                recommended_focus="Use as threshold briefing framework.",
+                reason="Burden rule generated from detected motion posture.",
+            )
+        )
+
+    return issues
 
 
 def extract_dates(text):
@@ -191,22 +326,39 @@ def detect_date_contradictions(documents):
     date_map = {}
 
     for doc in documents:
-        text = clean_text(doc.get("text") or doc.get("preview"))[:5000]
-        filename = clean_text(doc.get("filename"))
+        text = get_doc_text(doc)[:5000]
+        filename = get_doc_name(doc)
 
         dates = extract_dates(text)
 
         for item in dates:
-            date_map.setdefault(item, []).append(filename)
+            date_map.setdefault(item, []).append(
+                {
+                    "filename": filename,
+                    "doc": doc,
+                    "snippet": find_sentence_with_term(text, item),
+                }
+            )
 
     contradictions = []
 
     for date_value, sources in date_map.items():
-        unique_sources = list(set(sources))
+        unique_names = sorted(set(item["filename"] for item in sources))
 
-        if len(unique_sources) >= 3:
+        if len(unique_names) >= 3:
+            first_source = sources[0]
             contradictions.append(
-                f"Date '{date_value}' appears across multiple documents and should be verified for consistency."
+                build_issue_object(
+                    issue=f"Date '{date_value}' appears across multiple documents and should be verified for consistency.",
+                    category="date_contradiction",
+                    source_doc=first_source["doc"],
+                    source_snippet=first_source["snippet"],
+                    supporting_allegation=f"Same date appears in: {', '.join(unique_names[:5])}.",
+                    supporting_source_doc=first_source["doc"],
+                    risk_level="medium",
+                    recommended_focus="Compare the record timeline and confirm whether the date is consistent.",
+                    reason="Same date appears across multiple document sources.",
+                )
             )
 
     return contradictions[:10]
@@ -216,9 +368,9 @@ def extract_allegations(documents):
     allegations = []
 
     for doc in documents:
-        text = clean_text(doc.get("text") or doc.get("preview"))
-        filename = clean_text(doc.get("filename"))
-        doc_type = clean_text(doc.get("type"))
+        text = get_doc_text(doc)
+        filename = get_doc_name(doc)
+        doc_type = get_doc_type(doc)
 
         sentences = split_sentences(text)
 
@@ -232,6 +384,10 @@ def extract_allegations(documents):
                             "statement": sentence[:500],
                             "source": filename,
                             "doc_type": doc_type,
+                            "source_document": filename,
+                            "source_type": doc_type,
+                            "source_snippet": sentence[:500],
+                            "doc": doc,
                         }
                     )
                     break
@@ -243,35 +399,73 @@ def detect_missing_proof(allegations, documents):
     findings = []
 
     combined = " ".join(
-        clean_text(doc.get("text") or doc.get("preview")).lower()
+        get_doc_text(doc).lower()
         for doc in documents
     )
 
+    seen = set()
+
     for item in allegations:
-        statement = item.get("statement", "").lower()
+        statement = item.get("statement", "")
+        statement_lower = statement.lower()
+        source_doc = item.get("doc") or {}
+        source_snippet = item.get("source_snippet") or statement
 
-        if "notice" in statement and "exhibit" not in combined:
-            findings.append(
-                "Notice allegation may lack exhibit support."
-            )
+        if "notice" in statement_lower and "exhibit" not in combined:
+            issue = "Notice allegation may lack exhibit support."
+            if issue not in seen:
+                findings.append(
+                    build_issue_object(
+                        issue=issue,
+                        category="missing_proof",
+                        source_doc=source_doc,
+                        source_snippet=source_snippet,
+                        supporting_allegation=statement,
+                        supporting_source_doc=source_doc,
+                        risk_level="high",
+                        recommended_focus="Demand or identify notice exhibit proof.",
+                        reason="Notice allegation detected, but no exhibit reference found across the document set.",
+                    )
+                )
+                seen.add(issue)
 
-        if "damages" in statement and "invoice" not in combined:
-            findings.append(
-                "Damages allegations may lack documentary support."
-            )
+        if "damages" in statement_lower and "invoice" not in combined:
+            issue = "Damages allegations may lack documentary support."
+            if issue not in seen:
+                findings.append(
+                    build_issue_object(
+                        issue=issue,
+                        category="missing_proof",
+                        source_doc=source_doc,
+                        source_snippet=source_snippet,
+                        supporting_allegation=statement,
+                        supporting_source_doc=source_doc,
+                        risk_level="medium",
+                        recommended_focus="Look for invoices, ledgers, payment records, or damages exhibits.",
+                        reason="Damages allegation detected, but no invoice reference found across the document set.",
+                    )
+                )
+                seen.add(issue)
 
-        if "contract" in statement and "agreement" not in combined:
-            findings.append(
-                "Contract allegations may lack agreement or contract exhibit."
-            )
+        if "contract" in statement_lower and "agreement" not in combined:
+            issue = "Contract allegations may lack agreement or contract exhibit."
+            if issue not in seen:
+                findings.append(
+                    build_issue_object(
+                        issue=issue,
+                        category="missing_proof",
+                        source_doc=source_doc,
+                        source_snippet=source_snippet,
+                        supporting_allegation=statement,
+                        supporting_source_doc=source_doc,
+                        risk_level="high",
+                        recommended_focus="Confirm whether the operative agreement is in the record.",
+                        reason="Contract allegation detected, but no agreement reference found across the document set.",
+                    )
+                )
+                seen.add(issue)
 
-    unique = []
-
-    for finding in findings:
-        if finding not in unique:
-            unique.append(finding)
-
-    return unique[:10]
+    return findings[:10]
 
 
 def detect_position_conflicts(allegations):
@@ -285,13 +479,15 @@ def detect_position_conflicts(allegations):
         statement = item.get("statement", "")
 
         if doc_type == "complaint":
-            complaint_claims.append(statement)
+            complaint_claims.append(item)
 
         if doc_type in ["answer", "opposition"]:
-            defense_claims.append(statement)
+            defense_claims.append(item)
 
-    for plaintiff_statement in complaint_claims:
-        for defense_statement in defense_claims:
+    for plaintiff_item in complaint_claims:
+        for defense_item in defense_claims:
+            plaintiff_statement = plaintiff_item.get("statement", "")
+            defense_statement = defense_item.get("statement", "")
 
             if (
                 "breach" in plaintiff_statement.lower()
@@ -303,26 +499,72 @@ def detect_position_conflicts(allegations):
                         "plaintiff_position": plaintiff_statement[:220],
                         "defense_position": defense_statement[:220],
                         "risk_level": "high",
+                        "source_document": plaintiff_item.get("source_document", ""),
+                        "source_type": plaintiff_item.get("source_type", ""),
+                        "source_snippet": plaintiff_statement[:500],
+                        "supporting_allegation": defense_statement[:500],
+                        "supporting_source_document": defense_item.get("source_document", ""),
+                        "supporting_source_type": defense_item.get("source_type", ""),
+                        "plaintiff_doc": plaintiff_item.get("doc", {}),
+                        "defense_doc": defense_item.get("doc", {}),
                     }
                 )
 
     return conflicts[:10]
 
 
+def position_conflicts_to_issues(position_conflicts):
+    issues = []
+
+    for conflict in position_conflicts:
+        issues.append(
+            build_issue_object(
+                issue=f"{conflict['issue']} Risk Level: {conflict['risk_level']}.",
+                category="position_conflict",
+                source_doc=conflict.get("plaintiff_doc", {}),
+                source_snippet=conflict.get("source_snippet", ""),
+                supporting_allegation=conflict.get("supporting_allegation", ""),
+                supporting_source_doc=conflict.get("defense_doc", {}),
+                risk_level=conflict.get("risk_level", "high"),
+                recommended_focus="Use conflicting positions to frame disputed facts or credibility attack.",
+                reason="Complaint-side allegation appears to conflict with defense-side denial.",
+            )
+        )
+
+    return issues
+
+
 def detect_weak_allegations(documents):
     weak = []
 
-    for doc in documents:
-        text = clean_text(doc.get("text") or doc.get("preview"))
-        filename = clean_text(doc.get("filename"))
+    seen = set()
 
+    for doc in documents:
+        text = get_doc_text(doc)
+        filename = get_doc_name(doc)
         lower = text.lower()
 
         for phrase in WEAK_PHRASES:
             if phrase in lower:
+                key = (filename, phrase)
+
+                if key in seen:
+                    continue
+
                 weak.append(
-                    f"Potential weak allegation language detected in {filename}: '{phrase}'."
+                    build_issue_object(
+                        issue=f"Potential weak allegation language detected: '{phrase}'.",
+                        category="weak_allegation",
+                        source_doc=doc,
+                        source_snippet=find_sentence_with_term(text, phrase),
+                        supporting_allegation=find_sentence_with_term(text, phrase),
+                        supporting_source_doc=doc,
+                        risk_level="medium",
+                        recommended_focus="Use uncertainty language for impeachment, narrowing, or burden attack.",
+                        reason=f"Document contains weak or uncertain phrase: {phrase}.",
+                    )
                 )
+                seen.add(key)
 
     return weak[:12]
 
@@ -331,13 +573,28 @@ def detect_attack_points(documents):
     findings = []
 
     combined = " ".join(
-        clean_text(doc.get("text") or doc.get("preview"))
+        get_doc_text(doc)
         for doc in documents
     ).lower()
 
     for keyword, message in ATTACK_KEYWORDS.items():
         if keyword in combined:
-            findings.append(message)
+            source_doc = find_document_with_term(documents, keyword)
+            source_text = get_doc_text(source_doc)
+
+            findings.append(
+                build_issue_object(
+                    issue=message,
+                    category="attack_point",
+                    source_doc=source_doc,
+                    source_snippet=find_sentence_with_term(source_text, keyword),
+                    supporting_allegation=find_sentence_with_term(source_text, keyword),
+                    supporting_source_doc=source_doc,
+                    risk_level="high" if keyword in HIGH_RISK_TERMS else "medium",
+                    recommended_focus="Evaluate whether this can become a dispositive or high-value briefing point.",
+                    reason=f"Attack keyword detected in record: {keyword}.",
+                )
+            )
 
     return findings[:12]
 
@@ -345,17 +602,34 @@ def detect_attack_points(documents):
 def detect_fact_risks(documents):
     risks = []
 
-    for doc in documents:
-        text = clean_text(doc.get("text") or doc.get("preview"))
-        filename = clean_text(doc.get("filename"))
+    seen = set()
 
+    for doc in documents:
+        text = get_doc_text(doc)
+        filename = get_doc_name(doc)
         lower = text.lower()
 
         for term in FACT_RISK_TERMS:
             if term in lower:
+                key = (filename, term)
+
+                if key in seen:
+                    continue
+
                 risks.append(
-                    f"Potential factual uncertainty detected in {filename}: '{term}'."
+                    build_issue_object(
+                        issue=f"Potential factual uncertainty detected: '{term}'.",
+                        category="fact_risk",
+                        source_doc=doc,
+                        source_snippet=find_sentence_with_term(text, term),
+                        supporting_allegation=find_sentence_with_term(text, term),
+                        supporting_source_doc=doc,
+                        risk_level="medium",
+                        recommended_focus="Clarify the factual record and test whether the uncertainty affects an element.",
+                        reason=f"Fact-risk term detected in source document: {term}.",
+                    )
                 )
+                seen.add(key)
 
     return risks[:10]
 
@@ -363,23 +637,40 @@ def detect_fact_risks(documents):
 def detect_credibility_flags(documents):
     flags = []
 
-    for doc in documents:
-        text = clean_text(doc.get("text") or doc.get("preview"))
-        filename = clean_text(doc.get("filename"))
+    seen = set()
 
+    for doc in documents:
+        text = get_doc_text(doc)
+        filename = get_doc_name(doc)
         lower = text.lower()
 
         for term in CREDIBILITY_TERMS:
             if term in lower:
+                key = (filename, term)
+
+                if key in seen:
+                    continue
+
                 flags.append(
-                    f"Potential credibility issue detected in {filename}: '{term}'."
+                    build_issue_object(
+                        issue=f"Potential credibility issue detected: '{term}'.",
+                        category="credibility",
+                        source_doc=doc,
+                        source_snippet=find_sentence_with_term(text, term),
+                        supporting_allegation=find_sentence_with_term(text, term),
+                        supporting_source_doc=doc,
+                        risk_level="medium",
+                        recommended_focus="Use for impeachment, contradiction analysis, or witness credibility attack.",
+                        reason=f"Credibility term detected in source document: {term}.",
+                    )
                 )
+                seen.add(key)
 
     return flags[:10]
 
 
 def calculate_issue_score(issue_text):
-    text = issue_text.lower()
+    text = clean_text(issue_text).lower()
 
     score = 40
     category = "general"
@@ -437,30 +728,39 @@ def calculate_issue_score(issue_text):
     }
 
 
-def build_scored_issues(
-    core_issues,
-    contradictions,
-    attack_points,
-    weak_claims,
-):
-    scored = []
+def dedupe_issue_objects(issue_objects):
+    unique = []
+    seen = set()
 
-    combined = []
+    for item in issue_objects:
+        key = (
+            clean_text(item.get("issue")),
+            clean_text(item.get("source_document")),
+            clean_text(item.get("source_snippet"))[:120],
+        )
 
-    combined.extend(core_issues)
-    combined.extend(contradictions)
-    combined.extend(attack_points)
-    combined.extend(weak_claims)
+        if key in seen:
+            continue
 
-    for item in combined:
-        scored.append(calculate_issue_score(item))
+        unique.append(item)
+        seen.add(key)
 
-    scored.sort(
-        key=lambda x: x["score"],
+    return unique
+
+
+def sort_issue_objects(issue_objects):
+    sorted_items = list(issue_objects)
+
+    sorted_items.sort(
+        key=lambda x: (
+            x.get("score", 0),
+            1 if x.get("risk_level") == "high" else 0,
+            clean_text(x.get("category")),
+        ),
         reverse=True,
     )
 
-    return scored[:15]
+    return sorted_items
 
 
 def rank_priority_issues(scored_issues):
@@ -468,16 +768,28 @@ def rank_priority_issues(scored_issues):
 
     for item in scored_issues[:8]:
         ranked.append(
-            f"[{item['score']}] {item['issue']}"
+            {
+                "label": f"[{item.get('score', 0)}] {item.get('issue', '')}",
+                "issue": item.get("issue", ""),
+                "score": item.get("score", 0),
+                "category": item.get("category", ""),
+                "source_document": item.get("source_document", ""),
+                "source_snippet": item.get("source_snippet", ""),
+                "recommended_focus": item.get("recommended_focus", ""),
+            }
         )
 
     return ranked
 
 
+def flatten_issue_labels(issue_objects):
+    return [item.get("issue", "") for item in issue_objects if item.get("issue")]
+
+
 def build_issue_analysis(selected_case, documents=None, attorney_notes=None):
     """
     Core litigation issue detection engine.
-    v3.3 scoring and attorney focus engine.
+    v3.4 adds deterministic source traceability.
     """
 
     documents = documents or []
@@ -488,12 +800,13 @@ def build_issue_analysis(selected_case, documents=None, attorney_notes=None):
     document_groups = classify_documents(documents)
 
     missing_evidence = detect_missing_documents(documents, motion_type)
-    burden_issues = detect_burden_issues(motion_type)
+    burden_issues = detect_burden_issues(motion_type, documents)
     contradictions = detect_date_contradictions(documents)
 
     allegations = extract_allegations(documents)
 
     position_conflicts = detect_position_conflicts(allegations)
+    position_conflict_issues = position_conflicts_to_issues(position_conflicts)
 
     missing_proof = detect_missing_proof(
         allegations,
@@ -506,50 +819,57 @@ def build_issue_analysis(selected_case, documents=None, attorney_notes=None):
     credibility_flags = detect_credibility_flags(documents)
 
     core_issues = []
-
     core_issues.extend(burden_issues)
     core_issues.extend(missing_evidence)
     core_issues.extend(missing_proof)
 
-    for conflict in position_conflicts:
-        contradictions.append(
-            f"{conflict['issue']} Risk Level: {conflict['risk_level']}."
-        )
+    all_issues = []
+    all_issues.extend(core_issues)
+    all_issues.extend(contradictions)
+    all_issues.extend(position_conflict_issues)
+    all_issues.extend(attack_points)
+    all_issues.extend(weak_claims)
+    all_issues.extend(fact_risk_flags)
+    all_issues.extend(credibility_flags)
 
-    scored_issues = build_scored_issues(
-        core_issues,
-        contradictions,
-        attack_points,
-        weak_claims,
-    )
+    all_issues = sort_issue_objects(dedupe_issue_objects(all_issues))
 
     priority_ranking = rank_priority_issues(
-        scored_issues,
+        all_issues,
     )
 
     attorney_focus = []
 
-    for item in scored_issues[:5]:
-        attorney_focus.append(
-            item["recommended_focus"]
-        )
+    for item in all_issues[:5]:
+        focus = item.get("recommended_focus")
+        if focus and focus not in attorney_focus:
+            attorney_focus.append(focus)
 
     return {
         "engine": ENGINE_VERSION,
         "motion_type": motion_type,
         "document_groups": document_groups,
         "core_issues": core_issues,
-        "contradictions": contradictions,
+        "core_issue_labels": flatten_issue_labels(core_issues),
+        "contradictions": contradictions + position_conflict_issues,
+        "contradiction_labels": flatten_issue_labels(contradictions + position_conflict_issues),
         "attack_points": attack_points,
+        "attack_point_labels": flatten_issue_labels(attack_points),
         "missing_evidence": missing_evidence,
+        "missing_evidence_labels": flatten_issue_labels(missing_evidence),
         "missing_proof": missing_proof,
+        "missing_proof_labels": flatten_issue_labels(missing_proof),
         "weak_claims": weak_claims,
+        "weak_claim_labels": flatten_issue_labels(weak_claims),
         "priority_ranking": priority_ranking,
         "position_conflicts": position_conflicts,
         "allegations": allegations,
-        "scored_issues": scored_issues,
+        "scored_issues": all_issues,
+        "all_issues": all_issues,
         "attorney_focus": attorney_focus,
         "attorney_notes": attorney_notes,
         "fact_risk_flags": fact_risk_flags,
+        "fact_risk_labels": flatten_issue_labels(fact_risk_flags),
         "credibility_flags": credibility_flags,
+        "credibility_flag_labels": flatten_issue_labels(credibility_flags),
     }

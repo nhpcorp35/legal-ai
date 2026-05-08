@@ -231,6 +231,97 @@
             margin-bottom: 14px;
         }
 
+        .trace-card {
+            border: 1px solid #d8d8d8;
+            border-radius: 10px;
+            padding: 14px;
+            margin-bottom: 14px;
+            background: #fff;
+        }
+
+        .trace-head {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-bottom: 10px;
+        }
+
+        .score-badge {
+            display: inline-block;
+            background: #111;
+            color: #fff;
+            border-radius: 999px;
+            padding: 4px 9px;
+            font-size: 12px;
+            font-weight: 800;
+        }
+
+        .category-badge {
+            display: inline-block;
+            background: #eee;
+            color: #333;
+            border-radius: 999px;
+            padding: 4px 9px;
+            font-size: 12px;
+            font-weight: 800;
+            text-transform: uppercase;
+        }
+
+        .risk-badge {
+            display: inline-block;
+            background: #f1f1f1;
+            color: #333;
+            border-radius: 999px;
+            padding: 4px 9px;
+            font-size: 12px;
+            font-weight: 800;
+            text-transform: uppercase;
+        }
+
+        .trace-issue {
+            font-size: 16px;
+            font-weight: 900;
+            line-height: 1.4;
+            margin-bottom: 10px;
+        }
+
+        .trace-meta {
+            font-size: 13px;
+            color: #555;
+            margin-bottom: 8px;
+            line-height: 1.4;
+        }
+
+        .trace-quote {
+            border-left: 4px solid #111;
+            padding-left: 12px;
+            color: #333;
+            font-size: 14px;
+            line-height: 1.45;
+            margin-top: 8px;
+            margin-bottom: 8px;
+        }
+
+        .trace-focus {
+            background: #f7f7f7;
+            border-radius: 8px;
+            padding: 10px;
+            font-size: 14px;
+            line-height: 1.45;
+            margin-top: 8px;
+        }
+
+        details {
+            margin-bottom: 14px;
+        }
+
+        summary {
+            cursor: pointer;
+            font-weight: 900;
+            font-size: 16px;
+            margin-bottom: 10px;
+        }
+
         ul {
             margin-top: 8px;
             margin-bottom: 0;
@@ -279,7 +370,7 @@
     <div class="page-title">Matter Builder</div>
 
     <div class="subtitle">
-        Matter Builder v3 architecture with isolated litigation issue analysis engine.
+        Matter Builder v3 architecture with isolated litigation issue analysis engine and source-traceable attorney reasoning.
     </div>
 
     {% if matter.selected_case %}
@@ -346,7 +437,7 @@
 
             <div class="box">
                 <div class="label">Version</div>
-                <div class="value">v3.0</div>
+                <div class="value">v3.4</div>
             </div>
 
             <div class="box">
@@ -363,20 +454,99 @@
 
     <div class="panel issue-panel">
         <div class="panel-title">Core Litigation Issues</div>
-        <div class="issue-badge">Issue Engine v3.0</div>
+        <div class="issue-badge">{{ matter.issue_packet.engine or "Issue Engine v3.4" }}</div>
 
         {% if matter.issue_packet %}
             <div class="issue-grid">
+
+                <div class="box issue-box wide-box">
+                    <div class="label">Priority Issues With Source Traceability</div>
+
+                    {% if matter.issue_packet.scored_issues %}
+                        {% for item in matter.issue_packet.scored_issues %}
+                            <div class="trace-card">
+                                <div class="trace-head">
+                                    <span class="score-badge">Score {{ item.score }}</span>
+                                    <span class="category-badge">{{ item.category or "general" }}</span>
+                                    <span class="risk-badge">Risk {{ item.risk_level or "medium" }}</span>
+                                </div>
+
+                                <div class="trace-issue">
+                                    {{ item.issue }}
+                                </div>
+
+                                <div class="trace-meta">
+                                    <strong>Source:</strong>
+                                    {{ item.source_document or "—" }}
+                                    {% if item.source_type %}
+                                        · {{ item.source_type }}
+                                    {% endif %}
+                                </div>
+
+                                {% if item.source_snippet %}
+                                    <div class="trace-quote">
+                                        “{{ item.source_snippet }}”
+                                    </div>
+                                {% endif %}
+
+                                {% if item.supporting_allegation %}
+                                    <div class="trace-meta">
+                                        <strong>Supporting allegation/source:</strong>
+                                        {{ item.supporting_source_document or "—" }}
+                                        {% if item.supporting_source_type %}
+                                            · {{ item.supporting_source_type }}
+                                        {% endif %}
+                                    </div>
+
+                                    <div class="trace-quote">
+                                        “{{ item.supporting_allegation }}”
+                                    </div>
+                                {% endif %}
+
+                                {% if item.recommended_focus %}
+                                    <div class="trace-focus">
+                                        <strong>Attorney focus:</strong>
+                                        {{ item.recommended_focus }}
+                                    </div>
+                                {% endif %}
+
+                                {% if item.reason %}
+                                    <div class="trace-meta">
+                                        <strong>Reason:</strong>
+                                        {{ item.reason }}
+                                    </div>
+                                {% endif %}
+                            </div>
+                        {% endfor %}
+                    {% else %}
+                        <div class="empty">
+                            No scored issues generated yet.
+                        </div>
+                    {% endif %}
+                </div>
 
                 <div class="box issue-box">
                     <div class="label">Core Issues</div>
 
                     {% if matter.issue_packet.core_issues %}
-                        <ul>
-                            {% for item in matter.issue_packet.core_issues %}
-                                <li>{{ item }}</li>
-                            {% endfor %}
-                        </ul>
+                        {% for item in matter.issue_packet.core_issues %}
+                            <div class="trace-card">
+                                <div class="trace-head">
+                                    <span class="score-badge">Score {{ item.score }}</span>
+                                    <span class="category-badge">{{ item.category or "core" }}</span>
+                                </div>
+
+                                <div class="trace-issue">{{ item.issue }}</div>
+
+                                <div class="trace-meta">
+                                    <strong>Source:</strong> {{ item.source_document or "—" }}
+                                </div>
+
+                                {% if item.source_snippet %}
+                                    <div class="trace-quote">“{{ item.source_snippet }}”</div>
+                                {% endif %}
+                            </div>
+                        {% endfor %}
                     {% else %}
                         <div class="empty">
                             No core litigation issues detected yet.
@@ -388,11 +558,32 @@
                     <div class="label">Contradictions</div>
 
                     {% if matter.issue_packet.contradictions %}
-                        <ul>
-                            {% for item in matter.issue_packet.contradictions %}
-                                <li>{{ item }}</li>
-                            {% endfor %}
-                        </ul>
+                        {% for item in matter.issue_packet.contradictions %}
+                            <div class="trace-card">
+                                <div class="trace-head">
+                                    <span class="score-badge">Score {{ item.score }}</span>
+                                    <span class="category-badge">{{ item.category or "contradiction" }}</span>
+                                </div>
+
+                                <div class="trace-issue">{{ item.issue }}</div>
+
+                                <div class="trace-meta">
+                                    <strong>Source:</strong> {{ item.source_document or "—" }}
+                                </div>
+
+                                {% if item.source_snippet %}
+                                    <div class="trace-quote">“{{ item.source_snippet }}”</div>
+                                {% endif %}
+
+                                {% if item.supporting_allegation %}
+                                    <div class="trace-meta">
+                                        <strong>Supporting source:</strong>
+                                        {{ item.supporting_source_document or "—" }}
+                                    </div>
+                                    <div class="trace-quote">“{{ item.supporting_allegation }}”</div>
+                                {% endif %}
+                            </div>
+                        {% endfor %}
                     {% else %}
                         <div class="empty">
                             No contradictions detected yet.
@@ -404,11 +595,24 @@
                     <div class="label">Attack Points</div>
 
                     {% if matter.issue_packet.attack_points %}
-                        <ul>
-                            {% for item in matter.issue_packet.attack_points %}
-                                <li>{{ item }}</li>
-                            {% endfor %}
-                        </ul>
+                        {% for item in matter.issue_packet.attack_points %}
+                            <div class="trace-card">
+                                <div class="trace-head">
+                                    <span class="score-badge">Score {{ item.score }}</span>
+                                    <span class="category-badge">{{ item.category or "attack" }}</span>
+                                </div>
+
+                                <div class="trace-issue">{{ item.issue }}</div>
+
+                                <div class="trace-meta">
+                                    <strong>Source:</strong> {{ item.source_document or "—" }}
+                                </div>
+
+                                {% if item.source_snippet %}
+                                    <div class="trace-quote">“{{ item.source_snippet }}”</div>
+                                {% endif %}
+                            </div>
+                        {% endfor %}
                     {% else %}
                         <div class="empty">
                             No attack points identified yet.
@@ -420,11 +624,24 @@
                     <div class="label">Missing Evidence</div>
 
                     {% if matter.issue_packet.missing_evidence %}
-                        <ul>
-                            {% for item in matter.issue_packet.missing_evidence %}
-                                <li>{{ item }}</li>
-                            {% endfor %}
-                        </ul>
+                        {% for item in matter.issue_packet.missing_evidence %}
+                            <div class="trace-card">
+                                <div class="trace-head">
+                                    <span class="score-badge">Score {{ item.score }}</span>
+                                    <span class="category-badge">{{ item.category or "missing" }}</span>
+                                </div>
+
+                                <div class="trace-issue">{{ item.issue }}</div>
+
+                                <div class="trace-meta">
+                                    <strong>Source:</strong> {{ item.source_document or "—" }}
+                                </div>
+
+                                {% if item.source_snippet %}
+                                    <div class="trace-quote">“{{ item.source_snippet }}”</div>
+                                {% endif %}
+                            </div>
+                        {% endfor %}
                     {% else %}
                         <div class="empty">
                             No missing evidence detected yet.
@@ -436,11 +653,24 @@
                     <div class="label">Weak Claims</div>
 
                     {% if matter.issue_packet.weak_claims %}
-                        <ul>
-                            {% for item in matter.issue_packet.weak_claims %}
-                                <li>{{ item }}</li>
-                            {% endfor %}
-                        </ul>
+                        {% for item in matter.issue_packet.weak_claims %}
+                            <div class="trace-card">
+                                <div class="trace-head">
+                                    <span class="score-badge">Score {{ item.score }}</span>
+                                    <span class="category-badge">{{ item.category or "weak" }}</span>
+                                </div>
+
+                                <div class="trace-issue">{{ item.issue }}</div>
+
+                                <div class="trace-meta">
+                                    <strong>Source:</strong> {{ item.source_document or "—" }}
+                                </div>
+
+                                {% if item.source_snippet %}
+                                    <div class="trace-quote">“{{ item.source_snippet }}”</div>
+                                {% endif %}
+                            </div>
+                        {% endfor %}
                     {% else %}
                         <div class="empty">
                             No weak claims detected yet.
@@ -454,7 +684,14 @@
                     {% if matter.issue_packet.priority_ranking %}
                         <ol>
                             {% for item in matter.issue_packet.priority_ranking %}
-                                <li>{{ item }}</li>
+                                <li>
+                                    <strong>{{ item.label }}</strong>
+                                    {% if item.source_document %}
+                                        <div class="small">
+                                            Source: {{ item.source_document }}
+                                        </div>
+                                    {% endif %}
+                                </li>
                             {% endfor %}
                         </ol>
                     {% else %}
@@ -468,11 +705,24 @@
                     <div class="label">Fact Risk Flags</div>
 
                     {% if matter.issue_packet.fact_risk_flags %}
-                        <ul>
-                            {% for item in matter.issue_packet.fact_risk_flags %}
-                                <li>{{ item }}</li>
-                            {% endfor %}
-                        </ul>
+                        {% for item in matter.issue_packet.fact_risk_flags %}
+                            <div class="trace-card">
+                                <div class="trace-head">
+                                    <span class="score-badge">Score {{ item.score }}</span>
+                                    <span class="category-badge">{{ item.category or "fact risk" }}</span>
+                                </div>
+
+                                <div class="trace-issue">{{ item.issue }}</div>
+
+                                <div class="trace-meta">
+                                    <strong>Source:</strong> {{ item.source_document or "—" }}
+                                </div>
+
+                                {% if item.source_snippet %}
+                                    <div class="trace-quote">“{{ item.source_snippet }}”</div>
+                                {% endif %}
+                            </div>
+                        {% endfor %}
                     {% else %}
                         <div class="empty">
                             No factual risk flags detected yet.
@@ -484,11 +734,24 @@
                     <div class="label">Credibility Flags</div>
 
                     {% if matter.issue_packet.credibility_flags %}
-                        <ul>
-                            {% for item in matter.issue_packet.credibility_flags %}
-                                <li>{{ item }}</li>
-                            {% endfor %}
-                        </ul>
+                        {% for item in matter.issue_packet.credibility_flags %}
+                            <div class="trace-card">
+                                <div class="trace-head">
+                                    <span class="score-badge">Score {{ item.score }}</span>
+                                    <span class="category-badge">{{ item.category or "credibility" }}</span>
+                                </div>
+
+                                <div class="trace-issue">{{ item.issue }}</div>
+
+                                <div class="trace-meta">
+                                    <strong>Source:</strong> {{ item.source_document or "—" }}
+                                </div>
+
+                                {% if item.source_snippet %}
+                                    <div class="trace-quote">“{{ item.source_snippet }}”</div>
+                                {% endif %}
+                            </div>
+                        {% endfor %}
                     {% else %}
                         <div class="empty">
                             No credibility flags detected yet.
