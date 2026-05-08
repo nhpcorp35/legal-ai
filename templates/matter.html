@@ -50,6 +50,11 @@
             background: #fff;
         }
 
+        .issue-panel {
+            border: 3px solid #111;
+            background: #f8fbff;
+        }
+
         .panel-title {
             font-size: 15px;
             font-weight: 800;
@@ -90,6 +95,12 @@
             gap: 18px;
         }
 
+        .issue-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 18px;
+        }
+
         .draft-grid {
             display: grid;
             grid-template-columns: repeat(2, 1fr);
@@ -108,6 +119,11 @@
         }
 
         .work-box {
+            background: #fff;
+            min-height: 140px;
+        }
+
+        .issue-box {
             background: #fff;
             min-height: 140px;
         }
@@ -203,7 +219,8 @@
 
         .proof-badge,
         .work-badge,
-        .draft-badge {
+        .draft-badge,
+        .issue-badge {
             display: inline-block;
             background: #111;
             color: #fff;
@@ -224,60 +241,6 @@
             line-height: 1.4;
         }
 
-        .authority-title {
-            font-weight: 800;
-            margin-bottom: 3px;
-        }
-
-        .authority-source {
-            color: #666;
-            font-size: 14px;
-            margin-bottom: 4px;
-        }
-
-        .authority-detail {
-            line-height: 1.45;
-        }
-
-        .draft-title {
-            font-size: 22px;
-            font-weight: 900;
-            margin-bottom: 12px;
-        }
-
-        .draft-text {
-            white-space: pre-wrap;
-            line-height: 1.6;
-            font-size: 16px;
-            font-weight: 600;
-        }
-
-        .draft-heading {
-            font-size: 18px;
-            font-weight: 900;
-            margin-bottom: 8px;
-        }
-
-        textarea.draft-editable {
-            width: 100%;
-            min-height: 180px;
-            border: 1px solid #ddd;
-            border-radius: 8px;
-            padding: 14px;
-            font-family: Arial, sans-serif;
-            font-size: 15px;
-            line-height: 1.55;
-            resize: vertical;
-            box-sizing: border-box;
-        }
-
-        .editable-note {
-            color: #666;
-            font-size: 14px;
-            margin-bottom: 14px;
-            line-height: 1.4;
-        }
-
         .citation-panel {
             border: 3px solid #111;
             background: #fffdf7;
@@ -294,27 +257,17 @@
             min-height: 140px;
         }
 
-        .citation-text {
+        textarea.draft-editable {
+            width: 100%;
+            min-height: 180px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 14px;
+            font-family: Arial, sans-serif;
             font-size: 15px;
-            line-height: 1.5;
-            font-weight: 600;
-        }
-
-        .citation-card {
-            border-top: 1px solid #eee;
-            padding-top: 12px;
-            margin-top: 12px;
-        }
-
-        .citation-card:first-child {
-            border-top: 0;
-            padding-top: 0;
-            margin-top: 0;
-        }
-
-        .citation-line {
-            font-weight: 900;
-            margin-top: 5px;
+            line-height: 1.55;
+            resize: vertical;
+            box-sizing: border-box;
         }
 
     </style>
@@ -326,9 +279,7 @@
     <div class="page-title">Matter Builder</div>
 
     <div class="subtitle">
-        Build one organized matter page from complaints, answers, motions, affirmations,
-        oppositions, declarations, exhibits, memoranda of law, prior orders, decisions,
-        attorney work product, draft-ready opposition sections, citation support, and exhibit mapping.
+        Matter Builder v3 architecture with isolated litigation issue analysis engine.
     </div>
 
     {% if matter.selected_case %}
@@ -382,13 +333,6 @@
                 </div>
             </div>
         </div>
-    {% else %}
-        <div class="panel">
-            <div class="panel-title">Selected Case</div>
-            <div class="empty">
-                No selected case was injected. Open a search result and click Build Matter to test selected case injection.
-            </div>
-        </div>
     {% endif %}
 
     <div class="panel">
@@ -402,7 +346,7 @@
 
             <div class="box">
                 <div class="label">Version</div>
-                <div class="value">v2.8</div>
+                <div class="value">v3.0</div>
             </div>
 
             <div class="box">
@@ -417,337 +361,146 @@
         </div>
     </div>
 
-    <div class="panel">
-        <div class="panel-title">Auto Matter Summary</div>
+    <div class="panel issue-panel">
+        <div class="panel-title">Core Litigation Issues</div>
+        <div class="issue-badge">Issue Engine v3.0</div>
 
-        <div class="summary-grid">
-            <div class="box">
-                <div class="label">Case Name</div>
-                <div class="summary-value">{{ matter.summary.case_name }}</div>
-            </div>
+        {% if matter.issue_packet %}
+            <div class="issue-grid">
 
-            <div class="box">
-                <div class="label">Parties</div>
-                <div class="summary-value">
-                    Plaintiff: {{ matter.summary.plaintiff }}<br>
-                    Defendant: {{ matter.summary.defendant }}
-                </div>
-            </div>
+                <div class="box issue-box">
+                    <div class="label">Core Issues</div>
 
-            <div class="box">
-                <div class="label">Motion Posture</div>
-                <div class="summary-value">{{ matter.summary.motion_posture }}</div>
-            </div>
-
-            <div class="box">
-                <div class="label">Procedural Posture</div>
-                <div class="summary-value">{{ matter.summary.procedural_posture }}</div>
-            </div>
-        </div>
-    </div>
-
-    <div class="panel">
-        <div class="panel-title">Strongest Motion Documents</div>
-
-        {% if matter.summary.strongest_motion_documents %}
-            {% for doc in matter.summary.strongest_motion_documents %}
-                <div class="strong-doc">
-                    <strong>{{ doc.filename }}</strong>
-                    <span class="small"> — {{ doc.group }} / score {{ doc.score }}</span>
-                </div>
-            {% endfor %}
-        {% else %}
-            <div class="empty">No motion documents detected.</div>
-        {% endif %}
-    </div>
-
-    <div class="panel work-product-panel">
-        <div class="panel-title">Attorney Work Product</div>
-        <div class="work-badge">v2.6 Attorney Workflow Engine</div>
-
-        {% if matter.attorney_work_product %}
-            <div class="work-grid">
-                <div class="box work-box">
-                    <div class="label">Plaintiff Core Arguments</div>
-                    {% if matter.attorney_work_product.plaintiff_core_arguments %}
+                    {% if matter.issue_packet.core_issues %}
                         <ul>
-                            {% for item in matter.attorney_work_product.plaintiff_core_arguments %}
+                            {% for item in matter.issue_packet.core_issues %}
                                 <li>{{ item }}</li>
                             {% endfor %}
                         </ul>
                     {% else %}
-                        <div class="empty">No plaintiff arguments detected.</div>
+                        <div class="empty">
+                            No core litigation issues detected yet.
+                        </div>
                     {% endif %}
                 </div>
 
-                <div class="box work-box">
-                    <div class="label">Defense Core Arguments</div>
-                    {% if matter.attorney_work_product.defense_core_arguments %}
+                <div class="box issue-box">
+                    <div class="label">Contradictions</div>
+
+                    {% if matter.issue_packet.contradictions %}
                         <ul>
-                            {% for item in matter.attorney_work_product.defense_core_arguments %}
+                            {% for item in matter.issue_packet.contradictions %}
                                 <li>{{ item }}</li>
                             {% endfor %}
                         </ul>
                     {% else %}
-                        <div class="empty">No defense arguments detected.</div>
+                        <div class="empty">
+                            No contradictions detected yet.
+                        </div>
                     {% endif %}
                 </div>
 
-                <div class="box work-box">
-                    <div class="label">Weakness / Contradiction Detection</div>
-                    {% if matter.attorney_work_product.weaknesses %}
+                <div class="box issue-box">
+                    <div class="label">Attack Points</div>
+
+                    {% if matter.issue_packet.attack_points %}
                         <ul>
-                            {% for item in matter.attorney_work_product.weaknesses %}
+                            {% for item in matter.issue_packet.attack_points %}
                                 <li>{{ item }}</li>
                             {% endfor %}
                         </ul>
                     {% else %}
-                        <div class="empty">No weaknesses detected.</div>
+                        <div class="empty">
+                            No attack points identified yet.
+                        </div>
                     {% endif %}
                 </div>
 
-                <div class="box work-box">
-                    <div class="label">Drafting Strategy</div>
-                    {% if matter.attorney_work_product.drafting_strategy %}
+                <div class="box issue-box">
+                    <div class="label">Missing Evidence</div>
+
+                    {% if matter.issue_packet.missing_evidence %}
                         <ul>
-                            {% for item in matter.attorney_work_product.drafting_strategy %}
+                            {% for item in matter.issue_packet.missing_evidence %}
                                 <li>{{ item }}</li>
                             {% endfor %}
                         </ul>
                     {% else %}
-                        <div class="empty">No drafting strategy generated.</div>
+                        <div class="empty">
+                            No missing evidence detected yet.
+                        </div>
                     {% endif %}
                 </div>
 
-                <div class="box work-box wide-box">
-                    <div class="label">Strongest Authorities</div>
-                    {% if matter.attorney_work_product.strongest_authorities %}
-                        {% for authority in matter.attorney_work_product.strongest_authorities %}
-                            <div class="strong-doc">
-                                <div class="authority-title">{{ authority.title }}</div>
-                                <div class="authority-source">{{ authority.source }}</div>
-                                <div class="authority-detail">{{ authority.detail }}</div>
-                            </div>
-                        {% endfor %}
+                <div class="box issue-box">
+                    <div class="label">Weak Claims</div>
+
+                    {% if matter.issue_packet.weak_claims %}
+                        <ul>
+                            {% for item in matter.issue_packet.weak_claims %}
+                                <li>{{ item }}</li>
+                            {% endfor %}
+                        </ul>
                     {% else %}
-                        <div class="empty">No authorities identified.</div>
+                        <div class="empty">
+                            No weak claims detected yet.
+                        </div>
                     {% endif %}
                 </div>
 
-                <div class="box work-box wide-box">
-                    <div class="label">Recommended Opposition Outline</div>
-                    {% if matter.attorney_work_product.recommended_outline %}
+                <div class="box issue-box">
+                    <div class="label">Priority Ranking</div>
+
+                    {% if matter.issue_packet.priority_ranking %}
                         <ol>
-                            {% for item in matter.attorney_work_product.recommended_outline %}
+                            {% for item in matter.issue_packet.priority_ranking %}
                                 <li>{{ item }}</li>
                             {% endfor %}
                         </ol>
                     {% else %}
-                        <div class="empty">No outline generated.</div>
+                        <div class="empty">
+                            No priority ranking generated yet.
+                        </div>
                     {% endif %}
                 </div>
-            </div>
-        {% else %}
-            <div class="empty">Attorney work product has not been generated.</div>
-        {% endif %}
-    </div>
 
-    <div class="panel draft-panel">
-        <div class="panel-title">Draft Generation Engine</div>
-        <div class="draft-badge">v2.7 Drafting Engine</div>
+                <div class="box issue-box">
+                    <div class="label">Fact Risk Flags</div>
 
-        {% if matter.draft_generation %}
-            <div class="draft-grid">
-                <div class="box draft-box wide-box">
-                    <div class="label">Preliminary Statement</div>
-                    <div class="draft-text">{{ matter.draft_generation.preliminary_statement }}</div>
-                </div>
-
-                <div class="box draft-box wide-box">
-                    <div class="label">Statement of Facts</div>
-                    <div class="draft-text">{{ matter.draft_generation.statement_of_facts }}</div>
-                </div>
-
-                <div class="box draft-box">
-                    <div class="label">Point Headings</div>
-                    {% if matter.draft_generation.point_headings %}
-                        <ol>
-                            {% for heading in matter.draft_generation.point_headings %}
-                                <li><strong>{{ heading }}</strong></li>
+                    {% if matter.issue_packet.fact_risk_flags %}
+                        <ul>
+                            {% for item in matter.issue_packet.fact_risk_flags %}
+                                <li>{{ item }}</li>
                             {% endfor %}
-                        </ol>
+                        </ul>
                     {% else %}
-                        <div class="empty">No point headings generated.</div>
+                        <div class="empty">
+                            No factual risk flags detected yet.
+                        </div>
                     {% endif %}
                 </div>
 
-                <div class="box draft-box">
-                    <div class="label">Opposition Starter Paragraphs</div>
-                    {% if matter.draft_generation.starter_paragraphs %}
-                        {% for paragraph in matter.draft_generation.starter_paragraphs %}
-                            <p>{{ paragraph }}</p>
-                        {% endfor %}
+                <div class="box issue-box">
+                    <div class="label">Credibility Flags</div>
+
+                    {% if matter.issue_packet.credibility_flags %}
+                        <ul>
+                            {% for item in matter.issue_packet.credibility_flags %}
+                                <li>{{ item }}</li>
+                            {% endfor %}
+                        </ul>
                     {% else %}
-                        <div class="empty">No starter paragraphs generated.</div>
+                        <div class="empty">
+                            No credibility flags detected yet.
+                        </div>
                     {% endif %}
                 </div>
 
-                <div class="box draft-box wide-box">
-                    <div class="label">Argument Section Skeleton</div>
-                    {% if matter.draft_generation.argument_skeleton %}
-                        {% for section in matter.draft_generation.argument_skeleton %}
-                            <div class="strong-doc">
-                                <div class="draft-heading">{{ section.heading }}</div>
-                                <div class="authority-detail">{{ section.body }}</div>
-                            </div>
-                        {% endfor %}
-                    {% else %}
-                        <div class="empty">No argument skeleton generated.</div>
-                    {% endif %}
-                </div>
             </div>
         {% else %}
-            <div class="empty">Draft generation has not been generated.</div>
-        {% endif %}
-    </div>
-
-
-    <div class="panel citation-panel">
-        <div class="panel-title">Citation + Exhibit Engine</div>
-        <div class="draft-badge">v2.8 Citation Support</div>
-
-        <div class="editable-note">
-            Suggested citations are drafting aids only. Verify exhibit lettering, NYSCEF document numbers,
-            page pins, paragraph numbers, and admissibility before filing.
-        </div>
-
-        {% if matter.citation_exhibit_engine %}
-            <div class="citation-grid">
-                <div class="box citation-box">
-                    <div class="label">Exhibit Detection</div>
-                    {% if matter.citation_exhibit_engine.exhibit_inventory %}
-                        {% for exhibit in matter.citation_exhibit_engine.exhibit_inventory %}
-                            <div class="citation-card">
-                                <div class="authority-title">Exhibit {{ exhibit.label }}</div>
-                                <div class="authority-source">{{ exhibit.filename }}</div>
-                                <div class="citation-line">{{ exhibit.citation }}</div>
-                                {% if exhibit.preview %}
-                                    <div class="authority-detail">{{ exhibit.preview }}</div>
-                                {% endif %}
-                            </div>
-                        {% endfor %}
-                    {% else %}
-                        <div class="empty">No exhibit documents detected yet.</div>
-                    {% endif %}
-                </div>
-
-                <div class="box citation-box">
-                    <div class="label">Affidavit / Affirmation Support</div>
-                    {% if matter.citation_exhibit_engine.affidavit_support %}
-                        {% for item in matter.citation_exhibit_engine.affidavit_support %}
-                            <div class="citation-card">
-                                <div class="authority-title">{{ item.filename }}</div>
-                                <div class="citation-line">{{ item.citation }}</div>
-                                <ul>
-                                    {% for point in item.support_points %}
-                                        <li>{{ point }}</li>
-                                    {% endfor %}
-                                </ul>
-                            </div>
-                        {% endfor %}
-                    {% else %}
-                        <div class="empty">No affidavit or affirmation support detected yet.</div>
-                    {% endif %}
-                </div>
-
-                <div class="box citation-box wide-box">
-                    <div class="label">Fact-to-Document Support Map</div>
-                    {% if matter.citation_exhibit_engine.fact_support_map %}
-                        {% for item in matter.citation_exhibit_engine.fact_support_map %}
-                            <div class="citation-card">
-                                <div class="citation-text">{{ item.fact }}</div>
-                                <div class="citation-line">Suggested: {{ item.suggested_citation }}</div>
-                                <div class="authority-source">Source: {{ item.source_document }}</div>
-                                {% if item.supporting_documents %}
-                                    <ul>
-                                        {% for support in item.supporting_documents %}
-                                            <li>
-                                                <strong>{{ support.filename }}</strong>
-                                                — {{ support.citation }}
-                                            </li>
-                                        {% endfor %}
-                                    </ul>
-                                {% endif %}
-                            </div>
-                        {% endfor %}
-                    {% else %}
-                        <div class="empty">No fact support map generated yet.</div>
-                    {% endif %}
-                </div>
-
-                <div class="box citation-box wide-box">
-                    <div class="label">Contradiction / Weakness Support Links</div>
-                    {% if matter.citation_exhibit_engine.contradiction_support_links %}
-                        {% for item in matter.citation_exhibit_engine.contradiction_support_links %}
-                            <div class="citation-card">
-                                <div class="citation-text">{{ item.weakness }}</div>
-                                {% if item.supporting_documents %}
-                                    <ul>
-                                        {% for support in item.supporting_documents %}
-                                            <li>
-                                                <strong>{{ support.filename }}</strong>
-                                                — {{ support.citation }}
-                                            </li>
-                                        {% endfor %}
-                                    </ul>
-                                {% else %}
-                                    <div class="empty">No direct supporting document detected. Attorney review required.</div>
-                                {% endif %}
-                            </div>
-                        {% endfor %}
-                    {% else %}
-                        <div class="empty">No contradiction support links generated yet.</div>
-                    {% endif %}
-                </div>
-
-                <div class="box citation-box wide-box">
-                    <div class="label">Suggested Draft Citations</div>
-                    {% if matter.citation_exhibit_engine.citation_suggestions %}
-                        {% for item in matter.citation_exhibit_engine.citation_suggestions %}
-                            <div class="citation-card">
-                                <div class="citation-text">{{ item.draft_fact }}</div>
-                                <div class="citation-line">{{ item.suggested_citation }}</div>
-                                <div class="authority-source">{{ item.source_document }}</div>
-                            </div>
-                        {% endfor %}
-                    {% else %}
-                        <div class="empty">No citation suggestions generated yet.</div>
-                    {% endif %}
-                </div>
+            <div class="empty">
+                Issue Engine packet not available.
             </div>
-        {% else %}
-            <div class="empty">Citation + Exhibit Engine has not generated support yet.</div>
-        {% endif %}
-    </div>
-
-    <div class="panel draft-panel">
-        <div class="panel-title">Attorney-Editable Draft Blocks</div>
-        <div class="draft-badge">Editable Draft Workspace</div>
-
-        <div class="editable-note">
-            These draft blocks are generated from the selected case, strongest motion documents,
-            detected weaknesses, and recommended opposition strategy. Edit directly in the boxes.
-        </div>
-
-        {% if matter.draft_generation and matter.draft_generation.editable_blocks %}
-            {% for block in matter.draft_generation.editable_blocks %}
-                <div class="box draft-box wide-box">
-                    <div class="label">{{ block.title }}</div>
-                    <textarea class="draft-editable">{{ block.content }}</textarea>
-                </div>
-            {% endfor %}
-        {% else %}
-            <div class="empty">No editable draft blocks generated.</div>
         {% endif %}
     </div>
 
@@ -768,14 +521,19 @@
                                 <li>
                                     <div class="doc-name">{{ doc.filename }}</div>
                                     <div class="doc-type">Type: {{ doc.type }}</div>
+
                                     {% if doc.relative_path %}
-                                        <div class="small">{{ doc.relative_path }}</div>
+                                        <div class="small">
+                                            {{ doc.relative_path }}
+                                        </div>
                                     {% endif %}
                                 </li>
                             {% endfor %}
                         </ul>
                     {% else %}
-                        <div class="empty">No documents classified.</div>
+                        <div class="empty">
+                            No documents classified.
+                        </div>
                     {% endif %}
                 </div>
             {% endfor %}
