@@ -3,7 +3,7 @@
 import re
 
 
-ENGINE_VERSION = "Issue Engine v3.1"
+ENGINE_VERSION = "Issue Engine v3.2"
 
 
 REQUIRED_DOCUMENT_TYPES = {
@@ -27,9 +27,15 @@ BURDEN_RULES = {
 }
 
 
-DATE_PATTERNS = [
-    r"\b\d{1,2}/\d{1,2}/\d{2,4}\b",
-    r"\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{1,2},\s+\d{4}\b",
+ALLEGATION_PATTERNS = [
+    r"plaintiff alleges",
+    r"defendant breached",
+    r"failed to",
+    r"negligently",
+    r"wrongfully",
+    r"caused",
+    r"damages",
+    r"notice",
 ]
 
 
@@ -57,6 +63,11 @@ ATTACK_KEYWORDS = {
 }
 
 
+DATE_PATTERNS = [
+    r"\b\d{1,2}/\d{1,2}/\d{2,4}\b",
+]
+
+
 FACT_RISK_TERMS = [
     "approximately",
     "unknown",
@@ -81,6 +92,10 @@ def clean_text(value):
     return " ".join(str(value or "").split()).strip()
 
 
+def split_sentences(text):
+    return re.split(r'(?<=[.!?])\s+', clean_text(text))
+
+
 def detect_motion_type(selected_case, documents):
     selected_motion = clean_text((selected_case or {}).get("motion")).lower()
 
@@ -102,6 +117,16 @@ def detect_motion_type(selected_case, documents):
         return "default judgment motion"
 
     return "general motion"
+
+
+def classify_documents(documents):
+    grouped = {}
+
+    for doc in documents:
+        doc_type = doc.get("type", "other")
+        grouped.setdefault(doc_type, []).append(doc)
+
+    return grouped
 
 
 def detect_missing_documents(documents, motion_type):
@@ -161,6 +186,103 @@ def detect_date_contradictions(documents):
             )
 
     return contradictions[:10]
+
+
+def extract_allegations(documents):
+    allegations = []
+
+    for doc in documents:
+        text = clean_text(doc.get("text") or doc.get("preview"))
+        filename = clean_text(doc.get("filename"))
+        doc_type = clean_text(doc.get("type"))
+
+        sentences = split_sentences(text)
+
+        for sentence in sentences:
+            lower = sentence.lower()
+
+            for pattern in ALLEGATION_PATTERNS:
+                if pattern in lower:
+                    allegations.append(
+                        {
+                            "statement": sentence[:500],
+                            "source": filename,
+                            "doc_type": doc_type,
+                        }
+                    )
+                    break
+
+    return allegations[:50]
+
+
+def detect_missing_proof(allegations, documents):
+    findings = []
+
+    combined = " ".join(
+        clean_text(doc.get("text") or doc.get("preview")).lower()
+        for doc in documents
+    )
+
+    for item in allegations:
+        statement = item.get("statement", "").lower()
+
+        if "notice" in statement and "exhibit" not in combined:
+            findings.append(
+                "Notice allegation may lack exhibit support."
+            )
+
+        if "damages" in statement and "invoice" not in combined:
+            findings.append(
+                "Damages allegations may lack documentary support."
+            )
+
+        if "contract" in statement and "agreement" not in combined:
+            findings.append(
+                "Contract allegations may lack agreement or contract exhibit."
+            )
+
+    unique = []
+
+    for finding in findings:
+        if finding not in unique:
+            unique.append(finding)
+
+    return unique[:10]
+
+
+def detect_position_conflicts(allegations):
+    conflicts = []
+
+    complaint_claims = []
+    defense_claims = []
+
+    for item in allegations:
+        doc_type = item.get("doc_type", "")
+        statement = item.get("statement", "")
+
+        if doc_type == "complaint":
+            complaint_claims.append(statement)
+
+        if doc_type in ["answer", "opposition"]:
+            defense_claims.append(statement)
+
+    for plaintiff_statement in complaint_claims:
+        for defense_statement in defense_claims:
+
+            if (
+                "breach" in plaintiff_statement.lower()
+                and "deny" in defense_statement.lower()
+            ):
+                conflicts.append(
+                    {
+                        "issue": "Potential breach contradiction detected.",
+                        "plaintiff_position": plaintiff_statement[:220],
+                        "defense_position": defense_statement[:220],
+                        "risk_level": "high",
+                    }
+                )
+
+    return conflicts[:10]
 
 
 def detect_weak_allegations(documents):
@@ -251,7 +373,7 @@ def rank_priority_issues(core_issues, contradictions, attack_points):
 def build_issue_analysis(selected_case, documents=None, attorney_notes=None):
     """
     Core litigation issue detection engine.
-    v3.1 rule-based implementation.
+    v3.2 contradiction + missing proof engine.
     """
 
     documents = documents or []
@@ -259,17 +381,36 @@ def build_issue_analysis(selected_case, documents=None, attorney_notes=None):
 
     motion_type = detect_motion_type(selected_case, documents)
 
+    document_groups = classify_documents(documents)
+
     missing_evidence = detect_missing_documents(documents, motion_type)
     burden_issues = detect_burden_issues(motion_type)
     contradictions = detect_date_contradictions(documents)
+
+    allegations = extract_allegations(documents)
+
+    position_conflicts = detect_position_conflicts(allegations)
+
+    missing_proof = detect_missing_proof(
+        allegations,
+        documents,
+    )
+
     weak_claims = detect_weak_allegations(documents)
     attack_points = detect_attack_points(documents)
     fact_risk_flags = detect_fact_risks(documents)
     credibility_flags = detect_credibility_flags(documents)
 
     core_issues = []
+
     core_issues.extend(burden_issues)
     core_issues.extend(missing_evidence)
+    core_issues.extend(missing_proof)
+
+    for conflict in position_conflicts:
+        contradictions.append(
+            f"{conflict['issue']} Risk Level: {conflict['risk_level']}."
+        )
 
     priority_ranking = rank_priority_issues(
         core_issues,
@@ -280,12 +421,16 @@ def build_issue_analysis(selected_case, documents=None, attorney_notes=None):
     return {
         "engine": ENGINE_VERSION,
         "motion_type": motion_type,
+        "document_groups": document_groups,
         "core_issues": core_issues,
         "contradictions": contradictions,
         "attack_points": attack_points,
         "missing_evidence": missing_evidence,
+        "missing_proof": missing_proof,
         "weak_claims": weak_claims,
         "priority_ranking": priority_ranking,
+        "position_conflicts": position_conflicts,
+        "allegations": allegations,
         "attorney_notes": attorney_notes,
         "fact_risk_flags": fact_risk_flags,
         "credibility_flags": credibility_flags,
