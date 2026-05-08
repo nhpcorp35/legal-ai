@@ -3,7 +3,7 @@
 import re
 
 
-ENGINE_VERSION = "Issue Engine v3.2"
+ENGINE_VERSION = "Issue Engine v3.3"
 
 
 REQUIRED_DOCUMENT_TYPES = {
@@ -85,6 +85,30 @@ CREDIBILITY_TERMS = [
     "recanted",
     "false",
     "misleading",
+]
+
+
+HIGH_RISK_TERMS = [
+    "standing",
+    "jurisdiction",
+    "prima facie",
+    "contract",
+    "notice",
+]
+
+
+MEDIUM_RISK_TERMS = [
+    "damages",
+    "timeline",
+    "discovery",
+    "causation",
+]
+
+
+LOW_RISK_TERMS = [
+    "approximately",
+    "possibly",
+    "appears to",
 ]
 
 
@@ -354,26 +378,106 @@ def detect_credibility_flags(documents):
     return flags[:10]
 
 
-def rank_priority_issues(core_issues, contradictions, attack_points):
+def calculate_issue_score(issue_text):
+    text = issue_text.lower()
+
+    score = 40
+    category = "general"
+    reason = "General litigation concern detected."
+    recommended_focus = "Review underlying record support."
+
+    for term in HIGH_RISK_TERMS:
+        if term in text:
+            score = 90
+            category = "dispositive"
+            reason = f"Issue contains potentially dispositive term: {term}."
+            recommended_focus = "Attack immediately and prioritize in briefing."
+            return {
+                "issue": issue_text,
+                "score": score,
+                "category": category,
+                "reason": reason,
+                "recommended_focus": recommended_focus,
+            }
+
+    for term in MEDIUM_RISK_TERMS:
+        if term in text:
+            score = 70
+            category = "material"
+            reason = f"Issue contains materially significant term: {term}."
+            recommended_focus = "Develop factual and evidentiary attack."
+            return {
+                "issue": issue_text,
+                "score": score,
+                "category": category,
+                "reason": reason,
+                "recommended_focus": recommended_focus,
+            }
+
+    for term in LOW_RISK_TERMS:
+        if term in text:
+            score = 50
+            category = "credibility"
+            reason = f"Issue contains uncertainty term: {term}."
+            recommended_focus = "Use for impeachment or credibility attack."
+            return {
+                "issue": issue_text,
+                "score": score,
+                "category": category,
+                "reason": reason,
+                "recommended_focus": recommended_focus,
+            }
+
+    return {
+        "issue": issue_text,
+        "score": score,
+        "category": category,
+        "reason": reason,
+        "recommended_focus": recommended_focus,
+    }
+
+
+def build_scored_issues(
+    core_issues,
+    contradictions,
+    attack_points,
+    weak_claims,
+):
+    scored = []
+
+    combined = []
+
+    combined.extend(core_issues)
+    combined.extend(contradictions)
+    combined.extend(attack_points)
+    combined.extend(weak_claims)
+
+    for item in combined:
+        scored.append(calculate_issue_score(item))
+
+    scored.sort(
+        key=lambda x: x["score"],
+        reverse=True,
+    )
+
+    return scored[:15]
+
+
+def rank_priority_issues(scored_issues):
     ranked = []
 
-    ranked.extend(attack_points[:3])
-    ranked.extend(contradictions[:2])
-    ranked.extend(core_issues[:3])
+    for item in scored_issues[:8]:
+        ranked.append(
+            f"[{item['score']}] {item['issue']}"
+        )
 
-    unique = []
-
-    for item in ranked:
-        if item not in unique:
-            unique.append(item)
-
-    return unique[:8]
+    return ranked
 
 
 def build_issue_analysis(selected_case, documents=None, attorney_notes=None):
     """
     Core litigation issue detection engine.
-    v3.2 contradiction + missing proof engine.
+    v3.3 scoring and attorney focus engine.
     """
 
     documents = documents or []
@@ -412,11 +516,23 @@ def build_issue_analysis(selected_case, documents=None, attorney_notes=None):
             f"{conflict['issue']} Risk Level: {conflict['risk_level']}."
         )
 
-    priority_ranking = rank_priority_issues(
+    scored_issues = build_scored_issues(
         core_issues,
         contradictions,
         attack_points,
+        weak_claims,
     )
+
+    priority_ranking = rank_priority_issues(
+        scored_issues,
+    )
+
+    attorney_focus = []
+
+    for item in scored_issues[:5]:
+        attorney_focus.append(
+            item["recommended_focus"]
+        )
 
     return {
         "engine": ENGINE_VERSION,
@@ -431,6 +547,8 @@ def build_issue_analysis(selected_case, documents=None, attorney_notes=None):
         "priority_ranking": priority_ranking,
         "position_conflicts": position_conflicts,
         "allegations": allegations,
+        "scored_issues": scored_issues,
+        "attorney_focus": attorney_focus,
         "attorney_notes": attorney_notes,
         "fact_risk_flags": fact_risk_flags,
         "credibility_flags": credibility_flags,
