@@ -3,6 +3,7 @@ from pathlib import Path
 import re
 
 from engines.issue_engine import build_issue_analysis
+from engines.entity_graph_engine import build_entity_graph
 
 try:
     from pypdf import PdfReader
