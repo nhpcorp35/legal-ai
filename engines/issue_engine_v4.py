@@ -3,7 +3,6 @@
 import re
 
 from core.models import (
-    DocumentReference,
     IssueFinding,
 )
 
@@ -13,7 +12,6 @@ from core.utils.issue_accessors import (
     get_issue_category,
     get_issue_focus,
     get_issue_label,
-    get_issue_risk_level,
     get_issue_risk_weight,
     get_issue_score,
     get_issue_source,
@@ -753,10 +751,14 @@ def dedupe_issue_objects(issue_objects):
     for item in issue_objects:
         source = get_issue_source(item)
 
+        label = clean_text(get_issue_label(item))
+        filename = clean_text(source.filename)
+        snippet = clean_text(source.source_snippet)[:120]
+
         key = (
-            clean_text(get_issue_label(item)),
-            clean_text(source.filename),
-            clean_text(source.source_snippet)[:120],
+            label,
+            filename,
+            snippet,
         )
 
         if key in seen:
@@ -769,21 +771,18 @@ def dedupe_issue_objects(issue_objects):
 
 
 def sort_issue_objects(issue_objects):
-    sorted_items = list(issue_objects)
-
-    def sort_key(item):
+    def issue_sort_key(item):
         return (
             get_issue_score(item),
             get_issue_risk_weight(item),
-            clean_text(get_issue_category(item)),
+            get_issue_category(item),
         )
 
-    sorted_items.sort(
-        key=sort_key,
+    return sorted(
+        issue_objects,
+        key=issue_sort_key,
         reverse=True,
     )
-
-    return sorted_items
 
 
 def rank_priority_issues(scored_issues):
@@ -791,32 +790,33 @@ def rank_priority_issues(scored_issues):
 
     for item in scored_issues[:8]:
         source = get_issue_source(item)
+        score = get_issue_score(item)
+        label = get_issue_label(item)
 
-        ranked.append(
-            {
-                "label": f"[{get_issue_score(item)}] {get_issue_label(item)}",
-                "issue": get_issue_label(item),
-                "score": get_issue_score(item),
-                "category": get_issue_category(item),
-                "source_document": source.filename,
-                "source_snippet": source.source_snippet,
-                "recommended_focus": get_issue_focus(item),
-            }
-        )
+        category = get_issue_category(item)
+        focus = get_issue_focus(item)
+
+        ranked_item = {
+            "label": f"[{score}] {label}",
+            "issue": label,
+            "score": score,
+            "category": category,
+            "source_document": source.filename,
+            "source_snippet": source.source_snippet,
+            "recommended_focus": focus,
+        }
+
+        ranked.append(ranked_item)
 
     return ranked
 
 
 def flatten_issue_labels(issue_objects):
-    labels = []
-
-    for item in issue_objects:
-        label = get_issue_label(item)
-
-        if label:
-            labels.append(label)
-
-    return labels
+    return [
+        get_issue_label(item)
+        for item in issue_objects
+        if get_issue_label(item)
+    ]
 
 
 def build_issue_analysis(selected_case, documents=None, attorney_notes=None):
@@ -871,13 +871,17 @@ def build_issue_analysis(selected_case, documents=None, attorney_notes=None):
         all_issues,
     )
 
-    attorney_focus = []
-
-    for item in all_issues[:5]:
-        focus = clean_text(get_issue_focus(item))
-
-        if focus and focus not in attorney_focus:
-            attorney_focus.append(focus)
+    attorney_focus = list(
+        dict.fromkeys(
+            filter(
+                None,
+                (
+                    clean_text(get_issue_focus(item))
+                    for item in all_issues[:5]
+                ),
+            )
+        )
+    )
 
     return {
         "engine": ENGINE_VERSION,
