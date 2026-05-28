@@ -11,8 +11,10 @@ from core.utils.scoring import clamp_score, normalize_risk
 
 from core.utils.issue_accessors import (
     get_issue_category,
+    get_issue_focus,
     get_issue_label,
     get_issue_risk_level,
+    get_issue_risk_weight,
     get_issue_score,
     get_issue_source,
 )
@@ -147,28 +149,6 @@ def get_doc_name(doc):
 
 def get_doc_type(doc):
     return clean_text(doc.get("type") or doc.get("category") or "other")
-
-
-def get_issue_source_document(item):
-    if isinstance(item, IssueFinding):
-        source = item.source or DocumentReference()
-        return source.filename
-
-    if isinstance(item, dict):
-        return item.get("source_document", "")
-
-    return ""
-
-
-def get_issue_source_snippet(item):
-    if isinstance(item, IssueFinding):
-        source = item.source or DocumentReference()
-        return source.source_snippet
-
-    if isinstance(item, dict):
-        return item.get("source_snippet", "")
-
-    return ""
 
 
 def first_text_document(documents):
@@ -771,27 +751,13 @@ def dedupe_issue_objects(issue_objects):
     seen = set()
 
     for item in issue_objects:
-        if isinstance(item, IssueFinding):
-            source = item.source or DocumentReference()
-            key = (
-                clean_text(item.issue),
-                clean_text(source.filename),
-                clean_text(source.source_snippet)[:120],
-            )
+        source = get_issue_source(item)
 
-        elif isinstance(item, dict):
-            key = (
-                clean_text(item.get("issue")),
-                clean_text(item.get("source_document")),
-                clean_text(item.get("source_snippet"))[:120],
-            )
-
-        else:
-            key = (
-                clean_text(str(item)),
-                "",
-                "",
-            )
+        key = (
+            clean_text(get_issue_label(item)),
+            clean_text(source.filename),
+            clean_text(source.source_snippet)[:120],
+        )
 
         if key in seen:
             continue
@@ -808,7 +774,7 @@ def sort_issue_objects(issue_objects):
     def sort_key(item):
         return (
             get_issue_score(item),
-            1 if get_issue_risk_level(item) == "high" else 0,
+            get_issue_risk_weight(item),
             clean_text(get_issue_category(item)),
         )
 
@@ -826,14 +792,6 @@ def rank_priority_issues(scored_issues):
     for item in scored_issues[:8]:
         source = get_issue_source(item)
 
-        recommended_focus = ""
-
-        if isinstance(item, IssueFinding):
-            recommended_focus = item.recommended_focus
-
-        elif isinstance(item, dict):
-            recommended_focus = item.get("recommended_focus", "")
-
         ranked.append(
             {
                 "label": f"[{get_issue_score(item)}] {get_issue_label(item)}",
@@ -842,7 +800,7 @@ def rank_priority_issues(scored_issues):
                 "category": get_issue_category(item),
                 "source_document": source.filename,
                 "source_snippet": source.source_snippet,
-                "recommended_focus": recommended_focus,
+                "recommended_focus": get_issue_focus(item),
             }
         )
 
@@ -853,13 +811,10 @@ def flatten_issue_labels(issue_objects):
     labels = []
 
     for item in issue_objects:
-        if isinstance(item, IssueFinding):
-            if item.issue:
-                labels.append(item.issue)
+        label = get_issue_label(item)
 
-        elif isinstance(item, dict):
-            if item.get("issue"):
-                labels.append(item.get("issue"))
+        if label:
+            labels.append(label)
 
     return labels
 
@@ -919,13 +874,7 @@ def build_issue_analysis(selected_case, documents=None, attorney_notes=None):
     attorney_focus = []
 
     for item in all_issues[:5]:
-        focus = None
-
-        if isinstance(item, IssueFinding):
-            focus = item.recommended_focus
-
-        elif isinstance(item, dict):
-            focus = item.get("recommended_focus")
+        focus = clean_text(get_issue_focus(item))
 
         if focus and focus not in attorney_focus:
             attorney_focus.append(focus)

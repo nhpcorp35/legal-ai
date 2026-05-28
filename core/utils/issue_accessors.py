@@ -4,6 +4,13 @@ from core.models import (
 )
 
 
+RISK_WEIGHTS = {
+    "high": 3,
+    "medium": 2,
+    "low": 1,
+}
+
+
 def get_issue_score(item):
     if isinstance(item, IssueFinding):
         return item.score
@@ -42,6 +49,10 @@ def get_issue_risk_level(item):
         return item.get("risk_level", "medium")
 
     return "medium"
+
+
+def get_issue_risk_weight(item):
+    return RISK_WEIGHTS.get(get_issue_risk_level(item), 0)
 
 
 def get_issue_focus(item):
