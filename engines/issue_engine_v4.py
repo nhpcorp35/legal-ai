@@ -2,11 +2,6 @@
 
 import re
 
-from core.models import (
-    DocumentReference,
-    IssueFinding,
-)
-
 from core.utils.scoring import clamp_score, normalize_risk
 
 
@@ -790,7 +785,18 @@ def rank_priority_issues(scored_issues):
 
 
 def flatten_issue_labels(issue_objects):
-    return [item.get("issue", "") for item in issue_objects if item.get("issue")]
+    labels = []
+
+    for item in issue_objects:
+        if isinstance(item, IssueFinding):
+            if item.issue:
+                labels.append(item.issue)
+
+        elif isinstance(item, dict):
+            if item.get("issue"):
+                labels.append(item.get("issue"))
+
+    return labels
 
 
 def build_issue_analysis(selected_case, documents=None, attorney_notes=None):
