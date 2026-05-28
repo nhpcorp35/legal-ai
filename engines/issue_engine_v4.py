@@ -2,6 +2,13 @@
 
 import re
 
+from core.models import (
+    DocumentReference,
+    IssueFinding,
+)
+
+from core.utils.scoring import clamp_score, normalize_risk
+
 from core.utils.scoring import clamp_score, normalize_risk
 
 
@@ -211,20 +218,19 @@ def build_issue_object(
     if scored.get("reason"):
         reason = scored["reason"]
 
-    return {
-        "issue": clean_text(issue),
-        "category": category,
-        "score": scored.get("score", 40),
-        "risk_level": risk_level,
-        "reason": reason,
-        "recommended_focus": recommended_focus,
-        "source_document": get_doc_name(source_doc),
-        "source_type": get_doc_type(source_doc),
-        "source_snippet": clean_text(source_snippet),
-        "supporting_allegation": clean_text(supporting_allegation),
-        "supporting_source_document": get_doc_name(supporting_source_doc) if supporting_source_doc else "",
-        "supporting_source_type": get_doc_type(supporting_source_doc) if supporting_source_doc else "",
-    }
+    return IssueFinding(
+        issue=clean_text(issue),
+        category=category,
+        score=clamp_score(scored.get("score", 40)),
+        risk_level=normalize_risk(scored.get("score", 40)),
+        reason=reason,
+        recommended_focus=recommended_focus,
+        source=DocumentReference(
+            filename=get_doc_name(source_doc),
+            document_type=get_doc_type(source_doc),
+            source_snippet=clean_text(source_snippet),
+        ),
+    )
 
 
 def detect_motion_type(selected_case, documents):
@@ -735,11 +741,27 @@ def dedupe_issue_objects(issue_objects):
     seen = set()
 
     for item in issue_objects:
-        key = (
-            clean_text(item.get("issue")),
-            clean_text(item.get("source_document")),
-            clean_text(item.get("source_snippet"))[:120],
-        )
+        if isinstance(item, IssueFinding):
+            source = item.source or DocumentReference()
+            key = (
+                clean_text(item.issue),
+                clean_text(source.filename),
+                clean_text(source.source_snippet)[:120],
+            )
+
+        elif isinstance(item, dict):
+            key = (
+                clean_text(item.get("issue")),
+                clean_text(item.get("source_document")),
+                clean_text(item.get("source_snippet"))[:120],
+            )
+
+        else:
+            key = (
+                clean_text(str(item)),
+                "",
+                "",
+            )
 
         if key in seen:
             continue
@@ -753,12 +775,25 @@ def dedupe_issue_objects(issue_objects):
 def sort_issue_objects(issue_objects):
     sorted_items = list(issue_objects)
 
+    def sort_key(item):
+        if isinstance(item, IssueFinding):
+            return (
+                item.score,
+                1 if item.risk_level == "high" else 0,
+                clean_text(item.category),
+            )
+
+        if isinstance(item, dict):
+            return (
+                item.get("score", 0),
+                1 if item.get("risk_level") == "high" else 0,
+                clean_text(item.get("category")),
+            )
+
+        return (0, 0, "")
+
     sorted_items.sort(
-        key=lambda x: (
-            x.get("score", 0),
-            1 if x.get("risk_level") == "high" else 0,
-            clean_text(x.get("category")),
-        ),
+        key=sort_key,
         reverse=True,
     )
 
