@@ -11,8 +11,10 @@ from core.utils.scoring import clamp_score, normalize_risk
 
 from core.utils.issue_accessors import (
     get_issue_category,
+    get_issue_label,
     get_issue_risk_level,
     get_issue_score,
+    get_issue_source,
 )
 
 from core.utils.scoring import clamp_score, normalize_risk
@@ -822,33 +824,27 @@ def rank_priority_issues(scored_issues):
     ranked = []
 
     for item in scored_issues[:8]:
-        if isinstance(item, IssueFinding):
-            source = item.source or DocumentReference()
+        source = get_issue_source(item)
 
-            ranked.append(
-                {
-                    "label": f"[{item.score}] {item.issue}",
-                    "issue": item.issue,
-                    "score": item.score,
-                    "category": item.category,
-                    "source_document": source.filename,
-                    "source_snippet": source.source_snippet,
-                    "recommended_focus": item.recommended_focus,
-                }
-            )
+        recommended_focus = ""
+
+        if isinstance(item, IssueFinding):
+            recommended_focus = item.recommended_focus
 
         elif isinstance(item, dict):
-            ranked.append(
-                {
-                    "label": f"[{item.get('score', 0)}] {item.get('issue', '')}",
-                    "issue": item.get("issue", ""),
-                    "score": item.get("score", 0),
-                    "category": item.get("category", ""),
-                    "source_document": item.get("source_document", ""),
-                    "source_snippet": item.get("source_snippet", ""),
-                    "recommended_focus": item.get("recommended_focus", ""),
-                }
-            )
+            recommended_focus = item.get("recommended_focus", "")
+
+        ranked.append(
+            {
+                "label": f"[{get_issue_score(item)}] {get_issue_label(item)}",
+                "issue": get_issue_label(item),
+                "score": get_issue_score(item),
+                "category": get_issue_category(item),
+                "source_document": source.filename,
+                "source_snippet": source.source_snippet,
+                "recommended_focus": recommended_focus,
+            }
+        )
 
     return ranked
 

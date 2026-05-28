@@ -44,6 +44,16 @@ def get_issue_risk_level(item):
     return "medium"
 
 
+def get_issue_focus(item):
+    if isinstance(item, IssueFinding):
+        return item.recommended_focus
+
+    if isinstance(item, dict):
+        return item.get("recommended_focus", "")
+
+    return ""
+
+
 def get_issue_source(item):
     if isinstance(item, IssueFinding):
         return item.source or DocumentReference()
