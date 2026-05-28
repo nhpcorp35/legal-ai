@@ -751,14 +751,10 @@ def dedupe_issue_objects(issue_objects):
     for item in issue_objects:
         source = get_issue_source(item)
 
-        label = clean_text(get_issue_label(item))
-        filename = clean_text(source.filename)
-        snippet = clean_text(source.source_snippet)[:120]
-
         key = (
-            label,
-            filename,
-            snippet,
+            clean_text(get_issue_label(item)),
+            clean_text(source.filename),
+            clean_text(source.source_snippet)[:120],
         )
 
         if key in seen:
