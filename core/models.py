@@ -23,15 +23,10 @@ class IssueFinding:
 
 @dataclass
 class ContradictionFinding:
-    issue: str
-    conflict_type: str = "general"
-    severity: int = 50
-    legal_impact: str = ""
-    credibility_impact: str = ""
-    recommended_attack: str = ""
-
-    source_a: Optional[DocumentReference] = None
-    source_b: Optional[DocumentReference] = None
+    category: str
+    summary: str
+    score: int = 50
+    source: Optional[DocumentReference] = None
 
 
 @dataclass
@@ -65,6 +60,4 @@ class StrategyRecommendation:
     recommendation: str
     priority: str = "medium"
     reasoning: str = ""
-    supporting_issues: List[str] = field(default_factory=list)[B
-
-
+    supporting_issues: List[str] = field(default_factory=list)
