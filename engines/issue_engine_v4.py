@@ -141,6 +141,28 @@ def get_doc_type(doc):
     return clean_text(doc.get("type") or doc.get("category") or "other")
 
 
+def get_issue_source_document(item):
+    if isinstance(item, IssueFinding):
+        source = item.source or DocumentReference()
+        return source.filename
+
+    if isinstance(item, dict):
+        return item.get("source_document", "")
+
+    return ""
+
+
+def get_issue_source_snippet(item):
+    if isinstance(item, IssueFinding):
+        source = item.source or DocumentReference()
+        return source.source_snippet
+
+    if isinstance(item, dict):
+        return item.get("source_snippet", "")
+
+    return ""
+
+
 def first_text_document(documents):
     for doc in documents:
         if get_doc_text(doc):
@@ -804,17 +826,33 @@ def rank_priority_issues(scored_issues):
     ranked = []
 
     for item in scored_issues[:8]:
-        ranked.append(
-            {
-                "label": f"[{item.get('score', 0)}] {item.get('issue', '')}",
-                "issue": item.get("issue", ""),
-                "score": item.get("score", 0),
-                "category": item.get("category", ""),
-                "source_document": item.get("source_document", ""),
-                "source_snippet": item.get("source_snippet", ""),
-                "recommended_focus": item.get("recommended_focus", ""),
-            }
-        )
+        if isinstance(item, IssueFinding):
+            source = item.source or DocumentReference()
+
+            ranked.append(
+                {
+                    "label": f"[{item.score}] {item.issue}",
+                    "issue": item.issue,
+                    "score": item.score,
+                    "category": item.category,
+                    "source_document": source.filename,
+                    "source_snippet": source.source_snippet,
+                    "recommended_focus": item.recommended_focus,
+                }
+            )
+
+        elif isinstance(item, dict):
+            ranked.append(
+                {
+                    "label": f"[{item.get('score', 0)}] {item.get('issue', '')}",
+                    "issue": item.get("issue", ""),
+                    "score": item.get("score", 0),
+                    "category": item.get("category", ""),
+                    "source_document": item.get("source_document", ""),
+                    "source_snippet": item.get("source_snippet", ""),
+                    "recommended_focus": item.get("recommended_focus", ""),
+                }
+            )
 
     return ranked
 
@@ -889,7 +927,14 @@ def build_issue_analysis(selected_case, documents=None, attorney_notes=None):
     attorney_focus = []
 
     for item in all_issues[:5]:
-        focus = item.get("recommended_focus")
+        focus = None
+
+        if isinstance(item, IssueFinding):
+            focus = item.recommended_focus
+
+        elif isinstance(item, dict):
+            focus = item.get("recommended_focus")
+
         if focus and focus not in attorney_focus:
             attorney_focus.append(focus)
 
