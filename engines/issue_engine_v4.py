@@ -9,6 +9,12 @@ from core.models import (
 
 from core.utils.scoring import clamp_score, normalize_risk
 
+from core.utils.issue_accessors import (
+    get_issue_category,
+    get_issue_risk_level,
+    get_issue_score,
+)
+
 from core.utils.scoring import clamp_score, normalize_risk
 
 
@@ -798,21 +804,11 @@ def sort_issue_objects(issue_objects):
     sorted_items = list(issue_objects)
 
     def sort_key(item):
-        if isinstance(item, IssueFinding):
-            return (
-                item.score,
-                1 if item.risk_level == "high" else 0,
-                clean_text(item.category),
-            )
-
-        if isinstance(item, dict):
-            return (
-                item.get("score", 0),
-                1 if item.get("risk_level") == "high" else 0,
-                clean_text(item.get("category")),
-            )
-
-        return (0, 0, "")
+        return (
+            get_issue_score(item),
+            1 if get_issue_risk_level(item) == "high" else 0,
+            clean_text(get_issue_category(item)),
+        )
 
     sorted_items.sort(
         key=sort_key,
