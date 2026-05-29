@@ -1,4 +1,17 @@
-# Legal AI — Project State
+CURRENT TASK
+
+Contradiction Engine v2
+
+NEXT ACTION
+
+Upgrade contradiction_claims.py with FACT_PATTERNS
+
+STATUS
+
+Repository clean
+Branch: contradiction-engine-v2
+Basic claim extraction complete
+UI unchanged# Legal AI — Project State
 
 Last Updated: 2026-05-29
 
