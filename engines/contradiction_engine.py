@@ -20,6 +20,13 @@ def clean_text(value):
     return re.sub(r"\s+", " ", str(value)).strip()
 
 
+def build_summary(category, match_count):
+    return (
+        f"Potential {category.replace('_', ' ')} detected "
+        f"({match_count} supporting indicators)."
+    )
+
+
 def detect_contradictions(documents):
     findings = []
 
@@ -32,26 +39,39 @@ def detect_contradictions(documents):
         lowered = text.lower()
 
         for category, patterns in CONTRADICTION_PATTERNS:
-            matches = [
-                pattern
-                for pattern in patterns
-                if re.search(pattern, lowered)
-            ]
 
-            if len(matches) < 2:
+            matched_patterns = []
+
+            for pattern in patterns:
+                if re.search(pattern, lowered):
+                    matched_patterns.append(pattern)
+
+            if len(matched_patterns) < 2:
                 continue
+
+            score = clamp_score(
+                60 + (len(matched_patterns) * 8)
+            )
 
             findings.append(
                 ContradictionFinding(
                     category=category,
-                    summary=f"Potential {category.replace('_', ' ')} detected.",
-                    score=clamp_score(70 + (len(matches) * 5)),
+                    summary=build_summary(
+                        category,
+                        len(matched_patterns),
+                    ),
+                    score=score,
                     source=DocumentReference(
                         filename=doc.get("filename", ""),
                         document_type=doc.get("type", ""),
-                        source_snippet=text[:400],
+                        source_snippet=text[:500],
                     ),
                 )
             )
+
+    findings.sort(
+        key=lambda x: x.score,
+        reverse=True,
+    )
 
     return findings
