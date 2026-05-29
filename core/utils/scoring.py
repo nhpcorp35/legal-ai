@@ -11,7 +11,4 @@ def normalize_risk(score):
     if score >= 65:
         return "medium"
 
-    return "low"[[A
-
-
-
+    return "low"

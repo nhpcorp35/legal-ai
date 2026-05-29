@@ -4,6 +4,7 @@ import re
 
 from engines.issue_engine import build_issue_analysis
 from engines.entity_graph_engine import build_entity_graph
+from engines.contradiction_index import build_contradiction_analysis
 
 try:
     from pypdf import PdfReader
@@ -655,6 +656,8 @@ def build_matter_summary(documents):
         documents,
     )
 
+    summary["contradiction_analysis"] = build_contradiction_analysis(documents)
+
     summary["attorney_work_product"] = build_attorney_work_product(summary, documents)
 
     return summary
@@ -697,6 +700,7 @@ def get_matter(selected_case=None, documents=None, matter_folder=DEFAULT_MATTER_
         "summary": summary,
         "selected_case": summary.get("selected_case"),
         "issue_packet": summary.get("issue_packet", {}),
+        "contradiction_analysis": summary.get("contradiction_analysis", {}),
         "attorney_work_product": summary.get("attorney_work_product", {}),
         "draft_generation": summary.get("attorney_work_product", {}).get("draft_generation", {}),
         "citation_exhibit_engine": summary.get("attorney_work_product", {}).get("citation_exhibit_engine", {}),
