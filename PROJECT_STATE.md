@@ -4,15 +4,14 @@ Contradiction Engine v2
 
 NEXT ACTION
 
-Upgrade contradiction_claims.py with FACT_PATTERNS
+Integrate claim extraction into contradiction engine
 
 STATUS
 
-Repository clean
+Claim extraction improved
+FACT_PATTERNS active
+UI unchanged
 Branch: contradiction-engine-v2
-Basic claim extraction complete
-UI unchanged# Legal AI — Project State
-
 Last Updated: 2026-05-29
 
 ## Current Branch

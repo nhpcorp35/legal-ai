@@ -14,6 +14,25 @@ CLAIM_PATTERNS = [
 ]
 
 
+FACT_PATTERNS = [
+    r"\bnever\b",
+    r"\balways\b",
+    r"\bno\b",
+    r"\byes\b",
+    r"\bnot\b",
+    r"\bwas\b",
+    r"\bwere\b",
+    r"\bis\b",
+    r"\bare\b",
+    r"\bcaused\b",
+    r"\bresulted\b",
+    r"\boccurred\b",
+    r"\bprovided\b",
+    r"\bsent\b",
+    r"\breceived\b",
+]
+
+
 def clean_text(text):
     if not text:
         return ""
@@ -28,6 +47,24 @@ def split_sentences(text):
     )
 
 
+def is_claim(sentence):
+    lowered = sentence.lower()
+
+    if any(
+        re.search(pattern, lowered)
+        for pattern in CLAIM_PATTERNS
+    ):
+        return True
+
+    if any(
+        re.search(pattern, lowered)
+        for pattern in FACT_PATTERNS
+    ):
+        return True
+
+    return False
+
+
 def extract_claims(text):
     text = clean_text(text)
 
@@ -35,12 +72,12 @@ def extract_claims(text):
 
     for sentence in split_sentences(text):
 
-        lowered = sentence.lower()
+        sentence = sentence.strip()
 
-        if any(
-            re.search(pattern, lowered)
-            for pattern in CLAIM_PATTERNS
-        ):
-            claims.append(sentence.strip())
+        if len(sentence) < 20:
+            continue
+
+        if is_claim(sentence):
+            claims.append(sentence)
 
     return claims
