@@ -24,7 +24,10 @@ FACT_PATTERNS = [
     r"\bwere\b",
     r"\bis\b",
     r"\bare\b",
+    r"\bcause\b",
     r"\bcaused\b",
+    r"\bcauses\b",
+    r"\bcausing\b",
     r"\bresulted\b",
     r"\boccurred\b",
     r"\bprovided\b",
@@ -87,10 +90,14 @@ CLAIM_TYPE_PATTERNS = {
         r"\boccurred\b",
     ],
     "causation": [
+        r"\bcause\b",
         r"\bcaused\b",
+        r"\bcauses\b",
+        r"\bcausing\b",
         r"\bresulted\b",
         r"\bled to\b",
         r"\bbecause\b",
+        r"\bresponsible for\b",
     ],
     "witness": [
         r"\btestified\b",
@@ -174,6 +181,49 @@ def determine_claim_type(sentence):
     return "assertion"
 
 
+def normalize_fact_text(fact):
+    fact = clean_text(fact)
+
+    fact = re.sub(
+        r"\b(did|does|do)\b",
+        "",
+        fact,
+        flags=re.IGNORECASE,
+    )
+
+    fact = re.sub(
+        r"\b(never|not|no)\b",
+        "",
+        fact,
+        flags=re.IGNORECASE,
+    )
+
+    fact = re.sub(
+        r"\b(caused|causes|causing)\b",
+        "cause",
+        fact,
+        flags=re.IGNORECASE,
+    )
+
+    fact = re.sub(
+        r"\bresulted in\b",
+        "cause",
+        fact,
+        flags=re.IGNORECASE,
+    )
+
+    fact = re.sub(
+        r"\bled to\b",
+        "cause",
+        fact,
+        flags=re.IGNORECASE,
+    )
+
+    fact = re.sub(r"\s+", " ", fact)
+
+    return fact.strip(" .").lower()
+
+
 def extract_fact_text(sentence):
     fact = sentence
 
@@ -193,21 +243,7 @@ def extract_fact_text(sentence):
             flags=re.IGNORECASE,
         )
 
-    #
-    # Negation belongs in polarity,
-    # not in fact_text.
-    #
-
-    fact = re.sub(
-        r"\b(never|not|no)\b",
-        "",
-        fact,
-        flags=re.IGNORECASE,
-    )
-
-    fact = re.sub(r"\s+", " ", fact)
-
-    return fact.strip(" .")
+    return normalize_fact_text(fact)
 
 
 def build_claim(sentence):
