@@ -12,6 +12,10 @@ from engines.contradiction_constants import (
     ENGINE_VERSION,
 )
 
+from engines.contradiction_cross_document import (
+    detect_cross_document_conflicts,
+)
+
 
 def clean_text(value):
     if not value:
@@ -27,8 +31,45 @@ def build_summary(category, match_count):
     )
 
 
+def build_claim_finding(conflict):
+    claim_a = conflict.get("claim_a", {})
+    claim_b = conflict.get("claim_b", {})
+
+    score = 85
+
+    return ContradictionFinding(
+        category=conflict.get(
+            "type",
+            "position_conflict",
+        ),
+        summary=conflict.get(
+            "summary",
+            "Potential contradiction detected.",
+        ),
+        score=score,
+        source=DocumentReference(
+            filename=claim_a.get(
+                "source_document",
+                "",
+            ),
+            document_type=claim_a.get(
+                "source_type",
+                "",
+            ),
+            source_snippet=claim_a.get(
+                "text",
+                "",
+            )[:500],
+        ),
+    )
+
+
 def detect_contradictions(documents):
     findings = []
+
+    #
+    # Legacy keyword detector
+    #
 
     for doc in documents:
         text = clean_text(doc.get("text"))
@@ -62,12 +103,31 @@ def detect_contradictions(documents):
                     ),
                     score=score,
                     source=DocumentReference(
-                        filename=doc.get("filename", ""),
-                        document_type=doc.get("type", ""),
+                        filename=doc.get(
+                            "filename",
+                            "",
+                        ),
+                        document_type=doc.get(
+                            "type",
+                            "",
+                        ),
                         source_snippet=text[:500],
                     ),
                 )
             )
+
+    #
+    # Claim-based detector
+    #
+
+    for conflict in detect_cross_document_conflicts(
+        documents
+    ):
+        findings.append(
+            build_claim_finding(
+                conflict
+            )
+        )
 
     findings.sort(
         key=lambda x: x.score,
