@@ -30,6 +30,14 @@ FACT_PATTERNS = [
     r"\bprovided\b",
     r"\bsent\b",
     r"\breceived\b",
+    r"\brequired\b",
+    r"\bmandated\b",
+    r"\bprohibited\b",
+    r"\ballowed\b",
+    r"\bconfirmed\b",
+    r"\bagreed\b",
+    r"\bexecuted\b",
+    r"\bentered into\b",
 ]
 
 
@@ -61,6 +69,44 @@ VERB_PATTERNS = [
     "admits",
     "contends",
 ]
+
+
+CLAIM_TYPE_PATTERNS = {
+    "notice": [
+        r"\bnotice\b",
+        r"\binformed\b",
+        r"\baware\b",
+        r"\breceived\b",
+        r"\bsent\b",
+    ],
+    "timeline": [
+        r"\bbefore\b",
+        r"\bafter\b",
+        r"\bearlier\b",
+        r"\blater\b",
+        r"\boccurred\b",
+    ],
+    "causation": [
+        r"\bcaused\b",
+        r"\bresulted\b",
+        r"\bled to\b",
+        r"\bbecause\b",
+    ],
+    "witness": [
+        r"\btestified\b",
+        r"\bswore\b",
+        r"\bdeposition\b",
+        r"\baffidavit\b",
+        r"\bwitness\b",
+    ],
+    "document": [
+        r"\bcontract\b",
+        r"\blease\b",
+        r"\bagreement\b",
+        r"\bemail\b",
+        r"\bletter\b",
+    ],
+}
 
 
 def clean_text(text):
@@ -117,6 +163,17 @@ def determine_speaker(sentence):
     return "unknown"
 
 
+def determine_claim_type(sentence):
+    lowered = sentence.lower()
+
+    for claim_type, patterns in CLAIM_TYPE_PATTERNS.items():
+        for pattern in patterns:
+            if re.search(pattern, lowered):
+                return claim_type
+
+    return "assertion"
+
+
 def extract_fact_text(sentence):
     fact = sentence
 
@@ -146,7 +203,7 @@ def build_claim(sentence):
         "text": sentence,
         "speaker": determine_speaker(sentence),
         "fact_text": extract_fact_text(sentence),
-        "claim_type": "assertion",
+        "claim_type": determine_claim_type(sentence),
         "polarity": determine_polarity(sentence),
     }
 
