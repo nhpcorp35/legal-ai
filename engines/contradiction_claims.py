@@ -30,6 +30,10 @@ FACT_PATTERNS = [
     r"\bcausing\b",
     r"\bresulted\b",
     r"\boccurred\b",
+    r"\bbefore\b",
+    r"\bafter\b",
+    r"\bearlier\b",
+    r"\blater\b",
     r"\bprovided\b",
     r"\bsent\b",
     r"\breceived\b",
@@ -246,14 +250,88 @@ def extract_fact_text(sentence):
     return normalize_fact_text(fact)
 
 
+def extract_timeline_relation(sentence):
+    lowered = sentence.lower()
+
+    if re.search(r"\bbefore\b|\bearlier\b", lowered):
+        return "before"
+
+    if re.search(r"\bafter\b|\blater\b", lowered):
+        return "after"
+
+    return ""
+
+
+def extract_timeline_date(sentence):
+    lowered = clean_text(sentence).lower()
+
+    match = re.search(
+        r"\b(?:before|after|earlier than|later than)\s+"
+        r"([a-z]+\.?\s+\d{1,2}(?:,\s*\d{4})?)\b",
+        lowered,
+    )
+
+    if match:
+        return clean_text(match.group(1)).strip(" .,")
+
+    match = re.search(
+        r"\b(?:before|after|earlier than|later than)\s+"
+        r"(\d{1,2}/\d{1,2}(?:/\d{2,4})?)\b",
+        lowered,
+    )
+
+    if match:
+        return clean_text(match.group(1)).strip(" .,")
+
+    match = re.search(
+        r"\b(?:before|after|earlier than|later than)\s+"
+        r"(\d{4}-\d{1,2}-\d{1,2})\b",
+        lowered,
+    )
+
+    if match:
+        return clean_text(match.group(1)).strip(" .,")
+
+    return ""
+
+
+def extract_timeline_event(sentence):
+    claim_type = determine_claim_type(sentence)
+
+    if claim_type != "timeline":
+        return ""
+
+    fact = extract_fact_text(sentence)
+
+    fact = re.sub(
+        r"\b(before|after|earlier|later)\b.*$",
+        "",
+        fact,
+        flags=re.IGNORECASE,
+    )
+
+    fact = re.sub(r"\s+", " ", fact)
+
+    return fact.strip(" .").lower()
+
+
 def build_claim(sentence):
-    return {
+    claim_type = determine_claim_type(sentence)
+
+    claim = {
         "text": sentence,
         "speaker": determine_speaker(sentence),
         "fact_text": extract_fact_text(sentence),
-        "claim_type": determine_claim_type(sentence),
+        "claim_type": claim_type,
         "polarity": determine_polarity(sentence),
     }
+
+    if claim_type == "timeline":
+        claim["timeline_event"] = extract_timeline_event(sentence)
+        claim["timeline_relation"] = extract_timeline_relation(sentence)
+        claim["timeline_date"] = extract_timeline_date(sentence)
+
+    return claim
 
 
 def extract_claims(text):

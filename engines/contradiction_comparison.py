@@ -1,18 +1,71 @@
-def claims_match(claim_a, claim_b):
-    fact_a = claim_a.get(
-        "fact_text",
-        "",
-    ).strip().lower()
+def clean_value(value):
+    return str(value or "").strip().lower()
 
-    fact_b = claim_b.get(
-        "fact_text",
-        "",
-    ).strip().lower()
+
+def claims_match(claim_a, claim_b):
+    fact_a = clean_value(
+        claim_a.get("fact_text", "")
+    )
+
+    fact_b = clean_value(
+        claim_b.get("fact_text", "")
+    )
 
     if not fact_a or not fact_b:
         return False
 
     return fact_a == fact_b
+
+
+def timeline_claims_conflict(claim_a, claim_b):
+    if (
+        claim_a.get("claim_type") != "timeline"
+        or claim_b.get("claim_type") != "timeline"
+    ):
+        return False
+
+    event_a = clean_value(
+        claim_a.get("timeline_event", "")
+    )
+
+    event_b = clean_value(
+        claim_b.get("timeline_event", "")
+    )
+
+    date_a = clean_value(
+        claim_a.get("timeline_date", "")
+    )
+
+    date_b = clean_value(
+        claim_b.get("timeline_date", "")
+    )
+
+    relation_a = clean_value(
+        claim_a.get("timeline_relation", "")
+    )
+
+    relation_b = clean_value(
+        claim_b.get("timeline_relation", "")
+    )
+
+    if not event_a or not event_b:
+        return False
+
+    if event_a != event_b:
+        return False
+
+    if date_a and date_b and date_a != date_b:
+        return False
+
+    opposite_relations = {
+        ("before", "after"),
+        ("after", "before"),
+    }
+
+    return (
+        relation_a,
+        relation_b,
+    ) in opposite_relations
 
 
 def classify_conflict(claim_a, claim_b):
@@ -83,6 +136,29 @@ def classify_conflict(claim_a, claim_b):
     )
 
 
+def should_compare_as_conflict(claim_a, claim_b):
+    if timeline_claims_conflict(
+        claim_a,
+        claim_b,
+    ):
+        return True
+
+    if not claims_match(
+        claim_a,
+        claim_b,
+    ):
+        return False
+
+    if (
+        claim_a.get("polarity")
+        ==
+        claim_b.get("polarity")
+    ):
+        return False
+
+    return True
+
+
 def compare_claims(claims):
     findings = []
 
@@ -90,16 +166,9 @@ def compare_claims(claims):
 
         for claim_b in claims[i + 1:]:
 
-            if not claims_match(
+            if not should_compare_as_conflict(
                 claim_a,
                 claim_b,
-            ):
-                continue
-
-            if (
-                claim_a.get("polarity")
-                ==
-                claim_b.get("polarity")
             ):
                 continue
 
