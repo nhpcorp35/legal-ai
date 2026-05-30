@@ -26,6 +26,11 @@ def classify_conflict(claim_a, claim_b):
         "unknown",
     )
 
+    claim_type = claim_a.get(
+        "claim_type",
+        "assertion",
+    )
+
     if (
         speaker_a != "unknown"
         and speaker_a == speaker_b
@@ -34,6 +39,41 @@ def classify_conflict(claim_a, claim_b):
             "position_shift",
             "Same speaker takes opposite "
             "positions on the same fact."
+        )
+
+    if claim_type == "notice":
+        return (
+            "notice_conflict",
+            "Different parties dispute "
+            "notice or knowledge."
+        )
+
+    if claim_type == "timeline":
+        return (
+            "timeline_conflict",
+            "Different parties dispute "
+            "timing or sequence of events."
+        )
+
+    if claim_type == "causation":
+        return (
+            "causation_conflict",
+            "Different parties dispute "
+            "cause and effect."
+        )
+
+    if claim_type == "witness":
+        return (
+            "witness_conflict",
+            "Different witness accounts "
+            "or testimony detected."
+        )
+
+    if claim_type == "document":
+        return (
+            "document_conflict",
+            "Different interpretations "
+            "of documentary evidence."
         )
 
     return (

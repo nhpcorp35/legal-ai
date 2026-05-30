@@ -193,6 +193,18 @@ def extract_fact_text(sentence):
             flags=re.IGNORECASE,
         )
 
+    #
+    # Negation belongs in polarity,
+    # not in fact_text.
+    #
+
+    fact = re.sub(
+        r"\b(never|not|no)\b",
+        "",
+        fact,
+        flags=re.IGNORECASE,
+    )
+
     fact = re.sub(r"\s+", " ", fact)
 
     return fact.strip(" .")
