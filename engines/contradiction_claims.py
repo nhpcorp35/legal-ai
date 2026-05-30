@@ -41,6 +41,15 @@ NEGATIVE_PATTERNS = [
 ]
 
 
+SPEAKER_PATTERNS = [
+    "plaintiff",
+    "defendant",
+    "claimant",
+    "respondent",
+    "petitioner",
+]
+
+
 def clean_text(text):
     if not text:
         return ""
@@ -85,9 +94,20 @@ def determine_polarity(sentence):
     return "positive"
 
 
+def determine_speaker(sentence):
+    lowered = sentence.lower()
+
+    for speaker in SPEAKER_PATTERNS:
+        if re.search(rf"\b{speaker}\b", lowered):
+            return speaker
+
+    return "unknown"
+
+
 def build_claim(sentence):
     return {
         "text": sentence,
+        "speaker": determine_speaker(sentence),
         "claim_type": "assertion",
         "polarity": determine_polarity(sentence),
     }
