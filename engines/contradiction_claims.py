@@ -33,6 +33,14 @@ FACT_PATTERNS = [
 ]
 
 
+NEGATIVE_PATTERNS = [
+    r"\bnever\b",
+    r"\bno\b",
+    r"\bnot\b",
+    r"\bdenies\b",
+]
+
+
 def clean_text(text):
     if not text:
         return ""
@@ -65,6 +73,26 @@ def is_claim(sentence):
     return False
 
 
+def determine_polarity(sentence):
+    lowered = sentence.lower()
+
+    if any(
+        re.search(pattern, lowered)
+        for pattern in NEGATIVE_PATTERNS
+    ):
+        return "negative"
+
+    return "positive"
+
+
+def build_claim(sentence):
+    return {
+        "text": sentence,
+        "claim_type": "assertion",
+        "polarity": determine_polarity(sentence),
+    }
+
+
 def extract_claims(text):
     text = clean_text(text)
 
@@ -78,6 +106,8 @@ def extract_claims(text):
             continue
 
         if is_claim(sentence):
-            claims.append(sentence)
+            claims.append(
+                build_claim(sentence)
+            )
 
     return claims
