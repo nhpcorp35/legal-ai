@@ -15,6 +15,34 @@ def claims_match(claim_a, claim_b):
     return fact_a == fact_b
 
 
+def classify_conflict(claim_a, claim_b):
+    speaker_a = claim_a.get(
+        "speaker",
+        "unknown",
+    )
+
+    speaker_b = claim_b.get(
+        "speaker",
+        "unknown",
+    )
+
+    if (
+        speaker_a != "unknown"
+        and speaker_a == speaker_b
+    ):
+        return (
+            "position_shift",
+            "Same speaker takes opposite "
+            "positions on the same fact."
+        )
+
+    return (
+        "factual_dispute",
+        "Different parties take opposite "
+        "positions on the same fact."
+    )
+
+
 def compare_claims(claims):
     findings = []
 
@@ -35,12 +63,17 @@ def compare_claims(claims):
             ):
                 continue
 
+            conflict_type, summary = (
+                classify_conflict(
+                    claim_a,
+                    claim_b,
+                )
+            )
+
             findings.append(
                 {
-                    "type": "position_conflict",
-                    "summary":
-                        "Opposite positions detected "
-                        "for the same factual assertion.",
+                    "type": conflict_type,
+                    "summary": summary,
                     "claim_a": claim_a,
                     "claim_b": claim_b,
                 }
