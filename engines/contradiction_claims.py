@@ -50,6 +50,19 @@ SPEAKER_PATTERNS = [
 ]
 
 
+VERB_PATTERNS = [
+    "alleges",
+    "claims",
+    "asserts",
+    "states",
+    "testified",
+    "swore",
+    "denies",
+    "admits",
+    "contends",
+]
+
+
 def clean_text(text):
     if not text:
         return ""
@@ -104,10 +117,35 @@ def determine_speaker(sentence):
     return "unknown"
 
 
+def extract_fact_text(sentence):
+    fact = sentence
+
+    for speaker in SPEAKER_PATTERNS:
+        fact = re.sub(
+            rf"\b{speaker}\b",
+            "",
+            fact,
+            flags=re.IGNORECASE,
+        )
+
+    for verb in VERB_PATTERNS:
+        fact = re.sub(
+            rf"\b{verb}\b",
+            "",
+            fact,
+            flags=re.IGNORECASE,
+        )
+
+    fact = re.sub(r"\s+", " ", fact)
+
+    return fact.strip(" .")
+
+
 def build_claim(sentence):
     return {
         "text": sentence,
         "speaker": determine_speaker(sentence),
+        "fact_text": extract_fact_text(sentence),
         "claim_type": "assertion",
         "polarity": determine_polarity(sentence),
     }
