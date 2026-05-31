@@ -2,6 +2,15 @@ def clean_value(value):
     return str(value or "").strip().lower()
 
 
+CREDIBILITY_SOURCES = {
+    "affidavit",
+    "affirmation",
+    "deposition",
+    "declaration",
+    "testimony",
+}
+
+
 def claims_match(claim_a, claim_b):
     fact_a = clean_value(
         claim_a.get("fact_text", "")
@@ -115,6 +124,51 @@ def document_claims_conflict(claim_a, claim_b):
     ) in opposite_actions
 
 
+def credibility_claims_conflict(claim_a, claim_b):
+    source_a = clean_value(
+        claim_a.get("source_type", "")
+    )
+
+    source_b = clean_value(
+        claim_b.get("source_type", "")
+    )
+
+    if (
+        source_a not in CREDIBILITY_SOURCES
+        or source_b not in CREDIBILITY_SOURCES
+    ):
+        return False
+
+    if source_a == source_b:
+        return False
+
+    requirement_a = clean_value(
+        claim_a.get(
+            "document_requirement",
+            ""
+        )
+    )
+
+    requirement_b = clean_value(
+        claim_b.get(
+            "document_requirement",
+            ""
+        )
+    )
+
+    if not requirement_a or not requirement_b:
+        return False
+
+    if requirement_a != requirement_b:
+        return False
+
+    return (
+        claim_a.get("polarity")
+        !=
+        claim_b.get("polarity")
+    )
+
+
 def classify_conflict(claim_a, claim_b):
     speaker_a = claim_a.get(
         "speaker",
@@ -130,6 +184,16 @@ def classify_conflict(claim_a, claim_b):
         "claim_type",
         "assertion",
     )
+
+    if credibility_claims_conflict(
+        claim_a,
+        claim_b,
+    ):
+        return (
+            "credibility_conflict",
+            "Inconsistent statements across "
+            "testimony or sworn evidence."
+        )
 
     if (
         speaker_a != "unknown"
@@ -185,6 +249,12 @@ def classify_conflict(claim_a, claim_b):
 
 def should_compare_as_conflict(claim_a, claim_b):
     if timeline_claims_conflict(
+        claim_a,
+        claim_b,
+    ):
+        return True
+
+    if credibility_claims_conflict(
         claim_a,
         claim_b,
     ):
