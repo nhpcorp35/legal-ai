@@ -72,6 +72,34 @@ def _extract_month_day(text):
     return match.group(1), match.group(2)
 
 
+def _quantity_conflict(a, b):
+    a_type = _normalize_text(a.get("claim_type"))
+    b_type = _normalize_text(b.get("claim_type"))
+
+    if a_type != "quantity" or b_type != "quantity":
+        return False
+
+    a_subject = _normalize_text(a.get("quantity_subject"))
+    b_subject = _normalize_text(b.get("quantity_subject"))
+
+    a_unit = _normalize_text(a.get("quantity_unit"))
+    b_unit = _normalize_text(b.get("quantity_unit"))
+
+    a_value = a.get("quantity_value")
+    b_value = b.get("quantity_value")
+
+    if a_value is None or b_value is None:
+        return False
+
+    if a_subject != b_subject:
+        return False
+
+    if a_unit != b_unit:
+        return False
+
+    return a_value != b_value
+
+
 def _date_conflict(a, b):
     a_type = _normalize_text(a.get("claim_type"))
     b_type = _normalize_text(b.get("claim_type"))
@@ -200,6 +228,9 @@ def _document_conflict(a, b):
 
 
 def _conflict_type(a, b):
+    if _quantity_conflict(a, b):
+        return "quantity_conflict"
+
     if _date_conflict(a, b):
         return "date_conflict"
 
@@ -241,6 +272,7 @@ def _derive_severity(a, b):
         "document_conflict",
         "timeline_conflict",
         "date_conflict",
+        "quantity_conflict",
     }:
         return 9
 

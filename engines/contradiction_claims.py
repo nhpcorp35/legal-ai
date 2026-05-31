@@ -146,6 +146,23 @@ FACT_PATTERNS = [
     r"\bexecutes\b",
     r"\bexecuted\b",
     r"\bentered into\b",
+    r"\bpaid\b",
+    r"\bpay\b",
+    r"\bpays\b",
+    r"\bpayment\b",
+    r"\bpayments\b",
+    r"\bowe\b",
+    r"\bowes\b",
+    r"\bowed\b",
+    r"\bamount\b",
+    r"\bbalance\b",
+    r"\bdamages\b",
+    r"\brent\b",
+    r"\bdeposit\b",
+    r"\bfee\b",
+    r"\bfees\b",
+    r"\b\d+\b",
+    r"\$\s*\d+",
 ]
 
 
@@ -180,7 +197,15 @@ VERB_PATTERNS = [
 ]
 
 
+QUANTITY_PATTERNS = [
+    r"\$\s*\d+(?:,\d{3})*(?:\.\d+)?",
+    r"\b\d+(?:,\d{3})*(?:\.\d+)?\s+(?:payment|payments|installment|installments|days|months|years)\b",
+    r"\b(?:paid|pay|pays|owed|owes|owe|amount|balance|damages|rent|deposit|fee|fees)\b",
+]
+
+
 CLAIM_TYPE_PATTERNS = {
+    "quantity": QUANTITY_PATTERNS,
     "notice": [
         r"\bnotice\b",
         r"\binformed\b",
@@ -260,6 +285,12 @@ def is_claim(sentence):
     ):
         return True
 
+    if any(
+        re.search(pattern, lowered)
+        for pattern in QUANTITY_PATTERNS
+    ):
+        return True
+
     return False
 
 
@@ -286,7 +317,6 @@ def determine_speaker(sentence):
             return speaker
 
     return "unknown"
-
 
 
 def extract_witness_name(sentence):
@@ -342,11 +372,23 @@ def is_document_claim(sentence):
     )
 
 
+def is_quantity_claim(sentence):
+    lowered = sentence.lower()
+
+    return any(
+        re.search(pattern, lowered)
+        for pattern in QUANTITY_PATTERNS
+    )
+
+
 def determine_claim_type(sentence):
     lowered = sentence.lower()
 
     if is_document_claim(sentence):
         return "document"
+
+    if is_quantity_claim(sentence):
+        return "quantity"
 
     for claim_type, patterns in CLAIM_TYPE_PATTERNS.items():
         for pattern in patterns:
@@ -549,6 +591,72 @@ def extract_document_requirement(sentence):
     return fact.strip(" .").lower()
 
 
+def extract_quantity_value(sentence):
+    lowered = sentence.lower()
+
+    money_match = re.search(
+        r"\$\s*(\d+(?:,\d{3})*(?:\.\d+)?)",
+        lowered,
+    )
+
+    if money_match:
+        return float(money_match.group(1).replace(",", ""))
+
+    number_match = re.search(
+        r"\b(\d+(?:,\d{3})*(?:\.\d+)?)\b",
+        lowered,
+    )
+
+    if number_match:
+        return float(number_match.group(1).replace(",", ""))
+
+    return None
+
+
+def extract_quantity_unit(sentence):
+    lowered = sentence.lower()
+
+    if re.search(r"\$", lowered):
+        return "dollars"
+
+    unit_match = re.search(
+        r"\b\d+(?:,\d{3})*(?:\.\d+)?\s+"
+        r"(payment|payments|installment|installments|days|months|years)\b",
+        lowered,
+    )
+
+    if unit_match:
+        return unit_match.group(1)
+
+    if re.search(r"\b(payment|payments|paid|pay|pays)\b", lowered):
+        return "payments"
+
+    if re.search(r"\b(rent|deposit|fee|fees|damages|amount|balance|owed|owes|owe)\b", lowered):
+        return "dollars"
+
+    return ""
+
+
+def extract_quantity_subject(sentence):
+    fact = extract_fact_text(sentence)
+
+    fact = re.sub(
+        r"\$\s*\d+(?:,\d{3})*(?:\.\d+)?",
+        "",
+        fact,
+    )
+
+    fact = re.sub(
+        r"\b\d+(?:,\d{3})*(?:\.\d+)?\b",
+        "",
+        fact,
+    )
+
+    fact = re.sub(r"\s+", " ", fact)
+
+    return fact.strip(" .").lower()
+
+
 def build_claim(sentence):
     claim_type = determine_claim_type(sentence)
 
@@ -571,6 +679,11 @@ def build_claim(sentence):
         claim["document_subject"] = extract_document_subject(sentence)
         claim["document_action"] = extract_document_action(sentence)
         claim["document_requirement"] = extract_document_requirement(sentence)
+
+    if claim_type == "quantity":
+        claim["quantity_value"] = extract_quantity_value(sentence)
+        claim["quantity_unit"] = extract_quantity_unit(sentence)
+        claim["quantity_subject"] = extract_quantity_subject(sentence)
 
     return claim
 
