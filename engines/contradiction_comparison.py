@@ -12,6 +12,8 @@ This file is intentionally conservative. No new feature expansion should be
 added here until the contradiction regression test suite is stable.
 """
 
+import re
+
 
 def _normalize_text(value):
     if value is None:
@@ -20,12 +22,6 @@ def _normalize_text(value):
 
 
 def _same_subject(a, b):
-    """
-    Conservative subject matching.
-
-    Prefer explicit normalized_fact if available, then fact_text.
-    This keeps comparison stable across claim extractor changes.
-    """
     a_subject = _normalize_text(
         a.get("normalized_fact")
         or a.get("fact_text")
@@ -61,6 +57,68 @@ def _speaker_identity(claim):
     )
 
 
+def _extract_month_day(text):
+    text = _normalize_text(text)
+
+    match = re.search(
+        r"(january|february|march|april|may|june|july|august|"
+        r"september|october|november|december)\s+(\d{1,2})",
+        text,
+    )
+
+    if not match:
+        return None
+
+    return match.group(1), match.group(2)
+
+
+def _date_conflict(a, b):
+    a_type = _normalize_text(a.get("claim_type"))
+    b_type = _normalize_text(b.get("claim_type"))
+
+    if a_type != "timeline" or b_type != "timeline":
+        return False
+
+    a_fact = _normalize_text(a.get("fact_text"))
+    b_fact = _normalize_text(b.get("fact_text"))
+
+    if not a_fact or not b_fact:
+        return False
+
+    if "before" in a_fact or "after" in a_fact:
+        return False
+
+    if "before" in b_fact or "after" in b_fact:
+        return False
+
+    a_date = _extract_month_day(a_fact)
+    b_date = _extract_month_day(b_fact)
+
+    if not a_date or not b_date:
+        return False
+
+    a_event = re.sub(
+        r"january \d{1,2}|february \d{1,2}|march \d{1,2}|april \d{1,2}|"
+        r"may \d{1,2}|june \d{1,2}|july \d{1,2}|august \d{1,2}|"
+        r"september \d{1,2}|october \d{1,2}|november \d{1,2}|december \d{1,2}",
+        "",
+        a_fact,
+    ).strip()
+
+    b_event = re.sub(
+        r"january \d{1,2}|february \d{1,2}|march \d{1,2}|april \d{1,2}|"
+        r"may \d{1,2}|june \d{1,2}|july \d{1,2}|august \d{1,2}|"
+        r"september \d{1,2}|october \d{1,2}|november \d{1,2}|december \d{1,2}",
+        "",
+        b_fact,
+    ).strip()
+
+    if a_event != b_event:
+        return False
+
+    return a_date != b_date
+
+
 def _timeline_conflict(a, b):
     a_type = _normalize_text(a.get("claim_type"))
     b_type = _normalize_text(b.get("claim_type"))
@@ -80,6 +138,7 @@ def _timeline_conflict(a, b):
     )
 
     same_anchor = False
+
     for token in [
         "january", "february", "march", "april",
         "may", "june", "july", "august",
@@ -141,6 +200,9 @@ def _document_conflict(a, b):
 
 
 def _conflict_type(a, b):
+    if _date_conflict(a, b):
+        return "date_conflict"
+
     if _timeline_conflict(a, b):
         return "timeline_conflict"
 
@@ -178,6 +240,7 @@ def _derive_severity(a, b):
         "witness_conflict",
         "document_conflict",
         "timeline_conflict",
+        "date_conflict",
     }:
         return 9
 
