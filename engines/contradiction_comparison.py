@@ -163,6 +163,30 @@ def credibility_claims_conflict(claim_a, claim_b):
             claim_b.get("polarity")
         )
 
+    witness_a = clean_value(
+        claim_a.get("witness_name", "")
+    )
+
+    witness_b = clean_value(
+        claim_b.get("witness_name", "")
+    )
+
+    if witness_a and witness_b:
+        if witness_a != witness_b:
+            return False
+
+        if not claims_match(
+            claim_a,
+            claim_b,
+        ):
+            return False
+
+        return (
+            claim_a.get("polarity")
+            !=
+            claim_b.get("polarity")
+        )
+
     speaker_a = clean_value(
         claim_a.get("speaker", "")
     )
