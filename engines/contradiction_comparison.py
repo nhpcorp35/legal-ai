@@ -389,13 +389,29 @@ def compare_claims(claims):
                 )
             )
 
-            findings.append(
-                {
-                    "type": conflict_type,
-                    "summary": summary,
-                    "claim_a": claim_a,
-                    "claim_b": claim_b,
-                }
+            finding = {
+                "type": conflict_type,
+                "summary": summary,
+                "claim_a": claim_a,
+                "claim_b": claim_b,
+            }
+
+            witness_a = clean_value(
+                claim_a.get("witness_name", "")
             )
+
+            witness_b = clean_value(
+                claim_b.get("witness_name", "")
+            )
+
+            if (
+                conflict_type == "credibility_conflict"
+                and witness_a
+                and witness_b
+                and witness_a == witness_b
+            ):
+                finding["impeachment_candidate"] = True
+
+            findings.append(finding)
 
     return findings
