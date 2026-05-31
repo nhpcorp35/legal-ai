@@ -139,9 +139,6 @@ def credibility_claims_conflict(claim_a, claim_b):
     ):
         return False
 
-    if source_a == source_b:
-        return False
-
     requirement_a = clean_value(
         claim_a.get(
             "document_requirement",
@@ -156,10 +153,34 @@ def credibility_claims_conflict(claim_a, claim_b):
         )
     )
 
-    if not requirement_a or not requirement_b:
+    if requirement_a and requirement_b:
+        if requirement_a != requirement_b:
+            return False
+
+        return (
+            claim_a.get("polarity")
+            !=
+            claim_b.get("polarity")
+        )
+
+    speaker_a = clean_value(
+        claim_a.get("speaker", "")
+    )
+
+    speaker_b = clean_value(
+        claim_b.get("speaker", "")
+    )
+
+    if not speaker_a or not speaker_b:
         return False
 
-    if requirement_a != requirement_b:
+    if speaker_a != speaker_b:
+        return False
+
+    if not claims_match(
+        claim_a,
+        claim_b,
+    ):
         return False
 
     return (
