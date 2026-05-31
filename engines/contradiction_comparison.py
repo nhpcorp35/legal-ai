@@ -211,6 +211,33 @@ def _causation_conflict(a, b):
     return same_core and _opposite_polarity(a, b)
 
 
+def _procedural_conflict(a, b):
+    if not (_same_subject(a, b) and _opposite_polarity(a, b)):
+        return False
+
+    fact = _normalize_text(
+        a.get("fact_text")
+        or a.get("text")
+    )
+
+    procedural_keywords = [
+        "served",
+        "service",
+        "filed",
+        "filing",
+        "delivered",
+        "delivery",
+        "mailed",
+        "received",
+        "receipt",
+    ]
+
+    return any(
+        keyword in fact
+        for keyword in procedural_keywords
+    )
+
+
 def _document_conflict(a, b):
     a_type = _normalize_text(a.get("claim_type"))
     b_type = _normalize_text(b.get("claim_type"))
@@ -236,6 +263,9 @@ def _conflict_type(a, b):
 
     if _timeline_conflict(a, b):
         return "timeline_conflict"
+
+    if _procedural_conflict(a, b):
+        return "procedural_conflict"
 
     if _document_conflict(a, b):
         return "document_conflict"
@@ -270,6 +300,7 @@ def _derive_severity(a, b):
         "credibility_conflict",
         "witness_conflict",
         "document_conflict",
+        "procedural_conflict",
         "timeline_conflict",
         "date_conflict",
         "quantity_conflict",
