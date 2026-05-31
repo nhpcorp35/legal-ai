@@ -68,6 +68,53 @@ def timeline_claims_conflict(claim_a, claim_b):
     ) in opposite_relations
 
 
+def document_claims_conflict(claim_a, claim_b):
+    if (
+        claim_a.get("claim_type") != "document"
+        or claim_b.get("claim_type") != "document"
+    ):
+        return False
+
+    subject_a = clean_value(
+        claim_a.get("document_subject", "")
+    )
+
+    subject_b = clean_value(
+        claim_b.get("document_subject", "")
+    )
+
+    action_a = clean_value(
+        claim_a.get("document_action", "")
+    )
+
+    action_b = clean_value(
+        claim_b.get("document_action", "")
+    )
+
+    if not subject_a or not subject_b:
+        return False
+
+    if subject_a != subject_b:
+        return False
+
+    if (
+        claim_a.get("polarity")
+        !=
+        claim_b.get("polarity")
+    ):
+        return True
+
+    opposite_actions = {
+        ("allow", "prohibit"),
+        ("prohibit", "allow"),
+    }
+
+    return (
+        action_a,
+        action_b,
+    ) in opposite_actions
+
+
 def classify_conflict(claim_a, claim_b):
     speaker_a = claim_a.get(
         "speaker",
@@ -138,6 +185,12 @@ def classify_conflict(claim_a, claim_b):
 
 def should_compare_as_conflict(claim_a, claim_b):
     if timeline_claims_conflict(
+        claim_a,
+        claim_b,
+    ):
+        return True
+
+    if document_claims_conflict(
         claim_a,
         claim_b,
     ):
