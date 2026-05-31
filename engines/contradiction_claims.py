@@ -14,10 +14,20 @@ CLAIM_PATTERNS = [
 ]
 
 
+SOURCE_TYPES = [
+    "affidavit",
+    "affirmation",
+    "deposition",
+    "testimony",
+    "declaration",
+]
+
+
 DOCUMENT_SUBJECTS = [
     "affidavit",
     "affirmation",
     "deposition",
+    "declaration",
     "order",
     "decision",
     "lease",
@@ -153,6 +163,7 @@ SPEAKER_PATTERNS = [
     "claimant",
     "respondent",
     "petitioner",
+    "witness",
 ]
 
 
@@ -198,7 +209,9 @@ CLAIM_TYPE_PATTERNS = {
         r"\btestified\b",
         r"\bswore\b",
         r"\bdeposition\b",
+        r"\btestimony\b",
         r"\baffidavit\b",
+        r"\bdeclaration\b",
         r"\bwitness\b",
     ],
     "document": [
@@ -211,6 +224,7 @@ CLAIM_TYPE_PATTERNS = {
         r"\baffidavit\b",
         r"\baffirmation\b",
         r"\bdeposition\b",
+        r"\bdeclaration\b",
         r"\border\b",
         r"\bdecision\b",
     ],
@@ -267,6 +281,19 @@ def determine_speaker(sentence):
     for speaker in SPEAKER_PATTERNS:
         if re.search(rf"\b{speaker}\b", lowered):
             return speaker
+
+    return "unknown"
+
+
+def extract_source_type(sentence):
+    lowered = sentence.lower()
+
+    if re.search(r"\btestified\b|\btestimony\b", lowered):
+        return "testimony"
+
+    for source_type in SOURCE_TYPES:
+        if re.search(rf"\b{source_type}\b", lowered):
+            return source_type
 
     return "unknown"
 
@@ -505,6 +532,7 @@ def build_claim(sentence):
         "fact_text": extract_fact_text(sentence),
         "claim_type": claim_type,
         "polarity": determine_polarity(sentence),
+        "source_type": extract_source_type(sentence),
     }
 
     if claim_type == "timeline":
