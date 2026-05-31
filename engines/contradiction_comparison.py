@@ -1,436 +1,255 @@
-def clean_value(value):
-    return str(value or "").strip().lower()
+# engines/contradiction_comparison.py
+
+"""
+Contradiction Comparison Engine
+
+Purpose:
+- Compare extracted claims and identify direct contradictions.
+- Preserve litigation-facing metadata used by regression tests:
+  severity, impeachment_candidate, and attack_priority.
+
+This file is intentionally conservative. No new feature expansion should be
+added here until the contradiction regression test suite is stable.
+"""
 
 
-CREDIBILITY_SOURCES = {
-    "affidavit",
-    "affirmation",
-    "deposition",
-    "declaration",
-    "testimony",
-}
+def _normalize_text(value):
+    if value is None:
+        return ""
+    return str(value).strip().lower()
 
 
-def claims_match(claim_a, claim_b):
-    fact_a = clean_value(
-        claim_a.get("fact_text", "")
+def _same_subject(a, b):
+    """
+    Conservative subject matching.
+
+    Prefer explicit normalized_fact if available, then fact_text.
+    This keeps comparison stable across claim extractor changes.
+    """
+    a_subject = _normalize_text(
+        a.get("normalized_fact")
+        or a.get("fact_text")
+        or a.get("text")
+    )
+    b_subject = _normalize_text(
+        b.get("normalized_fact")
+        or b.get("fact_text")
+        or b.get("text")
     )
 
-    fact_b = clean_value(
-        claim_b.get("fact_text", "")
-    )
-
-    if not fact_a or not fact_b:
+    if not a_subject or not b_subject:
         return False
 
-    return fact_a == fact_b
+    return a_subject == b_subject
 
 
-def timeline_claims_conflict(claim_a, claim_b):
-    if (
-        claim_a.get("claim_type") != "timeline"
-        or claim_b.get("claim_type") != "timeline"
-    ):
-        return False
-
-    event_a = clean_value(
-        claim_a.get("timeline_event", "")
-    )
-
-    event_b = clean_value(
-        claim_b.get("timeline_event", "")
-    )
-
-    date_a = clean_value(
-        claim_a.get("timeline_date", "")
-    )
-
-    date_b = clean_value(
-        claim_b.get("timeline_date", "")
-    )
-
-    relation_a = clean_value(
-        claim_a.get("timeline_relation", "")
-    )
-
-    relation_b = clean_value(
-        claim_b.get("timeline_relation", "")
-    )
-
-    if not event_a or not event_b:
-        return False
-
-    if event_a != event_b:
-        return False
-
-    if date_a and date_b and date_a != date_b:
-        return False
-
-    opposite_relations = {
-        ("before", "after"),
-        ("after", "before"),
-    }
+def _opposite_polarity(a, b):
+    a_polarity = _normalize_text(a.get("polarity"))
+    b_polarity = _normalize_text(b.get("polarity"))
 
     return (
-        relation_a,
-        relation_b,
-    ) in opposite_relations
+        a_polarity in {"positive", "negative"}
+        and b_polarity in {"positive", "negative"}
+        and a_polarity != b_polarity
+    )
 
 
-def document_claims_conflict(claim_a, claim_b):
-    if (
-        claim_a.get("claim_type") != "document"
-        or claim_b.get("claim_type") != "document"
-    ):
+def _speaker_identity(claim):
+    return _normalize_text(
+        claim.get("witness_name")
+        or claim.get("speaker")
+    )
+
+
+def _timeline_conflict(a, b):
+    a_type = _normalize_text(a.get("claim_type"))
+    b_type = _normalize_text(b.get("claim_type"))
+
+    if a_type != "timeline" or b_type != "timeline":
         return False
 
-    subject_a = clean_value(
-        claim_a.get("document_subject", "")
-    )
+    a_fact = _normalize_text(a.get("fact_text"))
+    b_fact = _normalize_text(b.get("fact_text"))
 
-    subject_b = clean_value(
-        claim_b.get("document_subject", "")
-    )
-
-    action_a = clean_value(
-        claim_a.get("document_action", "")
-    )
-
-    action_b = clean_value(
-        claim_b.get("document_action", "")
-    )
-
-    if not subject_a or not subject_b:
+    if not a_fact or not b_fact:
         return False
 
-    if subject_a != subject_b:
+    before_after = (
+        (" before " in a_fact and " after " in b_fact)
+        or (" after " in a_fact and " before " in b_fact)
+    )
+
+    same_anchor = False
+    for token in [
+        "january", "february", "march", "april",
+        "may", "june", "july", "august",
+        "september", "october", "november", "december"
+    ]:
+        if token in a_fact and token in b_fact:
+            same_anchor = True
+            break
+
+    if not same_anchor:
+        a_tokens = set(a_fact.replace(".", "").replace(",", "").split())
+        b_tokens = set(b_fact.replace(".", "").replace(",", "").split())
+
+        shared_numbers = {
+            token for token in a_tokens.intersection(b_tokens)
+            if any(ch.isdigit() for ch in token)
+        }
+
+        same_anchor = bool(shared_numbers)
+
+    return before_after and same_anchor
+
+
+def _causation_conflict(a, b):
+    a_type = _normalize_text(a.get("claim_type"))
+    b_type = _normalize_text(b.get("claim_type"))
+
+    if a_type != "causation" or b_type != "causation":
         return False
 
-    if (
-        claim_a.get("polarity")
-        !=
-        claim_b.get("polarity")
-    ):
-        return True
+    a_fact = _normalize_text(a.get("fact_text"))
+    b_fact = _normalize_text(b.get("fact_text"))
 
-    opposite_actions = {
-        ("allow", "prohibit"),
-        ("prohibit", "allow"),
-    }
-
-    return (
-        action_a,
-        action_b,
-    ) in opposite_actions
-
-
-def credibility_claims_conflict(claim_a, claim_b):
-    source_a = clean_value(
-        claim_a.get("source_type", "")
-    )
-
-    source_b = clean_value(
-        claim_b.get("source_type", "")
-    )
-
-    if (
-        source_a not in CREDIBILITY_SOURCES
-        or source_b not in CREDIBILITY_SOURCES
-    ):
+    if not a_fact or not b_fact:
         return False
 
-    requirement_a = clean_value(
-        claim_a.get(
-            "document_requirement",
-            ""
-        )
+    same_core = (
+        a_fact.replace(" did not ", " ").replace(" not ", " ")
+        == b_fact.replace(" did not ", " ").replace(" not ", " ")
     )
 
-    requirement_b = clean_value(
-        claim_b.get(
-            "document_requirement",
-            ""
-        )
-    )
+    return same_core and _opposite_polarity(a, b)
 
-    if requirement_a and requirement_b:
-        if requirement_a != requirement_b:
-            return False
 
-        return (
-            claim_a.get("polarity")
-            !=
-            claim_b.get("polarity")
-        )
+def _document_conflict(a, b):
+    a_type = _normalize_text(a.get("claim_type"))
+    b_type = _normalize_text(b.get("claim_type"))
 
-    witness_a = clean_value(
-        claim_a.get("witness_name", "")
-    )
-
-    witness_b = clean_value(
-        claim_b.get("witness_name", "")
-    )
-
-    if witness_a and witness_b:
-        if witness_a != witness_b:
-            return False
-
-        if not claims_match(
-            claim_a,
-            claim_b,
-        ):
-            return False
-
-        return (
-            claim_a.get("polarity")
-            !=
-            claim_b.get("polarity")
-        )
-
-    speaker_a = clean_value(
-        claim_a.get("speaker", "")
-    )
-
-    speaker_b = clean_value(
-        claim_b.get("speaker", "")
-    )
-
-    if not speaker_a or not speaker_b:
+    if a_type != "document" or b_type != "document":
         return False
 
-    if speaker_a != speaker_b:
-        return False
+    a_subject = _normalize_text(a.get("document_subject"))
+    b_subject = _normalize_text(b.get("document_subject"))
 
-    if not claims_match(
-        claim_a,
-        claim_b,
-    ):
-        return False
+    if a_subject and b_subject and a_subject == b_subject:
+        return _opposite_polarity(a, b)
 
-    return (
-        claim_a.get("polarity")
-        !=
-        claim_b.get("polarity")
-    )
+    return _same_subject(a, b) and _opposite_polarity(a, b)
 
 
-def classify_conflict(claim_a, claim_b):
-    speaker_a = claim_a.get(
-        "speaker",
-        "unknown",
-    )
+def _conflict_type(a, b):
+    if _timeline_conflict(a, b):
+        return "timeline_conflict"
 
-    speaker_b = claim_b.get(
-        "speaker",
-        "unknown",
-    )
+    if _document_conflict(a, b):
+        return "document_conflict"
 
-    claim_type = claim_a.get(
-        "claim_type",
-        "assertion",
-    )
+    if _causation_conflict(a, b):
+        return "credibility_conflict"
 
-    if credibility_claims_conflict(
-        claim_a,
-        claim_b,
-    ):
-        return (
-            "credibility_conflict",
-            "Inconsistent statements across "
-            "testimony or sworn evidence."
-        )
+    if _same_subject(a, b) and _opposite_polarity(a, b):
+        a_identity = _speaker_identity(a)
+        b_identity = _speaker_identity(b)
 
-    witness_a = clean_value(
-        claim_a.get("witness_name", "")
-    )
+        if a_identity and b_identity and a_identity != b_identity:
+            return "witness_conflict"
 
-    witness_b = clean_value(
-        claim_b.get("witness_name", "")
-    )
+        return "credibility_conflict"
 
-    if (
-        speaker_a != "unknown"
-        and speaker_a == speaker_b
-        and speaker_a != "witness"
-    ):
-        return (
-            "position_shift",
-            "Same speaker takes opposite "
-            "positions on the same fact."
-        )
-
-    if (
-        speaker_a == "witness"
-        and speaker_b == "witness"
-        and witness_a
-        and witness_b
-        and witness_a == witness_b
-    ):
-        return (
-            "credibility_conflict",
-            "Inconsistent statements across "
-            "testimony or sworn evidence."
-        )
-
-    if claim_type == "notice":
-        return (
-            "notice_conflict",
-            "Different parties dispute "
-            "notice or knowledge."
-        )
-
-    if claim_type == "timeline":
-        return (
-            "timeline_conflict",
-            "Different parties dispute "
-            "timing or sequence of events."
-        )
-
-    if claim_type == "causation":
-        return (
-            "causation_conflict",
-            "Different parties dispute "
-            "cause and effect."
-        )
-
-    if (
-        claim_type == "witness"
-        and clean_value(
-            claim_a.get("witness_name", "")
-        )
-        and clean_value(
-            claim_b.get("witness_name", "")
-        )
-        and clean_value(
-            claim_a.get("witness_name", "")
-        ) != clean_value(
-            claim_b.get("witness_name", "")
-        )
-    ):
-        return (
-            "witness_conflict",
-            "Different witness accounts "
-            "or testimony detected."
-        )
-
-    if claim_type == "witness":
-        return (
-            "witness_conflict",
-            "Different witness accounts "
-            "or testimony detected."
-        )
-
-    if claim_type == "document":
-        return (
-            "document_conflict",
-            "Different interpretations "
-            "of documentary evidence."
-        )
-
-    return (
-        "factual_dispute",
-        "Different parties take opposite "
-        "positions on the same fact."
-    )
+    return None
 
 
-def should_compare_as_conflict(claim_a, claim_b):
-    if timeline_claims_conflict(
-        claim_a,
-        claim_b,
-    ):
-        return True
+def _is_conflict(a, b):
+    return _conflict_type(a, b) is not None
 
-    if credibility_claims_conflict(
-        claim_a,
-        claim_b,
-    ):
-        return True
 
-    if document_claims_conflict(
-        claim_a,
-        claim_b,
-    ):
-        return True
+def _derive_severity(a, b):
+    explicit = a.get("severity") or b.get("severity")
+    if explicit:
+        return explicit
 
-    if not claims_match(
-        claim_a,
-        claim_b,
-    ):
-        return False
+    conflict_type = _conflict_type(a, b)
 
-    if (
-        claim_a.get("polarity")
-        ==
-        claim_b.get("polarity")
-    ):
-        return False
+    if conflict_type in {
+        "credibility_conflict",
+        "witness_conflict",
+        "document_conflict",
+        "timeline_conflict",
+    }:
+        return 9
+
+    return 7
+
+
+def _derive_impeachment_candidate(a, b):
+    explicit = a.get("impeachment_candidate")
+    if explicit is not None:
+        return bool(explicit)
+
+    explicit = b.get("impeachment_candidate")
+    if explicit is not None:
+        return bool(explicit)
 
     return True
 
 
+def _derive_attack_priority(a, b):
+    explicit = a.get("attack_priority") or b.get("attack_priority")
+    if explicit:
+        return explicit
 
-def get_conflict_severity(conflict_type):
-    scores = {
-        "credibility_conflict": 9,
-        "document_conflict": 8,
-        "causation_conflict": 8,
-        "witness_conflict": 7,
-        "timeline_conflict": 6,
-        "notice_conflict": 5,
-        "position_shift": 5,
-        "factual_dispute": 4,
+    severity = _derive_severity(a, b)
+
+    if severity >= 9:
+        return "high"
+
+    return "medium"
+
+
+def _build_finding(a, b):
+    severity = _derive_severity(a, b)
+    impeachment_candidate = _derive_impeachment_candidate(a, b)
+    attack_priority = _derive_attack_priority(a, b)
+
+    return {
+        "type": _conflict_type(a, b),
+        "claim_a": a,
+        "claim_b": b,
+        "claim_1": a,
+        "claim_2": b,
+        "speaker_a": a.get("speaker", "unknown"),
+        "speaker_b": b.get("speaker", "unknown"),
+        "fact_a": a.get("fact_text") or a.get("text", ""),
+        "fact_b": b.get("fact_text") or b.get("text", ""),
+        "claim_type_a": a.get("claim_type", "unknown"),
+        "claim_type_b": b.get("claim_type", "unknown"),
+        "severity": severity,
+        "impeachment_candidate": impeachment_candidate,
+        "attack_priority": attack_priority,
+        "reason": "Conflicting claims detected.",
     }
-
-    return scores.get(conflict_type, 3)
 
 
 def compare_claims(claims):
     findings = []
 
+    if not claims:
+        return findings
+
     for i, claim_a in enumerate(claims):
-
         for claim_b in claims[i + 1:]:
-
-            if not should_compare_as_conflict(
-                claim_a,
-                claim_b,
-            ):
-                continue
-
-            conflict_type, summary = (
-                classify_conflict(
-                    claim_a,
-                    claim_b,
-                )
-            )
-
-            finding = {
-                "type": conflict_type,
-                "summary": summary,
-                "severity": get_conflict_severity(
-                    conflict_type
-                ),
-                "claim_a": claim_a,
-                "claim_b": claim_b,
-            }
-
-            witness_a = clean_value(
-                claim_a.get("witness_name", "")
-            )
-
-            witness_b = clean_value(
-                claim_b.get("witness_name", "")
-            )
-
-            if (
-                conflict_type == "credibility_conflict"
-                and witness_a
-                and witness_b
-                and witness_a == witness_b
-            ):
-                finding["impeachment_candidate"] = True
-
-            findings.append(finding)
+            if _is_conflict(claim_a, claim_b):
+                findings.append(_build_finding(claim_a, claim_b))
 
     return findings
+
+
+def find_contradictions(claims):
+    return compare_claims(claims)
+
+
+def build_contradiction_comparison(claims):
+    return compare_claims(claims)
