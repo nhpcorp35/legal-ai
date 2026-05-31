@@ -14,6 +14,77 @@ CLAIM_PATTERNS = [
 ]
 
 
+DOCUMENT_SUBJECTS = [
+    "lease",
+    "contract",
+    "agreement",
+    "email",
+    "letter",
+    "notice",
+    "affidavit",
+    "affirmation",
+    "deposition",
+    "order",
+    "decision",
+]
+
+
+DOCUMENT_ACTION_PATTERNS = {
+    "require": [
+        r"\brequire\b",
+        r"\brequires\b",
+        r"\brequired\b",
+        r"\brequiring\b",
+    ],
+    "prohibit": [
+        r"\bprohibit\b",
+        r"\bprohibits\b",
+        r"\bprohibited\b",
+        r"\bprohibiting\b",
+    ],
+    "allow": [
+        r"\ballow\b",
+        r"\ballows\b",
+        r"\ballowed\b",
+        r"\ballowing\b",
+        r"\bpermit\b",
+        r"\bpermits\b",
+        r"\bpermitted\b",
+        r"\bpermitting\b",
+    ],
+    "mandate": [
+        r"\bmandate\b",
+        r"\bmandates\b",
+        r"\bmandated\b",
+        r"\bmandating\b",
+    ],
+    "confirm": [
+        r"\bconfirm\b",
+        r"\bconfirms\b",
+        r"\bconfirmed\b",
+        r"\bconfirming\b",
+    ],
+    "provide": [
+        r"\bprovide\b",
+        r"\bprovides\b",
+        r"\bprovided\b",
+        r"\bproviding\b",
+    ],
+    "state": [
+        r"\bstate\b",
+        r"\bstates\b",
+        r"\bstated\b",
+        r"\bstating\b",
+    ],
+    "execute": [
+        r"\bexecute\b",
+        r"\bexecutes\b",
+        r"\bexecuted\b",
+        r"\bexecuting\b",
+    ],
+}
+
+
 FACT_PATTERNS = [
     r"\bnever\b",
     r"\balways\b",
@@ -34,15 +105,35 @@ FACT_PATTERNS = [
     r"\bafter\b",
     r"\bearlier\b",
     r"\blater\b",
+    r"\bprovide\b",
+    r"\bprovides\b",
     r"\bprovided\b",
+    r"\bsend\b",
+    r"\bsends\b",
     r"\bsent\b",
+    r"\breceive\b",
+    r"\breceives\b",
     r"\breceived\b",
+    r"\brequire\b",
+    r"\brequires\b",
     r"\brequired\b",
+    r"\bmandate\b",
+    r"\bmandates\b",
     r"\bmandated\b",
+    r"\bprohibit\b",
+    r"\bprohibits\b",
     r"\bprohibited\b",
+    r"\ballow\b",
+    r"\ballows\b",
     r"\ballowed\b",
+    r"\bconfirm\b",
+    r"\bconfirms\b",
     r"\bconfirmed\b",
+    r"\bagree\b",
+    r"\bagrees\b",
     r"\bagreed\b",
+    r"\bexecute\b",
+    r"\bexecutes\b",
     r"\bexecuted\b",
     r"\bentered into\b",
 ]
@@ -116,6 +207,12 @@ CLAIM_TYPE_PATTERNS = {
         r"\bagreement\b",
         r"\bemail\b",
         r"\bletter\b",
+        r"\bnotice\b",
+        r"\baffidavit\b",
+        r"\baffirmation\b",
+        r"\bdeposition\b",
+        r"\border\b",
+        r"\bdecision\b",
     ],
 }
 
@@ -174,8 +271,39 @@ def determine_speaker(sentence):
     return "unknown"
 
 
+def has_document_subject(sentence):
+    lowered = sentence.lower()
+
+    for subject in DOCUMENT_SUBJECTS:
+        if re.search(rf"\b{subject}\b", lowered):
+            return True
+
+    return False
+
+
+def has_document_action(sentence):
+    lowered = sentence.lower()
+
+    for patterns in DOCUMENT_ACTION_PATTERNS.values():
+        for pattern in patterns:
+            if re.search(pattern, lowered):
+                return True
+
+    return False
+
+
+def is_document_claim(sentence):
+    return (
+        has_document_subject(sentence)
+        and has_document_action(sentence)
+    )
+
+
 def determine_claim_type(sentence):
     lowered = sentence.lower()
+
+    if is_document_claim(sentence):
+        return "document"
 
     for claim_type, patterns in CLAIM_TYPE_PATTERNS.items():
         for pattern in patterns:
@@ -315,6 +443,59 @@ def extract_timeline_event(sentence):
     return fact.strip(" .").lower()
 
 
+def extract_document_subject(sentence):
+    lowered = sentence.lower()
+
+    for subject in DOCUMENT_SUBJECTS:
+        if re.search(rf"\b{subject}\b", lowered):
+            return subject
+
+    return ""
+
+
+def extract_document_action(sentence):
+    lowered = sentence.lower()
+
+    for action, patterns in DOCUMENT_ACTION_PATTERNS.items():
+        for pattern in patterns:
+            if re.search(pattern, lowered):
+                return action
+
+    return ""
+
+
+def extract_document_requirement(sentence):
+    subject = extract_document_subject(sentence)
+    action = extract_document_action(sentence)
+
+    if not subject or not action:
+        return ""
+
+    fact = extract_fact_text(sentence)
+
+    subject_pattern = rf"\b(the\s+)?{re.escape(subject)}\b"
+    fact = re.sub(
+        subject_pattern,
+        "",
+        fact,
+        flags=re.IGNORECASE,
+    )
+
+    for patterns in DOCUMENT_ACTION_PATTERNS.values():
+        for pattern in patterns:
+            fact = re.sub(
+                pattern,
+                "",
+                fact,
+                flags=re.IGNORECASE,
+            )
+
+    fact = re.sub(r"\bthat\b", "", fact, flags=re.IGNORECASE)
+    fact = re.sub(r"\s+", " ", fact)
+
+    return fact.strip(" .").lower()
+
+
 def build_claim(sentence):
     claim_type = determine_claim_type(sentence)
 
@@ -330,6 +511,11 @@ def build_claim(sentence):
         claim["timeline_event"] = extract_timeline_event(sentence)
         claim["timeline_relation"] = extract_timeline_relation(sentence)
         claim["timeline_date"] = extract_timeline_date(sentence)
+
+    if claim_type == "document":
+        claim["document_subject"] = extract_document_subject(sentence)
+        claim["document_action"] = extract_document_action(sentence)
+        claim["document_requirement"] = extract_document_requirement(sentence)
 
     return claim
 
