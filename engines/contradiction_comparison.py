@@ -240,14 +240,36 @@ def classify_conflict(claim_a, claim_b):
             "testimony or sworn evidence."
         )
 
+    witness_a = clean_value(
+        claim_a.get("witness_name", "")
+    )
+
+    witness_b = clean_value(
+        claim_b.get("witness_name", "")
+    )
+
     if (
         speaker_a != "unknown"
         and speaker_a == speaker_b
+        and speaker_a != "witness"
     ):
         return (
             "position_shift",
             "Same speaker takes opposite "
             "positions on the same fact."
+        )
+
+    if (
+        speaker_a == "witness"
+        and speaker_b == "witness"
+        and witness_a
+        and witness_b
+        and witness_a == witness_b
+    ):
+        return (
+            "credibility_conflict",
+            "Inconsistent statements across "
+            "testimony or sworn evidence."
         )
 
     if claim_type == "notice":
@@ -269,6 +291,26 @@ def classify_conflict(claim_a, claim_b):
             "causation_conflict",
             "Different parties dispute "
             "cause and effect."
+        )
+
+    if (
+        claim_type == "witness"
+        and clean_value(
+            claim_a.get("witness_name", "")
+        )
+        and clean_value(
+            claim_b.get("witness_name", "")
+        )
+        and clean_value(
+            claim_a.get("witness_name", "")
+        ) != clean_value(
+            claim_b.get("witness_name", "")
+        )
+    ):
+        return (
+            "witness_conflict",
+            "Different witness accounts "
+            "or testimony detected."
         )
 
     if claim_type == "witness":

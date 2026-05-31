@@ -402,6 +402,16 @@ def normalize_fact_text(fact):
 def extract_fact_text(sentence):
     fact = sentence
 
+    witness_name = extract_witness_name(sentence)
+
+    if witness_name:
+        fact = re.sub(
+            re.escape(witness_name),
+            "",
+            fact,
+            flags=re.IGNORECASE,
+        )
+
     for speaker in SPEAKER_PATTERNS:
         fact = re.sub(
             rf"\b{speaker}\b",
