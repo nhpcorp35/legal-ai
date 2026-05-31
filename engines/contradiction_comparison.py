@@ -369,6 +369,22 @@ def should_compare_as_conflict(claim_a, claim_b):
     return True
 
 
+
+def get_conflict_severity(conflict_type):
+    scores = {
+        "credibility_conflict": 9,
+        "document_conflict": 8,
+        "causation_conflict": 8,
+        "witness_conflict": 7,
+        "timeline_conflict": 6,
+        "notice_conflict": 5,
+        "position_shift": 5,
+        "factual_dispute": 4,
+    }
+
+    return scores.get(conflict_type, 3)
+
+
 def compare_claims(claims):
     findings = []
 
@@ -392,6 +408,9 @@ def compare_claims(claims):
             finding = {
                 "type": conflict_type,
                 "summary": summary,
+                "severity": get_conflict_severity(
+                    conflict_type
+                ),
                 "claim_a": claim_a,
                 "claim_b": claim_b,
             }
