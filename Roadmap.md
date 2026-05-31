@@ -1,5 +1,20 @@
 Roadmap# Legal AI Roadmap
+NEXT
 
+Contradiction Engine v2.6
+Procedural Conflict Detection
+
+Examples:
+- motion served / never served
+- notice filed / never filed
+- complaint filed / never filed
+- service completed / not completed
+
+Output:
+- procedural_conflict
+
+v2.7
+Evidence vs Assertion
 ## NOW
 
 ### Contradiction Engine v2.4 — Document Extraction
