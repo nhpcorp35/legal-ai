@@ -278,11 +278,27 @@ def determine_polarity(sentence):
 def determine_speaker(sentence):
     lowered = sentence.lower()
 
+    if extract_witness_name(sentence):
+        return "witness"
+
     for speaker in SPEAKER_PATTERNS:
         if re.search(rf"\b{speaker}\b", lowered):
             return speaker
 
     return "unknown"
+
+
+
+def extract_witness_name(sentence):
+    match = re.search(
+        r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\s+(?:testified|swore)\b",
+        sentence,
+    )
+
+    if match:
+        return match.group(1)
+
+    return ""
 
 
 def extract_source_type(sentence):
@@ -529,6 +545,7 @@ def build_claim(sentence):
     claim = {
         "text": sentence,
         "speaker": determine_speaker(sentence),
+        "witness_name": extract_witness_name(sentence),
         "fact_text": extract_fact_text(sentence),
         "claim_type": claim_type,
         "polarity": determine_polarity(sentence),
