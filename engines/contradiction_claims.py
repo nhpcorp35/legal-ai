@@ -15,17 +15,17 @@ CLAIM_PATTERNS = [
 
 
 DOCUMENT_SUBJECTS = [
+    "affidavit",
+    "affirmation",
+    "deposition",
+    "order",
+    "decision",
     "lease",
     "contract",
     "agreement",
     "email",
     "letter",
     "notice",
-    "affidavit",
-    "affirmation",
-    "deposition",
-    "order",
-    "decision",
 ]
 
 
