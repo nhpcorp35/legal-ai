@@ -1,36 +1,58 @@
 CURRENT TASK
 
-Contradiction Engine v2
+Contradiction Engine v2.3
 
-NEXT ACTION
-
-Integrate claim extraction into contradiction engine
-
-STATUS
-
-Claim extraction improved
-FACT_PATTERNS active
-UI unchanged
-Branch: contradiction-engine-v2
-Last Updated: 2026-05-29
-
-## Current Branch
-
+Branch:
 contradiction-engine-v2
 
-## Current Status
+Latest Commit:
+3bb1213 Add timeline normalization and timeline conflict detection
 
-The app is operational.
+Tags:
+contradiction-v2.2-causation-working
+contradiction-v2.3-timeline-working
+contradiction-v2.3-complete
 
-Current verified state:
-- Matter Builder operational
-- Issue Engine migrated
-- Contradiction Engine integrated
-- Entity Graph integrated
-- Contradiction UI connected
-- App boots clean
-- Git clean before current Contradiction Engine v2 work
+Completed:
+✓ structured claim extraction
+✓ speaker extraction
+✓ polarity extraction
+✓ claim type classification
+✓ cross-document comparison
+✓ notice_conflict
+✓ witness_conflict
+✓ causation_conflict
+✓ timeline_conflict
+✓ factual_dispute
+✓ position_shift
 
+Architecture:
+- contradiction_claims.py
+- contradiction_comparison.py
+- contradiction_cross_document.py
+- contradiction_document_claims.py
+- contradiction_engine.py
+
+Current Limitation:
+Document claims are not yet structurally extracted.
+
+Next Goal:
+Contradiction Engine v2.4 — Document Extraction
+
+Need:
+- document_subject
+- document_action
+- document_requirement
+
+Examples:
+"The lease requires written approval."
+"The agreement prohibits subletting."
+"The lease allows pets."
+
+Future Direction:
+Document conflicts
+Evidence vs assertion conflicts
+Contract vs testimony conflicts
 ## Strategic Direction
 
 Legal AI is no longer focused primarily on generic legal search or generic drafting.
