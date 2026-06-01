@@ -550,13 +550,17 @@ def extract_document_subject(sentence):
 
 def extract_document_action(sentence):
     lowered = sentence.lower()
+    best_action = ""
+    best_pos = None
 
     for action, patterns in DOCUMENT_ACTION_PATTERNS.items():
         for pattern in patterns:
-            if re.search(pattern, lowered):
-                return action
+            match = re.search(pattern, lowered)
+            if match and (best_pos is None or match.start() < best_pos):
+                best_pos = match.start()
+                best_action = action
 
-    return ""
+    return best_action
 
 def extract_document_requirement(sentence):
     subject = extract_document_subject(sentence)

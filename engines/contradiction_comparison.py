@@ -22,6 +22,20 @@ def _normalize_text(value):
 
 
 def _same_subject(a, b):
+    a_fact_subject = _normalize_text(a.get("fact_subject"))
+    a_fact_action = _normalize_text(a.get("fact_action"))
+    b_fact_subject = _normalize_text(b.get("fact_subject"))
+    b_fact_action = _normalize_text(b.get("fact_action"))
+
+    if (
+        a_fact_subject and a_fact_action
+        and b_fact_subject and b_fact_action
+    ):
+        return (
+            a_fact_subject == b_fact_subject
+            and a_fact_action == b_fact_action
+        )
+
     a_subject = _normalize_text(
         a.get("normalized_fact")
         or a.get("fact_text")
