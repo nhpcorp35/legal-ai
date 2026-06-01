@@ -558,6 +558,7 @@ def extract_document_action(sentence):
 
     return ""
 
+
 def extract_document_requirement(sentence):
     subject = extract_document_subject(sentence)
     action = extract_document_action(sentence)
@@ -575,26 +576,16 @@ def extract_document_requirement(sentence):
         flags=re.IGNORECASE,
     )
 
-    action_patterns = DOCUMENT_ACTION_PATTERNS.get(
-        action,
-        [],
-    )
+    for patterns in DOCUMENT_ACTION_PATTERNS.values():
+        for pattern in patterns:
+            fact = re.sub(
+                pattern,
+                "",
+                fact,
+                flags=re.IGNORECASE,
+            )
 
-    for pattern in action_patterns:
-        fact = re.sub(
-            pattern,
-            "",
-            fact,
-            flags=re.IGNORECASE,
-        )
-
-    fact = re.sub(
-        r"\bthat\b",
-        "",
-        fact,
-        flags=re.IGNORECASE,
-    )
-
+    fact = re.sub(r"\bthat\b", "", fact, flags=re.IGNORECASE)
     fact = re.sub(r"\s+", " ", fact)
 
     return fact.strip(" .").lower()
@@ -688,21 +679,6 @@ def build_claim(sentence):
         claim["document_subject"] = extract_document_subject(sentence)
         claim["document_action"] = extract_document_action(sentence)
         claim["document_requirement"] = extract_document_requirement(sentence)
-        requirement = claim["document_requirement"]
-        subject_match = re.match(
-            r"^([a-z][a-z0-9_-]*)\b",
-            requirement,
-        )
-        claim["fact_subject"] = subject_match.group(1) if subject_match else ""
-        fact_action = ""
-        for action, patterns in DOCUMENT_ACTION_PATTERNS.items():
-            for pattern in patterns:
-                if re.search(pattern, requirement):
-                    fact_action = action
-                    break
-            if fact_action:
-                break
-        claim["fact_action"] = fact_action
 
     if claim_type == "quantity":
         claim["quantity_value"] = extract_quantity_value(sentence)
