@@ -558,7 +558,6 @@ def extract_document_action(sentence):
 
     return ""
 
-
 def extract_document_requirement(sentence):
     subject = extract_document_subject(sentence)
     action = extract_document_action(sentence)
@@ -576,16 +575,26 @@ def extract_document_requirement(sentence):
         flags=re.IGNORECASE,
     )
 
-    for patterns in DOCUMENT_ACTION_PATTERNS.values():
-        for pattern in patterns:
-            fact = re.sub(
-                pattern,
-                "",
-                fact,
-                flags=re.IGNORECASE,
-            )
+    action_patterns = DOCUMENT_ACTION_PATTERNS.get(
+        action,
+        [],
+    )
 
-    fact = re.sub(r"\bthat\b", "", fact, flags=re.IGNORECASE)
+    for pattern in action_patterns:
+        fact = re.sub(
+            pattern,
+            "",
+            fact,
+            flags=re.IGNORECASE,
+        )
+
+    fact = re.sub(
+        r"\bthat\b",
+        "",
+        fact,
+        flags=re.IGNORECASE,
+    )
+
     fact = re.sub(r"\s+", " ", fact)
 
     return fact.strip(" .").lower()
