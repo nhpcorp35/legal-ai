@@ -32,12 +32,15 @@ findings = compare_claims(claims)
 
 assert findings
 
-report = build_top_attack_surfaces(findings)
+report = build_top_attack_surfaces(
+    findings,
+    limit=1,
+)
 
 assert report
-assert len(report) > 0
+assert len(report) == 1
 
 assert "attack_rank" in report[0]
 assert "credibility_score" in report[0]
 
-print("TOP ATTACK SURFACES PASSED")
+print("TOP ATTACK SURFACE LIMITING PASSED")
