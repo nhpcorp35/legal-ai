@@ -349,10 +349,36 @@ def _derive_attack_priority(a, b):
     return "medium"
 
 
+def _derive_attack_surface(a, b):
+    conflict_type = _conflict_type(a, b)
+
+    if conflict_type == "document_conflict":
+        return [
+            "document credibility challenge",
+            "impeachment opportunity",
+        ]
+
+    if conflict_type == "witness_conflict":
+        return [
+            "witness credibility challenge",
+            "impeachment opportunity",
+        ]
+
+    if conflict_type == "procedural_conflict":
+        return [
+            "procedural weakness",
+        ]
+
+    return [
+        "conflicting factual assertions",
+    ]
+
+
 def _build_finding(a, b):
     severity = _derive_severity(a, b)
     impeachment_candidate = _derive_impeachment_candidate(a, b)
     attack_priority = _derive_attack_priority(a, b)
+    attack_surface = _derive_attack_surface(a, b)
 
     return {
         "type": _conflict_type(a, b),
@@ -369,6 +395,7 @@ def _build_finding(a, b):
         "severity": severity,
         "impeachment_candidate": impeachment_candidate,
         "attack_priority": attack_priority,
+        "attack_surface": attack_surface,
         "reason": "Conflicting claims detected.",
     }
 
