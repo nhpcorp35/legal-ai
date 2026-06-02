@@ -425,6 +425,25 @@ def _derive_cluster_summary(a, b):
     return "Related contradiction cluster"
 
 
+def _derive_attack_surface_category(a, b):
+    conflict_type = _conflict_type(a, b)
+
+    if conflict_type in {
+        "document_conflict",
+        "credibility_conflict",
+        "witness_conflict",
+    }:
+        return "credibility"
+
+    if conflict_type == "procedural_conflict":
+        return "procedure"
+
+    if conflict_type in {"timeline_conflict", "date_conflict"}:
+        return "chronology"
+
+    return "factual"
+
+
 def _build_finding(a, b):
     severity = _derive_severity(a, b)
     impeachment_candidate = _derive_impeachment_candidate(a, b)
@@ -433,6 +452,7 @@ def _build_finding(a, b):
     credibility_score = _derive_credibility_score(a, b)
     cluster_id = _derive_cluster_id(a, b)
     cluster_summary = _derive_cluster_summary(a, b)
+    attack_surface_category = _derive_attack_surface_category(a, b)
 
     return {
         "type": _conflict_type(a, b),
@@ -453,6 +473,7 @@ def _build_finding(a, b):
         "credibility_score": credibility_score,
         "cluster_id": cluster_id,
         "cluster_summary": cluster_summary,
+        "attack_surface_category": attack_surface_category,
         "reason": "Conflicting claims detected.",
     }
 
