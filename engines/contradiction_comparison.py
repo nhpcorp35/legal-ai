@@ -416,6 +416,15 @@ def _derive_cluster_id(a, b):
     return "general"
 
 
+def _derive_cluster_summary(a, b):
+    cluster_id = _derive_cluster_id(a, b)
+
+    if cluster_id != "general":
+        return f"Contradictory testimony by {cluster_id}"
+
+    return "Related contradiction cluster"
+
+
 def _build_finding(a, b):
     severity = _derive_severity(a, b)
     impeachment_candidate = _derive_impeachment_candidate(a, b)
@@ -423,6 +432,7 @@ def _build_finding(a, b):
     attack_surface = _derive_attack_surface(a, b)
     credibility_score = _derive_credibility_score(a, b)
     cluster_id = _derive_cluster_id(a, b)
+    cluster_summary = _derive_cluster_summary(a, b)
 
     return {
         "type": _conflict_type(a, b),
@@ -442,6 +452,7 @@ def _build_finding(a, b):
         "attack_surface": attack_surface,
         "credibility_score": credibility_score,
         "cluster_id": cluster_id,
+        "cluster_summary": cluster_summary,
         "reason": "Conflicting claims detected.",
     }
 
