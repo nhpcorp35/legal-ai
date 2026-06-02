@@ -374,11 +374,33 @@ def _derive_attack_surface(a, b):
     ]
 
 
+def _derive_credibility_score(a, b):
+    conflict_type = _conflict_type(a, b)
+
+    if conflict_type == "credibility_conflict":
+        return 10
+    if conflict_type == "witness_conflict":
+        return 9
+    if conflict_type == "document_conflict":
+        return 8
+    if conflict_type == "procedural_conflict":
+        return 7
+    if conflict_type == "timeline_conflict":
+        return 7
+    if conflict_type == "date_conflict":
+        return 6
+    if conflict_type == "quantity_conflict":
+        return 6
+
+    return 5
+
+
 def _build_finding(a, b):
     severity = _derive_severity(a, b)
     impeachment_candidate = _derive_impeachment_candidate(a, b)
     attack_priority = _derive_attack_priority(a, b)
     attack_surface = _derive_attack_surface(a, b)
+    credibility_score = _derive_credibility_score(a, b)
 
     return {
         "type": _conflict_type(a, b),
@@ -396,6 +418,7 @@ def _build_finding(a, b):
         "impeachment_candidate": impeachment_candidate,
         "attack_priority": attack_priority,
         "attack_surface": attack_surface,
+        "credibility_score": credibility_score,
         "reason": "Conflicting claims detected.",
     }
 
