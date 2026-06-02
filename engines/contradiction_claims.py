@@ -321,7 +321,7 @@ def determine_speaker(sentence):
 
 def extract_witness_name(sentence):
     match = re.search(
-        r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\s+(?:testified|swore)\b",
+        r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\s+(?:(?:\w+)\s+)*(?:testified|swore)\b",
         sentence,
     )
 

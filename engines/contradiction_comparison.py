@@ -281,6 +281,17 @@ def _conflict_type(a, b):
     if _procedural_conflict(a, b):
         return "procedural_conflict"
 
+    a_witness = _normalize_text(a.get("witness_name"))
+    b_witness = _normalize_text(b.get("witness_name"))
+
+    if (
+        a_witness
+        and b_witness
+        and a_witness == b_witness
+        and _opposite_polarity(a, b)
+    ):
+        return "credibility_conflict"
+
     if _document_conflict(a, b):
         return "document_conflict"
 
