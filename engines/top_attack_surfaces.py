@@ -1,7 +1,7 @@
 # engines/top_attack_surfaces.py
 
 
-def build_top_attack_surfaces(findings):
+def build_top_attack_surfaces(findings, limit=None):
     findings = list(findings)
 
     findings.sort(
@@ -11,5 +11,8 @@ def build_top_attack_surfaces(findings):
             -x.get("severity", 0),
         )
     )
+
+    if limit is not None:
+        findings = findings[:limit]
 
     return findings
