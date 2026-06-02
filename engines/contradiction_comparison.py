@@ -444,6 +444,23 @@ def _derive_attack_surface_category(a, b):
     return "factual"
 
 
+def _derive_attack_rank(a, b):
+    credibility_score = _derive_credibility_score(a, b)
+
+    if credibility_score == 10:
+        return 1
+    if credibility_score == 9:
+        return 2
+    if credibility_score == 8:
+        return 3
+    if credibility_score == 7:
+        return 4
+    if credibility_score == 6:
+        return 5
+
+    return 6
+
+
 def _build_finding(a, b):
     severity = _derive_severity(a, b)
     impeachment_candidate = _derive_impeachment_candidate(a, b)
@@ -453,6 +470,7 @@ def _build_finding(a, b):
     cluster_id = _derive_cluster_id(a, b)
     cluster_summary = _derive_cluster_summary(a, b)
     attack_surface_category = _derive_attack_surface_category(a, b)
+    attack_rank = _derive_attack_rank(a, b)
 
     return {
         "type": _conflict_type(a, b),
@@ -474,6 +492,7 @@ def _build_finding(a, b):
         "cluster_id": cluster_id,
         "cluster_summary": cluster_summary,
         "attack_surface_category": attack_surface_category,
+        "attack_rank": attack_rank,
         "reason": "Conflicting claims detected.",
     }
 
