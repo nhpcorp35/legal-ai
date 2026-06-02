@@ -406,12 +406,23 @@ def _derive_credibility_score(a, b):
     return 5
 
 
+def _derive_cluster_id(a, b):
+    a_witness = _normalize_text(a.get("witness_name"))
+    b_witness = _normalize_text(b.get("witness_name"))
+
+    if a_witness and b_witness and a_witness == b_witness:
+        return a_witness
+
+    return "general"
+
+
 def _build_finding(a, b):
     severity = _derive_severity(a, b)
     impeachment_candidate = _derive_impeachment_candidate(a, b)
     attack_priority = _derive_attack_priority(a, b)
     attack_surface = _derive_attack_surface(a, b)
     credibility_score = _derive_credibility_score(a, b)
+    cluster_id = _derive_cluster_id(a, b)
 
     return {
         "type": _conflict_type(a, b),
@@ -430,6 +441,7 @@ def _build_finding(a, b):
         "attack_priority": attack_priority,
         "attack_surface": attack_surface,
         "credibility_score": credibility_score,
+        "cluster_id": cluster_id,
         "reason": "Conflicting claims detected.",
     }
 
