@@ -609,6 +609,20 @@
                                     </div>
                                 {% endif %}
 
+                                {% if item.similar_cases %}
+                                    <div class="trace-meta">
+                                        <strong>Similar Cases:</strong>
+                                    </div>
+                                    {% for case in item.similar_cases %}
+                                        <div class="trace-meta">
+                                            {{ case.case_name }}
+                                        </div>
+                                        <div class="trace-meta">
+                                            {{ case.reason }}
+                                        </div>
+                                    {% endfor %}
+                                {% endif %}
+
                                 <div class="trace-meta">
                                     <strong>Source:</strong> {{ item.source_document or "—" }}
                                 </div>
