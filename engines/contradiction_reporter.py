@@ -44,12 +44,28 @@ def _report_fields_for_item(item):
     return {field: entry.get(field) for field in REPORT_FIELDS}
 
 
+def _statement_fields_for_item(item):
+    finding = _item_to_finding(item)
+
+    if not finding:
+        return {}
+
+    claim_a = finding.get("claim_a") or finding.get("claim_1") or {}
+    claim_b = finding.get("claim_b") or finding.get("claim_2") or {}
+
+    return {
+        "statement_a": claim_a.get("text", ""),
+        "statement_b": claim_b.get("text", ""),
+    }
+
+
 def build_contradiction_cards(items):
     cards = []
 
     for item in items:
         source = get_contradiction_source(item)
         report_fields = _report_fields_for_item(item)
+        statement_fields = _statement_fields_for_item(item)
 
         cards.append(
             {
@@ -62,6 +78,8 @@ def build_contradiction_cards(items):
                 "narrative": report_fields.get("narrative"),
                 "recommendation": report_fields.get("recommendation"),
                 "litigation_impact": report_fields.get("litigation_impact"),
+                "statement_a": statement_fields.get("statement_a"),
+                "statement_b": statement_fields.get("statement_b"),
             }
         )
 
