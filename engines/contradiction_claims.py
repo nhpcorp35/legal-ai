@@ -173,6 +173,39 @@ NEGATIVE_PATTERNS = [
     r"\bdenies\b",
 ]
 
+ASSERTION_STRENGTH_PATTERNS = [
+    (
+        "information_and_belief",
+        [
+            r"\bupon information and belief\b",
+            r"\binformation and belief\b",
+        ],
+    ),
+    (
+        "lacks_knowledge",
+        [
+            r"\bwithout knowledge\b",
+            r"\blacks knowledge\b",
+        ],
+    ),
+    (
+        "denial",
+        [
+            r"\bdenies\b",
+            r"\bdeny\b",
+            r"\bdenied\b",
+        ],
+    ),
+    (
+        "allegation",
+        [
+            r"\balleges\b",
+            r"\ballege\b",
+            r"\balleged\b",
+        ],
+    ),
+]
+
 
 SPEAKER_PATTERNS = [
     "plaintiff",
@@ -304,6 +337,17 @@ def determine_polarity(sentence):
         return "negative"
 
     return "positive"
+
+
+def determine_assertion_strength(sentence):
+    lowered = sentence.lower()
+
+    for strength, patterns in ASSERTION_STRENGTH_PATTERNS:
+        for pattern in patterns:
+            if re.search(pattern, lowered):
+                return strength
+
+    return "direct_assertion"
 
 
 def determine_speaker(sentence):
@@ -681,6 +725,7 @@ def build_claim(sentence):
         "claim_type": claim_type,
         "polarity": determine_polarity(sentence),
         "source_type": extract_source_type(sentence),
+        "assertion_strength": determine_assertion_strength(sentence),
     }
 
     if claim_type == "timeline":
