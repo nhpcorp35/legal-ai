@@ -31,6 +31,27 @@ def build_summary(category, match_count):
     )
 
 
+def build_claim_summary(conflict):
+    summary = conflict.get("summary")
+    if summary:
+        return clean_text(summary)
+
+    cluster_summary = conflict.get("cluster_summary")
+    if cluster_summary:
+        return clean_text(cluster_summary)
+
+    claim_a = conflict.get("claim_a", {})
+    claim_b = conflict.get("claim_b", {})
+    text_a = clean_text(claim_a.get("text", ""))
+    text_b = clean_text(claim_b.get("text", ""))
+
+    if text_a and text_b:
+        return f"{text_a} However, {text_b}"
+
+    conflict_type = conflict.get("type", "contradiction")
+    return f"Potential {conflict_type.replace('_', ' ')} detected."
+
+
 def build_claim_finding(conflict):
     claim_a = conflict.get("claim_a", {})
     claim_b = conflict.get("claim_b", {})
@@ -42,10 +63,7 @@ def build_claim_finding(conflict):
             "type",
             "position_conflict",
         ),
-        summary=conflict.get(
-            "summary",
-            "Potential contradiction detected.",
-        ),
+        summary=build_claim_summary(conflict),
         score=score,
         comparison=conflict,
         source=DocumentReference(
