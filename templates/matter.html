@@ -565,6 +565,12 @@
                                     <span class="category-badge">{{ item.category or "contradiction" }}</span>
                                 </div>
 
+                                {% if item.contradiction_scope == "cross_document" %}
+                                    <span class="category-badge">CROSS DOCUMENT CONFLICT</span>
+                                {% elif item.contradiction_scope == "internal_document" %}
+                                    <span class="category-badge">INTERNAL DOCUMENT CONFLICT</span>
+                                {% endif %}
+
                                 <div class="trace-issue">{{ item.summary }}</div>
 
                                 {% if item.statement_a %}
