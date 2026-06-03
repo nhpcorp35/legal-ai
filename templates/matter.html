@@ -573,9 +573,21 @@
                                     </div>
                                 {% endif %}
 
+                                {% if item.source_a %}
+                                    <div class="trace-meta">
+                                        <strong>Source A:</strong> {{ item.source_a }}
+                                    </div>
+                                {% endif %}
+
                                 {% if item.statement_b %}
                                     <div class="trace-meta">
                                         <strong>Statement B:</strong> {{ item.statement_b }}
+                                    </div>
+                                {% endif %}
+
+                                {% if item.source_b %}
+                                    <div class="trace-meta">
+                                        <strong>Source B:</strong> {{ item.source_b }}
                                     </div>
                                 {% endif %}
 
