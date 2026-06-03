@@ -567,6 +567,24 @@
 
                                 <div class="trace-issue">{{ item.summary }}</div>
 
+                                {% if item.narrative %}
+                                    <div class="trace-meta">
+                                        <strong>Narrative:</strong> {{ item.narrative }}
+                                    </div>
+                                {% endif %}
+
+                                {% if item.recommendation %}
+                                    <div class="trace-meta">
+                                        <strong>Recommendation:</strong> {{ item.recommendation }}
+                                    </div>
+                                {% endif %}
+
+                                {% if item.litigation_impact %}
+                                    <div class="trace-meta">
+                                        <strong>Litigation impact:</strong> {{ item.litigation_impact }}
+                                    </div>
+                                {% endif %}
+
                                 <div class="trace-meta">
                                     <strong>Source:</strong> {{ item.source_document or "—" }}
                                 </div>
