@@ -83,6 +83,15 @@ def _similar_cases_for_item(item):
     return list(finding.get("similar_cases") or [])
 
 
+def _contradiction_scope_for_item(item):
+    finding = _item_to_finding(item)
+
+    if not finding:
+        return ""
+
+    return finding.get("contradiction_scope") or ""
+
+
 def build_contradiction_cards(items):
     cards = []
 
@@ -92,6 +101,7 @@ def build_contradiction_cards(items):
         statement_fields = _statement_fields_for_item(item)
         source_fields = _source_fields_for_item(item)
         similar_cases = _similar_cases_for_item(item)
+        contradiction_scope = _contradiction_scope_for_item(item)
 
         cards.append(
             {
@@ -108,6 +118,7 @@ def build_contradiction_cards(items):
                 "statement_b": statement_fields.get("statement_b"),
                 "source_a": source_fields.get("source_a"),
                 "source_b": source_fields.get("source_b"),
+                "contradiction_scope": contradiction_scope,
                 "similar_cases": similar_cases,
             }
         )
