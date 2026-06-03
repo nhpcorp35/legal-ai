@@ -15,6 +15,7 @@ from engines.contradiction_constants import (
 from engines.contradiction_cross_document import (
     detect_cross_document_conflicts,
 )
+from engines.similar_case_enrichment import enrich_similar_cases
 
 
 def clean_text(value):
@@ -53,6 +54,8 @@ def build_claim_summary(conflict):
 
 
 def build_claim_finding(conflict):
+    conflict = enrich_similar_cases(conflict)
+
     claim_a = conflict.get("claim_a", {})
     claim_b = conflict.get("claim_b", {})
 
