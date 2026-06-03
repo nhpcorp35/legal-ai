@@ -47,6 +47,7 @@ def build_claim_finding(conflict):
             "Potential contradiction detected.",
         ),
         score=score,
+        comparison=conflict,
         source=DocumentReference(
             filename=claim_a.get(
                 "source_document",

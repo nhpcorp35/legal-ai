@@ -27,6 +27,7 @@ class ContradictionFinding:
     summary: str
     score: int = 50
     source: Optional[DocumentReference] = None
+    comparison: Optional[dict] = None
 
 
 @dataclass
