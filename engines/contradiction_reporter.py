@@ -74,6 +74,21 @@ def _source_fields_for_item(item):
     }
 
 
+def _assertion_strength_fields_for_item(item):
+    finding = _item_to_finding(item)
+
+    if not finding:
+        return {}
+
+    claim_a = finding.get("claim_a") or finding.get("claim_1") or {}
+    claim_b = finding.get("claim_b") or finding.get("claim_2") or {}
+
+    return {
+        "assertion_strength_a": claim_a.get("assertion_strength", ""),
+        "assertion_strength_b": claim_b.get("assertion_strength", ""),
+    }
+
+
 def _similar_cases_for_item(item):
     finding = _item_to_finding(item)
 
@@ -100,6 +115,7 @@ def build_contradiction_cards(items):
         report_fields = _report_fields_for_item(item)
         statement_fields = _statement_fields_for_item(item)
         source_fields = _source_fields_for_item(item)
+        assertion_strength_fields = _assertion_strength_fields_for_item(item)
         similar_cases = _similar_cases_for_item(item)
         contradiction_scope = _contradiction_scope_for_item(item)
 
@@ -118,6 +134,12 @@ def build_contradiction_cards(items):
                 "statement_b": statement_fields.get("statement_b"),
                 "source_a": source_fields.get("source_a"),
                 "source_b": source_fields.get("source_b"),
+                "assertion_strength_a": assertion_strength_fields.get(
+                    "assertion_strength_a"
+                ),
+                "assertion_strength_b": assertion_strength_fields.get(
+                    "assertion_strength_b"
+                ),
                 "contradiction_scope": contradiction_scope,
                 "similar_cases": similar_cases,
             }

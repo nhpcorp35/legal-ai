@@ -571,6 +571,18 @@
                                     <span class="category-badge">INTERNAL DOCUMENT CONFLICT</span>
                                 {% endif %}
 
+                                {% if item.assertion_strength_a or item.assertion_strength_b %}
+                                    <div class="trace-meta">
+                                        <strong>Assertion Strength:</strong>
+                                    </div>
+                                    <div class="trace-meta">
+                                        A: {{ item.assertion_strength_a }}
+                                    </div>
+                                    <div class="trace-meta">
+                                        B: {{ item.assertion_strength_b }}
+                                    </div>
+                                {% endif %}
+
                                 <div class="trace-issue">{{ item.summary }}</div>
 
                                 {% if item.statement_a %}
