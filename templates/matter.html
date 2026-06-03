@@ -567,6 +567,18 @@
 
                                 <div class="trace-issue">{{ item.summary }}</div>
 
+                                {% if item.statement_a %}
+                                    <div class="trace-meta">
+                                        <strong>Statement A:</strong> {{ item.statement_a }}
+                                    </div>
+                                {% endif %}
+
+                                {% if item.statement_b %}
+                                    <div class="trace-meta">
+                                        <strong>Statement B:</strong> {{ item.statement_b }}
+                                    </div>
+                                {% endif %}
+
                                 {% if item.narrative %}
                                     <div class="trace-meta">
                                         <strong>Narrative:</strong> {{ item.narrative }}
