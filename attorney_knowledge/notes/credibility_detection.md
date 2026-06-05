@@ -91,3 +91,70 @@ Some contradictions directly affect credibility.
 
 Those should receive elevated ranking.
 
+Current contradiction types
+
+factual_dispute
+witness_conflict
+credibility_conflict
+timeline_conflict
+date_conflict
+quantity_conflict
+procedural_conflict
+document_conflict
+causation_conflict
+
+Current card fields
+
+summary
+statement_a
+statement_b
+source_a
+source_b
+contradiction_scope
+assertion_strength_a
+assertion_strength_b
+narrative
+recommendation
+litigation_impact
+similar_cases
+
+Current regressions
+
+v6.9.1
+v6.9.2
+v6.9.3
+v6.9.4
+v6.9.5
+
+Open attorney questions
+
+alternative pleading
+information and belief
+credibility weighting
+severity weighting
+Attorney Feedback — John Cuomo (2026-06-05)
+
+Alternative pleading:
+- proper legal drafting
+- not a contradiction
+- flag separately
+
+Information and belief:
+- not a fact
+- weaker than direct assertion
+
+Plaintiff vs Defendant:
+- generally factual dispute
+- not credibility issue
+
+Same witness changing story:
+- major credibility issue
+- impeachment opportunity
+
+Contradictions:
+- do not require case law
+- contradiction itself is often sufficient
+
+Trust:
+- verification is critical
+- document/page/line references are highly valuable

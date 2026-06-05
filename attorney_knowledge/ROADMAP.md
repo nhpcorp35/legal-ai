@@ -1,107 +1,295 @@
 # Legal AI — Attorney Knowledge Roadmap
 
-Last Updated: 2026-05-29
+Last Updated: 2026-06-06
 
 ## Product Thesis
 
 The moat is litigation cognition.
 
-The system should help identify what matters in litigation:
-- what facts changed
-- what testimony conflicts
-- what documents contradict a party
-- what procedural defects exist
-- what credibility problems exist
-- what attack surfaces exist
-- what strategy follows
+The goal is not to replace the attorney.
 
-## Phase 1 — Matter Builder
+The goal is to help attorneys:
+
+* understand a matter quickly
+* verify every important fact
+* identify important issues
+* identify contradictions
+* identify credibility problems
+* accelerate research
+* accelerate writing
+* preserve trust
+
+Attorney Principles:
+
+* Trust > Intelligence
+* Verification > Automation
+* Every output must be traceable and verifiable
+
+---
+
+# Attorney Workflow
+
+1. Understand the Matter
+2. Verify the Facts
+3. Identify Issues
+4. Identify Contradictions
+5. Assess Credibility
+6. Identify Attack Surfaces
+7. Develop Strategy
+8. Research and Draft
+
+All future development should support this workflow.
+
+---
+
+# Phase 1 — Matter Builder
 
 Status: Complete
 
 Purpose:
+
 Create the central matter workspace.
 
-## Phase 2 — Issue Engine
+Completed:
 
-Status: Operational / migrated
+* matter ingestion
+* document classification
+* matter organization
+
+---
+
+# Phase 2 — Matter Understanding Engine
+
+Status: Next
 
 Purpose:
+
+Allow an attorney to understand a matter rapidly.
+
+Planned Outputs:
+
+* matter synopsis
+* key facts
+* key witnesses
+* key documents
+* key dates
+* procedural posture
+* important testimony
+* major contradictions
+* open questions
+
+Primary Use Case:
+
+New lawyer onboarding.
+
+Primary Attorney Feedback:
+
+A lawyer inheriting a case should be able to understand the matter rapidly without reading every document first.
+
+---
+
+# Phase 3 — Verification & Traceability
+
+Status: Next
+
+Purpose:
+
+Allow attorneys to verify every AI conclusion.
+
+Planned Outputs:
+
+* document references
+* page references
+* line references
+* source snippets
+* one-click verification
+
+Attorney Priority:
+
+Highest
+
+Attorney Feedback:
+
+Mistakes destroy credibility.
+
+Every conclusion must be traceable back to source material.
+
+---
+
+# Phase 4 — Issue Engine
+
+Status: Operational
+
+Purpose:
+
 Identify legal and factual issues from matter documents.
 
-## Phase 3 — Contradiction Engine v1
+---
 
-Status: Complete
+# Phase 5 — Contradiction Engine
 
-Purpose:
-Initial keyword-based contradiction detection.
-
-Limitation:
-Too shallow. Detects signals, not true attorney-style contradictions.
-
-## Phase 4 — Contradiction Engine v2
-
-Status: In Progress
+Status: Operational
 
 Purpose:
-Introduce attorney-style contradiction taxonomy and improved heuristic detection.
+
+Attorney-style contradiction detection.
 
 Completed:
-- expanded contradiction categories
-- improved detector structure
-- preserved UI contract
 
-Next:
-- claim extraction
-- cross-document comparison
-- position shift detection
-- document conflict detection
-- witness conflict detection
+* factual disputes
+* witness conflicts
+* credibility conflicts
+* timeline conflicts
+* procedural conflicts
+* document conflicts
+* quantity conflicts
+* contradiction scope
+* assertion strength
+* source traceability
+* narratives
+* recommendations
+* litigation impact
 
-## Phase 5 — Credibility Engine
+Regression Protected:
+
+* contradiction card payload
+* similar case pipeline
+* source traceability pipeline
+* contradiction scope pipeline
+* assertion strength pipeline
+
+Attorney Guidance:
+
+Plaintiff vs Defendant disagreement:
+
+* generally a factual dispute
+* not automatically a credibility issue
+
+Same witness changing story:
+
+* major credibility issue
+* major impeachment opportunity
+
+Alternative pleading:
+
+* proper legal drafting
+* flag separately
+* not a contradiction
+
+Information and belief:
+
+* weaker than direct factual assertion
+* should not be treated as a fact
+
+Case law for contradictions:
+
+* generally unnecessary
+* the contradiction itself is often sufficient
+
+---
+
+# Phase 6 — Credibility Engine
 
 Status: Planned
 
 Purpose:
-Identify credibility problems from contradictions, omissions, timeline problems, and unsupported assertions.
 
-## Phase 6 — Attack Surface Engine
-
-Status: Planned
-
-Purpose:
-Convert weaknesses into litigation attack opportunities.
+Identify credibility vulnerabilities.
 
 Examples:
-- impeachment
-- motion argument
-- discovery target
-- procedural attack
-- evidentiary gap
 
-## Phase 7 — Strategy Engine
+* witness changes story
+* sworn statement conflicts
+* position shifts
+* unsupported factual assertions
+* credibility attacks
+
+Attorney Priority:
+
+Very High
+
+---
+
+# Phase 7 — Attack Surface Engine
 
 Status: Planned
 
 Purpose:
-Convert issues, contradictions, credibility flags, and attack surfaces into strategy.
+
+Convert weaknesses into litigation opportunities.
+
+Examples:
+
+* impeachment opportunities
+* deposition targets
+* summary judgment opportunities
+* discovery targets
+* evidentiary attacks
+
+Attorney Priority:
+
+Very High
+
+---
+
+# Phase 8 — Strategy Engine
+
+Status: Planned
+
+Purpose:
+
+Assist attorney strategic thinking.
 
 Outputs:
-- strongest argument
-- weakest issue
-- recommended roadmap
-- draft outline
-- authority needs
-- factual emphasis
 
-## Phase 8 — Litigation Graph
+* strongest attack surfaces
+* strongest defenses
+* recommended discovery
+* deposition themes
+* motion opportunities
 
-Status: Planned
+Attorney remains the decision maker.
 
-Purpose:
-Visualize parties, facts, documents, dates, contradictions, and issues as a connected graph.
+Attorney Feedback:
 
-## Session Startup Checklist
+Some contradictions are best used at deposition.
+
+Some contradictions are best saved for trial.
+
+That determination remains a strategic judgment call.
+
+---
+
+# Planned Extensions
+
+Matter Synopsis Reports
+
+Lawyer Onboarding Reports
+
+Deposition Analysis
+
+Trial Preparation Reports
+
+Alternative Pleading Detection
+
+* flag separately
+* not a contradiction
+
+Information & Belief Weighting
+
+---
+
+# Long-Term Research
+
+Litigation Graph
+
+Cross-Matter Knowledge Systems
+
+Litigation Cognition Systems
+
+---
+
+# Session Startup Checklist
 
 Run:
 
@@ -110,9 +298,9 @@ cat ARCHITECTURE.md
 cat DECISIONS.md
 cat attorney_knowledge/ROADMAP.md
 
-Then run:
+Then:
 
 git status
 git branch
 
-Then continue from PROJECT_STATE.md current workstream.
+Then continue from PROJECT_STATE.md.

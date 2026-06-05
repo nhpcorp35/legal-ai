@@ -168,3 +168,11 @@ cat PROJECT_STATE.md
 cat ARCHITECTURE.md
 cat DECISIONS.md
 cat attorney_knowledge/ROADMAP.md
+
+Contradiction Engine v2 stabilized.
+
+Awaiting implementation of:
+- Source Traceability v2
+- Alternative Pleading Detection
+
+Attorney feedback incorporated.
