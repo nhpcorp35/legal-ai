@@ -24,6 +24,8 @@ Attorney Principles:
 * Trust > Intelligence
 * Verification > Automation
 * Every output must be traceable and verifiable
+* AI should help identify facts, issues, contradictions, and credibility concerns that attorneys may have overlooked
+* AI must never fabricate cases, citations, evidence, testimony, or facts
 
 ---
 
@@ -39,6 +41,38 @@ Attorney Principles:
 8. Research and Draft
 
 All future development should support this workflow.
+
+---
+
+# Attorney Objective Principle
+
+Before generating output, the system should determine:
+
+"What is the attorney trying to accomplish?"
+
+Different objectives require different outputs.
+
+Examples:
+
+- New lawyer onboarding
+- Matter understanding
+- Deposition preparation
+- Motion practice
+- Trial preparation
+- Research
+- Drafting
+
+The same matter may produce different reports depending on the attorney's objective.
+
+Attorney Feedback (John Cuomo):
+
+"The first question from my software to me should be:
+What do you need?
+What are you doing?"
+
+Outputs should adapt to the attorney's objective rather than producing a single universal synopsis.
+
+A perfect report for deposition preparation may be completely different from a perfect report for motion practice, trial preparation, research, drafting, or lawyer onboarding.
 
 ---
 
@@ -85,6 +119,27 @@ New lawyer onboarding.
 Primary Attorney Feedback:
 
 A lawyer inheriting a case should be able to understand the matter rapidly without reading every document first.
+
+Future Direction:
+
+Matter Understanding may evolve into a Matter Briefing Engine, where report contents vary based on attorney objective.
+
+Examples:
+
+- New lawyer onboarding
+- Deposition preparation
+- Motion practice
+- Trial preparation
+- Research
+- Drafting
+
+The first question should not be:
+
+"What report should I generate?"
+
+The first question should be:
+
+"What is the attorney trying to do?"
 
 ---
 
@@ -276,6 +331,17 @@ Alternative Pleading Detection
 * not a contradiction
 
 Information & Belief Weighting
+
+Objective-Based Matter Briefing
+
+Different reports for:
+
+- Lawyer onboarding
+- Deposition preparation
+- Motion practice
+- Trial preparation
+- Research
+- Drafting
 
 ---
 
