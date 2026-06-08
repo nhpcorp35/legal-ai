@@ -1,126 +1,255 @@
-Roadmap# Legal AI Roadmap
-NEXT
+# Legal AI Roadmap
 
-Contradiction Engine v2.6
-Procedural Conflict Detection
+Last Updated: 2026-06-08
 
-Examples:
-- motion served / never served
-- notice filed / never filed
-- complaint filed / never filed
-- service completed / not completed
+## Product Thesis
 
-Output:
-- procedural_conflict
+The goal is not to replace the attorney.
 
-v2.7
-Evidence vs Assertion
-## NOW
+The goal is to help attorneys:
 
-### Contradiction Engine v2.4 — Document Extraction
+* understand a matter
+* verify facts
+* identify issues
+* identify contradictions
+* identify credibility problems
+* accelerate research
+* accelerate writing
+* preserve trust
 
-Goal:
-Extract structured document claims.
+Attorney Principles:
 
-Need:
+* Trust > Intelligence
+* Verification > Automation
+* AI must never fabricate cases, citations, evidence, testimony, or facts
+* Every conclusion must be traceable and verifiable
 
-* document_subject
-* document_action
-* document_requirement
+Attorney Feedback:
 
-Examples:
-
-* Lease requires written approval
-* Agreement prohibits subletting
-* Lease allows pets
-* Contract requires notice
-
-Success Criteria:
-Document claims become structured objects rather than raw text.
+"The first question from my software should be:
+What do you need?
+What are you doing?"
 
 ---
 
-## NEXT
+# CURRENT STATUS
 
-### Contradiction Engine v2.5 — Document Conflict Detection
+## Matter Builder
 
-Goal:
-Detect contradictions between:
+Status: Operational
 
-* document vs document
-* document vs testimony
-* document vs affidavit
-* contract vs assertion
+Completed:
 
-Examples:
-
-* Lease requires written approval
-* Plaintiff claims verbal approval was sufficient
-
-Output:
-
-* document_conflict
+* matter ingestion
+* document classification
+* matter organization
 
 ---
 
-## LATER
+## Issue Engine
 
-### Evidence vs Assertion Engine
+Status: Operational
 
-Goal:
-Detect when evidence conflicts with party allegations.
+Completed:
 
-Examples:
-
-* Email confirms notice sent
-
-* Party alleges notice never sent
-
-* Contract requires written approval
-
-* Party alleges verbal approval was enough
-
-Output:
-
-* evidence_conflict
-* documentary_conflict
+* legal issue extraction
+* factual issue extraction
 
 ---
 
-## FUTURE
+## Contradiction Engine v2
 
-### Litigation Cognition Layer
+Status: Operational
 
-Goal:
-Move beyond contradiction detection into litigation reasoning.
+Completed:
 
-Examples:
-
-* strongest attack points
-* credibility attacks
-* procedural weaknesses
-* burden-of-proof failures
-* evidentiary gaps
-* strategy recommendations
-
-Attorney Workflow Focus:
-
-* motion practice
-* opposition review
-* affirmation drafting
-* contradiction discovery
-* credibility analysis
-* litigation strategy support
-
----
-
-## BACKLOG
-
-* damages conflicts
-* authority conflicts
+* factual disputes
+* witness conflicts
+* credibility conflicts
+* timeline conflicts
+* date conflicts
+* quantity conflicts
 * procedural conflicts
-* timeline expansion
-* witness credibility scoring
-* contradiction ranking improvements
-* contradiction clustering
-* contradiction visual graph
+* document conflicts
+* contradiction scope
+* source traceability
+* assertion strength
+* attack narratives
+* litigation impact
+* recommendations
+* similar case enrichment
+
+Regression Protected:
+
+* contradiction card payload
+* source traceability pipeline
+* contradiction scope pipeline
+* assertion strength pipeline
+* similar case pipeline
+
+---
+
+# NEXT
+
+## Matter Understanding Engine
+
+Purpose:
+
+Help attorneys understand a matter quickly.
+
+Key Outputs:
+
+* probable case narrative
+* key facts
+* key witnesses
+* key documents
+* key dates
+* major disputes
+* major contradictions
+* open questions
+* facts requiring client verification
+
+Attorney Insight:
+
+Clients often provide incomplete facts.
+
+Attorneys frequently reconstruct what happened from pleadings, motions, testimony, exhibits, and court filings.
+
+The system should help reconstruct the factual narrative and identify areas requiring verification.
+
+---
+
+## Verification & Traceability v2
+
+Purpose:
+
+Increase attorney trust.
+
+Planned Outputs:
+
+* document references
+* page references
+* line references
+* source snippets
+* one-click verification
+
+Attorney Priority:
+
+Highest
+
+---
+
+# PLANNED
+
+## Credibility Engine
+
+Purpose:
+
+Identify credibility vulnerabilities.
+
+Examples:
+
+* same witness changes story
+* sworn statement conflicts
+* position shifts
+* unsupported factual assertions
+
+Attorney Priority:
+
+Very High
+
+---
+
+## Attack Surface Engine
+
+Purpose:
+
+Convert weaknesses into litigation opportunities.
+
+Examples:
+
+* impeachment opportunities
+* deposition targets
+* summary judgment opportunities
+* discovery targets
+* evidentiary attacks
+
+---
+
+## Strategy Engine
+
+Purpose:
+
+Assist attorney strategic thinking.
+
+Outputs:
+
+* strongest attack surfaces
+* strongest defenses
+* recommended discovery
+* deposition themes
+* motion opportunities
+
+Attorney remains the decision maker.
+
+---
+
+# RESEARCH
+
+## Alternative Pleading Detection
+
+Attorney Guidance:
+
+* flag separately
+* not a contradiction
+* proper legal drafting
+
+---
+
+## Information & Belief Weighting
+
+Attorney Guidance:
+
+* weaker than direct factual assertion
+* should not be treated as a fact
+
+---
+
+## Objective-Based Matter Briefing
+
+Possible objectives:
+
+* lawyer onboarding
+* matter understanding
+* deposition preparation
+* motion practice
+* trial preparation
+* research
+* drafting
+
+Attorney Insight:
+
+Different objectives may require different reports.
+
+---
+
+# LONG-TERM
+
+## Litigation Cognition
+
+Goal:
+
+Move beyond contradiction detection into litigation understanding.
+
+Potential Outputs:
+
+* case reconstruction
+* fact verification
+* credibility analysis
+* issue identification
+* litigation strategy support
+* drafting assistance
+
+Attorney Observation:
+
+"If it can do this, it can do all of them."
