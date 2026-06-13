@@ -370,3 +370,10 @@ git status
 git branch
 
 Then continue from PROJECT_STATE.md.
+
+Attorney Principle:
+
+Objective > Analysis
+
+Before identifying important facts, issues, contradictions, or evidence,
+the system must understand the attorney's current objective.

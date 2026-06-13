@@ -1,3 +1,162 @@
+1. Attorney Doctrine
+
+ATTORNEY OBJECTIVE PRECEDES ALL ANALYSIS
+
+The first question is not:
+
+"What is important?"
+
+The first question is:
+
+"What is the attorney trying to accomplish?"
+
+Examples:
+
+- Motion (moving party)
+- Motion (opposing party)
+- Deposition preparation
+- Court appearance
+- Trial preparation
+- Research
+- Drafting
+- New lawyer onboarding
+
+The attorney's objective determines the value of every output.
+
+2. Facts vs Disputed Facts
+
+ ATTORNEY OBSERVATION
+
+Facts are generally available from:
+
+- Complaint
+- Answer
+- Affidavits
+- Testimony
+- Exhibits
+
+The more valuable question is:
+
+Which facts are disputed?
+
+Disputed facts drive:
+
+- Depositions
+- Discovery
+- Motion practice
+- Trial strategy
+- Settlement leverage
+
+4. Case Reconstruction
+
+ATTORNEY OBSERVATION
+
+Clients frequently provide incomplete facts.
+
+Attorneys often reconstruct what happened from:
+
+- Pleadings
+- Motions
+- Testimony
+- Exhibits
+- Court orders
+
+The reconstructed narrative is then verified with the client.
+
+Legal AI should assist in reconstructing the factual narrative from case documents.
+
+5. Verification Doctrine
+
+TRUST IS EVERYTHING
+
+Every important conclusion should be traceable to:
+
+- Source document
+- Page
+- Line
+- Supporting text
+
+Attorneys must be able to independently verify:
+
+- Facts
+- Testimony
+- Evidence
+- Case law
+
+AI hallucinations destroy credibility.
+
+6. AI Citation Risk
+
+ATTORNEY OBSERVATION
+
+AI-generated hallucinated case citations remain common.
+
+Nonexistent cases continue to be cited in real litigation.
+
+Verification of every cited authority is mandatory.
+
+A fabricated citation can permanently damage attorney credibility.
+
+7. Judicial Reality
+
+ATTORNEY OBSERVATION
+
+Law is a system.
+
+Facts matter.
+Procedure matters.
+Judges matter.
+
+Judges generally dislike:
+
+- Lies
+- Bullshit
+- Being reversed on appeal
+
+A technically correct legal position may still fail because of:
+
+- Bad facts
+- Bad procedure
+- Bad credibility
+- Judicial discretion
+
+8. Litigation Reality
+
+ATTORNEY OBSERVATION
+
+Attorneys are advocates.
+
+They work with:
+
+- Facts
+- Testimony
+- Documents
+- Case law
+
+and attempt to fit those facts into the strongest available legal framework.
+
+Litigation is not merely finding the law.
+
+It is applying facts to law persuasively.
+
+9. ATTORNEY OBSERVATION
+
+Attorneys are advocates.
+
+They work with:
+
+- Facts
+- Testimony
+- Documents
+- Case law
+
+and attempt to fit those facts into the strongest available legal framework.
+
+Litigation is not merely finding the law.
+
+It is applying facts to law persuasively.
+
+10. 
 Allen <allen@nhpcorp.com>
 Apr 29, 2026, 12:51 PM
 to jc
@@ -507,3 +666,31 @@ to me
 
 # 2  facts in dispute based upon the case documents.  
 The purported facts are easily discerned from the pleadings.  
+
+
+John Cuomo
+2:58 PM (10 minutes ago)
+to me
+
+Summary: 
+Even a brief synopsis should be able to point out each. 
+If it is meant to be a summary, those items would be a part of the case, part of the summary. 
+
+Better than summary: 
+You're operating on the drill down theory here which is fine, BUT in order to do that, you need to know where/what your starting point is; to wit: What is the lawyers goal? 
+Motion, proponent or defending?  Deposition Prep?  Going into Court for a hearing/conference? or Trial? 
+
+Your thinking like a coder and because of that you are asking the wrong initial question, start with the Lawyers goal (above) that will tell you what I need to get there.
+Then you can fill in the blanks to help your machine get me there. 
+
+The attorney's objective determines the value of every output.
+
+Attorney Observation (2026-06-10)
+
+AI-generated hallucinated case citations remain a significant problem.
+
+Attorneys continue to submit nonexistent authorities.
+
+Verification of every cited authority is mandatory.
+
+Trust is destroyed when a lawyer cites a case that does not exist.
