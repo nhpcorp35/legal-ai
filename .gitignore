@@ -18,3 +18,6 @@ __pycache__/
 # secrets / local config
 openclaw.json
 .env
+
+# Large local media files
+docs/Files/attorney meetings/video:audio/*.mp4
