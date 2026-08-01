@@ -89,9 +89,33 @@ COURT_HEADER_WORDS = {
 
 OCR_MIN_TEXT_LENGTH = 120
 
+# Sparse cover pages used as a conservative exhibit-boundary signal.
+EXHIBIT_SPARSE_COVER_MAX_CHARS = 220
+
+# Minimum confidence required to assert an embedded exhibit boundary.
+# Weaker candidates are retained as uncertain_exhibit_boundaries.
+EXHIBIT_BOUNDARY_ASSERT_CONFIDENCE = {"high", "medium"}
+
 # Used only for deterministic page_id formatting when no verified NYSCEF
 # document number is available. Never invents a provenance document number.
 UNKNOWN_NYSCEF_DOCUMENT_NUMBER = 0
+
+# Conservative exhibit cover / heading detectors (page-local).
+EXHIBIT_COVER_HEADING_RE = re.compile(
+    r"(?is)^\s*(?:EXHIBIT|EXH\.?|EX\.)\s+([A-Z0-9]{1,4})\b"
+    r"(?:\s*[-–—:;]\s*|\s+)(?P<title>[^\n]{0,120})?"
+)
+EXHIBIT_COVER_ONLY_RE = re.compile(
+    r"(?is)^\s*(?:EXHIBIT|EXH\.?|EX\.)\s+([A-Z0-9]{1,4})\b\s*$"
+)
+EXHIBIT_NEAR_TOP_RE = re.compile(
+    r"(?i)^(?:.{0,80}?)(?:EXHIBIT|EXH\.?|EX\.)\s+([A-Z]|[0-9]{1,3})\b"
+)
+EXHIBIT_PROSE_REFERENCE_RE = re.compile(
+    r"(?i)\b(?:see|attached|annexed|marked|true\s+copy\s+of|copy\s+of)\s+"
+    r"(?:as\s+)?(?:EXHIBIT|EXH\.?|EX\.)\s+[A-Z0-9]{1,4}\b"
+)
+EXHIBIT_BARE_WORD_RE = re.compile(r"(?is)^\s*EXHIBITS?\b\s*$")
 
 # Benchmark folder naming from scraper/utils.js buildFilename:
 #   {caseNumber}__{docType}__{date}.pdf
@@ -379,6 +403,390 @@ def normalize_page_record(page, nyscef_document_number=None):
         "page_id": page_id,
         "text": text,
         "extraction_method": extraction_method,
+    }
+
+
+def make_segment_id(nyscef_document_number, segment_index):
+    """Deterministic segment ID aligned with NYSCEF page_id formatting."""
+    doc_no = coerce_nyscef_document_number(nyscef_document_number)
+    if doc_no is None:
+        doc_no = UNKNOWN_NYSCEF_DOCUMENT_NUMBER
+
+    return f"nyscef-{doc_no:03d}-segment-{int(segment_index):04d}"
+
+
+def normalize_exhibit_label(value):
+    value = clean_text(value).upper()
+    value = value.replace("EXHIBIT", "").replace("EXH.", "").replace("EXH", "")
+    value = re.sub(r"[^A-Z0-9]", "", value)
+    if value:
+        return value[:8]
+    return None
+
+
+def normalize_exhibit_title(value):
+    title = clean_text(value)
+    if not title:
+        return None
+    title = re.sub(r"(?i)^(to|:|-|–|—)\s*", "", title).strip()
+    if not title or title.upper() in {"EXHIBIT", "EXH", "EX"}:
+        return None
+    return title[:160]
+
+
+def _page_raw_text(page):
+    if not isinstance(page, dict):
+        return ""
+    text = page.get("text")
+    return text if isinstance(text, str) else str(text or "")
+
+
+def detect_page_exhibit_signals(page):
+    """
+    Collect conservative exhibit-boundary signals for a single page.
+
+    Strong signals favor cover/heading patterns. Prose references alone are
+    ignored so we do not invent boundaries from weak evidence.
+    """
+    raw = _page_raw_text(page)
+    if not raw or not raw.strip():
+        return []
+
+    # Preserve line structure when present; cleaned aggregates still work.
+    stripped = raw.strip()
+    first_line = stripped.splitlines()[0].strip() if stripped else ""
+    cleaned = clean_text(raw)
+    char_count = len(cleaned)
+    signals = []
+
+    # Prose citations ("see Exhibit A") are not boundary evidence unless the
+    # page itself opens with an exhibit cover/heading line.
+    prose_ref = EXHIBIT_PROSE_REFERENCE_RE.search(cleaned)
+    opens_with_cover = bool(
+        EXHIBIT_COVER_HEADING_RE.match(first_line)
+        or EXHIBIT_COVER_ONLY_RE.match(stripped)
+        or EXHIBIT_COVER_HEADING_RE.match(stripped)
+    )
+    if prose_ref and not opens_with_cover:
+        return []
+
+    cover_only = EXHIBIT_COVER_ONLY_RE.match(stripped) or EXHIBIT_COVER_ONLY_RE.match(
+        cleaned
+    )
+    if cover_only:
+        label = normalize_exhibit_label(cover_only.group(1))
+        if label:
+            signals.append(
+                {
+                    "kind": "cover_label",
+                    "strength": "strong",
+                    "exhibit_label": label,
+                    "exhibit_title": None,
+                    "detail": f"Sparse/cover page labeled Exhibit {label}",
+                }
+            )
+
+    heading = EXHIBIT_COVER_HEADING_RE.match(stripped) or EXHIBIT_COVER_HEADING_RE.match(
+        first_line
+    )
+    if heading and not cover_only:
+        label = normalize_exhibit_label(heading.group(1))
+        title = normalize_exhibit_title(heading.group("title"))
+        if label:
+            strength = (
+                "strong" if char_count <= EXHIBIT_SPARSE_COVER_MAX_CHARS else "medium"
+            )
+            kind = "titled_cover" if title else "heading_label"
+            signals.append(
+                {
+                    "kind": kind,
+                    "strength": strength,
+                    "exhibit_label": label,
+                    "exhibit_title": title,
+                    "detail": (
+                        f"Exhibit {label} heading at page start"
+                        + (f" titled '{title}'" if title else "")
+                    ),
+                }
+            )
+
+    if char_count <= EXHIBIT_SPARSE_COVER_MAX_CHARS and EXHIBIT_BARE_WORD_RE.match(
+        stripped
+    ):
+        signals.append(
+            {
+                "kind": "separator_cover",
+                "strength": "weak",
+                "exhibit_label": None,
+                "exhibit_title": None,
+                "detail": "Sparse separator page containing only 'Exhibit(s)'",
+            }
+        )
+
+    if not signals:
+        # Near-top mention without clear cover heading → uncertain candidate only.
+        near = EXHIBIT_NEAR_TOP_RE.search(cleaned[:300])
+        if near and not EXHIBIT_PROSE_REFERENCE_RE.search(cleaned[:300]):
+            label = normalize_exhibit_label(near.group(1))
+            if label:
+                signals.append(
+                    {
+                        "kind": "near_top_mention",
+                        "strength": "weak",
+                        "exhibit_label": label,
+                        "exhibit_title": None,
+                        "detail": (
+                            f"Exhibit {label} mentioned near top without cover pattern"
+                        ),
+                    }
+                )
+
+    # Reinforce sparseness only for cover/heading hits — never for weak
+    # near-top mentions, which would otherwise inflate confidence to assert.
+    cover_kinds = {"cover_label", "titled_cover", "heading_label"}
+    if char_count <= EXHIBIT_SPARSE_COVER_MAX_CHARS and any(
+        s.get("kind") in cover_kinds and s.get("exhibit_label") for s in signals
+    ):
+        if not any(s["kind"] == "sparse_cover_context" for s in signals):
+            label = next(
+                s["exhibit_label"]
+                for s in signals
+                if s.get("kind") in cover_kinds and s.get("exhibit_label")
+            )
+            signals.append(
+                {
+                    "kind": "sparse_cover_context",
+                    "strength": "medium",
+                    "exhibit_label": label,
+                    "exhibit_title": None,
+                    "detail": "Short page consistent with an exhibit cover sheet",
+                }
+            )
+
+    return signals
+
+
+def score_exhibit_boundary_confidence(signals):
+    if not signals:
+        return None
+
+    strengths = {s.get("strength") for s in signals}
+    kinds = {s.get("kind") for s in signals}
+
+    if "strong" in strengths and (
+        "cover_label" in kinds
+        or "titled_cover" in kinds
+        or "heading_label" in kinds
+    ):
+        if "sparse_cover_context" in kinds or "cover_label" in kinds:
+            return "high"
+        return "high" if "strong" in strengths else "medium"
+
+    if "medium" in strengths and (
+        "heading_label" in kinds
+        or "titled_cover" in kinds
+        or "sparse_cover_context" in kinds
+    ):
+        return "medium"
+
+    if strengths.intersection({"strong", "medium", "weak"}):
+        return "low"
+
+    return None
+
+
+def _primary_signal_label_title(signals):
+    label = None
+    title = None
+    for signal in signals:
+        if label is None and signal.get("exhibit_label"):
+            label = signal["exhibit_label"]
+        if title is None and signal.get("exhibit_title"):
+            title = signal["exhibit_title"]
+    return label, title
+
+
+def segment_embedded_exhibits(pages, nyscef_document_number=None):
+    """
+    Segment a filing's pages into parent material and embedded exhibits.
+
+    Conservative: only assert boundaries with medium/high confidence.
+    Weak candidates are returned under uncertain_boundaries and do not split
+    segments. Every page is assigned to exactly one primary segment; pages are
+    never dropped or duplicated.
+    """
+    normalized_pages = [
+        normalize_page_record(page, nyscef_document_number) for page in (pages or [])
+    ]
+
+    uncertain_boundaries = []
+    asserted_starts = []  # list of (page_index, label, title, confidence, signals)
+
+    for index, page in enumerate(normalized_pages):
+        signals = detect_page_exhibit_signals(page)
+        if not signals:
+            continue
+
+        confidence = score_exhibit_boundary_confidence(signals)
+        label, title = _primary_signal_label_title(signals)
+        page_number = page["page_number"]
+        evidence = [
+            {
+                "kind": s.get("kind"),
+                "strength": s.get("strength"),
+                "detail": s.get("detail"),
+                "exhibit_label": s.get("exhibit_label"),
+            }
+            for s in signals
+        ]
+
+        candidate = {
+            "page_number": page_number,
+            "page_id": page["page_id"],
+            "exhibit_label": label,
+            "exhibit_title": title,
+            "boundary_confidence": confidence,
+            "boundary_evidence": evidence,
+        }
+
+        if confidence in EXHIBIT_BOUNDARY_ASSERT_CONFIDENCE and label:
+            # Avoid re-asserting the same label on the immediately continued page
+            # when the heading merely repeats with no new cover evidence change.
+            if asserted_starts:
+                prev = asserted_starts[-1]
+                if prev["exhibit_label"] == label and prev["page_index"] == index - 1:
+                    # Treat repeated label on next page as continuation noise unless
+                    # this page is itself a sparse cover for a *different* span.
+                    if not any(s.get("kind") == "cover_label" for s in signals):
+                        uncertain_boundaries.append(candidate)
+                        continue
+            asserted_starts.append(
+                {
+                    "page_index": index,
+                    "exhibit_label": label,
+                    "exhibit_title": title,
+                    "boundary_confidence": confidence,
+                    "boundary_evidence": evidence,
+                }
+            )
+        else:
+            uncertain_boundaries.append(candidate)
+
+    segments = []
+    segment_index = 1
+    page_count = len(normalized_pages)
+
+    def _emit_segment(start_idx, end_idx, segment_type, label, title, confidence, evidence):
+        nonlocal segment_index
+        if start_idx > end_idx or start_idx < 0 or end_idx >= page_count:
+            return
+
+        slice_pages = normalized_pages[start_idx : end_idx + 1]
+        segment = {
+            "segment_id": make_segment_id(nyscef_document_number, segment_index),
+            "nyscef_document_number": coerce_nyscef_document_number(
+                nyscef_document_number
+            ),
+            "segment_type": segment_type,
+            "exhibit_label": label,
+            "exhibit_title": title,
+            "start_page": slice_pages[0]["page_number"],
+            "end_page": slice_pages[-1]["page_number"],
+            "page_ids": [p["page_id"] for p in slice_pages],
+            "boundary_confidence": confidence,
+            "boundary_evidence": list(evidence or []),
+        }
+        segments.append(segment)
+        segment_index += 1
+
+    if not asserted_starts:
+        if page_count:
+            _emit_segment(
+                0,
+                page_count - 1,
+                "parent",
+                None,
+                None,
+                "high",
+                [
+                    {
+                        "kind": "no_embedded_exhibit",
+                        "strength": "strong",
+                        "detail": "No evidence-backed embedded exhibit boundary detected",
+                        "exhibit_label": None,
+                    }
+                ],
+            )
+        return {
+            "segments": segments,
+            "uncertain_boundaries": uncertain_boundaries,
+        }
+
+    # Parent material before the first asserted exhibit, if any.
+    first_start = asserted_starts[0]["page_index"]
+    if first_start > 0:
+        _emit_segment(
+            0,
+            first_start - 1,
+            "parent",
+            None,
+            None,
+            "high",
+            [
+                {
+                    "kind": "parent_prefix",
+                    "strength": "strong",
+                    "detail": "Filing material preceding first embedded exhibit",
+                    "exhibit_label": None,
+                }
+            ],
+        )
+
+    for i, start in enumerate(asserted_starts):
+        start_idx = start["page_index"]
+        if i + 1 < len(asserted_starts):
+            end_idx = asserted_starts[i + 1]["page_index"] - 1
+        else:
+            end_idx = page_count - 1
+
+        _emit_segment(
+            start_idx,
+            end_idx,
+            "exhibit",
+            start["exhibit_label"],
+            start["exhibit_title"],
+            start["boundary_confidence"],
+            start["boundary_evidence"],
+        )
+
+    # Integrity: every page id appears exactly once across primary segments.
+    assigned = [page_id for seg in segments for page_id in seg["page_ids"]]
+    expected = [p["page_id"] for p in normalized_pages]
+    if assigned != expected:
+        # Repair by collapsing to a single parent segment rather than dropping
+        # or duplicating pages. Uncertain candidates are still returned.
+        segments = []
+        segment_index = 1
+        _emit_segment(
+            0,
+            page_count - 1,
+            "parent",
+            None,
+            None,
+            "low",
+            [
+                {
+                    "kind": "integrity_repair",
+                    "strength": "strong",
+                    "detail": "Segment boundaries repaired to preserve page coverage",
+                    "exhibit_label": None,
+                }
+            ],
+        )
+
+    return {
+        "segments": segments,
+        "uncertain_boundaries": uncertain_boundaries,
     }
 
 
@@ -823,7 +1231,7 @@ def selected_case_to_document(selected_case):
     }
 
 
-def normalize_document(document):
+def normalize_document(document, *, include_exhibit_segments=None):
     filename = clean_text(
         document.get("filename")
         or document.get("name")
@@ -903,6 +1311,24 @@ def normalize_document(document):
 
     if page_count is not None:
         normalized["page_count"] = page_count
+
+    # Additive opt-in: kwarg wins; otherwise honor document flag. Default off
+    # so existing consumers receive unchanged document/page structures.
+    # If a prior normalize already attached exhibit_segments, keep opting in so
+    # group_documents / re-normalize paths do not silently drop them.
+    if include_exhibit_segments is None:
+        if "include_exhibit_segments" in document:
+            include_exhibit_segments = bool(document.get("include_exhibit_segments"))
+        else:
+            include_exhibit_segments = "exhibit_segments" in document
+
+    if include_exhibit_segments and pages is not None:
+        segmentation = segment_embedded_exhibits(pages, nyscef_document_number)
+        normalized["exhibit_segments"] = segmentation["segments"]
+        if segmentation["uncertain_boundaries"]:
+            normalized["uncertain_exhibit_boundaries"] = segmentation[
+                "uncertain_boundaries"
+            ]
 
     return normalized
 
@@ -1120,6 +1546,8 @@ def get_matter(
     documents=None,
     matter_folder=None,
     inventory_path=None,
+    *,
+    include_exhibit_segments=False,
 ):
     resolved_folder = resolve_matter_folder(matter_folder)
     folder_documents = read_matter_folder(
@@ -1143,7 +1571,13 @@ def get_matter(
     all_documents.extend(folder_documents)
     all_documents.extend(documents)
 
-    normalized_documents = [normalize_document(doc) for doc in all_documents]
+    normalized_documents = [
+        normalize_document(
+            doc,
+            include_exhibit_segments=include_exhibit_segments,
+        )
+        for doc in all_documents
+    ]
 
     grouped_documents = group_documents(normalized_documents)
 
