@@ -2820,6 +2820,7 @@ RETRIEVAL_EXCERPT_MAX = 240
 RETRIEVAL_SCORE_PRECISION = 6
 
 # Transparent hybrid weights (sum intentionally > 1; absolute scale is relative).
+# boilerplate_penalty is applied as a negative component when justified.
 RETRIEVAL_WEIGHTS = {
     "exact_phrase": 40.0,
     "token_coverage": 28.0,
@@ -2827,7 +2828,12 @@ RETRIEVAL_WEIGHTS = {
     "exhibit": 10.0,
     "case_map": 14.0,
     "relationship": 8.0,
+    "boilerplate_penalty": 16.0,
 }
+
+# Case-map / relationship boosts require at least this excerpt grounding ratio
+# (distinctive query terms or multiword phrases present in the excerpt window).
+RETRIEVAL_CASE_MAP_GROUNDING_THRESHOLD = 0.2
 
 CATEGORY_QUERY_HINTS = {
     "motion": ("motion", "notice of motion", "summary judgment", "movant"),
@@ -2854,6 +2860,69 @@ CASE_MAP_CATEGORY_HINTS = {
     "court_orders": ("order", "ordered", "decision and order"),
 }
 
+# Multiword / distinctive legal phrases prioritized when present in the query.
+RETRIEVAL_LEGAL_PHRASES = (
+    "void ab initio",
+    "it is hereby ordered",
+    "decision and order",
+    "affirmative defense",
+    "cause of action",
+    "notice of motion",
+    "summary judgment",
+    "motion to dismiss",
+    "affidavit of service",
+    "admission of service",
+    "declaratory relief",
+    "wherefore",
+)
+
+# Procedural boilerplate page markers (stamp / service / caption shells).
+RETRIEVAL_BOILERPLATE_PATTERNS = (
+    r"\baffidavit of service\b",
+    r"\badmission of service\b",
+    r"\baffixing to (the )?door\b",
+    r"\bactual place of business within\b",
+    r"\bfiled:\s*[a-z]+\s+county\s+clerk\b",
+    r"\breceived nyscef\b",
+    r"\bnyscef doc\.?\s*no\.?\b",
+    r"\bsupreme court of the state of new york\b",
+)
+
+RETRIEVAL_SERVICE_QUERY_HINTS = (
+    "affidavit of service",
+    "admission of service",
+    "proof of service",
+    "served upon",
+    "service of process",
+    "service of the summons",
+)
+
+RETRIEVAL_SUBSTANTIVE_QUERY_HINTS = (
+    "plaintiff",
+    "defendant",
+    "party",
+    "parties",
+    "caption",
+    "wherefore",
+    "relief",
+    "void ab initio",
+    "policy",
+    "policies",
+    "coverage",
+    "cause of action",
+    "claim",
+    "claims",
+    "defense",
+    "defenses",
+    "allegation",
+    "allegations",
+    "order",
+    "ordered",
+    "decision and order",
+    "indemnif",
+    "misrepresentation",
+)
+
 
 def normalize_retrieval_text(value):
     """Lowercase whitespace-normalized text for deterministic matching."""
@@ -2874,9 +2943,177 @@ def tokenize_retrieval_query(query):
     stop = {
         "a", "an", "the", "of", "or", "and", "to", "in", "on", "for", "by",
         "is", "was", "are", "be", "as", "at", "that", "this", "with", "from",
+        "which", "where", "what", "when", "who", "whom", "how", "does", "do",
+        "did", "any", "among", "into", "about", "than", "then", "also", "such",
+        "other", "under", "over", "between", "within", "without", "whether",
+        "regarding", "including", "related", "record", "pages", "page",
+        "filing", "filings", "contain", "contains", "identify", "identified",
+        "language", "stating", "seeking", "sought", "address", "discuss",
+        "discussion", "passages", "text", "named",
     }
     tokens = [t for t in tokens if t not in stop]
     return normalized, tokens
+
+
+def _distinctive_retrieval_tokens(tokens):
+    """Tokens that carry party/policy/relief/order signal (not tiny closed-class)."""
+    weak = {
+        "it", "its", "no", "not", "yes", "said", "herein", "thereof", "therein",
+    }
+    distinctive = []
+    for token in tokens or []:
+        if token in weak:
+            continue
+        if len(token) <= 2 and not any(ch.isdigit() for ch in token):
+            continue
+        distinctive.append(token)
+    return distinctive
+
+
+def _extract_retrieval_phrases(normalized_query, tokens):
+    """
+    Multiword / distinctive legal phrases drawn from the query.
+
+    Full-query matching alone rarely fires on long diagnostic questions; these
+    subphrases restore exact legal wording (WHEREFORE, void ab initio, etc.)
+    without rewarding token-scattered or long-page stuffing.
+    """
+    joined = normalized_query or ""
+    known_phrases = []
+    support_phrases = []
+    seen = set()
+
+    def _add(bucket, phrase):
+        phrase = normalize_retrieval_text(phrase)
+        if not phrase or phrase in seen:
+            return
+        seen.add(phrase)
+        bucket.append(phrase)
+
+    for known in RETRIEVAL_LEGAL_PHRASES:
+        if known in joined:
+            _add(known_phrases, known)
+
+    distinctive = _distinctive_retrieval_tokens(tokens)
+    # Contiguous distinctive bigrams/trigrams — support anchoring only; known
+    # legal phrases remain the primary exact-phrase evidence.
+    for size in (3, 2):
+        for index in range(0, max(0, len(distinctive) - size + 1)):
+            candidate = " ".join(distinctive[index : index + size])
+            if candidate in joined:
+                _add(support_phrases, candidate)
+
+    known_phrases.sort(key=lambda item: (-len(item.split()), -len(item), item))
+    support_phrases.sort(key=lambda item: (-len(item.split()), -len(item), item))
+    return {
+        "known": known_phrases,
+        "support": support_phrases,
+        "all": known_phrases + support_phrases,
+    }
+
+
+def _phrase_lists(phrases):
+    """Normalize phrase payload from extract helper or a bare list."""
+    if isinstance(phrases, dict):
+        known = list(phrases.get("known") or [])
+        support = list(phrases.get("support") or [])
+        all_phrases = list(phrases.get("all") or (known + support))
+        return known, support, all_phrases
+    all_phrases = list(phrases or [])
+    known = [p for p in all_phrases if p in RETRIEVAL_LEGAL_PHRASES]
+    support = [p for p in all_phrases if p not in RETRIEVAL_LEGAL_PHRASES]
+    return known, support, all_phrases
+
+
+def _query_seeks_procedural_service(normalized_query, tokens, hints):
+    joined = normalized_query or ""
+    if any(hint in joined for hint in RETRIEVAL_SERVICE_QUERY_HINTS):
+        return True
+    token_set = set(tokens or [])
+    if "service" in token_set and (
+        "affidavit" in token_set
+        or "admission" in token_set
+        or "proof" in token_set
+        or "summons" in token_set
+        or "process" in token_set
+    ):
+        return True
+    # Discovery / procedural inventory queries should keep procedural pages.
+    if "discovery" in token_set or "discovery" in (hints.get("document_types") or []):
+        return True
+    if any(
+        hint in joined
+        for hint in (
+            "document request",
+            "document demands",
+            "discovery demand",
+            "interrogator",
+            "notice to admit",
+        )
+    ):
+        return True
+    return False
+
+
+def _query_seeks_substantive_content(normalized_query, tokens, hints):
+    joined = normalized_query or ""
+    if any(hint in joined for hint in RETRIEVAL_SUBSTANTIVE_QUERY_HINTS):
+        return True
+    case_map_cats = set(hints.get("case_map_categories") or [])
+    if case_map_cats.intersection(
+        {
+            "parties",
+            "policies",
+            "claims",
+            "defenses",
+            "allegations",
+            "court_orders",
+        }
+    ):
+        return True
+    doc_types = set(hints.get("document_types") or [])
+    if doc_types.intersection({"order", "policy", "complaint", "answer"}):
+        return True
+    return False
+
+
+def _detect_retrieval_boilerplate(text):
+    """
+    Classify stamp / service / caption-shell pages.
+
+    Returns (kind, strength) where strength is in [0, 1].
+    """
+    hay = normalize_retrieval_text(text)
+    if not hay:
+        return None, 0.0
+
+    hits = []
+    for pattern in RETRIEVAL_BOILERPLATE_PATTERNS:
+        if re.search(pattern, hay):
+            hits.append(pattern)
+
+    if not hits:
+        return None, 0.0
+
+    kind = "procedural_boilerplate"
+    if any("affidavit of service" in h for h in hits) or "affixing to" in hay:
+        kind = "affidavit_of_service"
+    elif any("admission of service" in h for h in hits):
+        kind = "admission_of_service"
+    elif sum(
+        1
+        for h in hits
+        if "nyscef" in h or "county clerk" in h or "received nyscef" in h
+    ) >= 2:
+        kind = "stamp_only"
+    elif "supreme court of the state of new york" in hay and len(hay) < 500:
+        kind = "caption_only"
+
+    # Strength scales with marker density but stays conservative (<= 1).
+    strength = min(1.0, 0.35 + (0.2 * len(hits)))
+    if kind in {"affidavit_of_service", "admission_of_service", "stamp_only"}:
+        strength = min(1.0, strength + 0.15)
+    return kind, strength
 
 
 def make_canonical_result_id(nyscef_document_number, page_number, segment_id=None):
@@ -2910,17 +3147,26 @@ def map_retrieval_classifications(
     return sorted(set(flags), key=lambda item: order.get(item, 99))
 
 
-def _retrieval_excerpt(text, phrase=None, tokens=None, radius=RETRIEVAL_EXCERPT_RADIUS):
+def _retrieval_excerpt(
+    text,
+    phrase=None,
+    tokens=None,
+    phrases=None,
+    radius=RETRIEVAL_EXCERPT_RADIUS,
+):
     raw = text or ""
     cleaned = clean_text(raw)
     if not cleaned:
         return ""
     hay = normalize_retrieval_text(cleaned)
     anchor = None
-    if phrase and phrase in hay:
-        anchor = hay.find(phrase)
-    elif tokens:
-        for token in tokens:
+    # Prefer multiword legal phrases, then full query, then distinctive tokens.
+    for candidate in list(phrases or []) + ([phrase] if phrase else []):
+        if candidate and candidate in hay:
+            anchor = hay.find(candidate)
+            break
+    if anchor is None and tokens:
+        for token in _distinctive_retrieval_tokens(tokens) + list(tokens):
             pos = hay.find(token)
             if pos >= 0:
                 anchor = pos
@@ -3094,22 +3340,77 @@ def _case_map_signals_by_page(case_map, page_lookup):
     return signals
 
 
-def _lexical_component_scores(text, phrase, tokens):
+def _lexical_component_scores(text, phrase, tokens, phrases=None):
     hay = normalize_retrieval_text(text)
-    if not hay or (not phrase and not tokens):
+    known_phrases, support_phrases, all_phrases = _phrase_lists(phrases)
+    if not hay or (not phrase and not tokens and not all_phrases):
         return {
             "exact_phrase": 0.0,
             "token_coverage": 0.0,
             "matched_tokens": [],
+            "matched_phrases": [],
         }
 
     exact = 0.0
+    matched_phrases = []
     if phrase and phrase in hay:
-        # Length-normalized: long pages do not earn extra phrase credit.
+        # Full normalized query hit: length-normalized (binary, not page-length).
         exact = 1.0
+        matched_phrases.append(phrase)
+    else:
+        # Known legal phrases dominate; incidental support bigrams are weaker.
+        # Additional known hits add a small bonus so void ab initio + WHEREFORE
+        # outranks a page that only echoes declaratory relief / wherefore clause.
+        best = 0.0
+        known_hits = 0
+        for candidate in known_phrases:
+            if candidate and candidate in hay:
+                matched_phrases.append(candidate)
+                known_hits += 1
+                parts = max(1, len(candidate.split()))
+                if parts >= 3:
+                    local = 0.88
+                elif parts == 2:
+                    local = 0.70
+                else:
+                    local = 0.55
+                if local > best:
+                    best = local
+        support_best = 0.0
+        for candidate in support_phrases:
+            if candidate and candidate in hay:
+                matched_phrases.append(candidate)
+                parts = max(1, len(candidate.split()))
+                local = 0.34 if parts >= 2 else 0.22
+                if local > support_best:
+                    support_best = local
+        if known_hits:
+            exact = min(1.0, best + (0.12 * (known_hits - 1)))
+        else:
+            exact = support_best
 
     matched = []
-    if tokens:
+    distinctive = _distinctive_retrieval_tokens(tokens)
+    # Tokens that only appear inside an unmatched query legal phrase should not
+    # earn full scattered coverage (prevents void + initio without the phrase).
+    phrase_locked_tokens = set()
+    for candidate in known_phrases:
+        if candidate and candidate not in hay:
+            for part in candidate.split():
+                if part in distinctive or len(part) <= 2:
+                    phrase_locked_tokens.add(part)
+
+    if distinctive:
+        weighted_hits = 0.0
+        for token in distinctive:
+            if token in hay:
+                matched.append(token)
+                if token in phrase_locked_tokens:
+                    weighted_hits += 0.25
+                else:
+                    weighted_hits += 1.0
+        coverage = weighted_hits / float(len(distinctive))
+    elif tokens:
         for token in tokens:
             if token in hay:
                 matched.append(token)
@@ -3119,9 +3420,65 @@ def _lexical_component_scores(text, phrase, tokens):
 
     return {
         "exact_phrase": exact,
-        "token_coverage": coverage,
+        "token_coverage": min(1.0, coverage),
         "matched_tokens": matched,
+        "matched_phrases": matched_phrases,
     }
+
+
+def _excerpt_query_grounding(excerpt, tokens, phrases=None):
+    """
+    Ratio of distinctive query signal present in the returned excerpt.
+
+    Used to gate case-map / relationship elevation so metadata-only pages do
+    not outrank strongly grounded excerpts.
+    """
+    hay = normalize_retrieval_text(excerpt)
+    if not hay:
+        return 0.0
+
+    _known, _support, phrase_list = _phrase_lists(phrases)
+    distinctive = _distinctive_retrieval_tokens(tokens)
+    if not distinctive and not phrase_list:
+        return 0.0
+
+    hits = 0.0
+    total = 0.0
+    for candidate in phrase_list:
+        total += 1.5
+        if candidate and candidate in hay:
+            hits += 1.5
+    for token in distinctive:
+        total += 1.0
+        if token in hay:
+            hits += 1.0
+    if total <= 0:
+        return 0.0
+    return min(1.0, hits / total)
+
+
+def _boilerplate_penalty_component(
+    text,
+    *,
+    normalized_query,
+    tokens,
+    hints,
+):
+    """
+    Conservative demotion for stamp/service/caption shells on substantive
+    queries. Procedural/service/discovery queries keep full retrieval.
+    """
+    if _query_seeks_procedural_service(normalized_query, tokens, hints):
+        return 0.0, None
+    if not _query_seeks_substantive_content(normalized_query, tokens, hints):
+        return 0.0, None
+
+    kind, strength = _detect_retrieval_boilerplate(text)
+    if not kind or strength <= 0:
+        return 0.0, None
+    return _round_retrieval_score(
+        strength * RETRIEVAL_WEIGHTS["boilerplate_penalty"]
+    ), kind
 
 
 def _metadata_component_score(document_type, hints):
@@ -3262,10 +3619,12 @@ def _score_page_candidate(
     tokens,
     hints,
     case_map_signals,
+    phrases=None,
 ):
     page = entry["page"]
     text = page.get("text") or ""
-    lex = _lexical_component_scores(text, phrase, tokens)
+    _known_phrases, _support_phrases, phrase_list = _phrase_lists(phrases)
+    lex = _lexical_component_scores(text, phrase, tokens, phrases=phrases)
     metadata = _metadata_component_score(entry["document_type"], hints)
     exhibit_score, segment = _exhibit_component_score(
         entry.get("segment"), hints, phrase, tokens
@@ -3273,6 +3632,39 @@ def _score_page_candidate(
     page_signals = case_map_signals.get(page.get("page_id")) or []
     case_map_score, relationship_score, best_node, map_explanations = (
         _case_map_component_scores(page_signals, phrase, tokens, hints)
+    )
+
+    excerpt = _retrieval_excerpt(
+        text, phrase, tokens, phrases=phrase_list
+    )
+    grounding = _excerpt_query_grounding(excerpt, tokens, phrases=phrases)
+    # Require meaningful excerpt/query grounding before case-map or relationship
+    # boosts can materially elevate a result. Weakly grounded pages keep a
+    # residual signal so filters can still surface them, but they cannot outrank
+    # strongly grounded pages via metadata linkage alone.
+    if grounding >= RETRIEVAL_CASE_MAP_GROUNDING_THRESHOLD:
+        case_map_gate = 1.0
+        relationship_gate = 1.0
+        grounding_note = None
+    elif grounding > 0:
+        case_map_gate = 0.25 * (grounding / RETRIEVAL_CASE_MAP_GROUNDING_THRESHOLD)
+        relationship_gate = case_map_gate
+        grounding_note = (
+            f"case-map boost gated by weak excerpt grounding ({grounding:.3f})"
+        )
+    else:
+        case_map_gate = 0.05
+        relationship_gate = 0.05
+        grounding_note = "case-map boost gated: no excerpt query grounding"
+
+    gated_case_map = case_map_score * case_map_gate
+    gated_relationship = relationship_score * relationship_gate
+
+    penalty_value, boilerplate_kind = _boilerplate_penalty_component(
+        text,
+        normalized_query=phrase,
+        tokens=tokens,
+        hints=hints,
     )
 
     components = {
@@ -3285,17 +3677,26 @@ def _score_page_candidate(
         "metadata": _round_retrieval_score(metadata * RETRIEVAL_WEIGHTS["metadata"]),
         "exhibit": _round_retrieval_score(exhibit_score * RETRIEVAL_WEIGHTS["exhibit"]),
         "case_map": _round_retrieval_score(
-            case_map_score * RETRIEVAL_WEIGHTS["case_map"]
+            gated_case_map * RETRIEVAL_WEIGHTS["case_map"]
         ),
         "relationship": _round_retrieval_score(
-            relationship_score * RETRIEVAL_WEIGHTS["relationship"]
+            gated_relationship * RETRIEVAL_WEIGHTS["relationship"]
         ),
+        "boilerplate_penalty": _round_retrieval_score(-penalty_value)
+        if penalty_value
+        else 0.0,
     }
     total = _round_retrieval_score(sum(components.values()))
 
     explanation = []
     if lex["exact_phrase"]:
-        explanation.append("exact phrase match on page text")
+        if lex.get("matched_phrases"):
+            explanation.append(
+                "exact phrase match: "
+                + ", ".join(lex["matched_phrases"][:4])
+            )
+        else:
+            explanation.append("exact phrase match on page text")
     if lex["matched_tokens"]:
         explanation.append(
             "token matches: " + ", ".join(lex["matched_tokens"][:12])
@@ -3307,12 +3708,23 @@ def _score_page_candidate(
             f"exhibit segment {segment.get('exhibit_label') or segment.get('segment_id')}"
         )
     explanation.extend(map_explanations[:4])
+    if grounding_note and (case_map_score > 0 or relationship_score > 0):
+        explanation.append(grounding_note)
+    if penalty_value and boilerplate_kind:
+        explanation.append(
+            f"boilerplate penalty ({boilerplate_kind}: -{penalty_value})"
+        )
 
     assertion_kind = None
     requires_review = False
     is_review_candidate = False
     linkage = None
-    if best_node and (case_map_score > 0 or relationship_score > 0 or lex["exact_phrase"] or lex["token_coverage"]):
+    if best_node and (
+        gated_case_map > 0
+        or gated_relationship > 0
+        or lex["exact_phrase"]
+        or lex["token_coverage"]
+    ):
         assertion_kind = best_node.get("assertion_kind")
         requires_review = bool(best_node.get("requires_review"))
         is_review_candidate = bool(best_node.get("is_review_candidate"))
@@ -3383,7 +3795,7 @@ def _score_page_candidate(
         "source_filename": entry["filename"],
         "document_type": entry["document_type"],
         "exhibit_segment": exhibit_payload,
-        "excerpt": _retrieval_excerpt(text, phrase, tokens),
+        "excerpt": excerpt,
         "component_scores": components,
         "score": total,
         "ranking_explanation": explanation,
@@ -3391,6 +3803,7 @@ def _score_page_candidate(
         "classifications": classifications,
         "assertion_kind": assertion_kind or "unknown",
         "matched_tokens": list(lex["matched_tokens"]),
+        "excerpt_grounding": _round_retrieval_score(grounding),
     }
 
 
@@ -3643,6 +4056,7 @@ def retrieve_canonical_records(
     """
     prepared = prepare_documents_for_canonical_retrieval(documents)
     phrase, tokens = tokenize_retrieval_query(query)
+    phrases = _extract_retrieval_phrases(phrase, tokens)
     hints = _detect_query_category_hints(phrase, tokens)
 
     active_case_map = case_map
@@ -3667,7 +4081,7 @@ def retrieve_canonical_records(
         ),
     ):
         candidate = _score_page_candidate(
-            entry, phrase, tokens, hints, case_map_signals
+            entry, phrase, tokens, hints, case_map_signals, phrases=phrases
         )
         # Require some evidence signal: lexical and/or case-map/exhibit/metadata.
         if candidate["score"] <= 0 and not candidate["matched_tokens"]:
@@ -3736,6 +4150,7 @@ def retrieve_canonical_records(
             "duplicate_count": duplicate_count,
             "rejected_invalid_citations": rejected_invalid,
             "query_hints": hints,
+            "query_phrases": list((_phrase_lists(phrases))[2]),
             "weights": dict(RETRIEVAL_WEIGHTS),
             "case_map_used": bool(active_case_map and any(
                 active_case_map.get(collection)
@@ -3743,8 +4158,9 @@ def retrieve_canonical_records(
             )),
             "page_corpus_size": len(page_lookup),
             "scoring": (
-                "hybrid lexical (exact phrase + token coverage) + metadata/"
-                "category + exhibit + case-map/relationship; no vector DB"
+                "hybrid lexical (exact/multiword phrase + distinctive token "
+                "coverage) + metadata/category + exhibit + grounding-gated "
+                "case-map/relationship - boilerplate penalty; no vector DB"
             ),
         }
         payload["diagnostics"] = diagnostics

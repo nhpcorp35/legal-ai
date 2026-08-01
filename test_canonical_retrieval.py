@@ -393,6 +393,351 @@ class CanonicalRetrievalResultShapeTests(unittest.TestCase):
         self.assertTrue(required.issubset(result.keys()))
         for flag in result["classifications"]:
             self.assertIn(flag, mb.RETRIEVAL_CLASSIFICATIONS)
+        self.assertIn("boilerplate_penalty", result["component_scores"])
+
+
+class CanonicalRetrievalBenchmarkRefinementTests(unittest.TestCase):
+    """Regression coverage derived from Case-00 diagnostic failure modes."""
+
+    def test_excerpt_grounded_page_outranks_case_map_only_boost(self):
+        grounded = mb.normalize_document(
+            _doc(
+                101,
+                "complaint",
+                [
+                    "FIRST CAUSE OF ACTION for breach of contract against Acme. "
+                    "Plaintiff seeks damages for unpaid premium payment obligations."
+                ],
+            ),
+            include_exhibit_segments=True,
+        )
+        # Case-map-linked stamp page: party name appears only in clerk stamp
+        # noise; excerpt should not be strongly query-grounded for relief terms.
+        stamp = mb.normalize_document(
+            _doc(
+                102,
+                "other",
+                [
+                    "FILED: QUEENS COUNTY CLERK 02/25/2022 10:00 AM "
+                    "INDEX NO. 704218/2022 NYSCEF DOC. NO. 1 "
+                    "RECEIVED NYSCEF: 02/25/2022 "
+                    "Acme Holdings LLC listed on stamp header only."
+                ],
+            ),
+            include_exhibit_segments=True,
+        )
+        docs = [grounded, stamp]
+        case_map = mb.build_case_map_from_documents(docs)
+        result = mb.retrieve_canonical_records(
+            docs,
+            "cause of action for breach of contract premium payment",
+            case_map=case_map,
+            top_k=5,
+        )
+        self.assertTrue(result["results"])
+        self.assertEqual(result["results"][0]["nyscef_document_number"], 101)
+        top = result["results"][0]
+        self.assertGreater(top.get("excerpt_grounding", 0), 0.2)
+        stamp_hits = [
+            r for r in result["results"] if r["nyscef_document_number"] == 102
+        ]
+        if stamp_hits:
+            self.assertLess(stamp_hits[0]["score"], top["score"])
+            # Gated or residual case-map must not dominate without grounding.
+            self.assertLessEqual(
+                stamp_hits[0]["component_scores"]["case_map"],
+                top["component_scores"]["case_map"]
+                + top["component_scores"]["exact_phrase"]
+                + top["component_scores"]["token_coverage"],
+            )
+
+    def test_stamp_service_boilerplate_demoted_for_substantive_query(self):
+        caption = mb.normalize_document(
+            _doc(
+                201,
+                "complaint",
+                [
+                    "SUPREME COURT OF THE STATE OF NEW YORK COUNTY OF QUEENS\n"
+                    "Certain Interested Underwriters at Lloyd's London, Plaintiff, "
+                    "against Triborough Construction Services, Inc., Defendant. "
+                    "Plaintiff alleges coverage obligations under the Policies."
+                ],
+            ),
+            include_exhibit_segments=True,
+        )
+        service = mb.normalize_document(
+            _doc(
+                202,
+                "affirmation",
+                [
+                    "AFFIDAVIT OF SERVICE. Deponent served Certain Interested "
+                    "Underwriters at Lloyd's London papers by AFFIXING TO DOOR "
+                    "of the actual place of business within the state. "
+                    "FILED: QUEENS COUNTY CLERK NYSCEF DOC. NO. 6 RECEIVED NYSCEF."
+                ],
+            ),
+            include_exhibit_segments=True,
+        )
+        docs = [caption, service]
+        case_map = mb.build_case_map_from_documents(docs)
+        result = mb.retrieve_canonical_records(
+            docs,
+            "Which pages identify Certain Interested Underwriters at Lloyd's "
+            "London as plaintiff in the caption?",
+            case_map=case_map,
+            top_k=5,
+        )
+        self.assertTrue(result["results"])
+        self.assertEqual(result["results"][0]["nyscef_document_number"], 201)
+        service_hit = next(
+            r for r in result["results"] if r["nyscef_document_number"] == 202
+        )
+        self.assertLess(service_hit["component_scores"]["boilerplate_penalty"], 0)
+        self.assertTrue(
+            any("boilerplate penalty" in str(x) for x in service_hit["ranking_explanation"])
+        )
+        self.assertLess(service_hit["score"], result["results"][0]["score"])
+
+    def test_service_document_retrievable_for_service_query(self):
+        service = mb.normalize_document(
+            _doc(
+                301,
+                "affirmation",
+                [
+                    "AFFIDAVIT OF SERVICE. Deponent served the summons and complaint "
+                    "upon Triborough Construction Services, Inc. by personal delivery."
+                ],
+            ),
+            include_exhibit_segments=True,
+        )
+        complaint = mb.normalize_document(
+            _doc(
+                302,
+                "complaint",
+                ["Plaintiff alleges breach without discussing service of process."],
+            ),
+            include_exhibit_segments=True,
+        )
+        docs = [service, complaint]
+        result = mb.retrieve_canonical_records(
+            docs,
+            "affidavit of service upon Triborough Construction Services",
+            case_map=mb.build_case_map_from_documents(docs),
+            top_k=5,
+        )
+        self.assertTrue(
+            any(r["nyscef_document_number"] == 301 for r in result["results"])
+        )
+        service_hit = next(r for r in result["results"] if r["nyscef_document_number"] == 301)
+        self.assertEqual(service_hit["component_scores"]["boilerplate_penalty"], 0.0)
+        self.assertEqual(result["results"][0]["nyscef_document_number"], 301)
+
+    def test_exact_legal_phrase_outranks_scattered_tokens(self):
+        phrase_page = mb.normalize_document(
+            _doc(
+                401,
+                "complaint",
+                [
+                    "WHEREFORE, Plaintiff demands judgment declaring that the "
+                    "Policies are void ab initio and of no force or effect."
+                ],
+            ),
+            include_exhibit_segments=True,
+        )
+        scattered = mb.normalize_document(
+            _doc(
+                402,
+                "memo",
+                [
+                    "The word void appears here. Separately the letters ab are used. "
+                    "Later initio is mentioned. Policies are discussed without the "
+                    "WHEREFORE clause requesting declaratory relief."
+                ],
+            ),
+            include_exhibit_segments=True,
+        )
+        docs = [phrase_page, scattered]
+        result = mb.retrieve_canonical_records(
+            docs,
+            "What declaratory relief is requested in the WHEREFORE clause "
+            "regarding whether the Policies are void ab initio?",
+            case_map=mb.build_case_map_from_documents(docs),
+            top_k=5,
+        )
+        self.assertEqual(result["results"][0]["nyscef_document_number"], 401)
+        top = result["results"][0]
+        self.assertGreater(top["component_scores"]["exact_phrase"], 0)
+        self.assertTrue(
+            "wherefore" in top["excerpt"].lower()
+            or "void ab initio" in top["excerpt"].lower()
+        )
+        scattered_hit = next(
+            r for r in result["results"] if r["nyscef_document_number"] == 402
+        )
+        self.assertGreater(top["score"], scattered_hit["score"])
+        self.assertGreater(
+            top["component_scores"]["exact_phrase"],
+            scattered_hit["component_scores"]["exact_phrase"],
+        )
+
+    def test_order_policy_relief_query_behavior(self):
+        order = mb.normalize_document(
+            _doc(
+                501,
+                "order",
+                ["Decision and Order. IT IS HEREBY ORDERED that the motion is denied."],
+            ),
+            include_exhibit_segments=True,
+        )
+        policy = mb.normalize_document(
+            _doc(
+                502,
+                "exhibit",
+                ["Policy No. POL-998877 provides coverage for the insured."],
+            ),
+            include_exhibit_segments=True,
+        )
+        relief = mb.normalize_document(
+            _doc(
+                503,
+                "complaint",
+                [
+                    "WHEREFORE plaintiff requests declaratory relief that Policy "
+                    "POL-998877 is void ab initio."
+                ],
+            ),
+            include_exhibit_segments=True,
+        )
+        stamp = mb.normalize_document(
+            _doc(
+                504,
+                "other",
+                [
+                    "FILED: QUEENS COUNTY CLERK 01/01/2024 INDEX NO. 1 "
+                    "NYSCEF DOC. NO. 9 RECEIVED NYSCEF: 01/01/2024"
+                ],
+            ),
+            include_exhibit_segments=True,
+        )
+        docs = [order, policy, relief, stamp]
+        case_map = mb.build_case_map_from_documents(docs)
+
+        order_result = mb.retrieve_canonical_records(
+            docs,
+            "Decision and Order or language stating it is hereby ordered",
+            case_map=case_map,
+            top_k=5,
+        )
+        self.assertEqual(order_result["results"][0]["nyscef_document_number"], 501)
+        self.assertIn(
+            "hereby ordered", order_result["results"][0]["excerpt"].lower()
+        )
+
+        policy_result = mb.retrieve_canonical_records(
+            docs, "Policy No. POL-998877 coverage", case_map=case_map, top_k=5
+        )
+        self.assertTrue(
+            any("POL-998877" in (r["excerpt"] or "") for r in policy_result["results"])
+        )
+
+        relief_result = mb.retrieve_canonical_records(
+            docs,
+            "WHEREFORE declaratory relief void ab initio",
+            case_map=case_map,
+            top_k=5,
+        )
+        self.assertEqual(relief_result["results"][0]["nyscef_document_number"], 503)
+        stamp_hits = [
+            r
+            for r in relief_result["results"]
+            if r["nyscef_document_number"] == 504
+        ]
+        if stamp_hits:
+            self.assertLess(
+                stamp_hits[0]["score"], relief_result["results"][0]["score"]
+            )
+
+    def test_exhibit_chronology_discovery_regression(self):
+        docs = _corpus()
+        discovery = mb.normalize_document(
+            _doc(
+                601,
+                "other",
+                [
+                    "DEMAND FOR DISCOVERY AND INSPECTION. Produce all insurance "
+                    "policies, certificates of insurance, and coverage-related documents."
+                ],
+            ),
+            include_exhibit_segments=True,
+        )
+        chronology = mb.normalize_document(
+            _doc(
+                602,
+                "other",
+                [
+                    "Index No. 704218/2022 Date Filed February 25, 2022 "
+                    "caption timeline entry for the commencement of the action."
+                ],
+            ),
+            include_exhibit_segments=True,
+        )
+        docs = list(docs) + [discovery, chronology]
+        case_map = mb.build_case_map_from_documents(docs)
+
+        exhibit = mb.retrieve_canonical_records(
+            docs, "Exhibit A lease agreement", case_map=case_map, top_k=10
+        )
+        self.assertTrue(
+            any(
+                (r.get("exhibit_segment") or {}).get("exhibit_label") == "A"
+                for r in exhibit["results"]
+            )
+        )
+
+        chrono = mb.retrieve_canonical_records(
+            docs,
+            "Index No. 704218/2022 filing date or Date Filed February 25, 2022",
+            case_map=case_map,
+            top_k=10,
+        )
+        self.assertTrue(
+            any(r["nyscef_document_number"] == 602 for r in chrono["results"])
+        )
+
+        disc = mb.retrieve_canonical_records(
+            docs,
+            "discovery demands seeking insurance policies or certificates of insurance",
+            case_map=case_map,
+            top_k=10,
+        )
+        self.assertTrue(
+            any(r["nyscef_document_number"] == 601 for r in disc["results"])
+        )
+        disc_hit = next(r for r in disc["results"] if r["nyscef_document_number"] == 601)
+        self.assertEqual(disc_hit["component_scores"]["boilerplate_penalty"], 0.0)
+
+    def test_deterministic_and_citation_valid_after_refinement(self):
+        docs = _corpus()
+        case_map = mb.build_case_map_from_documents(docs)
+        a = mb.retrieve_canonical_records_benchmark(
+            docs,
+            "WHEREFORE void ab initio Policy No. POL-998877",
+            case_map=case_map,
+            top_k=10,
+        )
+        b = mb.retrieve_canonical_records(
+            docs,
+            "WHEREFORE void ab initio Policy No. POL-998877",
+            case_map=case_map,
+            top_k=10,
+        )
+        self.assertTrue(mb.ranking_is_deterministic(a["results"], b["results"]))
+        self.assertEqual(a["metrics"]["citation_validity"], 1.0)
+        self.assertEqual(a["metrics"]["unsupported_result_rate"], 0.0)
+        self.assertEqual(a["metrics"]["duplicate_hit_rate"], 0.0)
+        for result in a["results"]:
+            self.assertIn("boilerplate_penalty", result["component_scores"])
+            self.assertIsInstance(result["ranking_explanation"], list)
 
 
 if __name__ == "__main__":
