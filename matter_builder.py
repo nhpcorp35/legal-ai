@@ -8,6 +8,7 @@ import re
 from engines.issue_engine import build_issue_analysis
 from engines.entity_graph_engine import build_entity_graph
 from engines.contradiction_index import build_contradiction_analysis
+from engines.drafting_engine import build_retrieval_grounded_qa
 
 try:
     from pypdf import PdfReader
@@ -4208,8 +4209,19 @@ def retrieve_canonical_records_benchmark(
     return primary
 
 
-def build_attorney_work_product(summary, documents):
-    return {
+def build_attorney_work_product(
+    summary,
+    documents,
+    *,
+    retrieval_grounded_qa=None,
+):
+    """
+    Attorney work-product container.
+
+    Default shape is unchanged (empty drafting stubs). When a retrieval-grounded
+    Q&A payload is supplied (opt-in), it is nested under retrieval_grounded_qa.
+    """
+    product = {
         "plaintiff_core_arguments": [],
         "defense_core_arguments": [],
         "strongest_authorities": [],
@@ -4219,6 +4231,9 @@ def build_attorney_work_product(summary, documents):
         "draft_generation": {},
         "citation_exhibit_engine": {},
     }
+    if retrieval_grounded_qa is not None:
+        product["retrieval_grounded_qa"] = retrieval_grounded_qa
+    return product
 
 
 def build_matter_summary(documents):
@@ -4266,6 +4281,8 @@ def get_matter(
     include_case_map=False,
     canonical_retrieval_query=None,
     canonical_retrieval_options=None,
+    attorney_qa_question=None,
+    attorney_qa_options=None,
 ):
     resolved_folder = resolve_matter_folder(matter_folder)
     folder_documents = read_matter_folder(
@@ -4291,7 +4308,10 @@ def get_matter(
 
     # Case-map / canonical retrieval need exhibit segment provenance when pages
     # exist. Opt-in only: default consumers still omit segments and case_map.
-    retrieval_opt_in = canonical_retrieval_query is not None
+    # Attorney Q&A is also opt-in and implies retrieval over the same question
+    # when canonical_retrieval_query is not separately provided.
+    qa_opt_in = attorney_qa_question is not None
+    retrieval_opt_in = canonical_retrieval_query is not None or qa_opt_in
     segment_opt_in = (
         include_exhibit_segments or include_case_map or retrieval_opt_in
     )
@@ -4333,14 +4353,49 @@ def get_matter(
             result["case_map"] = case_map
 
     if retrieval_opt_in:
+        retrieval_query = (
+            canonical_retrieval_query
+            if canonical_retrieval_query is not None
+            else attorney_qa_question
+        )
         options = dict(canonical_retrieval_options or {})
         options.setdefault("include_diagnostics", True)
         options.setdefault("build_case_map_if_missing", False)
         result["canonical_retrieval"] = retrieve_canonical_records(
             normalized_documents,
-            canonical_retrieval_query,
+            retrieval_query,
             case_map=case_map,
             **options,
         )
+
+    if qa_opt_in:
+        qa_options = dict(attorney_qa_options or {})
+        model_call = qa_options.pop("model_call", None)
+        allowed_sources = qa_options.pop("allowed_sources", None)
+        exhibit_context = qa_options.pop("exhibit_context", None)
+        qa_payload = build_retrieval_grounded_qa(
+            summary,
+            normalized_documents,
+            question=attorney_qa_question,
+            retrieval=result.get("canonical_retrieval"),
+            case_map=case_map,
+            exhibit_context=exhibit_context,
+            allowed_sources=allowed_sources,
+            model_call=model_call,
+        )
+        # Re-seal attorney work product with the opt-in Q&A nested inside.
+        work_product = build_attorney_work_product(
+            summary,
+            normalized_documents,
+            retrieval_grounded_qa=qa_payload,
+        )
+        summary["attorney_work_product"] = work_product
+        result["summary"] = summary
+        result["attorney_work_product"] = work_product
+        result["draft_generation"] = work_product.get("draft_generation", {})
+        result["citation_exhibit_engine"] = work_product.get(
+            "citation_exhibit_engine", {}
+        )
+        result["retrieval_grounded_qa"] = qa_payload
 
     return result
