@@ -75,11 +75,127 @@ COURT_HEADER_WORDS = {
 
 
 OCR_MIN_TEXT_LENGTH = 120
-OCR_MAX_PAGES = 8
+
+# Used only for deterministic page_id formatting when no verified NYSCEF
+# document number is available. Never invents a provenance document number.
+UNKNOWN_NYSCEF_DOCUMENT_NUMBER = 0
+
+# Benchmark folder naming from scraper/utils.js buildFilename:
+#   {caseNumber}__{docType}__{date}.pdf
+# That pattern carries an index/case id, not a NYSCEF document number.
+BENCHMARK_FILENAME_RE = re.compile(
+    r"^\d{4}-\d+__.+__\d{4}-\d{2}-\d{2}$",
+    re.IGNORECASE,
+)
+
+NYSCEF_FILENAME_PATTERNS = [
+    re.compile(
+        r"(?i)\bnyscef[\s_-]*(?:doc(?:ument)?[\s_-]*)?(?:no\.?[\s_-]*)?(\d+)(?!\d)"
+    ),
+    re.compile(r"(?i)\bdoc(?:ument)?[\s_-]*no\.?[\s_-]*(\d+)(?!\d)"),
+    re.compile(r"(?i)^(?:nyscef|doc)[\s_-]*(\d+)(?!\d)"),
+]
 
 
 def clean_text(value):
     return " ".join(str(value or "").split()).strip()
+
+
+def coerce_nyscef_document_number(value):
+    if value is None or value == "":
+        return None
+
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_nyscef_document_number_from_filename(filename):
+    """
+    Conservatively parse a NYSCEF document number from a filename.
+
+    Matches explicit NYSCEF / Doc No patterns only. Does not treat the
+    repository benchmark pattern {case}__{type}__{date}.pdf as a document
+    number.
+    """
+    name = Path(str(filename or "")).name
+    stem = Path(name).stem
+
+    if not stem:
+        return None
+
+    if BENCHMARK_FILENAME_RE.match(stem):
+        return None
+
+    if "__" in stem and re.match(r"^\d{4}-\d+", stem):
+        return None
+
+    for pattern in NYSCEF_FILENAME_PATTERNS:
+        match = pattern.search(stem)
+        if match:
+            return coerce_nyscef_document_number(match.group(1))
+
+    return None
+
+
+def resolve_nyscef_document_number(document=None, filename=None):
+    """Prefer explicit metadata; otherwise try a conservative filename parse."""
+    if isinstance(document, dict) and "nyscef_document_number" in document:
+        return coerce_nyscef_document_number(document.get("nyscef_document_number"))
+
+    name = filename
+    if name is None and isinstance(document, dict):
+        name = document.get("filename") or document.get("name") or document.get("title")
+
+    return parse_nyscef_document_number_from_filename(name)
+
+
+def make_page_id(nyscef_document_number, page_number):
+    doc_no = coerce_nyscef_document_number(nyscef_document_number)
+    if doc_no is None:
+        doc_no = UNKNOWN_NYSCEF_DOCUMENT_NUMBER
+
+    return f"nyscef-{doc_no:03d}-page-{int(page_number):04d}"
+
+
+def build_page_record(page_number, text, extraction_method, nyscef_document_number=None):
+    return {
+        "page_number": int(page_number),
+        "page_id": make_page_id(nyscef_document_number, page_number),
+        "text": text if isinstance(text, str) else str(text or ""),
+        "extraction_method": extraction_method,
+    }
+
+
+def aggregate_page_text(pages):
+    return clean_text("\n".join(
+        (page.get("text") or "") if isinstance(page, dict) else ""
+        for page in (pages or [])
+    ))
+
+
+def normalize_page_record(page, nyscef_document_number=None):
+    page = page or {}
+    page_number = int(page.get("page_number") or 0)
+    raw_text = page.get("text", "")
+    text = clean_text(raw_text) if raw_text else ""
+
+    extraction_method = page.get("extraction_method")
+    if extraction_method not in {"native", "ocr", "empty"}:
+        if text:
+            extraction_method = "native"
+        else:
+            extraction_method = "empty"
+
+    page_id = page.get("page_id") or make_page_id(nyscef_document_number, page_number)
+
+    return {
+        "page_number": page_number,
+        "page_id": page_id,
+        "text": text,
+        "extraction_method": extraction_method,
+    }
 
 
 def clean_case_party(value):
@@ -146,85 +262,139 @@ def extract_txt(path):
         return ""
 
 
-def extract_pdf_native(path):
+def extract_pdf_native_pages(path):
+    """Return one native text entry per physical PDF page (including empties)."""
     if PdfReader is None:
-        return ""
+        return []
 
     try:
         reader = PdfReader(str(path))
         pages = []
 
-        for page in reader.pages[:20]:
+        for index, page in enumerate(reader.pages, start=1):
             text = page.extract_text() or ""
+            pages.append({"page_number": index, "text": text})
 
-            if text.strip():
-                pages.append(text)
-
-        extracted = "\n".join(pages)
-
-        print(f"PDF NATIVE [{path.name}] chars={len(extracted)}")
-
-        return extracted
+        print(f"PDF NATIVE [{Path(path).name}] pages={len(pages)}")
+        return pages
 
     except Exception as e:
-        print(f"PDF NATIVE FAILED [{path.name}] -> {e}")
-        return ""
+        print(f"PDF NATIVE FAILED [{Path(path).name}] -> {e}")
+        return []
 
 
-def extract_pdf_ocr(path):
+def extract_pdf_ocr_page(path, page_number):
+    """OCR a single physical PDF page. No document-wide page cap."""
     if pytesseract is None or convert_from_path is None:
-        print(f"OCR UNAVAILABLE [{path.name}]")
+        print(f"OCR UNAVAILABLE [{Path(path).name}]")
         return ""
 
     try:
-        print(f"OCR START [{path.name}]")
+        print(f"OCR PAGE {page_number} [{Path(path).name}]")
 
         images = convert_from_path(
             str(path),
             dpi=250,
-            first_page=1,
-            last_page=OCR_MAX_PAGES,
+            first_page=page_number,
+            last_page=page_number,
         )
 
-        pages = []
+        if not images:
+            return ""
 
-        for index, image in enumerate(images, start=1):
-            print(f"OCR PAGE {index} [{path.name}]")
-
-            text = pytesseract.image_to_string(image)
-
-            if text.strip():
-                pages.append(text)
-
-        extracted = "\n".join(pages)
-
-        print(f"OCR COMPLETE [{path.name}] chars={len(extracted)}")
-
-        return extracted
+        return pytesseract.image_to_string(images[0]) or ""
 
     except Exception as e:
-        print(f"OCR FAILED [{path.name}] -> {e}")
+        print(f"OCR FAILED [{Path(path).name} page={page_number}] -> {e}")
         return ""
 
 
+def extract_pdf_document(path, nyscef_document_number=None):
+    """
+    Extract every physical PDF page with per-page OCR fallback.
+
+    Returns text, pages, page_count, and nyscef_document_number.
+    """
+    path = Path(path)
+
+    if nyscef_document_number is None:
+        nyscef_document_number = parse_nyscef_document_number_from_filename(path.name)
+    else:
+        nyscef_document_number = coerce_nyscef_document_number(nyscef_document_number)
+
+    native_pages = extract_pdf_native_pages(path)
+    page_records = []
+
+    for native in native_pages:
+        page_number = native["page_number"]
+        native_text = clean_text(native.get("text"))
+
+        if len(native_text) >= OCR_MIN_TEXT_LENGTH:
+            page_records.append(
+                build_page_record(
+                    page_number,
+                    native_text,
+                    "native",
+                    nyscef_document_number,
+                )
+            )
+            continue
+
+        print(
+            f"PDF LOW TEXT [{path.name}] page={page_number} "
+            f"chars={len(native_text)} attempting OCR fallback"
+        )
+
+        ocr_text = clean_text(extract_pdf_ocr_page(path, page_number))
+
+        if len(ocr_text) > len(native_text):
+            print(f"PDF OCR SUCCESS [{path.name}] page={page_number}")
+            page_records.append(
+                build_page_record(
+                    page_number,
+                    ocr_text,
+                    "ocr",
+                    nyscef_document_number,
+                )
+            )
+        elif native_text:
+            page_records.append(
+                build_page_record(
+                    page_number,
+                    native_text,
+                    "native",
+                    nyscef_document_number,
+                )
+            )
+        else:
+            page_records.append(
+                build_page_record(
+                    page_number,
+                    "",
+                    "empty",
+                    nyscef_document_number,
+                )
+            )
+
+    aggregate = aggregate_page_text(page_records)
+
+    if page_records:
+        print(
+            f"PDF OK [{path.name}] pages={len(page_records)} "
+            f"chars={len(aggregate)}"
+        )
+
+    return {
+        "text": aggregate,
+        "pages": page_records,
+        "page_count": len(page_records),
+        "nyscef_document_number": nyscef_document_number,
+    }
+
+
 def extract_pdf(path):
-    native_text = clean_text(extract_pdf_native(path))
-
-    if len(native_text) >= OCR_MIN_TEXT_LENGTH:
-        print(f"PDF OK [{path.name}] using native extraction")
-        return native_text
-
-    print(f"PDF LOW TEXT [{path.name}] attempting OCR fallback")
-
-    ocr_text = clean_text(extract_pdf_ocr(path))
-
-    if len(ocr_text) > len(native_text):
-        print(f"PDF OCR SUCCESS [{path.name}]")
-        return ocr_text
-
-    print(f"PDF OCR NO IMPROVEMENT [{path.name}]")
-
-    return native_text
+    """Backward-compatible aggregate text extraction."""
+    return extract_pdf_document(path)["text"]
 
 
 def extract_docx(path):
@@ -309,29 +479,38 @@ def read_matter_folder(folder_path=DEFAULT_MATTER_FOLDER):
 
         doc_type = classify_by_filename(path.name)
 
-        extracted_text = clean_text(extract_text(path))
+        document = {
+            "filename": path.name,
+            "title": path.name,
+            "path": str(path),
+            "relative_path": str(path.relative_to(folder)) if folder.exists() else str(path),
+            "folder": str(path.parent),
+            "type": doc_type,
+            "category": doc_type,
+            "group": DOCUMENT_GROUPS.get(doc_type, DOCUMENT_GROUPS["other"]),
+            "source": "folder",
+        }
+
+        if path.suffix.lower() == ".pdf":
+            pdf_doc = extract_pdf_document(path)
+            extracted_text = pdf_doc["text"]
+            document["text"] = extracted_text
+            document["preview"] = extracted_text[:800]
+            document["pages"] = pdf_doc["pages"]
+            document["page_count"] = pdf_doc["page_count"]
+            document["nyscef_document_number"] = pdf_doc["nyscef_document_number"]
+        else:
+            extracted_text = clean_text(extract_text(path))
+            document["text"] = extracted_text
+            document["preview"] = extracted_text[:800]
 
         print(
             f"CLASSIFIED [{path.name}] "
             f"type={doc_type} "
-            f"chars={len(extracted_text)}"
+            f"chars={len(document['text'])}"
         )
 
-        documents.append(
-            {
-                "filename": path.name,
-                "title": path.name,
-                "path": str(path),
-                "relative_path": str(path.relative_to(folder)) if folder.exists() else str(path),
-                "folder": str(path.parent),
-                "type": doc_type,
-                "category": doc_type,
-                "group": DOCUMENT_GROUPS.get(doc_type, DOCUMENT_GROUPS["other"]),
-                "text": extracted_text,
-                "preview": extracted_text[:800],
-                "source": "folder",
-            }
-        )
+        documents.append(document)
 
     return documents
 
@@ -429,9 +608,40 @@ def normalize_document(document):
 
     group = DOCUMENT_GROUPS.get(doc_type, DOCUMENT_GROUPS["other"])
 
-    text = clean_text(document.get("text", ""))
+    nyscef_document_number = None
+    if "nyscef_document_number" in document:
+        nyscef_document_number = coerce_nyscef_document_number(
+            document.get("nyscef_document_number")
+        )
+    else:
+        nyscef_document_number = parse_nyscef_document_number_from_filename(filename)
 
-    return {
+    pages = None
+    page_count = None
+
+    if "pages" in document and document.get("pages") is not None:
+        pages = [
+            normalize_page_record(page, nyscef_document_number)
+            for page in document.get("pages") or []
+        ]
+        page_count = document.get("page_count")
+        if page_count is None:
+            page_count = len(pages)
+        else:
+            try:
+                page_count = int(page_count)
+            except (TypeError, ValueError):
+                page_count = len(pages)
+        text = aggregate_page_text(pages)
+    else:
+        text = clean_text(document.get("text", ""))
+        if "page_count" in document and document.get("page_count") is not None:
+            try:
+                page_count = int(document.get("page_count"))
+            except (TypeError, ValueError):
+                page_count = None
+
+    normalized = {
         "filename": filename,
         "title": clean_text(document.get("title") or filename),
         "path": document.get("path", ""),
@@ -453,6 +663,17 @@ def normalize_document(document):
         "rule": document.get("rule", ""),
         "case_id": document.get("case_id", ""),
     }
+
+    if "nyscef_document_number" in document or nyscef_document_number is not None:
+        normalized["nyscef_document_number"] = nyscef_document_number
+
+    if pages is not None:
+        normalized["pages"] = pages
+
+    if page_count is not None:
+        normalized["page_count"] = page_count
+
+    return normalized
 
 
 def group_documents(documents):
