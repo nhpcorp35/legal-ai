@@ -241,8 +241,11 @@ class LegacyCompatibilityTests(unittest.TestCase):
             txt_path = folder / "note.txt"
             txt_path.write_text("legacy note")
 
-            with patch.object(mb, "extract_pdf_ocr_page", return_value=""):
-                docs = mb.read_matter_folder(folder)
+            with patch.dict(mb.os.environ, {}, clear=False):
+                mb.os.environ.pop(mb.LEGALAI_MATTER_FOLDER_ENV, None)
+                mb.os.environ.pop(mb.LEGALAI_NYSCEF_INVENTORY_PATH_ENV, None)
+                with patch.object(mb, "extract_pdf_ocr_page", return_value=""):
+                    docs = mb.read_matter_folder(folder)
 
             by_name = {d["filename"]: d for d in docs}
             self.assertEqual(by_name[pdf_path.name]["nyscef_document_number"], 12)

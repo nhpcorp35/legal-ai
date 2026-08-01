@@ -2788,6 +2788,1010 @@ def build_case_map_from_documents(documents, *, validate=True):
     return case_map
 
 
+# ---------------------------------------------------------------------------
+# Canonical record retrieval (opt-in)
+#
+# Page- and exhibit-segment–granular search over matter documents with
+# case-map signals. Returns evidence citations only — never legal conclusions.
+# Default get_matter / normalize_document consumers are unchanged unless the
+# caller opts in via retrieve_canonical_records / canonical_retrieval_query.
+# No external vector DB: hybrid lexical + metadata + relationship ranking only.
+# ---------------------------------------------------------------------------
+
+RETRIEVAL_CLASSIFICATIONS = (
+    "review_candidate",
+    "allegation",
+    "legal_position",
+    "inference",
+    "unknown",
+    "verified_fact",
+)
+
+ASSERTION_KIND_TO_CLASSIFICATION = {
+    "verified_record_fact": "verified_fact",
+    "party_allegation": "allegation",
+    "legal_position": "legal_position",
+    "inference": "inference",
+    "unknown": "unknown",
+}
+
+RETRIEVAL_EXCERPT_RADIUS = 110
+RETRIEVAL_EXCERPT_MAX = 240
+RETRIEVAL_SCORE_PRECISION = 6
+
+# Transparent hybrid weights (sum intentionally > 1; absolute scale is relative).
+RETRIEVAL_WEIGHTS = {
+    "exact_phrase": 40.0,
+    "token_coverage": 28.0,
+    "metadata": 12.0,
+    "exhibit": 10.0,
+    "case_map": 14.0,
+    "relationship": 8.0,
+}
+
+CATEGORY_QUERY_HINTS = {
+    "motion": ("motion", "notice of motion", "summary judgment", "movant"),
+    "order": ("order", "ordered", "decision and order", "it is hereby ordered"),
+    "complaint": ("complaint", "cause of action", "plaintiff alleges"),
+    "answer": ("answer", "affirmative defense", "defendant alleges"),
+    "exhibit": ("exhibit",),
+    "affirmation": ("affirmation", "affidavit"),
+    "opposition": ("opposition", "opposes"),
+    "reply": ("reply",),
+    "memo": ("memorandum", "memo of law"),
+    "policy": ("policy", "coverage", "insured"),
+}
+
+CASE_MAP_CATEGORY_HINTS = {
+    "parties": ("party", "plaintiff", "defendant", "petitioner", "respondent"),
+    "policies": ("policy", "coverage", "insured"),
+    "claims": ("cause of action", "claim", "breach"),
+    "defenses": ("defense", "affirmative defense"),
+    "allegations": ("alleges", "alleges that", "contends", "avers"),
+    "evidence": ("exhibit", "evidence", "annexed"),
+    "timeline_events": ("dated", "on or about", "occurred"),
+    "motions": ("motion", "notice of motion", "summary judgment"),
+    "court_orders": ("order", "ordered", "decision and order"),
+}
+
+
+def normalize_retrieval_text(value):
+    """Lowercase whitespace-normalized text for deterministic matching."""
+    return " ".join(str(value or "").lower().split()).strip()
+
+
+def tokenize_retrieval_query(query):
+    """
+    Split a query into normalized phrase + tokens.
+
+    Preserves multi-digit/date-like tokens and letter-number exhibit labels.
+    """
+    normalized = normalize_retrieval_text(query)
+    if not normalized:
+        return "", []
+    tokens = re.findall(r"[a-z0-9][a-z0-9'/-]*", normalized)
+    # Drop ultra-common closed-class noise while keeping legal/factual terms.
+    stop = {
+        "a", "an", "the", "of", "or", "and", "to", "in", "on", "for", "by",
+        "is", "was", "are", "be", "as", "at", "that", "this", "with", "from",
+    }
+    tokens = [t for t in tokens if t not in stop]
+    return normalized, tokens
+
+
+def make_canonical_result_id(nyscef_document_number, page_number, segment_id=None):
+    doc_no = coerce_nyscef_document_number(nyscef_document_number)
+    if doc_no is None:
+        doc_no = UNKNOWN_NYSCEF_DOCUMENT_NUMBER
+    base = f"cret-nyscef-{doc_no:03d}-page-{int(page_number):04d}"
+    if segment_id:
+        return f"{base}-{slugify_case_map_key(segment_id)}"
+    return base
+
+
+def map_retrieval_classifications(
+    assertion_kind=None,
+    *,
+    requires_review=False,
+    is_review_candidate=False,
+):
+    """Map case-map assertion kinds onto explicit retrieval classifications."""
+    flags = []
+    mapped = ASSERTION_KIND_TO_CLASSIFICATION.get(assertion_kind)
+    if mapped:
+        flags.append(mapped)
+    elif assertion_kind is None:
+        flags.append("unknown")
+    if requires_review or is_review_candidate:
+        if "review_candidate" not in flags:
+            flags.append("review_candidate")
+    # Stable order matching RETRIEVAL_CLASSIFICATIONS.
+    order = {name: index for index, name in enumerate(RETRIEVAL_CLASSIFICATIONS)}
+    return sorted(set(flags), key=lambda item: order.get(item, 99))
+
+
+def _retrieval_excerpt(text, phrase=None, tokens=None, radius=RETRIEVAL_EXCERPT_RADIUS):
+    raw = text or ""
+    cleaned = clean_text(raw)
+    if not cleaned:
+        return ""
+    hay = normalize_retrieval_text(cleaned)
+    anchor = None
+    if phrase and phrase in hay:
+        anchor = hay.find(phrase)
+    elif tokens:
+        for token in tokens:
+            pos = hay.find(token)
+            if pos >= 0:
+                anchor = pos
+                break
+    if anchor is None:
+        return cleaned[:RETRIEVAL_EXCERPT_MAX]
+    # Map roughly from normalized hay offset back onto cleaned text length.
+    ratio = len(cleaned) / max(len(hay), 1)
+    center = int(anchor * ratio)
+    start = max(0, center - radius)
+    end = min(len(cleaned), center + radius)
+    return clean_text(cleaned[start:end])[:RETRIEVAL_EXCERPT_MAX]
+
+
+def _round_retrieval_score(value):
+    return round(float(value), RETRIEVAL_SCORE_PRECISION)
+
+
+def _detect_query_category_hints(normalized_query, tokens):
+    doc_types = set()
+    case_map_categories = set()
+    joined = normalized_query or ""
+    token_set = set(tokens or [])
+    for doc_type, hints in CATEGORY_QUERY_HINTS.items():
+        for hint in hints:
+            if " " in hint:
+                if hint in joined:
+                    doc_types.add(doc_type)
+            elif hint in token_set or hint in joined:
+                doc_types.add(doc_type)
+    for category, hints in CASE_MAP_CATEGORY_HINTS.items():
+        for hint in hints:
+            if " " in hint:
+                if hint in joined:
+                    case_map_categories.add(category)
+            elif hint in token_set or hint in joined:
+                case_map_categories.add(category)
+    exhibit_labels = set()
+    for match in re.finditer(
+        r"\bexhibit\s+([a-z0-9]{1,4})\b", joined, flags=re.IGNORECASE
+    ):
+        exhibit_labels.add(normalize_exhibit_label(match.group(1)))
+    return {
+        "document_types": sorted(doc_types),
+        "case_map_categories": sorted(case_map_categories),
+        "exhibit_labels": sorted(label for label in exhibit_labels if label),
+    }
+
+
+def _segment_for_page(document, page_id):
+    for segment in document.get("exhibit_segments") or []:
+        if page_id in (segment.get("page_ids") or []):
+            return segment
+    return None
+
+
+def _page_lookup_from_documents(documents):
+    by_page_id = {}
+    for document in documents or []:
+        nyscef = coerce_nyscef_document_number(document.get("nyscef_document_number"))
+        filename = document.get("filename") or document.get("title") or ""
+        doc_type = document.get("type") or document.get("category") or "other"
+        for page in _iter_document_pages(document):
+            page_id = page.get("page_id")
+            if not page_id:
+                continue
+            by_page_id[page_id] = {
+                "page": page,
+                "document": document,
+                "nyscef_document_number": nyscef,
+                "filename": filename,
+                "document_type": doc_type,
+                "segment": _segment_for_page(document, page_id),
+            }
+    return by_page_id
+
+
+def _review_candidate_ids(case_map):
+    ids = set()
+    for entry in (case_map or {}).get("review_candidates") or []:
+        if isinstance(entry, dict):
+            node_id = entry.get("id")
+            if node_id:
+                ids.add(node_id)
+        elif isinstance(entry, str):
+            ids.add(entry)
+    return ids
+
+
+def _case_map_signals_by_page(case_map, page_lookup):
+    """
+    Index case-map nodes/relationships onto underlying page_ids.
+
+    Nodes without resolvable page support are skipped (never returned alone).
+    """
+    signals = {}
+    if not case_map:
+        return signals
+
+    review_ids = _review_candidate_ids(case_map)
+
+    def _touch(page_id, payload):
+        if page_id not in page_lookup:
+            return
+        bucket = signals.setdefault(page_id, [])
+        bucket.append(payload)
+
+    for collection, node in iter_case_map_nodes(case_map):
+        supports = node.get("record_support") or []
+        if not supports:
+            continue
+        page_ids = []
+        for support in supports:
+            page_ids.extend(support.get("page_ids") or [])
+        if not page_ids:
+            continue
+        payload = {
+            "kind": "node",
+            "node_id": node.get("id"),
+            "node_type": node.get("node_type"),
+            "collection": collection,
+            "label": node.get("label") or "",
+            "assertion_kind": node.get("assertion_kind"),
+            "requires_review": bool(node.get("requires_review")),
+            "is_review_candidate": node.get("id") in review_ids,
+            "conflicts_with": list(node.get("conflicts_with") or []),
+            "search_text": normalize_retrieval_text(
+                " ".join(
+                    [
+                        node.get("label") or "",
+                        node.get("node_type") or "",
+                        collection,
+                        " ".join(node.get("extraction_signals") or []),
+                    ]
+                )
+            ),
+        }
+        for page_id in page_ids:
+            _touch(page_id, payload)
+
+    for rel in case_map.get("relationships") or []:
+        supports = rel.get("record_support") or []
+        page_ids = []
+        for support in supports:
+            page_ids.extend(support.get("page_ids") or [])
+        if not page_ids:
+            continue
+        payload = {
+            "kind": "relationship",
+            "relationship_id": rel.get("id"),
+            "relation_type": rel.get("relation_type"),
+            "source_id": rel.get("source_id"),
+            "target_id": rel.get("target_id"),
+            "assertion_kind": rel.get("assertion_kind"),
+            "requires_review": bool(rel.get("requires_review")),
+            "is_review_candidate": rel.get("id") in review_ids,
+            "search_text": normalize_retrieval_text(
+                " ".join(
+                    [
+                        rel.get("relation_type") or "",
+                        rel.get("source_id") or "",
+                        rel.get("target_id") or "",
+                        " ".join(rel.get("extraction_signals") or []),
+                    ]
+                )
+            ),
+        }
+        for page_id in page_ids:
+            _touch(page_id, payload)
+
+    return signals
+
+
+def _lexical_component_scores(text, phrase, tokens):
+    hay = normalize_retrieval_text(text)
+    if not hay or (not phrase and not tokens):
+        return {
+            "exact_phrase": 0.0,
+            "token_coverage": 0.0,
+            "matched_tokens": [],
+        }
+
+    exact = 0.0
+    if phrase and phrase in hay:
+        # Length-normalized: long pages do not earn extra phrase credit.
+        exact = 1.0
+
+    matched = []
+    if tokens:
+        for token in tokens:
+            if token in hay:
+                matched.append(token)
+        coverage = len(matched) / float(len(tokens))
+    else:
+        coverage = 0.0
+
+    return {
+        "exact_phrase": exact,
+        "token_coverage": coverage,
+        "matched_tokens": matched,
+    }
+
+
+def _metadata_component_score(document_type, hints):
+    wanted = set(hints.get("document_types") or [])
+    if not wanted:
+        return 0.0
+    if document_type in wanted:
+        return 1.0
+    # Policy language often lives inside complaints/answers/exhibits.
+    if "policy" in wanted and document_type in {"complaint", "answer", "exhibit", "other"}:
+        return 0.45
+    return 0.0
+
+
+def _exhibit_component_score(segment, hints, phrase, tokens):
+    if not segment:
+        return 0.0, None
+    label = normalize_exhibit_label(segment.get("exhibit_label"))
+    score = 0.0
+    if label and label in (hints.get("exhibit_labels") or []):
+        score = 1.0
+    elif label and tokens and label.lower() in tokens:
+        score = 0.7
+    elif segment.get("segment_type") == "exhibit" and (
+        "exhibit" in (phrase or "") or "exhibit" in (tokens or [])
+    ):
+        score = 0.35
+    return score, segment
+
+
+def _case_map_component_scores(signals, phrase, tokens, hints):
+    if not signals:
+        return 0.0, 0.0, None, []
+
+    best_node = None
+    best_node_score = 0.0
+    rel_score = 0.0
+    explanations = []
+
+    wanted_collections = set(hints.get("case_map_categories") or [])
+
+    for signal in signals:
+        search_text = signal.get("search_text") or ""
+        lex = _lexical_component_scores(search_text, phrase, tokens)
+        local = (0.65 * lex["exact_phrase"]) + (0.35 * lex["token_coverage"])
+        if signal.get("kind") == "node":
+            if signal.get("collection") in wanted_collections:
+                local += 0.25
+            if local > best_node_score:
+                best_node_score = local
+                best_node = signal
+            if local > 0:
+                explanations.append(
+                    f"case-map node {signal.get('node_id')} matched ({signal.get('assertion_kind')})"
+                )
+        elif signal.get("kind") == "relationship":
+            local_rel = local
+            if local_rel > rel_score:
+                rel_score = local_rel
+            if local_rel > 0:
+                explanations.append(
+                    f"case-map relationship {signal.get('relationship_id')} matched"
+                )
+
+    return min(best_node_score, 1.0), min(rel_score, 1.0), best_node, explanations
+
+
+def _passes_canonical_filters(candidate, filters):
+    if not filters:
+        return True
+
+    filing = filters.get("nyscef_document_number")
+    if filing is not None:
+        if isinstance(filing, (list, tuple, set)):
+            allowed = {
+                coerce_nyscef_document_number(item) for item in filing
+            }
+            if candidate["nyscef_document_number"] not in allowed:
+                return False
+        else:
+            if candidate["nyscef_document_number"] != coerce_nyscef_document_number(
+                filing
+            ):
+                return False
+
+    doc_type = filters.get("document_type") or filters.get("category")
+    if doc_type:
+        if isinstance(doc_type, (list, tuple, set)):
+            if candidate["document_type"] not in set(doc_type):
+                return False
+        elif candidate["document_type"] != doc_type:
+            return False
+
+    case_map_category = filters.get("case_map_category")
+    if case_map_category:
+        linkage = candidate.get("case_map_linkage") or {}
+        collection = linkage.get("collection")
+        if isinstance(case_map_category, (list, tuple, set)):
+            if collection not in set(case_map_category):
+                return False
+        elif collection != case_map_category:
+            return False
+
+    classification = filters.get("classification")
+    if classification:
+        flags = set(candidate.get("classifications") or [])
+        if isinstance(classification, (list, tuple, set)):
+            if not flags.intersection(set(classification)):
+                return False
+        elif classification not in flags:
+            return False
+
+    exhibit = filters.get("exhibit_segment")
+    if exhibit is not None and exhibit != "":
+        segment = candidate.get("exhibit_segment") or {}
+        label = normalize_exhibit_label(segment.get("exhibit_label"))
+        segment_id = segment.get("segment_id")
+        wanted = str(exhibit).strip()
+        wanted_norm = normalize_retrieval_text(wanted)
+        if wanted_norm.startswith("exhibit "):
+            wanted_label = normalize_exhibit_label(wanted_norm[8:])
+        else:
+            wanted_label = normalize_exhibit_label(wanted)
+        if wanted == segment_id:
+            return True
+        if wanted_label and label and wanted_label == label:
+            return True
+        if wanted and label and wanted == label:
+            return True
+        return False
+
+    return True
+
+
+def _score_page_candidate(
+    entry,
+    phrase,
+    tokens,
+    hints,
+    case_map_signals,
+):
+    page = entry["page"]
+    text = page.get("text") or ""
+    lex = _lexical_component_scores(text, phrase, tokens)
+    metadata = _metadata_component_score(entry["document_type"], hints)
+    exhibit_score, segment = _exhibit_component_score(
+        entry.get("segment"), hints, phrase, tokens
+    )
+    page_signals = case_map_signals.get(page.get("page_id")) or []
+    case_map_score, relationship_score, best_node, map_explanations = (
+        _case_map_component_scores(page_signals, phrase, tokens, hints)
+    )
+
+    components = {
+        "exact_phrase": _round_retrieval_score(
+            lex["exact_phrase"] * RETRIEVAL_WEIGHTS["exact_phrase"]
+        ),
+        "token_coverage": _round_retrieval_score(
+            lex["token_coverage"] * RETRIEVAL_WEIGHTS["token_coverage"]
+        ),
+        "metadata": _round_retrieval_score(metadata * RETRIEVAL_WEIGHTS["metadata"]),
+        "exhibit": _round_retrieval_score(exhibit_score * RETRIEVAL_WEIGHTS["exhibit"]),
+        "case_map": _round_retrieval_score(
+            case_map_score * RETRIEVAL_WEIGHTS["case_map"]
+        ),
+        "relationship": _round_retrieval_score(
+            relationship_score * RETRIEVAL_WEIGHTS["relationship"]
+        ),
+    }
+    total = _round_retrieval_score(sum(components.values()))
+
+    explanation = []
+    if lex["exact_phrase"]:
+        explanation.append("exact phrase match on page text")
+    if lex["matched_tokens"]:
+        explanation.append(
+            "token matches: " + ", ".join(lex["matched_tokens"][:12])
+        )
+    if metadata:
+        explanation.append(f"document type boost ({entry['document_type']})")
+    if exhibit_score and segment:
+        explanation.append(
+            f"exhibit segment {segment.get('exhibit_label') or segment.get('segment_id')}"
+        )
+    explanation.extend(map_explanations[:4])
+
+    assertion_kind = None
+    requires_review = False
+    is_review_candidate = False
+    linkage = None
+    if best_node and (case_map_score > 0 or relationship_score > 0 or lex["exact_phrase"] or lex["token_coverage"]):
+        assertion_kind = best_node.get("assertion_kind")
+        requires_review = bool(best_node.get("requires_review"))
+        is_review_candidate = bool(best_node.get("is_review_candidate"))
+        linkage = {
+            "node_id": best_node.get("node_id"),
+            "node_type": best_node.get("node_type"),
+            "collection": best_node.get("collection"),
+            "label": best_node.get("label"),
+            "assertion_kind": assertion_kind,
+            "conflicts_with": list(best_node.get("conflicts_with") or []),
+        }
+    elif page_signals:
+        # Page is cited by case-map but query did not match node text; still
+        # surface classification from the strongest review-flagged signal.
+        for signal in page_signals:
+            if signal.get("kind") != "node":
+                continue
+            assertion_kind = signal.get("assertion_kind")
+            requires_review = bool(signal.get("requires_review"))
+            is_review_candidate = bool(signal.get("is_review_candidate"))
+            linkage = {
+                "node_id": signal.get("node_id"),
+                "node_type": signal.get("node_type"),
+                "collection": signal.get("collection"),
+                "label": signal.get("label"),
+                "assertion_kind": assertion_kind,
+                "conflicts_with": list(signal.get("conflicts_with") or []),
+            }
+            break
+
+    classifications = map_retrieval_classifications(
+        assertion_kind,
+        requires_review=requires_review,
+        is_review_candidate=is_review_candidate,
+    )
+
+    exhibit_payload = None
+    if segment and segment.get("segment_type") == "exhibit":
+        exhibit_payload = {
+            "segment_id": segment.get("segment_id"),
+            "exhibit_label": segment.get("exhibit_label"),
+            "exhibit_title": segment.get("exhibit_title"),
+            "segment_type": segment.get("segment_type"),
+            "start_page": segment.get("start_page"),
+            "end_page": segment.get("end_page"),
+        }
+    elif segment:
+        exhibit_payload = {
+            "segment_id": segment.get("segment_id"),
+            "exhibit_label": segment.get("exhibit_label"),
+            "exhibit_title": segment.get("exhibit_title"),
+            "segment_type": segment.get("segment_type"),
+            "start_page": segment.get("start_page"),
+            "end_page": segment.get("end_page"),
+        }
+
+    return {
+        "result_id": make_canonical_result_id(
+            entry["nyscef_document_number"],
+            page.get("page_number"),
+            (exhibit_payload or {}).get("segment_id")
+            if exhibit_payload and exhibit_payload.get("segment_type") == "exhibit"
+            else None,
+        ),
+        "page_id": page.get("page_id"),
+        "nyscef_document_number": entry["nyscef_document_number"],
+        "pdf_page": page.get("page_number"),
+        "source_filename": entry["filename"],
+        "document_type": entry["document_type"],
+        "exhibit_segment": exhibit_payload,
+        "excerpt": _retrieval_excerpt(text, phrase, tokens),
+        "component_scores": components,
+        "score": total,
+        "ranking_explanation": explanation,
+        "case_map_linkage": linkage,
+        "classifications": classifications,
+        "assertion_kind": assertion_kind or "unknown",
+        "matched_tokens": list(lex["matched_tokens"]),
+    }
+
+
+def _deduplicate_canonical_hits(candidates):
+    """
+    Collapse overlapping page/segment hits to one result per page_id.
+
+    Distinct page_ids (including conflicting allegation sources) are retained.
+    When merging, keep the higher score and prefer exhibit-segment provenance.
+    """
+    best_by_page = {}
+    duplicate_count = 0
+    for candidate in candidates:
+        page_id = candidate.get("page_id")
+        if not page_id:
+            continue
+        existing = best_by_page.get(page_id)
+        if existing is None:
+            best_by_page[page_id] = candidate
+            continue
+        duplicate_count += 1
+        keep = candidate
+        drop = existing
+        if existing["score"] > candidate["score"]:
+            keep = existing
+            drop = candidate
+        elif existing["score"] == candidate["score"]:
+            # Deterministic tie-break: prefer exhibit segment, then result_id.
+            keep_exhibit = bool(
+                (existing.get("exhibit_segment") or {}).get("segment_type") == "exhibit"
+            )
+            cand_exhibit = bool(
+                (candidate.get("exhibit_segment") or {}).get("segment_type") == "exhibit"
+            )
+            if cand_exhibit and not keep_exhibit:
+                keep = candidate
+                drop = existing
+            elif keep_exhibit == cand_exhibit:
+                if candidate.get("result_id", "") < existing.get("result_id", ""):
+                    keep = candidate
+                    drop = existing
+        # Prefer non-empty exhibit segment metadata from either side.
+        if keep is candidate and (drop.get("exhibit_segment") and not keep.get("exhibit_segment")):
+            keep = dict(keep)
+            keep["exhibit_segment"] = drop["exhibit_segment"]
+            keep["result_id"] = make_canonical_result_id(
+                keep["nyscef_document_number"],
+                keep["pdf_page"],
+                (keep["exhibit_segment"] or {}).get("segment_id")
+                if (keep["exhibit_segment"] or {}).get("segment_type") == "exhibit"
+                else None,
+            )
+        best_by_page[page_id] = keep
+
+    deduped = list(best_by_page.values())
+    deduped.sort(
+        key=lambda item: (
+            -item["score"],
+            item.get("nyscef_document_number") is None,
+            item.get("nyscef_document_number") if item.get("nyscef_document_number") is not None else 10**9,
+            item.get("pdf_page") or 0,
+            item.get("result_id") or "",
+        )
+    )
+    return deduped, duplicate_count
+
+
+def _diversify_by_filing(results, *, top_k, filing_penalty=0.18, max_per_filing=None):
+    """
+    Re-rank so a single large filing cannot monopolize the top-k solely by
+    page count. Uses a deterministic greedy penalty on repeated filings.
+    """
+    if top_k <= 0:
+        return []
+
+    selected = []
+    filing_counts = {}
+    remaining = list(results)
+
+    while remaining and len(selected) < top_k:
+        best_index = None
+        best_adjusted = None
+        best_item = None
+        for index, item in enumerate(remaining):
+            filing = item.get("nyscef_document_number")
+            count = filing_counts.get(filing, 0)
+            if max_per_filing is not None and count >= max_per_filing:
+                continue
+            adjusted = _round_retrieval_score(
+                item["score"] * (1.0 / (1.0 + (filing_penalty * count)))
+            )
+            key = (
+                adjusted,
+                # Prefer previously unseen filings on ties to increase coverage.
+                1 if count == 0 else 0,
+                -(item.get("nyscef_document_number") or 0)
+                if item.get("nyscef_document_number") is not None
+                else 0,
+                -(item.get("pdf_page") or 0),
+                item.get("result_id") or "",
+            )
+            if best_adjusted is None or key > best_adjusted:
+                best_adjusted = key
+                best_index = index
+                best_item = item
+        if best_index is None:
+            break
+        chosen = dict(best_item)
+        chosen["diversity_adjusted_score"] = best_adjusted[0]
+        selected.append(chosen)
+        filing = chosen.get("nyscef_document_number")
+        filing_counts[filing] = filing_counts.get(filing, 0) + 1
+        remaining.pop(best_index)
+
+    return selected
+
+
+def validate_canonical_result_citation(result, page_lookup):
+    """Return True when a result cites a known page record."""
+    if not isinstance(result, dict):
+        return False
+    page_id = result.get("page_id")
+    if not page_id or page_id not in page_lookup:
+        return False
+    if result.get("nyscef_document_number") is None:
+        return False
+    if result.get("pdf_page") is None:
+        return False
+    expected = page_lookup[page_id]
+    if expected["nyscef_document_number"] != result.get("nyscef_document_number"):
+        return False
+    if expected["page"].get("page_number") != result.get("pdf_page"):
+        return False
+    return True
+
+
+def compute_canonical_retrieval_metrics(payload, documents=None):
+    """
+    Benchmark-friendly diagnostics. Does not claim relevance/recall.
+
+    Metrics:
+      - citation_validity
+      - unique_filing_coverage
+      - duplicate_hit_rate
+      - deterministic_ranking (caller may set via compare)
+      - unsupported_result_rate
+      - top_k_evidence
+    """
+    results = list((payload or {}).get("results") or [])
+    diagnostics = (payload or {}).get("diagnostics") or {}
+    page_lookup = _page_lookup_from_documents(documents or [])
+
+    valid = 0
+    unsupported = 0
+    filings = []
+    for result in results:
+        ok = validate_canonical_result_citation(result, page_lookup) if page_lookup else bool(
+            result.get("page_id") and result.get("nyscef_document_number") is not None
+        )
+        if ok:
+            valid += 1
+        else:
+            unsupported += 1
+        filing = result.get("nyscef_document_number")
+        if filing is not None and filing not in filings:
+            filings.append(filing)
+
+    total = len(results)
+    pre_dedup = diagnostics.get("pre_dedup_count")
+    duplicate_count = diagnostics.get("duplicate_count", 0)
+    if pre_dedup:
+        duplicate_hit_rate = duplicate_count / float(pre_dedup)
+    else:
+        duplicate_hit_rate = 0.0
+
+    top_k_evidence = [
+        {
+            "result_id": item.get("result_id"),
+            "page_id": item.get("page_id"),
+            "nyscef_document_number": item.get("nyscef_document_number"),
+            "excerpt": item.get("excerpt"),
+            "score": item.get("score"),
+            "classifications": item.get("classifications"),
+            "case_map_linkage": item.get("case_map_linkage"),
+        }
+        for item in results
+    ]
+
+    return {
+        "citation_validity": (valid / float(total)) if total else 1.0,
+        "unique_filing_coverage": len(filings),
+        "unique_filings": filings,
+        "duplicate_hit_rate": _round_retrieval_score(duplicate_hit_rate),
+        "unsupported_result_rate": (unsupported / float(total)) if total else 0.0,
+        "result_count": total,
+        "top_k_evidence": top_k_evidence,
+        "notes": (
+            "Metrics are structural/diagnostic only; relevance and recall "
+            "require gold labels and are not claimed here."
+        ),
+    }
+
+
+def ranking_is_deterministic(results_a, results_b):
+    """Compare two ranked result lists for identical order and scores."""
+    if len(results_a) != len(results_b):
+        return False
+    for left, right in zip(results_a, results_b):
+        if left.get("result_id") != right.get("result_id"):
+            return False
+        if left.get("score") != right.get("score"):
+            return False
+        if left.get("page_id") != right.get("page_id"):
+            return False
+    return True
+
+
+def prepare_documents_for_canonical_retrieval(documents, *, include_exhibit_segments=True):
+    """Normalize documents with exhibit segments for retrieval (opt-in helper)."""
+    prepared = []
+    for document in documents or []:
+        prepared.append(
+            normalize_document(
+                document,
+                include_exhibit_segments=include_exhibit_segments,
+            )
+        )
+    return prepared
+
+
+def retrieve_canonical_records(
+    documents,
+    query,
+    *,
+    case_map=None,
+    filters=None,
+    top_k=20,
+    include_diagnostics=False,
+    build_case_map_if_missing=True,
+    filing_diversity_penalty=0.18,
+    max_per_filing=None,
+    min_score=0.0,
+):
+    """
+    Opt-in provenance-preserving retrieval over canonical page records.
+
+    Searches at page and exhibit-segment granularity while retaining parent
+    NYSCEF filing provenance. Case-map nodes contribute ranking signals but
+    every returned hit is page-backed evidence (not a legal conclusion).
+    """
+    prepared = prepare_documents_for_canonical_retrieval(documents)
+    phrase, tokens = tokenize_retrieval_query(query)
+    hints = _detect_query_category_hints(phrase, tokens)
+
+    active_case_map = case_map
+    if active_case_map is None and build_case_map_if_missing:
+        active_case_map = build_case_map_from_documents(prepared)
+    elif active_case_map is None:
+        active_case_map = empty_case_map()
+
+    page_lookup = _page_lookup_from_documents(prepared)
+    case_map_signals = _case_map_signals_by_page(active_case_map, page_lookup)
+
+    raw_candidates = []
+    for page_id, entry in sorted(
+        page_lookup.items(),
+        key=lambda item: (
+            item[1]["nyscef_document_number"] is None,
+            item[1]["nyscef_document_number"]
+            if item[1]["nyscef_document_number"] is not None
+            else 10**9,
+            item[1]["page"].get("page_number") or 0,
+            item[0],
+        ),
+    ):
+        candidate = _score_page_candidate(
+            entry, phrase, tokens, hints, case_map_signals
+        )
+        # Require some evidence signal: lexical and/or case-map/exhibit/metadata.
+        if candidate["score"] <= 0 and not candidate["matched_tokens"]:
+            # Keep pure metadata-less empty pages out.
+            if not (
+                candidate["component_scores"]["exact_phrase"]
+                or candidate["component_scores"]["token_coverage"]
+                or candidate["component_scores"]["exhibit"]
+                or candidate["component_scores"]["case_map"]
+                or candidate["component_scores"]["relationship"]
+            ):
+                continue
+        if candidate["score"] < min_score:
+            continue
+        if not _passes_canonical_filters(candidate, filters):
+            continue
+        # Never emit a case-map assertion without underlying record citation.
+        if candidate.get("case_map_linkage") and not candidate.get("page_id"):
+            continue
+        raw_candidates.append(candidate)
+
+    deduped, duplicate_count = _deduplicate_canonical_hits(raw_candidates)
+    ranked = _diversify_by_filing(
+        deduped,
+        top_k=top_k,
+        filing_penalty=filing_diversity_penalty,
+        max_per_filing=max_per_filing,
+    )
+
+    # Final deterministic ordering key after diversity selection.
+    ranked.sort(
+        key=lambda item: (
+            -item.get("diversity_adjusted_score", item["score"]),
+            -item["score"],
+            item.get("nyscef_document_number") is None,
+            item.get("nyscef_document_number")
+            if item.get("nyscef_document_number") is not None
+            else 10**9,
+            item.get("pdf_page") or 0,
+            item.get("result_id") or "",
+        )
+    )
+
+    # Drop any unsupported / invalid citations defensively.
+    validated = []
+    rejected_invalid = 0
+    for item in ranked:
+        if validate_canonical_result_citation(item, page_lookup):
+            validated.append(item)
+        else:
+            rejected_invalid += 1
+
+    payload = {
+        "query": query,
+        "normalized_query": phrase,
+        "tokens": tokens,
+        "filters": filters or {},
+        "results": validated,
+        "result_count": len(validated),
+    }
+
+    if include_diagnostics:
+        diagnostics = {
+            "pre_dedup_count": len(raw_candidates),
+            "post_dedup_count": len(deduped),
+            "duplicate_count": duplicate_count,
+            "rejected_invalid_citations": rejected_invalid,
+            "query_hints": hints,
+            "weights": dict(RETRIEVAL_WEIGHTS),
+            "case_map_used": bool(active_case_map and any(
+                active_case_map.get(collection)
+                for collection in CASE_MAP_NODE_COLLECTIONS
+            )),
+            "page_corpus_size": len(page_lookup),
+            "scoring": (
+                "hybrid lexical (exact phrase + token coverage) + metadata/"
+                "category + exhibit + case-map/relationship; no vector DB"
+            ),
+        }
+        payload["diagnostics"] = diagnostics
+        payload["metrics"] = compute_canonical_retrieval_metrics(payload, prepared)
+
+    return payload
+
+
+def retrieve_canonical_records_benchmark(
+    documents,
+    query,
+    *,
+    case_map=None,
+    filters=None,
+    top_k=20,
+    **kwargs,
+):
+    """
+    Benchmark-friendly API: ranked results plus diagnostics/metrics.
+
+    Does not claim relevance or recall without gold labels.
+    """
+    primary = retrieve_canonical_records(
+        documents,
+        query,
+        case_map=case_map,
+        filters=filters,
+        top_k=top_k,
+        include_diagnostics=True,
+        **kwargs,
+    )
+    secondary = retrieve_canonical_records(
+        documents,
+        query,
+        case_map=case_map,
+        filters=filters,
+        top_k=top_k,
+        include_diagnostics=False,
+        **kwargs,
+    )
+    primary["metrics"]["deterministic_ranking"] = ranking_is_deterministic(
+        primary.get("results") or [],
+        secondary.get("results") or [],
+    )
+    return primary
+
+
 def build_attorney_work_product(summary, documents):
     return {
         "plaintiff_core_arguments": [],
@@ -2844,6 +3848,8 @@ def get_matter(
     *,
     include_exhibit_segments=False,
     include_case_map=False,
+    canonical_retrieval_query=None,
+    canonical_retrieval_options=None,
 ):
     resolved_folder = resolve_matter_folder(matter_folder)
     folder_documents = read_matter_folder(
@@ -2867,9 +3873,12 @@ def get_matter(
     all_documents.extend(folder_documents)
     all_documents.extend(documents)
 
-    # Case-map construction needs exhibit segment provenance when pages exist.
-    # Opt-in only: default consumers still omit segments and case_map.
-    segment_opt_in = include_exhibit_segments or include_case_map
+    # Case-map / canonical retrieval need exhibit segment provenance when pages
+    # exist. Opt-in only: default consumers still omit segments and case_map.
+    retrieval_opt_in = canonical_retrieval_query is not None
+    segment_opt_in = (
+        include_exhibit_segments or include_case_map or retrieval_opt_in
+    )
 
     normalized_documents = [
         normalize_document(
@@ -2901,7 +3910,21 @@ def get_matter(
         "citation_exhibit_engine": summary.get("attorney_work_product", {}).get("citation_exhibit_engine", {}),
     }
 
-    if include_case_map:
-        result["case_map"] = build_case_map_from_documents(normalized_documents)
+    case_map = None
+    if include_case_map or retrieval_opt_in:
+        case_map = build_case_map_from_documents(normalized_documents)
+        if include_case_map:
+            result["case_map"] = case_map
+
+    if retrieval_opt_in:
+        options = dict(canonical_retrieval_options or {})
+        options.setdefault("include_diagnostics", True)
+        options.setdefault("build_case_map_if_missing", False)
+        result["canonical_retrieval"] = retrieve_canonical_records(
+            normalized_documents,
+            canonical_retrieval_query,
+            case_map=case_map,
+            **options,
+        )
 
     return result
