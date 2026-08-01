@@ -1,5 +1,8 @@
 # matter_builder.py
 from pathlib import Path
+import hashlib
+import json
+import os
 import re
 
 from engines.issue_engine import build_issue_analysis
@@ -28,6 +31,16 @@ except Exception:
 
 
 DEFAULT_MATTER_FOLDER = Path("matter_docs")
+
+# Configurable corpus / inventory roots (Railway / executor).
+LEGALAI_MATTER_FOLDER_ENV = "LEGALAI_MATTER_FOLDER"
+LEGALAI_NYSCEF_INVENTORY_PATH_ENV = "LEGALAI_NYSCEF_INVENTORY_PATH"
+
+# Safe default inventory path for Case-00 when that corpus is explicitly selected
+# via LEGALAI_NYSCEF_INVENTORY_PATH (or an explicit inventory_path argument).
+CASE_00_TRIBOROUGH_INVENTORY_PATH = Path(
+    "data/case-00-triborough/nyscef_filing_inventory.json"
+)
 
 
 DOCUMENT_GROUPS = {
@@ -149,6 +162,177 @@ def resolve_nyscef_document_number(document=None, filename=None):
         name = document.get("filename") or document.get("name") or document.get("title")
 
     return parse_nyscef_document_number_from_filename(name)
+
+
+def resolve_matter_folder(matter_folder=None):
+    """
+    Resolve the matter/corpus root.
+
+    Precedence: explicit argument > LEGALAI_MATTER_FOLDER > matter_docs.
+    """
+    if matter_folder is not None:
+        return Path(matter_folder)
+
+    env_value = os.environ.get(LEGALAI_MATTER_FOLDER_ENV)
+    if env_value:
+        return Path(env_value)
+
+    return DEFAULT_MATTER_FOLDER
+
+
+def resolve_inventory_path(inventory_path=None):
+    """
+    Resolve an optional NYSCEF filing inventory path.
+
+    Precedence: explicit argument > LEGALAI_NYSCEF_INVENTORY_PATH > None.
+    Unrelated matters stay inventory-free unless configuration selects one.
+    The Case-00 aliases `case-00-triborough` / `case-00` resolve to
+    CASE_00_TRIBOROUGH_INVENTORY_PATH when that corpus is explicitly selected.
+    """
+    if inventory_path is not None:
+        raw = inventory_path
+    else:
+        raw = os.environ.get(LEGALAI_NYSCEF_INVENTORY_PATH_ENV)
+
+    if raw is None or raw == "":
+        return None
+
+    text = str(raw).strip()
+    if text in {"case-00-triborough", "case-00", "triborough"}:
+        return CASE_00_TRIBOROUGH_INVENTORY_PATH
+
+    return Path(text)
+
+
+def load_nyscef_filing_inventory(inventory_path):
+    """Load a canonical NYSCEF filing inventory JSON, or None if unavailable."""
+    if not inventory_path:
+        return None
+
+    path = Path(inventory_path)
+    if not path.is_file():
+        print(f"INVENTORY MISSING [{path}]")
+        return None
+
+    try:
+        payload = json.loads(path.read_text())
+    except Exception as exc:
+        print(f"INVENTORY LOAD FAILED [{path}] -> {exc}")
+        return None
+
+    if not isinstance(payload, dict):
+        print(f"INVENTORY INVALID [{path}] expected object")
+        return None
+
+    filings = payload.get("filings")
+    if not isinstance(filings, list):
+        print(f"INVENTORY INVALID [{path}] missing filings list")
+        return None
+
+    return payload
+
+
+def index_inventory_by_filename(inventory):
+    """Map exact filename -> list of filing records."""
+    index = {}
+    if not inventory:
+        return index
+
+    for entry in inventory.get("filings") or []:
+        if not isinstance(entry, dict):
+            continue
+        filename = entry.get("filename")
+        if not filename:
+            continue
+        index.setdefault(str(filename), []).append(entry)
+
+    return index
+
+
+def compute_file_sha256(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def lookup_inventory_provenance(path, inventory_by_filename):
+    """
+    Match a physical file to inventory by exact filename and verify SHA-256.
+
+    Never invents a NYSCEF number from an unverified filename. Returns a
+    provenance dict with status:
+      verified | non_canonical_duplicate | hash_mismatch | missing | ambiguous
+    """
+    path = Path(path)
+    filename = path.name
+    entries = list(inventory_by_filename.get(filename) or [])
+
+    if not entries:
+        return {
+            "status": "missing",
+            "nyscef_document_number": None,
+            "ingest_canonical": None,
+            "inventory_entry": None,
+        }
+
+    if len(entries) > 1:
+        return {
+            "status": "ambiguous",
+            "nyscef_document_number": None,
+            "ingest_canonical": None,
+            "inventory_entry": None,
+        }
+
+    entry = entries[0]
+    expected_sha = str(entry.get("sha256") or "").lower()
+    try:
+        actual_sha = compute_file_sha256(path).lower()
+    except Exception as exc:
+        print(f"INVENTORY HASH FAILED [{filename}] -> {exc}")
+        return {
+            "status": "hash_mismatch",
+            "nyscef_document_number": None,
+            "ingest_canonical": bool(entry.get("ingest_canonical"))
+            if "ingest_canonical" in entry
+            else None,
+            "inventory_entry": entry,
+        }
+
+    if not expected_sha or actual_sha != expected_sha:
+        print(
+            f"INVENTORY HASH MISMATCH [{filename}] "
+            f"expected={expected_sha or '—'} actual={actual_sha}"
+        )
+        return {
+            "status": "hash_mismatch",
+            "nyscef_document_number": None,
+            "ingest_canonical": bool(entry.get("ingest_canonical"))
+            if "ingest_canonical" in entry
+            else None,
+            "inventory_entry": entry,
+        }
+
+    ingest_canonical = bool(entry.get("ingest_canonical", True))
+    if not ingest_canonical:
+        return {
+            "status": "non_canonical_duplicate",
+            "nyscef_document_number": coerce_nyscef_document_number(
+                entry.get("nyscef_document_number")
+            ),
+            "ingest_canonical": False,
+            "inventory_entry": entry,
+        }
+
+    return {
+        "status": "verified",
+        "nyscef_document_number": coerce_nyscef_document_number(
+            entry.get("nyscef_document_number")
+        ),
+        "ingest_canonical": True,
+        "inventory_entry": entry,
+    }
 
 
 def make_page_id(nyscef_document_number, page_number):
@@ -309,7 +493,7 @@ def extract_pdf_ocr_page(path, page_number):
         return ""
 
 
-def extract_pdf_document(path, nyscef_document_number=None):
+def extract_pdf_document(path, nyscef_document_number=None, *, allow_filename_nyscef_parse=True):
     """
     Extract every physical PDF page with per-page OCR fallback.
 
@@ -317,10 +501,12 @@ def extract_pdf_document(path, nyscef_document_number=None):
     """
     path = Path(path)
 
-    if nyscef_document_number is None:
+    if nyscef_document_number is not None:
+        nyscef_document_number = coerce_nyscef_document_number(nyscef_document_number)
+    elif allow_filename_nyscef_parse:
         nyscef_document_number = parse_nyscef_document_number_from_filename(path.name)
     else:
-        nyscef_document_number = coerce_nyscef_document_number(nyscef_document_number)
+        nyscef_document_number = None
 
     native_pages = extract_pdf_native_pages(path)
     page_records = []
@@ -468,14 +654,42 @@ def find_matter_files(folder_path):
     return sorted(files, key=lambda p: str(p).lower())
 
 
-def read_matter_folder(folder_path=DEFAULT_MATTER_FOLDER):
-    folder = Path(folder_path)
+def read_matter_folder(folder_path=None, inventory_path=None):
+    folder = resolve_matter_folder(folder_path)
     files = find_matter_files(folder)
+
+    resolved_inventory_path = resolve_inventory_path(inventory_path)
+    inventory = load_nyscef_filing_inventory(resolved_inventory_path)
+    inventory_by_filename = index_inventory_by_filename(inventory)
+    inventory_enabled = inventory is not None
 
     documents = []
 
     for path in files:
         print(f"\nPROCESSING FILE: {path.name}")
+
+        provenance = None
+        verified_nyscef = None
+
+        if inventory_enabled and path.suffix.lower() == ".pdf":
+            provenance = lookup_inventory_provenance(path, inventory_by_filename)
+
+            if provenance["status"] == "non_canonical_duplicate":
+                print(
+                    f"INVENTORY SKIP DUPLICATE [{path.name}] "
+                    f"nyscef={provenance.get('nyscef_document_number')}"
+                )
+                continue
+
+            if provenance["status"] == "verified":
+                verified_nyscef = provenance.get("nyscef_document_number")
+            else:
+                print(
+                    f"INVENTORY PROVENANCE UNRESOLVED [{path.name}] "
+                    f"status={provenance['status']}"
+                )
+                # Do not assign a guessed NYSCEF number from the filename.
+                verified_nyscef = None
 
         doc_type = classify_by_filename(path.name)
 
@@ -492,13 +706,30 @@ def read_matter_folder(folder_path=DEFAULT_MATTER_FOLDER):
         }
 
         if path.suffix.lower() == ".pdf":
-            pdf_doc = extract_pdf_document(path)
+            if inventory_enabled:
+                if provenance is not None and provenance.get("status") == "verified":
+                    pdf_doc = extract_pdf_document(
+                        path,
+                        nyscef_document_number=verified_nyscef,
+                    )
+                else:
+                    # Inventory configured but provenance unresolved: never guess.
+                    pdf_doc = extract_pdf_document(
+                        path,
+                        nyscef_document_number=None,
+                        allow_filename_nyscef_parse=False,
+                    )
+            else:
+                pdf_doc = extract_pdf_document(path)
+
             extracted_text = pdf_doc["text"]
             document["text"] = extracted_text
             document["preview"] = extracted_text[:800]
             document["pages"] = pdf_doc["pages"]
             document["page_count"] = pdf_doc["page_count"]
             document["nyscef_document_number"] = pdf_doc["nyscef_document_number"]
+            if provenance is not None:
+                document["nyscef_provenance_status"] = provenance["status"]
         else:
             extracted_text = clean_text(extract_text(path))
             document["text"] = extracted_text
@@ -884,8 +1115,17 @@ def build_matter_summary(documents):
     return summary
 
 
-def get_matter(selected_case=None, documents=None, matter_folder=DEFAULT_MATTER_FOLDER):
-    folder_documents = read_matter_folder(matter_folder)
+def get_matter(
+    selected_case=None,
+    documents=None,
+    matter_folder=None,
+    inventory_path=None,
+):
+    resolved_folder = resolve_matter_folder(matter_folder)
+    folder_documents = read_matter_folder(
+        resolved_folder,
+        inventory_path=inventory_path,
+    )
 
     selected_case_document = None
 
@@ -917,7 +1157,7 @@ def get_matter(selected_case=None, documents=None, matter_folder=DEFAULT_MATTER_
         "documents": normalized_documents,
         "groups": grouped_documents,
         "grouped_documents": grouped_documents,
-        "folder": str(matter_folder),
+        "folder": str(resolved_folder),
         "summary": summary,
         "selected_case": summary.get("selected_case"),
         "issue_packet": summary.get("issue_packet", {}),
