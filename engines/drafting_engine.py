@@ -55,6 +55,13 @@ LEGALAI_MODEL_ENDPOINT_ENV = "LEGALAI_MODEL_ENDPOINT"
 LEGALAI_MODEL_API_KEY_ENV = "LEGALAI_MODEL_API_KEY"
 LEGALAI_MODEL_TIMEOUT_ENV = "LEGALAI_MODEL_TIMEOUT_SECONDS"
 
+OPENAI_API_KEY_ENV = "OPENAI_API_KEY"
+LEGALAI_OPENAI_MODEL_ENV = "LEGALAI_OPENAI_MODEL"
+LEGALAI_OPENAI_ENDPOINT_ENV = "LEGALAI_OPENAI_ENDPOINT"
+DEFAULT_OPENAI_MODEL = "gpt-5.6-sol"
+DEFAULT_OPENAI_ENDPOINT = "https://api.openai.com/v1/responses"
+ATTORNEY_QA_SCHEMA_NAME = "attorney_qa_answer"
+
 _POLICY_RE = re.compile(r"\b(?:POL(?:ICY)?[-\s]?)?\d{3,}[A-Z0-9-]*\b", re.I)
 _DATE_RE = re.compile(
     r"\b(?:\d{1,2}/\d{1,2}/\d{2,4}|"
@@ -101,8 +108,12 @@ ModelCall = Callable[[str, str], Any]
 
 
 # ---------------------------------------------------------------------------
-# Provider abstraction (generic; not vendor-parallel)
+# Provider abstraction (generic + optional OpenAI Responses path)
 # ---------------------------------------------------------------------------
+
+
+class OpenAIResponsesProviderError(RuntimeError):
+    """Structured rejection of OpenAI Responses API output or transport failure."""
 
 
 def _env_timeout_seconds(default: float = 60.0) -> float:
@@ -113,6 +124,147 @@ def _env_timeout_seconds(default: float = 60.0) -> float:
         return float(raw)
     except ValueError:
         return default
+
+
+def _openai_model_name() -> str:
+    return (os.environ.get(LEGALAI_OPENAI_MODEL_ENV) or "").strip() or DEFAULT_OPENAI_MODEL
+
+
+def _openai_endpoint() -> str:
+    return (
+        (os.environ.get(LEGALAI_OPENAI_ENDPOINT_ENV) or "").strip()
+        or DEFAULT_OPENAI_ENDPOINT
+    )
+
+
+def attorney_qa_response_json_schema() -> dict:
+    """Strict JSON Schema matching the attorney Q&A answer contract."""
+    proposition = {
+        "type": "object",
+        "properties": {
+            "proposition_id": {"type": "string"},
+            "text": {"type": "string"},
+            "classification": {
+                "type": "string",
+                "enum": list(PROPOSITION_CLASSIFICATIONS),
+            },
+            "nyscef_document_number": {"type": ["integer", "null"]},
+            "page_id": {"type": ["string", "null"]},
+            "pdf_page": {"type": ["integer", "null"]},
+            "source_excerpt": {"type": "string"},
+            "confidence": {"type": "number"},
+            "rationale": {"type": "string"},
+            "polarity": {
+                "type": "string",
+                "enum": ["supporting", "contrary", "unresolved"],
+            },
+        },
+        "required": [
+            "proposition_id",
+            "text",
+            "classification",
+            "nyscef_document_number",
+            "page_id",
+            "pdf_page",
+            "source_excerpt",
+            "confidence",
+            "rationale",
+            "polarity",
+        ],
+        "additionalProperties": False,
+    }
+    evidence_item = {
+        "type": "object",
+        "properties": {
+            "page_id": {"type": ["string", "null"]},
+            "nyscef_document_number": {"type": ["integer", "null"]},
+            "pdf_page": {"type": ["integer", "null"]},
+            "excerpt": {"type": "string"},
+            "note": {"type": "string"},
+        },
+        "required": [
+            "page_id",
+            "nyscef_document_number",
+            "pdf_page",
+            "excerpt",
+            "note",
+        ],
+        "additionalProperties": False,
+    }
+    reviewed_page = {
+        "type": "object",
+        "properties": {
+            "nyscef_document_number": {"type": ["integer", "null"]},
+            "page_id": {"type": ["string", "null"]},
+            "pdf_page": {"type": ["integer", "null"]},
+            "source_filename": {"type": "string"},
+            "document_type": {"type": "string"},
+        },
+        "required": [
+            "nyscef_document_number",
+            "page_id",
+            "pdf_page",
+            "source_filename",
+            "document_type",
+        ],
+        "additionalProperties": False,
+    }
+    return {
+        "type": "object",
+        "properties": {
+            "proposed_answer": {"type": "string"},
+            "propositions": {"type": "array", "items": proposition},
+            "supporting_evidence": {"type": "array", "items": evidence_item},
+            "contrary_evidence": {"type": "array", "items": evidence_item},
+            "unresolved_questions": {
+                "type": "array",
+                "items": {"type": "string"},
+            },
+            "documents_pages_reviewed": {
+                "type": "array",
+                "items": reviewed_page,
+            },
+            "confidence": {"type": "number"},
+            "attorney_review": {
+                "type": "object",
+                "properties": {
+                    "requires_attorney_review": {"type": "boolean"},
+                    "review_notes": {"type": "string"},
+                    "legal_conclusions_labeled": {"type": "boolean"},
+                    "coverage_conclusion": {"type": ["string", "null"]},
+                },
+                "required": [
+                    "requires_attorney_review",
+                    "review_notes",
+                    "legal_conclusions_labeled",
+                    "coverage_conclusion",
+                ],
+                "additionalProperties": False,
+            },
+            "review_scope": {
+                "type": "object",
+                "properties": {
+                    "completeness": {"type": "string"},
+                    "qualification": {"type": "string"},
+                    "explanation": {"type": "string"},
+                },
+                "required": ["completeness", "qualification", "explanation"],
+                "additionalProperties": False,
+            },
+        },
+        "required": [
+            "proposed_answer",
+            "propositions",
+            "supporting_evidence",
+            "contrary_evidence",
+            "unresolved_questions",
+            "documents_pages_reviewed",
+            "confidence",
+            "attorney_review",
+            "review_scope",
+        ],
+        "additionalProperties": False,
+    }
 
 
 def _http_model_call(endpoint: str, system_prompt: str, user_prompt: str) -> Any:
@@ -143,6 +295,247 @@ def _http_model_call(endpoint: str, system_prompt: str, user_prompt: str) -> Any
     return json.loads(body)
 
 
+def build_openai_responses_request(
+    system_prompt: str,
+    user_prompt: str,
+    *,
+    model: Optional[str] = None,
+) -> dict:
+    """Build a Responses API request with strict structured JSON output."""
+    return {
+        "model": model or _openai_model_name(),
+        "instructions": system_prompt,
+        "input": user_prompt,
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": ATTORNEY_QA_SCHEMA_NAME,
+                "strict": True,
+                "schema": attorney_qa_response_json_schema(),
+            }
+        },
+    }
+
+
+def _schema_type_ok(value: Any, type_spec: Any) -> bool:
+    if isinstance(type_spec, list):
+        return any(_schema_type_ok(value, option) for option in type_spec)
+    if type_spec == "object":
+        return isinstance(value, dict)
+    if type_spec == "array":
+        return isinstance(value, list)
+    if type_spec == "string":
+        return isinstance(value, str)
+    if type_spec == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if type_spec == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if type_spec == "boolean":
+        return isinstance(value, bool)
+    if type_spec == "null":
+        return value is None
+    return False
+
+
+def _validate_against_json_schema(value: Any, schema: dict, path: str = "$") -> None:
+    """Minimal strict-schema checker (no external jsonschema dependency)."""
+    if "enum" in schema and value not in schema["enum"]:
+        raise OpenAIResponsesProviderError(
+            f"Schema-invalid response at {path}: value not in enum"
+        )
+    type_spec = schema.get("type")
+    if type_spec is not None and not _schema_type_ok(value, type_spec):
+        raise OpenAIResponsesProviderError(
+            f"Schema-invalid response at {path}: expected {type_spec}"
+        )
+    if schema.get("type") == "object" or (
+        isinstance(schema.get("type"), list) and "object" in schema["type"]
+    ):
+        if not isinstance(value, dict):
+            return
+        props = schema.get("properties") or {}
+        required = schema.get("required") or []
+        for key in required:
+            if key not in value:
+                raise OpenAIResponsesProviderError(
+                    f"Schema-invalid response at {path}: missing '{key}'"
+                )
+        if schema.get("additionalProperties") is False:
+            extra = set(value) - set(props)
+            if extra:
+                raise OpenAIResponsesProviderError(
+                    f"Schema-invalid response at {path}: unexpected keys {sorted(extra)}"
+                )
+        for key, child in value.items():
+            child_schema = props.get(key)
+            if child_schema is not None:
+                _validate_against_json_schema(child, child_schema, f"{path}.{key}")
+    if schema.get("type") == "array" or (
+        isinstance(schema.get("type"), list) and "array" in schema["type"]
+    ):
+        if not isinstance(value, list):
+            return
+        item_schema = schema.get("items")
+        if isinstance(item_schema, dict):
+            for index, item in enumerate(value):
+                _validate_against_json_schema(item, item_schema, f"{path}[{index}]")
+
+
+def _extract_openai_output_texts(response_body: dict) -> Tuple[List[str], List[str]]:
+    """Walk Responses API output/content; return (texts, refusals)."""
+    texts: List[str] = []
+    refusals: List[str] = []
+    output = response_body.get("output")
+    if not isinstance(output, list):
+        return texts, refusals
+    for item in output:
+        if not isinstance(item, dict):
+            continue
+        item_type = item.get("type")
+        if item_type == "refusal" and item.get("refusal"):
+            refusals.append(str(item.get("refusal")))
+            continue
+        # Only assistant message items carry structured answer content.
+        if item_type not in (None, "message"):
+            continue
+        content = item.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            part_type = part.get("type")
+            if part_type == "refusal":
+                refusals.append(str(part.get("refusal") or "refused"))
+            elif part_type in ("output_text", "text"):
+                text = part.get("text")
+                if isinstance(text, str) and text.strip():
+                    texts.append(text)
+    return texts, refusals
+
+
+def parse_openai_responses_payload(response_body: Any) -> dict:
+    """
+    Parse structured attorney-Q&A JSON from a Responses API body.
+
+    Rejects refusal, incomplete, malformed, missing, or schema-invalid output.
+    Does not fall back to unvalidated free-form text.
+    """
+    if not isinstance(response_body, dict):
+        raise OpenAIResponsesProviderError(
+            "Malformed Responses API body: expected JSON object"
+        )
+
+    status = response_body.get("status")
+    if status == "incomplete":
+        details = response_body.get("incomplete_details") or {}
+        reason = details.get("reason") if isinstance(details, dict) else details
+        raise OpenAIResponsesProviderError(
+            f"Incomplete Responses API output"
+            + (f": {reason}" if reason else "")
+        )
+    if status not in (None, "completed"):
+        raise OpenAIResponsesProviderError(
+            f"Responses API status not usable: {status!r}"
+        )
+
+    error = response_body.get("error")
+    if error:
+        message = error.get("message") if isinstance(error, dict) else error
+        raise OpenAIResponsesProviderError(
+            f"Responses API error: {message or 'unknown'}"
+        )
+
+    texts, refusals = _extract_openai_output_texts(response_body)
+    if refusals:
+        # Never treat refusal prose as the answer contract.
+        raise OpenAIResponsesProviderError(
+            f"Model refused to produce structured output: {refusals[0]}"
+        )
+    if not texts:
+        raise OpenAIResponsesProviderError(
+            "Missing structured output text in Responses API content"
+        )
+
+    parsed_obj: Optional[dict] = None
+    last_parse_error = "no JSON object found"
+    for text in texts:
+        try:
+            candidate = json.loads(text)
+        except json.JSONDecodeError as exc:
+            last_parse_error = str(exc)
+            continue
+        if isinstance(candidate, dict):
+            parsed_obj = candidate
+            break
+        last_parse_error = "JSON root was not an object"
+
+    if parsed_obj is None:
+        raise OpenAIResponsesProviderError(
+            f"Malformed JSON in Responses API output: {last_parse_error}"
+        )
+
+    _validate_against_json_schema(parsed_obj, attorney_qa_response_json_schema())
+    return parsed_obj
+
+
+def _openai_responses_model_call(system_prompt: str, user_prompt: str) -> dict:
+    """Live OpenAI Responses API call (stdlib urllib; no SDK)."""
+    api_key = (os.environ.get(OPENAI_API_KEY_ENV) or "").strip()
+    if not api_key:
+        raise OpenAIResponsesProviderError(
+            f"{OPENAI_API_KEY_ENV} is required for OpenAI Responses provider"
+        )
+
+    endpoint = _openai_endpoint()
+    payload = build_openai_responses_request(system_prompt, user_prompt)
+    data = json.dumps(payload).encode("utf-8")
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+    request = urllib.request.Request(
+        endpoint,
+        data=data,
+        headers=headers,
+        method="POST",
+    )
+    timeout = _env_timeout_seconds()
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw_body = response.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        # Do not include request headers (may contain credentials).
+        detail = ""
+        try:
+            detail = exc.read().decode("utf-8", errors="replace")[:400]
+        except Exception:  # noqa: BLE001
+            detail = ""
+        raise OpenAIResponsesProviderError(
+            f"OpenAI Responses HTTP {exc.code}"
+            + (f": {detail}" if detail else "")
+        ) from None
+    except urllib.error.URLError as exc:
+        reason = getattr(exc, "reason", exc)
+        raise OpenAIResponsesProviderError(
+            f"OpenAI Responses transport error: {type(reason).__name__}: {reason}"
+        ) from None
+    except TimeoutError as exc:
+        raise OpenAIResponsesProviderError(
+            f"OpenAI Responses timeout after {_env_timeout_seconds()}s"
+        ) from exc
+
+    try:
+        body = json.loads(raw_body)
+    except json.JSONDecodeError as exc:
+        raise OpenAIResponsesProviderError(
+            f"Malformed Responses API HTTP body: {exc}"
+        ) from None
+
+    return parse_openai_responses_payload(body)
+
+
 def resolve_model_provider(
     model_call: Optional[ModelCall] = None,
 ) -> Optional[ModelCall]:
@@ -152,7 +545,8 @@ def resolve_model_provider(
     Priority:
       1. Explicit injectable ``model_call`` (tests / host integration)
       2. ``LEGALAI_MODEL_ENDPOINT`` HTTP JSON endpoint (stdlib urllib)
-      3. Unavailable (None) → caller must return structured NOT READY
+      3. ``OPENAI_API_KEY`` → OpenAI Responses API (unless generic endpoint set)
+      4. Unavailable (None) → caller must return structured NOT READY
     """
     if callable(model_call):
         return model_call
@@ -163,6 +557,14 @@ def resolve_model_provider(
             return _http_model_call(endpoint, system_prompt, user_prompt)
 
         return _configured
+
+    openai_key = (os.environ.get(OPENAI_API_KEY_ENV) or "").strip()
+    if openai_key:
+        def _openai(system_prompt: str, user_prompt: str) -> Any:
+            return _openai_responses_model_call(system_prompt, user_prompt)
+
+        return _openai
+
     return None
 
 
@@ -994,8 +1396,8 @@ def answer_attorney_record_question(
             retrieval=retrieval,
             reason=(
                 "Model/provider capability unavailable. "
-                "Configure LEGALAI_MODEL_ENDPOINT or pass model_call; "
-                "retrieved evidence is attached for attorney review."
+                "Configure OPENAI_API_KEY, LEGALAI_MODEL_ENDPOINT, or pass "
+                "model_call; retrieved evidence is attached for attorney review."
             ),
         )
         result["audit"]["provider_available"] = False

@@ -3,8 +3,14 @@
 from __future__ import annotations
 
 import copy
+import io
+import json
+import os
+import socket
 import tempfile
 import unittest
+import urllib.error
+from unittest import mock
 
 import matter_builder as mb
 from engines import drafting_engine as de
@@ -789,6 +795,469 @@ class AttorneyQAReasonerTests(unittest.TestCase):
         qa = result["retrieval_grounded_qa"]
         self.assertEqual(qa["status"], de.STATUS_READY)
         self.assertTrue(qa["propositions"])
+
+
+def _valid_openai_answer_payload(page_id, nyscef=13, pdf_page=1):
+    return {
+        "proposed_answer": "The court held the motion.",
+        "propositions": [
+            {
+                "proposition_id": "P1",
+                "text": "The Decision and Order states the motion is held.",
+                "classification": "verified_record_fact",
+                "nyscef_document_number": nyscef,
+                "page_id": page_id,
+                "pdf_page": pdf_page,
+                "source_excerpt": "IT IS HEREBY ORDERED that the motion is held.",
+                "confidence": 0.9,
+                "rationale": "Procedural directive appears on the order page.",
+                "polarity": "supporting",
+            }
+        ],
+        "supporting_evidence": [
+            {
+                "page_id": page_id,
+                "nyscef_document_number": nyscef,
+                "pdf_page": pdf_page,
+                "excerpt": "IT IS HEREBY ORDERED that the motion is held.",
+                "note": "Order page",
+            }
+        ],
+        "contrary_evidence": [],
+        "unresolved_questions": [],
+        "documents_pages_reviewed": [
+            {
+                "nyscef_document_number": nyscef,
+                "page_id": page_id,
+                "pdf_page": pdf_page,
+                "source_filename": "order.pdf",
+                "document_type": "order",
+            }
+        ],
+        "confidence": 0.9,
+        "attorney_review": {
+            "requires_attorney_review": True,
+            "review_notes": "Confirm order effect.",
+            "legal_conclusions_labeled": True,
+            "coverage_conclusion": None,
+        },
+        "review_scope": {
+            "completeness": "not_established",
+            "qualification": "Limited to retrieved order page.",
+            "explanation": "Single order page in retrieval scope.",
+        },
+    }
+
+
+def _responses_body_from_answer(answer_obj, *, status="completed", extra_items=None):
+    items = list(extra_items or [])
+    items.append(
+        {
+            "id": "msg_1",
+            "type": "message",
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "output_text",
+                    "text": json.dumps(answer_obj),
+                }
+            ],
+        }
+    )
+    return {
+        "id": "resp_test",
+        "object": "response",
+        "status": status,
+        "incomplete_details": None,
+        "error": None,
+        "output": items,
+    }
+
+
+class _FakeHTTPResponse:
+    def __init__(self, payload, status=200):
+        if isinstance(payload, (dict, list)):
+            raw = json.dumps(payload).encode("utf-8")
+        elif isinstance(payload, str):
+            raw = payload.encode("utf-8")
+        else:
+            raw = payload
+        self._raw = raw
+        self.status = status
+
+    def read(self):
+        return self._raw
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
+class OpenAIResponsesProviderTests(unittest.TestCase):
+    def setUp(self):
+        self.docs = _corpus()
+        self.order_hit = _hit(
+            self.docs,
+            13,
+            1,
+            classifications=["court_order", "procedural_fact"],
+            assertion_kind="procedural_fact",
+        )
+        self.retrieval = _retrieval(self.docs, [self.order_hit])
+        self._env_stack = mock.patch.dict(os.environ, {}, clear=False)
+        self._env_stack.start()
+        for key in (
+            de.OPENAI_API_KEY_ENV,
+            de.LEGALAI_OPENAI_MODEL_ENV,
+            de.LEGALAI_OPENAI_ENDPOINT_ENV,
+            de.LEGALAI_MODEL_ENDPOINT_ENV,
+            de.LEGALAI_MODEL_API_KEY_ENV,
+            de.LEGALAI_MODEL_TIMEOUT_ENV,
+        ):
+            os.environ.pop(key, None)
+
+    def tearDown(self):
+        self._env_stack.stop()
+
+    def _answer_payload(self):
+        return _valid_openai_answer_payload(self.order_hit["page_id"])
+
+    def test_openai_auto_selected_when_api_key_present(self):
+        os.environ[de.OPENAI_API_KEY_ENV] = "sk-test-key-secret"
+        provider = de.resolve_model_provider()
+        self.assertIsNotNone(provider)
+        self.assertTrue(de.model_provider_available())
+
+    def test_missing_api_key_provider_unavailable(self):
+        self.assertIsNone(de.resolve_model_provider())
+        self.assertFalse(de.model_provider_available())
+        result = de.answer_attorney_record_question(
+            "What did the court order?",
+            self.retrieval,
+            documents=self.docs,
+        )
+        self.assertEqual(result["status"], de.STATUS_NOT_READY)
+        self.assertFalse(result["audit"]["provider_available"])
+        self.assertIn("OPENAI_API_KEY", result["review_scope"]["reason"])
+
+    def test_generic_endpoint_overrides_openai_auto_selection(self):
+        os.environ[de.OPENAI_API_KEY_ENV] = "sk-test-key-secret"
+        os.environ[de.LEGALAI_MODEL_ENDPOINT_ENV] = "https://example.test/v1/model"
+        captured = {}
+
+        def fake_urlopen(request, timeout=None):
+            captured["full_url"] = request.full_url
+            captured["headers"] = dict(request.header_items())
+            captured["body"] = json.loads(request.data.decode("utf-8"))
+            return _FakeHTTPResponse({"proposed_answer": "generic", "propositions": []})
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            provider = de.resolve_model_provider()
+            raw = provider("sys", "user")
+        self.assertEqual(captured["full_url"], "https://example.test/v1/model")
+        self.assertEqual(captured["body"]["system"], "sys")
+        self.assertNotIn("text", captured["body"])
+        self.assertEqual(raw["proposed_answer"], "generic")
+
+    def test_request_endpoint_bearer_model_default_and_schema_shape(self):
+        os.environ[de.OPENAI_API_KEY_ENV] = "sk-test-key-secret"
+        answer = self._answer_payload()
+        captured = {}
+
+        def fake_urlopen(request, timeout=None):
+            captured["full_url"] = request.full_url
+            captured["headers"] = {k.lower(): v for k, v in request.header_items()}
+            captured["body"] = json.loads(request.data.decode("utf-8"))
+            captured["timeout"] = timeout
+            return _FakeHTTPResponse(_responses_body_from_answer(answer))
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            result = de.answer_attorney_record_question(
+                "What did the court order?",
+                self.retrieval,
+                documents=self.docs,
+            )
+
+        self.assertEqual(captured["full_url"], de.DEFAULT_OPENAI_ENDPOINT)
+        self.assertEqual(
+            captured["headers"].get("authorization"),
+            "Bearer sk-test-key-secret",
+        )
+        self.assertEqual(captured["body"]["model"], de.DEFAULT_OPENAI_MODEL)
+        self.assertEqual(
+            captured["body"]["instructions"], de.RECORD_ANALYSIS_SYSTEM_PROMPT
+        )
+        self.assertIn("evidence packet", captured["body"]["input"])
+        fmt = captured["body"]["text"]["format"]
+        self.assertEqual(fmt["type"], "json_schema")
+        self.assertTrue(fmt["strict"])
+        self.assertEqual(fmt["name"], de.ATTORNEY_QA_SCHEMA_NAME)
+        self.assertEqual(fmt["schema"]["type"], "object")
+        self.assertIn("propositions", fmt["schema"]["required"])
+        self.assertEqual(result["status"], de.STATUS_READY)
+        # Never leak key into attorney-facing payload / reason strings.
+        dumped = json.dumps(result)
+        self.assertNotIn("sk-test-key-secret", dumped)
+
+    def test_model_and_endpoint_overrides(self):
+        os.environ[de.OPENAI_API_KEY_ENV] = "sk-test-key-secret"
+        os.environ[de.LEGALAI_OPENAI_MODEL_ENV] = "gpt-test-override"
+        os.environ[de.LEGALAI_OPENAI_ENDPOINT_ENV] = (
+            "https://example.openai.test/v1/responses"
+        )
+        os.environ[de.LEGALAI_MODEL_TIMEOUT_ENV] = "12.5"
+        answer = self._answer_payload()
+        captured = {}
+
+        def fake_urlopen(request, timeout=None):
+            captured["full_url"] = request.full_url
+            captured["body"] = json.loads(request.data.decode("utf-8"))
+            captured["timeout"] = timeout
+            return _FakeHTTPResponse(_responses_body_from_answer(answer))
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            de.resolve_model_provider()("sys", "user-q")
+
+        self.assertEqual(
+            captured["full_url"], "https://example.openai.test/v1/responses"
+        )
+        self.assertEqual(captured["body"]["model"], "gpt-test-override")
+        self.assertEqual(captured["timeout"], 12.5)
+
+    def test_valid_output_parsing_and_citation_validator(self):
+        os.environ[de.OPENAI_API_KEY_ENV] = "sk-test-key-secret"
+        answer = self._answer_payload()
+        # Inject a hallucinated citation that schema allows but validator rejects.
+        answer["propositions"].append(
+            {
+                "proposition_id": "P2",
+                "text": "Hallucinated page claim.",
+                "classification": "verified_record_fact",
+                "nyscef_document_number": 99,
+                "page_id": "nyscef-99-p1",
+                "pdf_page": 1,
+                "source_excerpt": "not on record",
+                "confidence": 0.5,
+                "rationale": "Invented.",
+                "polarity": "supporting",
+            }
+        )
+
+        with mock.patch(
+            "urllib.request.urlopen",
+            return_value=_FakeHTTPResponse(_responses_body_from_answer(answer)),
+        ):
+            result = de.answer_attorney_record_question(
+                "What did the court order?",
+                self.retrieval,
+                documents=self.docs,
+            )
+        self.assertEqual(result["status"], de.STATUS_READY)
+        self.assertEqual(len(result["propositions"]), 1)
+        self.assertEqual(result["propositions"][0]["proposition_id"], "P1")
+        removed_ids = [
+            item["proposition_id"] for item in result["audit"]["removed_propositions"]
+        ]
+        self.assertIn("P2", removed_ids)
+
+    def test_multiple_output_items_and_content_parts(self):
+        os.environ[de.OPENAI_API_KEY_ENV] = "sk-test-key-secret"
+        answer = self._answer_payload()
+        body = {
+            "id": "resp_multi",
+            "status": "completed",
+            "error": None,
+            "output": [
+                {"type": "reasoning", "content": []},
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [
+                        {"type": "output_text", "text": "not-json-preamble"},
+                        {
+                            "type": "output_text",
+                            "text": json.dumps(answer),
+                        },
+                    ],
+                },
+            ],
+        }
+        parsed = de.parse_openai_responses_payload(body)
+        self.assertEqual(parsed["proposed_answer"], answer["proposed_answer"])
+
+    def test_refusal_returns_not_ready(self):
+        os.environ[de.OPENAI_API_KEY_ENV] = "sk-test-key-secret"
+        body = {
+            "status": "completed",
+            "error": None,
+            "output": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "refusal",
+                            "refusal": "I'm sorry, I cannot assist with that request.",
+                        }
+                    ],
+                }
+            ],
+        }
+        with mock.patch(
+            "urllib.request.urlopen", return_value=_FakeHTTPResponse(body)
+        ):
+            result = de.answer_attorney_record_question(
+                "What did the court order?",
+                self.retrieval,
+                documents=self.docs,
+            )
+        self.assertEqual(result["status"], de.STATUS_NOT_READY)
+        self.assertTrue(result["audit"]["provider_available"])
+        self.assertIn("refused", result["review_scope"]["reason"].lower())
+
+    def test_incomplete_response_returns_not_ready(self):
+        os.environ[de.OPENAI_API_KEY_ENV] = "sk-test-key-secret"
+        body = {
+            "status": "incomplete",
+            "incomplete_details": {"reason": "max_output_tokens"},
+            "error": None,
+            "output": [],
+        }
+        with mock.patch(
+            "urllib.request.urlopen", return_value=_FakeHTTPResponse(body)
+        ):
+            result = de.answer_attorney_record_question(
+                "What did the court order?",
+                self.retrieval,
+                documents=self.docs,
+            )
+        self.assertEqual(result["status"], de.STATUS_NOT_READY)
+        self.assertIn("Incomplete", result["review_scope"]["reason"])
+
+    def test_malformed_json_returns_not_ready(self):
+        os.environ[de.OPENAI_API_KEY_ENV] = "sk-test-key-secret"
+        body = {
+            "status": "completed",
+            "error": None,
+            "output": [
+                {
+                    "type": "message",
+                    "content": [{"type": "output_text", "text": "{not-json"}],
+                }
+            ],
+        }
+        with mock.patch(
+            "urllib.request.urlopen", return_value=_FakeHTTPResponse(body)
+        ):
+            result = de.answer_attorney_record_question(
+                "What did the court order?",
+                self.retrieval,
+                documents=self.docs,
+            )
+        self.assertEqual(result["status"], de.STATUS_NOT_READY)
+        self.assertIn("Malformed JSON", result["review_scope"]["reason"])
+
+    def test_schema_invalid_response_returns_not_ready(self):
+        os.environ[de.OPENAI_API_KEY_ENV] = "sk-test-key-secret"
+        # Valid JSON object but missing required contract keys.
+        body = _responses_body_from_answer({"proposed_answer": "only free text"})
+        with mock.patch(
+            "urllib.request.urlopen", return_value=_FakeHTTPResponse(body)
+        ):
+            result = de.answer_attorney_record_question(
+                "What did the court order?",
+                self.retrieval,
+                documents=self.docs,
+            )
+        self.assertEqual(result["status"], de.STATUS_NOT_READY)
+        self.assertIn("Schema-invalid", result["review_scope"]["reason"])
+
+    def test_http_error_returns_not_ready(self):
+        os.environ[de.OPENAI_API_KEY_ENV] = "sk-test-key-secret"
+
+        def fake_urlopen(request, timeout=None):
+            raise urllib.error.HTTPError(
+                url=request.full_url,
+                code=500,
+                msg="Server Error",
+                hdrs=None,
+                fp=io.BytesIO(b'{"error":{"message":"boom"}}'),
+            )
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            result = de.answer_attorney_record_question(
+                "What did the court order?",
+                self.retrieval,
+                documents=self.docs,
+            )
+        self.assertEqual(result["status"], de.STATUS_NOT_READY)
+        self.assertIn("HTTP 500", result["review_scope"]["reason"])
+        self.assertNotIn("sk-test-key-secret", result["review_scope"]["reason"])
+
+    def test_timeout_returns_not_ready(self):
+        os.environ[de.OPENAI_API_KEY_ENV] = "sk-test-key-secret"
+
+        def fake_urlopen(request, timeout=None):
+            raise urllib.error.URLError(socket.timeout("timed out"))
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            result = de.answer_attorney_record_question(
+                "What did the court order?",
+                self.retrieval,
+                documents=self.docs,
+            )
+        self.assertEqual(result["status"], de.STATUS_NOT_READY)
+        self.assertIn("transport error", result["review_scope"]["reason"].lower())
+
+    def test_injectable_model_call_unchanged_priority(self):
+        os.environ[de.OPENAI_API_KEY_ENV] = "sk-test-key-secret"
+        os.environ[de.LEGALAI_MODEL_ENDPOINT_ENV] = "https://example.test/v1/model"
+        called = {"urlopen": 0}
+
+        def fake_urlopen(*args, **kwargs):
+            called["urlopen"] += 1
+            raise AssertionError("urlopen should not run when model_call is injected")
+
+        payload = {
+            "proposed_answer": "Injected.",
+            "propositions": [
+                {
+                    "proposition_id": "P1",
+                    "text": "The Decision and Order states the motion is held.",
+                    "classification": "verified_record_fact",
+                    "nyscef_document_number": 13,
+                    "page_id": self.order_hit["page_id"],
+                    "pdf_page": 1,
+                    "source_excerpt": "IT IS HEREBY ORDERED that the motion is held.",
+                    "confidence": 0.9,
+                    "rationale": "Order text.",
+                    "polarity": "supporting",
+                }
+            ],
+            "confidence": 0.9,
+            "attorney_review": {
+                "requires_attorney_review": True,
+                "review_notes": "x",
+                "legal_conclusions_labeled": True,
+                "coverage_conclusion": None,
+            },
+        }
+
+        def fake_model(_system, _user):
+            return copy.deepcopy(payload)
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            result = de.answer_attorney_record_question(
+                "What did the court order?",
+                self.retrieval,
+                documents=self.docs,
+                model_call=fake_model,
+            )
+        self.assertEqual(called["urlopen"], 0)
+        self.assertEqual(result["status"], de.STATUS_READY)
+        self.assertEqual(result["proposed_answer"], "Injected.")
 
 
 if __name__ == "__main__":
