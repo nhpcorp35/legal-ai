@@ -1493,6 +1493,1301 @@ def selected_case_summary(documents):
     return None
 
 
+# ---------------------------------------------------------------------------
+# Citation-grounded litigation case map (opt-in / additive)
+# ---------------------------------------------------------------------------
+#
+# Built from canonical page records and embedded-exhibit segments. Conservative
+# deterministic helpers surface record-supported candidates; they do not produce
+# attorney-level semantic conclusions. Default get_matter consumers are unchanged.
+
+CASE_MAP_ASSERTION_KINDS = (
+    "verified_record_fact",
+    "party_allegation",
+    "legal_position",
+    "inference",
+    "unknown",
+)
+
+CASE_MAP_NODE_COLLECTIONS = (
+    "parties",
+    "policies",
+    "claims",
+    "defenses",
+    "allegations",
+    "evidence",
+    "timeline_events",
+    "motions",
+    "court_orders",
+)
+
+CASE_MAP_NODE_TYPE_TO_COLLECTION = {
+    "party": "parties",
+    "policy": "policies",
+    "claim": "claims",
+    "defense": "defenses",
+    "allegation": "allegations",
+    "evidence": "evidence",
+    "timeline_event": "timeline_events",
+    "motion": "motions",
+    "court_order": "court_orders",
+}
+
+CASE_MAP_EXCERPT_MAX = 240
+
+CAUSE_OF_ACTION_RE = re.compile(
+    r"(?is)\b(?:(?P<ordinal>first|second|third|fourth|fifth|sixth|"
+    r"seventh|eighth|ninth|tenth|\d+(?:st|nd|rd|th)?)\s+)?"
+    r"cause\s+of\s+action\b(?:\s*[-–—:]\s*|\s+for\s+)?(?P<title>[^\n.]{0,80})?"
+)
+
+AFFIRMATIVE_DEFENSE_RE = re.compile(
+    r"(?is)\b(?:(?P<ordinal>first|second|third|fourth|fifth|sixth|"
+    r"seventh|eighth|ninth|tenth|\d+(?:st|nd|rd|th)?)\s+)?"
+    r"(?:affirmative\s+)?defense\b(?:\s*[-–—:]\s*|\s+of\s+|\s+for\s+)?"
+    r"(?P<title>[^\n.]{0,80})?"
+)
+
+POLICY_REF_RE = re.compile(
+    r"(?i)\b(?:insurance\s+)?polic(?:y|ies)\b"
+    r"(?:\s+(?:number|no\.?|#)\s*[:#]?\s*([A-Z0-9][-A-Z0-9/]{2,24}))?"
+)
+
+ALLEGATION_SPEAKER_RE = re.compile(
+    r"(?i)\b(?P<speaker>plaintiffs?|defendants?|petitioners?|respondents?)\b"
+    r"(?:\s*,)?\s+"
+    r"(?:alleges?|contends?|claims?|avers?)(?:\s+that)?\b"
+)
+
+PARTY_ROLE_RE = re.compile(
+    r"(?i)\b(?P<name>[A-Z][A-Za-z0-9&.,'\\-\\s]{1,80}?)\s*,?\s*"
+    r"(?P<role>plaintiffs?|defendants?|petitioners?|respondents?)\b"
+)
+
+MOTION_HEADING_RE = re.compile(
+    r"(?i)\b(?:notice\s+of\s+motion|motion\s+for\s+(?:an\s+)?"
+    r"(?:summary\s+judgment|default\s+judgment|dismissal|leave)|"
+    r"motion\s+to\s+(?:dismiss|compel|vacate|renew|reargue))\b"
+)
+
+ORDER_HEADING_RE = re.compile(
+    r"(?i)\b(?:it\s+is\s+(?:hereby\s+)?ordered|ordered\s+that|"
+    r"decision\s+and\s+order|order\s+to\s+show\s+cause)\b"
+)
+
+TIMELINE_DATE_RE = re.compile(
+    r"(?i)\b(?P<date>"
+    r"(?:January|February|March|April|May|June|July|August|September|"
+    r"October|November|December)\s+\d{1,2},\s+\d{4}"
+    r"|\d{1,2}/\d{1,2}/\d{2,4}"
+    r")\b"
+)
+
+CONFLICT_NEGATION_RE = re.compile(
+    r"(?i)\b(?:did\s+not|does\s+not|failed\s+to|never|no\s+longer|"
+    r"without|denies?|denied)\b"
+)
+
+
+def empty_case_map():
+    return {
+        "parties": [],
+        "policies": [],
+        "claims": [],
+        "defenses": [],
+        "allegations": [],
+        "evidence": [],
+        "timeline_events": [],
+        "motions": [],
+        "court_orders": [],
+        "relationships": [],
+        "review_candidates": [],
+        "validation": {
+            "ok": True,
+            "errors": [],
+            "warnings": [],
+        },
+    }
+
+
+def slugify_case_map_key(value):
+    text = clean_text(value).lower()
+    text = re.sub(r"[^a-z0-9]+", "-", text).strip("-")
+    return text[:80] or "unknown"
+
+
+def make_case_map_node_id(node_type, nyscef_document_number, stable_key):
+    doc_no = coerce_nyscef_document_number(nyscef_document_number)
+    if doc_no is None:
+        doc_no = UNKNOWN_NYSCEF_DOCUMENT_NUMBER
+    return f"cmap-{node_type}-nyscef-{doc_no:03d}-{slugify_case_map_key(stable_key)}"
+
+
+def make_case_map_relationship_id(relation_type, source_id, target_id):
+    return (
+        f"cmap-rel-{slugify_case_map_key(relation_type)}-"
+        f"{slugify_case_map_key(source_id)}-"
+        f"{slugify_case_map_key(target_id)}"
+    )
+
+
+def make_record_support(
+    nyscef_document_number,
+    page_ids,
+    excerpt=None,
+    *,
+    segment_id=None,
+    exhibit_label=None,
+):
+    doc_no = coerce_nyscef_document_number(nyscef_document_number)
+    support = {
+        "nyscef_document_number": doc_no,
+        "page_ids": list(page_ids or []),
+    }
+    if excerpt is not None:
+        support["excerpt"] = clean_text(excerpt)[:CASE_MAP_EXCERPT_MAX]
+    if segment_id is not None:
+        support["segment_id"] = segment_id
+    if exhibit_label is not None:
+        support["exhibit_label"] = exhibit_label
+    return support
+
+
+def _excerpt_around_match(text, match, radius=110):
+    if not text or match is None:
+        return clean_text(text)[:CASE_MAP_EXCERPT_MAX]
+    start = max(0, match.start() - radius)
+    end = min(len(text), match.end() + radius)
+    return clean_text(text[start:end])[:CASE_MAP_EXCERPT_MAX]
+
+
+def build_case_map_node(
+    node_type,
+    label,
+    *,
+    nyscef_document_number,
+    page_ids,
+    assertion_kind,
+    stable_key=None,
+    excerpt=None,
+    speaker_party=None,
+    procedural_posture=None,
+    confidence="low",
+    extraction_signals=None,
+    requires_review=True,
+    status="candidate",
+    segment_id=None,
+    exhibit_label=None,
+    extra=None,
+):
+    if assertion_kind not in CASE_MAP_ASSERTION_KINDS:
+        raise ValueError(f"unsupported assertion_kind: {assertion_kind}")
+    if node_type not in CASE_MAP_NODE_TYPE_TO_COLLECTION:
+        raise ValueError(f"unsupported node_type: {node_type}")
+
+    key = stable_key or label or node_type
+    node = {
+        "id": make_case_map_node_id(node_type, nyscef_document_number, key),
+        "node_type": node_type,
+        "label": clean_text(label) if label is not None else "",
+        "assertion_kind": assertion_kind,
+        "speaker_party": speaker_party,
+        "procedural_posture": procedural_posture,
+        "confidence": confidence,
+        "extraction_signals": list(extraction_signals or []),
+        "requires_review": bool(requires_review),
+        "status": status,
+        "conflicts_with": [],
+        "record_support": [
+            make_record_support(
+                nyscef_document_number,
+                page_ids,
+                excerpt,
+                segment_id=segment_id,
+                exhibit_label=exhibit_label,
+            )
+        ],
+    }
+    if extra:
+        for field_name, value in extra.items():
+            if field_name not in node:
+                node[field_name] = value
+    return node
+
+
+def build_case_map_relationship(
+    relation_type,
+    source_id,
+    target_id,
+    *,
+    nyscef_document_number,
+    page_ids,
+    assertion_kind="inference",
+    excerpt=None,
+    confidence="low",
+    requires_review=True,
+    extraction_signals=None,
+    segment_id=None,
+    exhibit_label=None,
+):
+    if assertion_kind not in CASE_MAP_ASSERTION_KINDS:
+        raise ValueError(f"unsupported assertion_kind: {assertion_kind}")
+
+    return {
+        "id": make_case_map_relationship_id(relation_type, source_id, target_id),
+        "relation_type": relation_type,
+        "source_id": source_id,
+        "target_id": target_id,
+        "assertion_kind": assertion_kind,
+        "confidence": confidence,
+        "requires_review": bool(requires_review),
+        "extraction_signals": list(extraction_signals or []),
+        "record_support": [
+            make_record_support(
+                nyscef_document_number,
+                page_ids,
+                excerpt,
+                segment_id=segment_id,
+                exhibit_label=exhibit_label,
+            )
+        ],
+    }
+
+
+def _iter_document_pages(document):
+    pages = document.get("pages")
+    if pages is None:
+        return []
+    nyscef = coerce_nyscef_document_number(document.get("nyscef_document_number"))
+    return [normalize_page_record(page, nyscef) for page in pages]
+
+
+def _page_index_by_id(pages):
+    return {page["page_id"]: page for page in pages if page.get("page_id")}
+
+
+def _first_matching_page(pages, pattern):
+    for page in pages:
+        text = page.get("text") or ""
+        match = pattern.search(text)
+        if match:
+            return page, match
+    return None, None
+
+
+def _normalize_speaker_party(value):
+    value = clean_text(value).lower()
+    if value.startswith("plaintiff") or value.startswith("petitioner"):
+        return "plaintiff"
+    if value.startswith("defendant") or value.startswith("respondent"):
+        return "defendant"
+    return value or None
+
+
+def _append_unique_node(collection, node, by_id):
+    existing = by_id.get(node["id"])
+    if existing is None:
+        collection.append(node)
+        by_id[node["id"]] = node
+        return node
+
+    # Incremental provenance merge into the existing node.
+    seen_supports = {
+        (
+            s.get("nyscef_document_number"),
+            tuple(s.get("page_ids") or []),
+            s.get("excerpt"),
+            s.get("segment_id"),
+            s.get("exhibit_label"),
+        )
+        for s in existing.get("record_support") or []
+    }
+    for support in node.get("record_support") or []:
+        key = (
+            support.get("nyscef_document_number"),
+            tuple(support.get("page_ids") or []),
+            support.get("excerpt"),
+            support.get("segment_id"),
+            support.get("exhibit_label"),
+        )
+        if key not in seen_supports:
+            existing.setdefault("record_support", []).append(support)
+            seen_supports.add(key)
+
+    for signal in node.get("extraction_signals") or []:
+        if signal not in existing.setdefault("extraction_signals", []):
+            existing["extraction_signals"].append(signal)
+
+    for conflict_id in node.get("conflicts_with") or []:
+        if conflict_id not in existing.setdefault("conflicts_with", []):
+            existing["conflicts_with"].append(conflict_id)
+
+    if node.get("requires_review"):
+        existing["requires_review"] = True
+
+    return existing
+
+
+def _append_unique_relationship(relationships, relationship, by_id):
+    existing = by_id.get(relationship["id"])
+    if existing is None:
+        relationships.append(relationship)
+        by_id[relationship["id"]] = relationship
+        return relationship
+
+    seen_supports = {
+        (
+            s.get("nyscef_document_number"),
+            tuple(s.get("page_ids") or []),
+            s.get("excerpt"),
+        )
+        for s in existing.get("record_support") or []
+    }
+    for support in relationship.get("record_support") or []:
+        key = (
+            support.get("nyscef_document_number"),
+            tuple(support.get("page_ids") or []),
+            support.get("excerpt"),
+        )
+        if key not in seen_supports:
+            existing.setdefault("record_support", []).append(support)
+            seen_supports.add(key)
+    return existing
+
+
+def _mark_review_candidate(case_map, node_or_rel, reason):
+    entry = {
+        "id": node_or_rel.get("id"),
+        "reason": reason,
+        "assertion_kind": node_or_rel.get("assertion_kind"),
+    }
+    if entry not in case_map["review_candidates"]:
+        case_map["review_candidates"].append(entry)
+
+
+def _extract_parties_for_case_map(case_map, document, pages, by_id):
+    nyscef = coerce_nyscef_document_number(document.get("nyscef_document_number"))
+    if not pages:
+        return
+
+    # Prefer caption-like text on the first few pages only.
+    caption_pages = pages[:3]
+    caption_text = "\n".join(page.get("text") or "" for page in caption_pages)
+    case_name = extract_case_name(caption_text)
+    parties = extract_parties(case_name) if case_name != "Matter Builder" else None
+
+    if parties and parties.get("plaintiff") not in {"", "—"}:
+        page, match = _first_matching_page(
+            caption_pages,
+            re.compile(re.escape(parties["plaintiff"].split()[0]), re.IGNORECASE),
+        )
+        page = page or caption_pages[0]
+        excerpt = _excerpt_around_match(page.get("text") or "", match) if match else (
+            page.get("text") or ""
+        )[:CASE_MAP_EXCERPT_MAX]
+        node = build_case_map_node(
+            "party",
+            parties["plaintiff"],
+            nyscef_document_number=nyscef,
+            page_ids=[page["page_id"]],
+            assertion_kind="verified_record_fact",
+            stable_key=f"plaintiff:{parties['plaintiff']}",
+            excerpt=excerpt,
+            speaker_party=None,
+            procedural_posture="caption",
+            confidence="medium",
+            extraction_signals=["caption_party_v"],
+            requires_review=True,
+            status="known",
+            extra={"role": "plaintiff"},
+        )
+        _append_unique_node(case_map["parties"], node, by_id)
+        _mark_review_candidate(case_map, node, "Confirm caption party spelling/role")
+
+    if parties and parties.get("defendant") not in {"", "—"}:
+        page = caption_pages[0]
+        node = build_case_map_node(
+            "party",
+            parties["defendant"],
+            nyscef_document_number=nyscef,
+            page_ids=[page["page_id"]],
+            assertion_kind="verified_record_fact",
+            stable_key=f"defendant:{parties['defendant']}",
+            excerpt=(page.get("text") or "")[:CASE_MAP_EXCERPT_MAX],
+            procedural_posture="caption",
+            confidence="medium",
+            extraction_signals=["caption_party_v"],
+            requires_review=True,
+            status="known",
+            extra={"role": "defendant"},
+        )
+        _append_unique_node(case_map["parties"], node, by_id)
+        _mark_review_candidate(case_map, node, "Confirm caption party spelling/role")
+
+    # Role-tagged name lines (still candidates; names can be OCR-noisy).
+    for page in caption_pages:
+        for match in PARTY_ROLE_RE.finditer(page.get("text") or ""):
+            name = clean_case_party(match.group("name"))
+            role = _normalize_speaker_party(match.group("role"))
+            if not name or len(name) < 3:
+                continue
+            node = build_case_map_node(
+                "party",
+                name,
+                nyscef_document_number=nyscef,
+                page_ids=[page["page_id"]],
+                assertion_kind="verified_record_fact",
+                stable_key=f"{role or 'party'}:{name}",
+                excerpt=_excerpt_around_match(page.get("text") or "", match),
+                procedural_posture="caption",
+                confidence="low",
+                extraction_signals=["role_tagged_party"],
+                requires_review=True,
+                status="candidate",
+                extra={"role": role},
+            )
+            _append_unique_node(case_map["parties"], node, by_id)
+            _mark_review_candidate(case_map, node, "Role-tagged party needs attorney review")
+
+
+def _ensure_unknown_party_placeholder(case_map, documents, by_id):
+    """If no parties were grounded, retain an explicit unknown rather than inventing names."""
+    if case_map["parties"]:
+        return
+    for document in documents or []:
+        pages = _iter_document_pages(document)
+        if not pages:
+            continue
+        nyscef = coerce_nyscef_document_number(document.get("nyscef_document_number"))
+        unknown = build_case_map_node(
+            "party",
+            "",
+            nyscef_document_number=nyscef,
+            page_ids=[pages[0]["page_id"]],
+            assertion_kind="unknown",
+            stable_key="unresolved-parties",
+            excerpt=(pages[0].get("text") or "")[:CASE_MAP_EXCERPT_MAX],
+            confidence="low",
+            extraction_signals=["parties_unresolved"],
+            requires_review=True,
+            status="unknown",
+            extra={"role": None},
+        )
+        _append_unique_node(case_map["parties"], unknown, by_id)
+        _mark_review_candidate(case_map, unknown, "Parties unresolved from record text")
+        return
+
+def _extract_policies_for_case_map(case_map, document, pages, by_id):
+    nyscef = coerce_nyscef_document_number(document.get("nyscef_document_number"))
+    for page in pages:
+        text = page.get("text") or ""
+        for match in POLICY_REF_RE.finditer(text):
+            policy_no = clean_text(match.group(1) or "")
+            label = f"Policy {policy_no}" if policy_no else "Insurance policy (number unknown)"
+            assertion = "verified_record_fact" if policy_no else "unknown"
+            status = "candidate" if policy_no else "unknown"
+            node = build_case_map_node(
+                "policy",
+                label,
+                nyscef_document_number=nyscef,
+                page_ids=[page["page_id"]],
+                assertion_kind=assertion,
+                stable_key=policy_no or f"policy-ref:{page['page_id']}",
+                excerpt=_excerpt_around_match(text, match),
+                confidence="medium" if policy_no else "low",
+                extraction_signals=["policy_reference"],
+                requires_review=True,
+                status=status,
+                extra={"policy_number": policy_no or None},
+            )
+            _append_unique_node(case_map["policies"], node, by_id)
+            _mark_review_candidate(
+                case_map,
+                node,
+                "Confirm policy number/terms; deterministic match is not a holding",
+            )
+
+
+def _extract_claims_and_defenses(case_map, document, pages, by_id):
+    nyscef = coerce_nyscef_document_number(document.get("nyscef_document_number"))
+    doc_type = document.get("type") or "other"
+    procedural = detect_procedural_posture(document.get("text") or "")
+
+    for page in pages:
+        text = page.get("text") or ""
+        if doc_type in {"complaint", "motion", "affirmation", "other", "memo"}:
+            for match in CAUSE_OF_ACTION_RE.finditer(text):
+                ordinal = clean_text(match.group("ordinal") or "")
+                title = clean_text(match.group("title") or "")
+                label = clean_text(
+                    f"{ordinal} cause of action {title}".strip()
+                ) or "Cause of action"
+                node = build_case_map_node(
+                    "claim",
+                    label,
+                    nyscef_document_number=nyscef,
+                    page_ids=[page["page_id"]],
+                    assertion_kind="party_allegation",
+                    stable_key=f"claim:{ordinal}:{title}:{page['page_id']}",
+                    excerpt=_excerpt_around_match(text, match),
+                    speaker_party="plaintiff",
+                    procedural_posture=procedural,
+                    confidence="medium",
+                    extraction_signals=["cause_of_action_heading"],
+                    requires_review=True,
+                    status="candidate",
+                    extra={"ordinal": ordinal or None, "title": title or None},
+                )
+                _append_unique_node(case_map["claims"], node, by_id)
+                _mark_review_candidate(
+                    case_map, node, "Claim heading is a party contention, not a finding"
+                )
+
+        if doc_type in {"answer", "opposition", "motion", "other", "memo"}:
+            for match in AFFIRMATIVE_DEFENSE_RE.finditer(text):
+                # Avoid treating "defense counsel" prose as a pleaded defense.
+                window = text[max(0, match.start() - 20) : match.end() + 40].lower()
+                if "counsel" in window and "affirmative" not in window:
+                    continue
+                ordinal = clean_text(match.group("ordinal") or "")
+                title = clean_text(match.group("title") or "")
+                if title.lower() in {"counsel", "attorney", "attorneys"}:
+                    continue
+                label = clean_text(f"{ordinal} defense {title}".strip()) or "Defense"
+                node = build_case_map_node(
+                    "defense",
+                    label,
+                    nyscef_document_number=nyscef,
+                    page_ids=[page["page_id"]],
+                    assertion_kind="legal_position",
+                    stable_key=f"defense:{ordinal}:{title}:{page['page_id']}",
+                    excerpt=_excerpt_around_match(text, match),
+                    speaker_party="defendant",
+                    procedural_posture=procedural,
+                    confidence="medium",
+                    extraction_signals=["affirmative_defense_heading"],
+                    requires_review=True,
+                    status="candidate",
+                    extra={"ordinal": ordinal or None, "title": title or None},
+                )
+                _append_unique_node(case_map["defenses"], node, by_id)
+                _mark_review_candidate(
+                    case_map, node, "Defense is a legal position requiring attorney review"
+                )
+
+
+def _extract_allegations(case_map, document, pages, by_id):
+    nyscef = coerce_nyscef_document_number(document.get("nyscef_document_number"))
+    procedural = detect_procedural_posture(document.get("text") or "")
+
+    for page in pages:
+        text = page.get("text") or ""
+        for match in ALLEGATION_SPEAKER_RE.finditer(text):
+            speaker = _normalize_speaker_party(match.group("speaker"))
+            excerpt = _excerpt_around_match(text, match, radius=140)
+            # Never promote allegations to verified facts.
+            node = build_case_map_node(
+                "allegation",
+                excerpt,
+                nyscef_document_number=nyscef,
+                page_ids=[page["page_id"]],
+                assertion_kind="party_allegation",
+                stable_key=f"allegation:{speaker}:{page['page_id']}:{match.start()}",
+                excerpt=excerpt,
+                speaker_party=speaker,
+                procedural_posture=procedural,
+                confidence="medium",
+                extraction_signals=["speaker_allegation_verb"],
+                requires_review=True,
+                status="candidate",
+            )
+            stored = _append_unique_node(case_map["allegations"], node, by_id)
+            _mark_review_candidate(
+                case_map, stored, "Allegation must not be treated as established fact"
+            )
+
+
+def _link_conflicting_allegations(case_map, by_id):
+    """Conflicting assertions coexist and link; they are not reconciled."""
+    allegation_nodes = list(case_map["allegations"])
+    for i, left in enumerate(allegation_nodes):
+        left_text = (left.get("label") or "").lower()
+        left_neg = bool(CONFLICT_NEGATION_RE.search(left_text))
+        left_tokens = {
+            token
+            for token in re.findall(r"[a-z]{4,}", left_text)
+            if token
+            not in {
+                "plaintiff",
+                "defendant",
+                "alleges",
+                "allege",
+                "contends",
+                "claims",
+                "that",
+                "this",
+            }
+        }
+        for right in allegation_nodes[i + 1 :]:
+            if left.get("speaker_party") and right.get("speaker_party"):
+                if left["speaker_party"] == right["speaker_party"]:
+                    continue
+            right_text = (right.get("label") or "").lower()
+            right_neg = bool(CONFLICT_NEGATION_RE.search(right_text))
+            right_tokens = set(re.findall(r"[a-z]{4,}", right_text))
+            overlap = left_tokens & right_tokens
+            if len(overlap) < 2:
+                continue
+            if left_neg == right_neg:
+                continue
+            if right["id"] not in left.setdefault("conflicts_with", []):
+                left["conflicts_with"].append(right["id"])
+            if left["id"] not in right.setdefault("conflicts_with", []):
+                right["conflicts_with"].append(left["id"])
+            support_pages = []
+            support_nyscef = None
+            for node in (left, right):
+                for support in node.get("record_support") or []:
+                    support_pages.extend(support.get("page_ids") or [])
+                    if support_nyscef is None:
+                        support_nyscef = support.get("nyscef_document_number")
+            rel = build_case_map_relationship(
+                "conflicts_with",
+                left["id"],
+                right["id"],
+                nyscef_document_number=support_nyscef,
+                page_ids=support_pages[:4],
+                assertion_kind="inference",
+                excerpt="Conflicting party allegations retained without reconciliation",
+                confidence="low",
+                requires_review=True,
+                extraction_signals=["allegation_conflict_heuristic"],
+            )
+            # Preserve each side's provenance separately when filings differ.
+            rel["record_support"] = []
+            for node in (left, right):
+                for support in node.get("record_support") or []:
+                    rel["record_support"].append(dict(support))
+            if not rel["record_support"]:
+                rel["record_support"] = [
+                    make_record_support(
+                        support_nyscef,
+                        support_pages[:4],
+                        "Conflicting party allegations retained without reconciliation",
+                    )
+                ]
+            _append_unique_relationship(case_map["relationships"], rel, by_id)
+            _mark_review_candidate(
+                case_map, rel, "Conflicting allegations require attorney comparison"
+            )
+
+def _extract_evidence_from_exhibits(case_map, document, pages, by_id):
+    nyscef = coerce_nyscef_document_number(document.get("nyscef_document_number"))
+    segments = document.get("exhibit_segments") or []
+    page_by_id = _page_index_by_id(pages)
+
+    # Filing node anchor for relationships (document-as-filing).
+    filing_page_ids = [p["page_id"] for p in pages[:1]] or []
+    filing_node = None
+    if filing_page_ids:
+        filing_label = clean_text(
+            document.get("title") or document.get("filename") or f"NYSCEF {nyscef}"
+        )
+        filing_node = build_case_map_node(
+            "evidence",
+            f"Filing: {filing_label}",
+            nyscef_document_number=nyscef,
+            page_ids=filing_page_ids,
+            assertion_kind="verified_record_fact",
+            stable_key=f"filing:{nyscef}",
+            excerpt=(pages[0].get("text") if pages else "")[:CASE_MAP_EXCERPT_MAX],
+            procedural_posture=document.get("type"),
+            confidence="high",
+            extraction_signals=["filing_record"],
+            requires_review=False,
+            status="known",
+            extra={"kind": "filing"},
+        )
+        filing_node = _append_unique_node(case_map["evidence"], filing_node, by_id)
+
+    for segment in segments:
+        if segment.get("segment_type") != "exhibit":
+            continue
+        page_ids = list(segment.get("page_ids") or [])
+        if not page_ids:
+            continue
+        label = segment.get("exhibit_label") or "unknown"
+        title = segment.get("exhibit_title")
+        display = f"Exhibit {label}" + (f": {title}" if title else "")
+        first_page = page_by_id.get(page_ids[0], {})
+        node = build_case_map_node(
+            "evidence",
+            display,
+            nyscef_document_number=nyscef,
+            page_ids=page_ids,
+            assertion_kind="verified_record_fact",
+            stable_key=f"exhibit:{label}:{segment.get('segment_id')}",
+            excerpt=(first_page.get("text") or "")[:CASE_MAP_EXCERPT_MAX],
+            procedural_posture="embedded_exhibit",
+            confidence=segment.get("boundary_confidence") or "medium",
+            extraction_signals=["exhibit_segment"],
+            requires_review=True,
+            status="known",
+            segment_id=segment.get("segment_id"),
+            exhibit_label=label,
+            extra={
+                "kind": "exhibit",
+                "segment_id": segment.get("segment_id"),
+                "exhibit_label": label,
+                "exhibit_title": title,
+            },
+        )
+        stored = _append_unique_node(case_map["evidence"], node, by_id)
+        _mark_review_candidate(
+            case_map,
+            stored,
+            "Exhibit existence is record-verified; content truth is not",
+        )
+        if filing_node is not None:
+            rel = build_case_map_relationship(
+                "attached_as_exhibit",
+                filing_node["id"],
+                stored["id"],
+                nyscef_document_number=nyscef,
+                page_ids=page_ids[:1],
+                assertion_kind="verified_record_fact",
+                excerpt=display,
+                confidence=segment.get("boundary_confidence") or "medium",
+                requires_review=False,
+                extraction_signals=["exhibit_segment_link"],
+                segment_id=segment.get("segment_id"),
+                exhibit_label=label,
+            )
+            _append_unique_relationship(case_map["relationships"], rel, by_id)
+
+
+def _extract_motions_and_orders(case_map, document, pages, by_id):
+    nyscef = coerce_nyscef_document_number(document.get("nyscef_document_number"))
+    doc_type = document.get("type") or "other"
+    procedural = detect_motion_posture([document], document.get("text") or "")
+
+    for page in pages:
+        text = page.get("text") or ""
+        motion_match = MOTION_HEADING_RE.search(text)
+        if motion_match or doc_type == "motion":
+            if motion_match or page is pages[0]:
+                match = motion_match
+                label = (
+                    clean_text(match.group(0))
+                    if match
+                    else clean_text(document.get("title") or document.get("filename") or "Motion")
+                )
+                node = build_case_map_node(
+                    "motion",
+                    label,
+                    nyscef_document_number=nyscef,
+                    page_ids=[page["page_id"]],
+                    assertion_kind="verified_record_fact",
+                    stable_key=f"motion:{label}:{page['page_id']}",
+                    excerpt=_excerpt_around_match(text, match) if match else text[:CASE_MAP_EXCERPT_MAX],
+                    procedural_posture=procedural,
+                    confidence="high" if match else "low",
+                    extraction_signals=(
+                        ["motion_heading"] if match else ["motion_document_type"]
+                    ),
+                    requires_review=not bool(match),
+                    status="known" if match else "candidate",
+                )
+                stored = _append_unique_node(case_map["motions"], node, by_id)
+                if stored.get("requires_review"):
+                    _mark_review_candidate(
+                        case_map, stored, "Motion classification needs attorney confirmation"
+                    )
+                if match:
+                    break
+
+    for page in pages:
+        text = page.get("text") or ""
+        order_match = ORDER_HEADING_RE.search(text)
+        if order_match or doc_type == "order":
+            if order_match or page is pages[0]:
+                match = order_match
+                label = (
+                    clean_text(match.group(0))
+                    if match
+                    else clean_text(document.get("title") or document.get("filename") or "Order")
+                )
+                # Court orders are verified as filings; holdings remain review-gated.
+                node = build_case_map_node(
+                    "court_order",
+                    label,
+                    nyscef_document_number=nyscef,
+                    page_ids=[page["page_id"]],
+                    assertion_kind="verified_record_fact",
+                    stable_key=f"order:{label}:{page['page_id']}",
+                    excerpt=_excerpt_around_match(text, match) if match else text[:CASE_MAP_EXCERPT_MAX],
+                    procedural_posture="order",
+                    confidence="high" if match else "low",
+                    extraction_signals=(
+                        ["order_heading"] if match else ["order_document_type"]
+                    ),
+                    requires_review=True,
+                    status="known" if match else "candidate",
+                )
+                stored = _append_unique_node(case_map["court_orders"], node, by_id)
+                _mark_review_candidate(
+                    case_map,
+                    stored,
+                    "Order text identified; do not invent holdings from heading alone",
+                )
+                if match:
+                    break
+
+
+def _extract_timeline_events(case_map, document, pages, by_id):
+    nyscef = coerce_nyscef_document_number(document.get("nyscef_document_number"))
+    procedural_tokens = (
+        "filed",
+        "served",
+        "heard",
+        "order",
+        "motion",
+        "accident",
+        "occurrence",
+        "executed",
+        "signed",
+    )
+
+    for page in pages:
+        text = page.get("text") or ""
+        for match in TIMELINE_DATE_RE.finditer(text):
+            excerpt = _excerpt_around_match(text, match, radius=100)
+            lower_excerpt = excerpt.lower()
+            if not any(token in lower_excerpt for token in procedural_tokens):
+                # Date alone is insufficient to assert a timeline event.
+                continue
+            date_text = clean_text(match.group("date"))
+            node = build_case_map_node(
+                "timeline_event",
+                excerpt,
+                nyscef_document_number=nyscef,
+                page_ids=[page["page_id"]],
+                assertion_kind="inference",
+                stable_key=f"timeline:{date_text}:{page['page_id']}:{match.start()}",
+                excerpt=excerpt,
+                procedural_posture=document.get("type"),
+                confidence="low",
+                extraction_signals=["dated_procedural_context"],
+                requires_review=True,
+                status="candidate",
+                extra={"event_date": date_text},
+            )
+            stored = _append_unique_node(case_map["timeline_events"], node, by_id)
+            _mark_review_candidate(
+                case_map,
+                stored,
+                "Timeline date/context is a candidate inference, not a finding",
+            )
+
+
+def _link_issues_to_filings(case_map, by_id):
+    """Additive relationships among already-extracted map nodes."""
+    claims = list(case_map["claims"])
+    allegations = list(case_map["allegations"])
+    exhibits = []
+    for node in case_map["evidence"]:
+        label = node.get("exhibit_label")
+        if not label:
+            for support in node.get("record_support") or []:
+                if support.get("exhibit_label"):
+                    label = support.get("exhibit_label")
+                    break
+        if label or (node.get("label") or "").lower().startswith("exhibit "):
+            exhibits.append(node)
+
+    for claim in claims:
+        claim_pages = []
+        claim_nyscef = None
+        for support in claim.get("record_support") or []:
+            claim_pages.extend(support.get("page_ids") or [])
+            if claim_nyscef is None:
+                claim_nyscef = support.get("nyscef_document_number")
+        for allegation in allegations:
+            if allegation.get("speaker_party") != "plaintiff":
+                continue
+            alg_nyscef = None
+            alg_pages = []
+            for support in allegation.get("record_support") or []:
+                alg_pages.extend(support.get("page_ids") or [])
+                if alg_nyscef is None:
+                    alg_nyscef = support.get("nyscef_document_number")
+            if claim_nyscef is not None and alg_nyscef is not None and claim_nyscef != alg_nyscef:
+                continue
+            rel = build_case_map_relationship(
+                "raises_issue",
+                claim["id"],
+                allegation["id"],
+                nyscef_document_number=claim_nyscef if claim_nyscef is not None else alg_nyscef,
+                page_ids=(claim_pages or alg_pages)[:2],
+                assertion_kind="inference",
+                excerpt="Claim/allegation co-occurrence within filing",
+                confidence="low",
+                requires_review=True,
+                extraction_signals=["claim_allegation_link"],
+            )
+            _append_unique_relationship(case_map["relationships"], rel, by_id)
+            _mark_review_candidate(case_map, rel, "Issue linkage is heuristic only")
+
+    for exhibit in exhibits:
+        exhibit_nyscef = None
+        exhibit_pages = []
+        exhibit_label = None
+        segment_id = None
+        for support in exhibit.get("record_support") or []:
+            exhibit_pages.extend(support.get("page_ids") or [])
+            if exhibit_nyscef is None:
+                exhibit_nyscef = support.get("nyscef_document_number")
+            exhibit_label = exhibit_label or support.get("exhibit_label")
+            segment_id = segment_id or support.get("segment_id")
+        for claim in claims:
+            claim_nyscef = None
+            for support in claim.get("record_support") or []:
+                if claim_nyscef is None:
+                    claim_nyscef = support.get("nyscef_document_number")
+            if (
+                claim_nyscef is not None
+                and exhibit_nyscef is not None
+                and claim_nyscef != exhibit_nyscef
+            ):
+                continue
+            rel = build_case_map_relationship(
+                "potentially_supports",
+                exhibit["id"],
+                claim["id"],
+                nyscef_document_number=exhibit_nyscef if exhibit_nyscef is not None else claim_nyscef,
+                page_ids=exhibit_pages[:2],
+                assertion_kind="inference",
+                excerpt="Exhibit co-filed with claim; support not established",
+                confidence="low",
+                requires_review=True,
+                extraction_signals=["exhibit_claim_cofiling"],
+                segment_id=segment_id,
+                exhibit_label=exhibit_label,
+            )
+            _append_unique_relationship(case_map["relationships"], rel, by_id)
+            _mark_review_candidate(
+                case_map, rel, "Exhibit-to-issue support requires attorney review"
+            )
+
+
+def iter_case_map_nodes(case_map):
+    for collection in CASE_MAP_NODE_COLLECTIONS:
+        for node in case_map.get(collection) or []:
+            yield collection, node
+
+
+def validate_case_map(case_map, documents=None):
+    """
+    Validate citation grounding and graph integrity.
+
+    Rejects/flags unsupported substantive assertions, invalid page IDs,
+    duplicate IDs, dangling relationships, and provenance mismatches.
+    """
+    case_map = case_map or empty_case_map()
+    errors = []
+    warnings = []
+
+    known_page_ids = set()
+    page_id_to_nyscef = {}
+    if documents is not None:
+        for document in documents:
+            nyscef = coerce_nyscef_document_number(document.get("nyscef_document_number"))
+            for page in _iter_document_pages(document):
+                page_id = page.get("page_id")
+                if not page_id:
+                    continue
+                known_page_ids.add(page_id)
+                page_id_to_nyscef[page_id] = nyscef
+
+    seen_ids = {}
+    node_ids = set()
+
+    def _validate_support(owner_id, assertion_kind, supports, *, is_relationship=False):
+        substantive = assertion_kind != "unknown"
+        if substantive and not supports:
+            errors.append(
+                {
+                    "code": "unsupported_assertion",
+                    "id": owner_id,
+                    "message": "Substantive assertion lacks record_support",
+                }
+            )
+            return
+
+        for support in supports or []:
+            doc_no = support.get("nyscef_document_number")
+            page_ids = support.get("page_ids") or []
+            if substantive and doc_no is None:
+                errors.append(
+                    {
+                        "code": "missing_nyscef",
+                        "id": owner_id,
+                        "message": "Record support missing nyscef_document_number",
+                    }
+                )
+            if substantive and not page_ids:
+                errors.append(
+                    {
+                        "code": "unsupported_assertion",
+                        "id": owner_id,
+                        "message": "Substantive assertion lacks page_ids",
+                    }
+                )
+            for page_id in page_ids:
+                if not isinstance(page_id, str) or not page_id.startswith("nyscef-"):
+                    errors.append(
+                        {
+                            "code": "invalid_page_id",
+                            "id": owner_id,
+                            "page_id": page_id,
+                            "message": "page_id is not a deterministic NYSCEF page id",
+                        }
+                    )
+                    continue
+                if known_page_ids and page_id not in known_page_ids:
+                    errors.append(
+                        {
+                            "code": "invalid_page_id",
+                            "id": owner_id,
+                            "page_id": page_id,
+                            "message": "page_id not present in provided documents",
+                        }
+                    )
+                expected = page_id_to_nyscef.get(page_id)
+                if (
+                    expected is not None
+                    and doc_no is not None
+                    and int(expected) != int(doc_no)
+                ):
+                    errors.append(
+                        {
+                            "code": "provenance_mismatch",
+                            "id": owner_id,
+                            "page_id": page_id,
+                            "message": (
+                                f"page_id nyscef {expected} does not match "
+                                f"support nyscef {doc_no}"
+                            ),
+                        }
+                    )
+                # Even without a document corpus, page_id prefix must agree.
+                prefix_match = re.match(r"^nyscef-(\d+)-page-", str(page_id))
+                if prefix_match and doc_no is not None:
+                    if int(prefix_match.group(1)) != int(doc_no):
+                        errors.append(
+                            {
+                                "code": "provenance_mismatch",
+                                "id": owner_id,
+                                "page_id": page_id,
+                                "message": "page_id prefix disagrees with nyscef_document_number",
+                            }
+                        )
+
+    for collection, node in iter_case_map_nodes(case_map):
+        node_id = node.get("id")
+        if not node_id:
+            errors.append(
+                {
+                    "code": "missing_id",
+                    "collection": collection,
+                    "message": "Node missing id",
+                }
+            )
+            continue
+        if node_id in seen_ids:
+            errors.append(
+                {
+                    "code": "duplicate_id",
+                    "id": node_id,
+                    "message": f"Duplicate id across {seen_ids[node_id]} and {collection}",
+                }
+            )
+        else:
+            seen_ids[node_id] = collection
+        node_ids.add(node_id)
+
+        assertion_kind = node.get("assertion_kind")
+        if assertion_kind not in CASE_MAP_ASSERTION_KINDS:
+            errors.append(
+                {
+                    "code": "invalid_assertion_kind",
+                    "id": node_id,
+                    "message": f"Invalid assertion_kind {assertion_kind}",
+                }
+            )
+        # Allegations must never be classified as established facts.
+        if node.get("node_type") == "allegation" and assertion_kind == "verified_record_fact":
+            errors.append(
+                {
+                    "code": "allegation_promoted_to_fact",
+                    "id": node_id,
+                    "message": "Allegation cannot be verified_record_fact",
+                }
+            )
+
+        _validate_support(node_id, assertion_kind, node.get("record_support") or [])
+
+        for conflict_id in node.get("conflicts_with") or []:
+            # Conflict targets are checked after all nodes are indexed.
+            node.setdefault("_pending_conflicts", []).append(conflict_id)
+
+    for collection, node in iter_case_map_nodes(case_map):
+        for conflict_id in node.pop("_pending_conflicts", []):
+            if conflict_id not in node_ids:
+                errors.append(
+                    {
+                        "code": "dangling_relationship",
+                        "id": node.get("id"),
+                        "target_id": conflict_id,
+                        "message": "conflicts_with points to missing node",
+                    }
+                )
+
+    rel_ids = set()
+    for relationship in case_map.get("relationships") or []:
+        rel_id = relationship.get("id")
+        if not rel_id:
+            errors.append({"code": "missing_id", "message": "Relationship missing id"})
+            continue
+        if rel_id in seen_ids or rel_id in rel_ids:
+            errors.append(
+                {
+                    "code": "duplicate_id",
+                    "id": rel_id,
+                    "message": "Duplicate relationship id",
+                }
+            )
+        rel_ids.add(rel_id)
+
+        source_id = relationship.get("source_id")
+        target_id = relationship.get("target_id")
+        if source_id not in node_ids:
+            errors.append(
+                {
+                    "code": "dangling_relationship",
+                    "id": rel_id,
+                    "source_id": source_id,
+                    "message": "Relationship source_id not found",
+                }
+            )
+        if target_id not in node_ids:
+            errors.append(
+                {
+                    "code": "dangling_relationship",
+                    "id": rel_id,
+                    "target_id": target_id,
+                    "message": "Relationship target_id not found",
+                }
+            )
+
+        _validate_support(
+            rel_id,
+            relationship.get("assertion_kind"),
+            relationship.get("record_support") or [],
+            is_relationship=True,
+        )
+
+    validation = {
+        "ok": not errors,
+        "errors": errors,
+        "warnings": warnings,
+    }
+    case_map["validation"] = validation
+    return validation
+
+
+def merge_case_maps(base_map, addition_map):
+    """
+    Incrementally merge case maps by deterministic ids without dropping provenance.
+    """
+    merged = empty_case_map()
+    by_id = {}
+
+    for source in (base_map or empty_case_map(), addition_map or empty_case_map()):
+        for collection in CASE_MAP_NODE_COLLECTIONS:
+            for node in source.get(collection) or []:
+                # Copy to avoid mutating caller structures unexpectedly.
+                node_copy = dict(node)
+                node_copy["record_support"] = [
+                    dict(support) for support in node.get("record_support") or []
+                ]
+                node_copy["extraction_signals"] = list(node.get("extraction_signals") or [])
+                node_copy["conflicts_with"] = list(node.get("conflicts_with") or [])
+                _append_unique_node(merged[collection], node_copy, by_id)
+
+        for relationship in source.get("relationships") or []:
+            rel_copy = dict(relationship)
+            rel_copy["record_support"] = [
+                dict(support) for support in relationship.get("record_support") or []
+            ]
+            rel_copy["extraction_signals"] = list(
+                relationship.get("extraction_signals") or []
+            )
+            _append_unique_relationship(merged["relationships"], rel_copy, by_id)
+
+        for candidate in source.get("review_candidates") or []:
+            if candidate not in merged["review_candidates"]:
+                merged["review_candidates"].append(dict(candidate))
+
+    validate_case_map(merged)
+    return merged
+
+
+def build_case_map_from_documents(documents, *, validate=True):
+    """
+    Construct a citation-grounded litigation case map from normalized documents.
+
+    Conservative deterministic extraction only. Semantic/attorney conclusions are
+    exposed as review_candidates rather than established facts.
+    """
+    case_map = empty_case_map()
+    by_id = {}
+
+    for document in documents or []:
+        # Ensure exhibit segments exist when pages are present so evidence
+        # provenance can flow through without requiring a separate pass.
+        working = document
+        if (
+            document.get("pages") is not None
+            and "exhibit_segments" not in document
+        ):
+            working = normalize_document(document, include_exhibit_segments=True)
+
+        pages = _iter_document_pages(working)
+        if not pages:
+            # Without page anchors we cannot ground substantive map nodes.
+            continue
+
+        _extract_parties_for_case_map(case_map, working, pages, by_id)
+        _extract_policies_for_case_map(case_map, working, pages, by_id)
+        _extract_claims_and_defenses(case_map, working, pages, by_id)
+        _extract_allegations(case_map, working, pages, by_id)
+        _extract_evidence_from_exhibits(case_map, working, pages, by_id)
+        _extract_motions_and_orders(case_map, working, pages, by_id)
+        _extract_timeline_events(case_map, working, pages, by_id)
+
+    _ensure_unknown_party_placeholder(case_map, documents, by_id)
+    _link_conflicting_allegations(case_map, by_id)
+    _link_issues_to_filings(case_map, by_id)
+
+    if validate:
+        validate_case_map(case_map, documents)
+    else:
+        case_map["validation"] = {"ok": True, "errors": [], "warnings": []}
+
+    return case_map
+
+
 def build_attorney_work_product(summary, documents):
     return {
         "plaintiff_core_arguments": [],
@@ -1548,6 +2843,7 @@ def get_matter(
     inventory_path=None,
     *,
     include_exhibit_segments=False,
+    include_case_map=False,
 ):
     resolved_folder = resolve_matter_folder(matter_folder)
     folder_documents = read_matter_folder(
@@ -1571,10 +2867,14 @@ def get_matter(
     all_documents.extend(folder_documents)
     all_documents.extend(documents)
 
+    # Case-map construction needs exhibit segment provenance when pages exist.
+    # Opt-in only: default consumers still omit segments and case_map.
+    segment_opt_in = include_exhibit_segments or include_case_map
+
     normalized_documents = [
         normalize_document(
             doc,
-            include_exhibit_segments=include_exhibit_segments,
+            include_exhibit_segments=segment_opt_in,
         )
         for doc in all_documents
     ]
@@ -1583,7 +2883,7 @@ def get_matter(
 
     summary = build_matter_summary(normalized_documents)
 
-    return {
+    result = {
         "matter_name": summary["case_name"],
         "case_name": summary["case_name"],
         "index_number": summary["index_number"],
@@ -1600,3 +2900,8 @@ def get_matter(
         "draft_generation": summary.get("attorney_work_product", {}).get("draft_generation", {}),
         "citation_exhibit_engine": summary.get("attorney_work_product", {}).get("citation_exhibit_engine", {}),
     }
+
+    if include_case_map:
+        result["case_map"] = build_case_map_from_documents(normalized_documents)
+
+    return result
