@@ -209,6 +209,7 @@ class PartyRoleEvidenceCompletenessTests(unittest.TestCase):
             )
             self.assertTrue(hit.get("page_id"))
             self.assertEqual(hit["page_id"], f"nyscef-502-page-{page:04d}")
+            self.assertTrue(hit.get("party_role_section_expanded"))
 
     def test_expansion_stops_at_next_major_section(self):
         docs = [_multipage_parties_complaint()]
@@ -995,6 +996,70 @@ class PartyRolePacketBudgetTests(unittest.TestCase):
         # Never truncate mid-name to meet budget.
         self.assertFalse(caption_hit["excerpt"].endswith("Budget"))
         self.assertFalse(parties_hit["excerpt"].endswith("Mesa"))
+
+    def test_controlling_source_protects_initial_and_expanded_section_pages(self):
+        def hit(doc_no, page, doc_type, text, *, expanded=False, score=1.0):
+            value = {
+                "result_id": f"r-{doc_no}-{page}",
+                "page_id": f"nyscef-{doc_no}-page-{page:04d}",
+                "nyscef_document_number": doc_no,
+                "pdf_page": page,
+                "source_filename": f"filing_{doc_no}_{doc_type}.pdf",
+                "document_type": doc_type,
+                "excerpt": text,
+                "page_text": text,
+                "classifications": ["party_identity"],
+                "assertion_kind": "verified_record_fact",
+                "score": score,
+            }
+            if expanded:
+                value["party_role_section_expanded"] = True
+            return value
+
+        complaint = [
+            hit(
+                41,
+                1,
+                "complaint",
+                "SUPREME COURT\nNorth Harbor LLC, Plaintiff, -against- East Ridge Inc., Defendant.",
+                score=30.0,
+            ),
+            hit(41, 2, "complaint", "PARTIES\n1. North Harbor LLC is the Plaintiff.", expanded=True, score=29.0),
+            # These pages arrived in initial retrieval and intentionally do not
+            # carry the expansion marker.
+            hit(41, 3, "complaint", "2. East Ridge Inc. is the Defendant.", score=28.0),
+            hit(41, 4, "complaint", "3. West Field LP is joined as a necessary party.", score=27.0),
+            hit(41, 5, "complaint", "4. South Creek Trust is a notice defendant.", expanded=True, score=26.0),
+        ]
+        answer = [
+            hit(
+                52,
+                page,
+                "answer",
+                f"ANSWER page {page}. North Harbor LLC is Plaintiff and East Ridge Inc. is Defendant.",
+                expanded=page in {2, 8},
+                score=20.0 - page,
+            )
+            for page in range(1, 9)
+        ]
+        duplicate = dict(complaint[2], result_id="duplicate-middle")
+
+        selected, meta = de.apply_party_role_packet_budget(
+            complaint + answer + [duplicate], max_hits=6, max_chars=24000
+        )
+        selected_ids = [item["page_id"] for item in selected]
+
+        for page in range(1, 6):
+            page_id = f"nyscef-41-page-{page:04d}"
+            self.assertIn(page_id, selected_ids)
+            protected = next(item for item in selected if item["page_id"] == page_id)
+            self.assertTrue(protected.get("controlling_party_role_pleading"))
+            self.assertEqual(protected["nyscef_document_number"], 41)
+            self.assertEqual(protected["pdf_page"], page)
+        self.assertEqual(selected_ids.count("nyscef-41-page-0003"), 1)
+        self.assertLessEqual(len(selected_ids), 6)
+        self.assertLessEqual(sum(1 for item in selected if item["nyscef_document_number"] == 52), 1)
+        self.assertEqual(meta["protected_hit_count"], 5)
 
 
 if __name__ == "__main__":

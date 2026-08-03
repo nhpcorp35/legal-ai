@@ -3952,6 +3952,14 @@ def _ensure_party_role_section_pages(
     injected = list(ranked)
     for page_id in section_ids:
         if page_id in selected_ids:
+            # A section page can have entered through ordinary scoring before
+            # expansion.  Give it the same provenance marker as an injected
+            # page so downstream packet budgeting can protect the complete
+            # contiguous section, not just the pages expansion happened to add.
+            for existing_hit in injected:
+                if existing_hit.get("page_id") == page_id:
+                    existing_hit["party_role_section_expanded"] = True
+                    break
             continue
         entry = page_lookup.get(page_id)
         if not entry:

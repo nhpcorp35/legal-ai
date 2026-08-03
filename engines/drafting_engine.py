@@ -1153,8 +1153,8 @@ def _hit_serialized_char_count(hit: dict) -> int:
     return len(normalize_whitespace(" ".join(str(p or "") for p in parts)))
 
 
-def _hit_is_controlling_party_role_pleading(hit: dict) -> bool:
-    """True for initiating/operative pleading caption or PARTIES-section pages."""
+def _hit_is_party_role_caption_or_section_page(hit: dict) -> bool:
+    """True for an operative pleading's caption or PARTIES-section pages."""
     kind = _classify_hit_filing_kind(hit)
     if kind not in {"initiating", "amended_pleading", "answer"}:
         return False
@@ -1183,6 +1183,84 @@ def _hit_is_controlling_party_role_pleading(hit: dict) -> bool:
     return False
 
 
+def _party_role_source_key(hit: dict) -> str:
+    """Stable filing identity used to keep pleading pages grouped."""
+    doc_no = hit.get("nyscef_document_number")
+    if doc_no is not None:
+        return f"doc:{doc_no}"
+    filename = normalize_whitespace(hit.get("source_filename") or "").lower()
+    if filename:
+        return f"file:{filename}"
+    return f"result:{hit.get('result_id') or hit.get('document_type') or 'unknown'}"
+
+
+def _controlling_party_role_source(hits: Sequence[dict]) -> Optional[str]:
+    """
+    Select one controlling pleading from retrieval/source priority.
+
+    A source's page count is deliberately absent from the ordering, so a later
+    answer cannot displace the higher-priority complaint merely by contributing
+    more hits.  First-seen order preserves the retrieval rank within a kind.
+    """
+    kind_priority = {"initiating": 0, "amended_pleading": 1, "answer": 2}
+    candidates = []
+    seen = set()
+    for index, hit in enumerate(hits or []):
+        kind = _classify_hit_filing_kind(hit)
+        if kind not in kind_priority:
+            continue
+        key = _party_role_source_key(hit)
+        if key in seen:
+            continue
+        seen.add(key)
+        candidates.append((kind_priority[kind], index, key))
+    return min(candidates)[2] if candidates else None
+
+
+def _mark_controlling_party_role_group(hits: Sequence[dict]) -> List[dict]:
+    """Mark the controlling caption and complete detected PARTIES span."""
+    marked = [dict(hit) for hit in (hits or [])]
+    source_key = _controlling_party_role_source(marked)
+    if source_key is None:
+        return marked
+
+    source_hits = [
+        hit for hit in marked if _party_role_source_key(hit) == source_key
+    ]
+    section_pages = []
+    for hit in source_hits:
+        text = _hit_materiality_text(hit)
+        if hit.get("party_role_section_expanded") or re.search(
+            r"(?i)(?:^|[\n\r])\s*(?:(?:section|article|part)\s+[ivxlcdm\d]+"
+            r"(?:\s*[.:=\-—–]\s*|\s+)|(?:[ivxlcdm]+|\d+)(?:\.\d+)*[.)]?\s+)?"
+            r"(?:the\s+)?parties\b",
+            text,
+        ):
+            try:
+                section_pages.append(int(hit.get("pdf_page")))
+            except (TypeError, ValueError):
+                pass
+
+    # Expansion provenance identifies the detected span.  Include every
+    # already-retrieved page between its endpoints even if that page entered
+    # before expansion and therefore lacked the provenance marker.
+    section_range = None
+    if section_pages:
+        section_range = (min(section_pages), max(section_pages))
+
+    for hit in source_hits:
+        protected = _hit_is_party_role_caption_or_section_page(hit)
+        if section_range is not None:
+            try:
+                page_no = int(hit.get("pdf_page"))
+                protected = protected or section_range[0] <= page_no <= section_range[1]
+            except (TypeError, ValueError):
+                pass
+        if protected:
+            hit["controlling_party_role_pleading"] = True
+    return marked
+
+
 def _party_role_hit_dedupe_key(hit: dict) -> str:
     page_id = normalize_whitespace(hit.get("page_id") or "")
     if page_id:
@@ -1192,6 +1270,29 @@ def _party_role_hit_dedupe_key(hit: dict) -> str:
         f"ex:{hit.get('nyscef_document_number')}-"
         f"{hit.get('pdf_page')}-{excerpt[:160]}"
     )
+
+
+def _compress_protected_party_role_hit(hit: dict) -> dict:
+    """Remove nonresponsive prose while preserving complete role-bearing lines."""
+    excerpt = str(hit.get("excerpt") or "")
+    lines = excerpt.splitlines()
+    if len(lines) < 2:
+        return hit
+    responsive = []
+    for line in lines:
+        if (
+            _PARTY_ROLE_BEARING_RE.search(line)
+            or _PARTY_ROLE_QUALIFICATION_OR_CHANGE_RE.search(line)
+            or re.search(r"(?i)\b(?:parties|against|index\s+no\.?|supreme\s+court)\b", line)
+        ):
+            responsive.append(line.rstrip())
+    compressed = "\n".join(line for line in responsive if line.strip()).strip()
+    if not compressed or len(compressed) >= len(excerpt):
+        return hit
+    result = dict(hit)
+    result["excerpt"] = compressed
+    result["party_role_excerpt_compressed"] = True
+    return result
 
 
 def apply_party_role_packet_budget(
@@ -1221,12 +1322,14 @@ def apply_party_role_packet_budget(
         seen.add(key)
         deduped.append(hit)
 
+    deduped = _mark_controlling_party_role_group(deduped)
+
     protected = []
     qualifying = []
     other = []
     for hit in deduped:
         text = _hit_materiality_text(hit)
-        if _hit_is_controlling_party_role_pleading(hit):
+        if hit.get("controlling_party_role_pleading"):
             protected.append(hit)
         elif _hit_materially_changes_party_role(text) or _hit_qualifies_or_changes_party_role(
             text
@@ -1234,6 +1337,15 @@ def apply_party_role_packet_budget(
             qualifying.append(hit)
         else:
             other.append(hit)
+
+    # If the protected group itself creates character pressure, deterministically
+    # remove only nonresponsive prose from each page.  Complete role-bearing
+    # lines and every page-level citation remain intact; if those responsive
+    # passages alone exceed the limit, protection still wins over silent loss.
+    if max_chars is not None and sum(
+        _hit_serialized_char_count(hit) for hit in protected
+    ) > max_chars:
+        protected = [_compress_protected_party_role_hit(hit) for hit in protected]
 
     def _sort_key(item: dict):
         return (
@@ -1285,7 +1397,7 @@ def apply_party_role_packet_budget(
         "excluded_by_budget": max(0, len(deduped) - len(selected)),
         "serialized_chars": chars,
         "protected_hit_count": sum(
-            1 for hit in selected if _hit_is_controlling_party_role_pleading(hit)
+            1 for hit in selected if hit.get("controlling_party_role_pleading")
         ),
     }
     return selected, meta
