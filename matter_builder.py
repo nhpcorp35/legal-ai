@@ -1639,8 +1639,112 @@ PARTY_ROLE_BEARING_RE = re.compile(
     r"sued\s+herein|"
     r"joined\s+(?:herein|as\s+a\s+party)|"
     r"necessary\s+party|"
-    r"real\s+party\s+in\s+interest"
+    r"real\s+party\s+in\s+interest|"
+    r"notice\s+defendants?|"
+    r"named\s+insured|"
+    r"additional\s+insured"
     r")"
+)
+
+# Contiguous PARTIES-section heading (works on newline or whitespace-collapsed text).
+PARTIES_SECTION_HEADING_RE = re.compile(
+    r"(?i)(?:^|[\n\r])\s*(?:the\s+)?parties(?:\s+to\s+(?:this\s+)?"
+    r"(?:action|proceeding|litigation))?\s*:?(?=\s*(?:$|\d+\.|"
+    r"(?:plaintiffs?|defendants?|petitioners?|respondents?|third\b)))"
+)
+
+# Major pleading sections that end contiguous PARTIES expansion.
+MAJOR_PLEADING_SECTION_HEADING_RE = re.compile(
+    r"(?i)(?:^|[\n\r]|(?<=\.)\s)(?:"
+    r"jurisdiction(?:\s+and\s+venue)?|"
+    r"venue|"
+    r"facts?(?:\s+common\s+to\s+all\s+(?:counts|claims))?|"
+    r"factual\s+background|"
+    r"background|"
+    r"nature\s+of\s+(?:the\s+)?action|"
+    r"preliminary\s+statement|"
+    r"introduction|"
+    r"general\s+allegations|"
+    r"causes?\s+of\s+action|"
+    r"(?:first|second|third|fourth|fifth)\s+cause\s+of\s+action|"
+    r"count\s+(?:[ivxlcdm]+|\d+)|"
+    r"as\s+and\s+for\s+(?:a\s+)?(?:first\s+)?cause\s+of\s+action|"
+    r"wherefore|"
+    r"prayer\s+for\s+relief|"
+    r"affirmative\s+defenses|"
+    r"verification"
+    r")\s*:?(?=\s*(?:$|\d+\.|(?:[A-Z(\"'])))"
+)
+
+_MAJOR_SECTION_START_RE = re.compile(
+    r"(?i)^\s*(?:"
+    r"jurisdiction(?:\s+and\s+venue)?|"
+    r"venue|"
+    r"facts?(?:\s+common\s+to\s+all\s+(?:counts|claims))?|"
+    r"factual\s+background|"
+    r"background|"
+    r"nature\s+of\s+(?:the\s+)?action|"
+    r"preliminary\s+statement|"
+    r"introduction|"
+    r"general\s+allegations|"
+    r"causes?\s+of\s+action|"
+    r"(?:first|second|third|fourth|fifth)\s+cause\s+of\s+action|"
+    r"count\s+(?:[ivxlcdm]+|\d+)|"
+    r"as\s+and\s+for\s+(?:a\s+)?(?:first\s+)?cause\s+of\s+action|"
+    r"wherefore|"
+    r"prayer\s+for\s+relief|"
+    r"affirmative\s+defenses|"
+    r"verification"
+    r")\s*:?(?=\s*(?:$|\d+\.|(?:[A-Z(\"'])))"
+)
+
+# Body markers that end a pleading caption block.
+PLEADING_CAPTION_END_RE = re.compile(
+    r"(?i)(?:^|[\n\r]|(?<=\.)\s)\s*(?:"
+    r"parties|"
+    r"the\s+parties|"
+    r"jurisdiction|"
+    r"venue|"
+    r"preliminary\s+statement|"
+    r"nature\s+of\s+(?:the\s+)?action|"
+    r"summons|"
+    r"complaint|"
+    r"verified\s+complaint|"
+    r"petition|"
+    r"to\s+the\s+above[\s-]+named|"
+    r"please\s+take\s+notice|"
+    r"the\s+undersigned|"
+    r"plaintiffs?\s*,?\s+by(?:\s+and\s+through)?\s+(?:their|its)\s+attorneys?"
+    r")\b"
+)
+
+# Affirmation / service filings must not receive complete-caption treatment.
+_AFFIRMATION_OR_SERVICE_FILING_RE = re.compile(
+    r"(?i)\b(?:"
+    r"affirmation(?:\s+of\s+(?:service|mailing|good\s+faith))?|"
+    r"affidavit(?:\s+of\s+service)?|"
+    r"proof\s+of\s+service|"
+    r"admission\s+of\s+service|"
+    r"affidavit\s+of\s+mailing|"
+    r"certificate\s+of\s+service"
+    r")\b"
+)
+
+# Concise party-role identity / qualification passage cues.
+PARTY_ROLE_PASSAGE_RE = re.compile(
+    r"(?i)\b(?:"
+    r"plaintiffs?|defendants?|petitioners?|respondents?|appellants?|appellees?|"
+    r"third[\s-]+party\s+(?:plaintiffs?|defendants?)|"
+    r"notice\s+defendants?|named\s+insured|additional\s+insured|"
+    r"joined(?:\s+herein|\s+as)?|sued\s+herein|necessary\s+party|"
+    r"real\s+party\s+in\s+interest|"
+    r"limited\s+liability\s+(?:company|corporation|partnership)|"
+    r"domestic\s+corporation|foreign\s+corporation|"
+    r"authorized\s+to\s+do\s+business|organized\s+(?:under|to)|"
+    r"incorrectly\s+named|substituted\s+as|capacity|"
+    r"is\s+a\s+(?:corporation|partnership|limited)|"
+    r"are\s+(?:corporations|partnerships|limited)"
+    r")\b"
 )
 
 MOTION_HEADING_RE = re.compile(
@@ -3000,6 +3104,13 @@ RETRIEVAL_EXCERPT_RADIUS = 110
 RETRIEVAL_EXCERPT_MAX = 240
 RETRIEVAL_SCORE_PRECISION = 6
 
+# Party-role evidence completeness: focused excerpts may exceed the default
+# query-centered 240-character window so captions and role passages stay intact.
+PARTY_ROLE_CAPTION_EXCERPT_MAX = 3500
+PARTY_ROLE_PASSAGE_EXCERPT_MAX = 2500
+PARTY_ROLE_COMBINED_EXCERPT_MAX = 4000
+PARTY_ROLE_SECTION_EXPAND_MAX_PAGES = 6
+
 # Transparent hybrid weights (sum intentionally > 1; absolute scale is relative).
 # boilerplate_penalty is applied as a negative component when justified.
 RETRIEVAL_WEIGHTS = {
@@ -3454,6 +3565,438 @@ def _party_role_pleading_priority_score(entry, text, hints):
     if role_bearing:
         return 0.25
     return 0.0
+
+
+def _truncate_at_token_boundary(text, max_len):
+    """Truncate without cutting through a party name or other token."""
+    raw = text or ""
+    if max_len is None or max_len <= 0 or len(raw) <= max_len:
+        return raw
+    cut = raw[:max_len]
+    if max_len < len(raw) and not raw[max_len].isspace():
+        space = cut.rfind(" ")
+        if space >= max(1, max_len // 2):
+            cut = cut[:space]
+    return cut.rstrip()
+
+
+def _is_affirmation_or_service_filing(entry, text=""):
+    """True for affirmations / service papers (no complete-caption treatment)."""
+    doc_type = normalize_retrieval_text(entry.get("document_type") or "")
+    filename = normalize_retrieval_text(entry.get("filename") or "")
+    document = entry.get("document") or {}
+    title = normalize_retrieval_text(
+        document.get("title") or document.get("name") or ""
+    )
+    hay = f"{filename} {title} {doc_type} {normalize_retrieval_text((text or '')[:320])}"
+    if doc_type in {"affirmation", "affidavit"}:
+        return True
+    return bool(_AFFIRMATION_OR_SERVICE_FILING_RE.search(hay))
+
+
+def _is_operative_pleading_kind(kind):
+    return kind in {"initiating", "amended_pleading", "answer"}
+
+
+def _page_has_parties_section_heading(text):
+    return bool(text and PARTIES_SECTION_HEADING_RE.search(text))
+
+
+def _page_starts_major_pleading_section(text):
+    """True when the page opens on a major non-PARTIES section heading."""
+    cleaned = clean_text(text or "")
+    if not cleaned:
+        return False
+    if re.match(r"(?i)^\s*(?:the\s+)?parties\b", cleaned):
+        return False
+    return bool(_MAJOR_SECTION_START_RE.match(cleaned))
+
+
+def _page_has_major_section_after_parties(text):
+    """True when a major section heading appears after a PARTIES block starts."""
+    if not text:
+        return False
+    parties_match = PARTIES_SECTION_HEADING_RE.search(text)
+    start_at = parties_match.end() if parties_match else 0
+    return bool(MAJOR_PLEADING_SECTION_HEADING_RE.search(text, start_at))
+
+
+def _looks_like_caption_bearing_page(text, page_number=None, kind=None):
+    """
+    Detect caption-bearing pages on initiating/operative pleadings only.
+
+    Affirmations and service papers are excluded by caller.
+    """
+    if not _is_operative_pleading_kind(kind):
+        return False
+    cleaned = clean_text(text or "")
+    if not cleaned:
+        return False
+    if page_number is not None:
+        try:
+            if int(page_number) > 3:
+                return False
+        except (TypeError, ValueError):
+            pass
+    hay = normalize_retrieval_text(cleaned)
+    has_versus = bool(re.search(r"\bv\.|\bagainst\b", hay))
+    has_courtish = any(
+        token in hay
+        for token in (
+            "supreme court",
+            "index no",
+            "county of",
+            "plaintiff",
+            "defendant",
+            "petitioner",
+            "respondent",
+        )
+    )
+    if not (has_versus and has_courtish):
+        return False
+    return True
+
+
+def _extract_complete_pleading_caption(text):
+    """
+    Preserve the complete caption party list for an initiating/operative pleading.
+
+    Stops at the first body/section marker after caption content. Never truncates
+    a party name mid-token when applying an explicit length bound.
+    """
+    cleaned = clean_text(text or "")
+    if not cleaned:
+        return ""
+    end_match = PLEADING_CAPTION_END_RE.search(cleaned)
+    if end_match and end_match.start() > 40:
+        caption = cleaned[: end_match.start()].rstrip()
+    else:
+        # Fall back to the leading block before a blank-line body break.
+        parts = re.split(r"\n\s*\n", cleaned, maxsplit=1)
+        caption = parts[0].rstrip() if parts else cleaned
+    return _truncate_at_token_boundary(caption, PARTY_ROLE_CAPTION_EXCERPT_MAX)
+
+
+def _split_passage_units(text):
+    """Split page text into concise paragraph / sentence units."""
+    cleaned = clean_text(text or "")
+    if not cleaned:
+        return []
+    # Numbered pleading paragraphs are the primary unit.
+    if re.search(r"\b\d+\.\s+", cleaned):
+        parts = re.split(r"(?=\b\d+\.\s+)", cleaned)
+        return [part.strip() for part in parts if part and part.strip()]
+    units = []
+    # Avoid splitting on entity abbreviations such as "Inc." / "LLC."
+    pieces = re.split(
+        r"(?<!\bInc)(?<!\bLLC)(?<!\bLLP)(?<!\bCorp)(?<!\bLtd)(?<!\bCo)"
+        r"(?<=[.;])\s+(?=(?:[A-Z\"(]|\d+\.))",
+        cleaned,
+    )
+    for piece in pieces:
+        piece = piece.strip()
+        if piece:
+            units.append(piece)
+    return units
+
+
+def _extract_party_role_passages(text):
+    """
+    Keep all concise sentences/paragraphs that establish party identity/role.
+
+    Does not stop after the first match; returns citation-grounded focused text.
+    """
+    units = _split_passage_units(text)
+    kept = []
+    for unit in units:
+        stripped = unit.strip()
+        if re.match(r"(?i)^(?:the\s+)?parties\b", stripped):
+            # Preserve the section marker when it is its own unit or prefix.
+            if PARTIES_SECTION_HEADING_RE.search(stripped[:48]):
+                kept.append("PARTIES")
+            # Continue into role content on the same unit after the heading.
+            remainder = PARTIES_SECTION_HEADING_RE.sub("", stripped, count=1).strip()
+            if remainder:
+                unit = remainder
+                stripped = remainder
+            else:
+                continue
+        if _MAJOR_SECTION_START_RE.match(stripped):
+            break
+        if MAJOR_PLEADING_SECTION_HEADING_RE.match(stripped):
+            break
+        if PARTY_ROLE_PASSAGE_RE.search(unit) or PARTY_ROLE_BEARING_RE.search(unit):
+            if (
+                PARTY_ROLE_PASSAGE_RE.search(unit)
+                or re.search(
+                    r"(?i)\b(?:is|are|was|were|named|joined|sued|authorized|"
+                    r"organized|corporation|partnership|"
+                    r"notice\s+defendant|named\s+insured)\b",
+                    unit,
+                )
+            ):
+                kept.append(stripped)
+    if not kept:
+        return ""
+    # De-duplicate while preserving order.
+    deduped = []
+    seen = set()
+    for item in kept:
+        key = normalize_retrieval_text(item)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    joined = "\n".join(deduped)
+    return _truncate_at_token_boundary(joined, PARTY_ROLE_PASSAGE_EXCERPT_MAX)
+
+
+def _party_role_evidence_excerpt(entry, text, phrase=None, tokens=None, phrases=None):
+    """
+    Build focused party-role evidence from complete captions and role passages.
+
+    Uses full-page content as the source of truth, then returns focused evidence
+    rather than a short query-centered 240-character fragment.
+    """
+    kind = _pleading_kind_for_party_role(entry, text)
+    page = entry.get("page") or {}
+    page_number = page.get("page_number")
+    parts = []
+
+    if (
+        _is_operative_pleading_kind(kind)
+        and not _is_affirmation_or_service_filing(entry, text)
+        and _looks_like_caption_bearing_page(text, page_number, kind)
+    ):
+        caption = _extract_complete_pleading_caption(text)
+        if caption:
+            parts.append(caption)
+
+    if _is_operative_pleading_kind(kind) or _page_has_role_bearing_language(text):
+        passages = _extract_party_role_passages(text)
+        if passages:
+            # Avoid duplicating caption text already captured.
+            if not parts or normalize_retrieval_text(passages) not in normalize_retrieval_text(
+                parts[0]
+            ):
+                parts.append(passages)
+
+    if parts:
+        combined = "\n\n".join(parts)
+        return _truncate_at_token_boundary(combined, PARTY_ROLE_COMBINED_EXCERPT_MAX)
+
+    # Fallback: ordinary excerpt with token-safe truncation.
+    fallback = _retrieval_excerpt(
+        text, phrase=phrase, tokens=tokens, phrases=phrases
+    )
+    return _truncate_at_token_boundary(fallback, RETRIEVAL_EXCERPT_MAX)
+
+
+def _iter_document_page_entries(entry_lookup_by_doc):
+    for doc_no, entries in sorted(
+        entry_lookup_by_doc.items(),
+        key=lambda item: (item[0] is None, item[0] if item[0] is not None else 10**9),
+    ):
+        ordered = sorted(
+            entries,
+            key=lambda item: (
+                (item.get("page") or {}).get("page_number") or 0,
+                item.get("page_id") or "",
+            ),
+        )
+        yield doc_no, ordered
+
+
+def _collect_parties_section_page_ids(page_lookup):
+    """
+    Contiguous PARTIES-section page ids for initiating/operative pleadings.
+
+    Expansion walks forward from a PARTIES heading, stops at the next clearly
+    identified major section, and respects PARTY_ROLE_SECTION_EXPAND_MAX_PAGES.
+    """
+    by_doc = {}
+    for page_id, entry in (page_lookup or {}).items():
+        doc_no = entry.get("nyscef_document_number")
+        by_doc.setdefault(doc_no, []).append({**entry, "page_id": page_id})
+
+    section_page_ids = []
+    for _doc_no, entries in _iter_document_page_entries(by_doc):
+        texts = [
+            ((entry.get("page") or {}).get("text") or "") for entry in entries
+        ]
+        kinds = [
+            _pleading_kind_for_party_role(entry, texts[idx])
+            for idx, entry in enumerate(entries)
+        ]
+        idx = 0
+        while idx < len(entries):
+            text = texts[idx]
+            kind = kinds[idx]
+            if not (
+                _is_operative_pleading_kind(kind)
+                and not _is_affirmation_or_service_filing(entries[idx], text)
+                and _page_has_parties_section_heading(text)
+            ):
+                idx += 1
+                continue
+            span = [entries[idx]["page_id"]]
+            stop_after_current = _page_has_major_section_after_parties(text)
+            j = idx + 1
+            while (
+                not stop_after_current
+                and j < len(entries)
+                and len(span) < PARTY_ROLE_SECTION_EXPAND_MAX_PAGES
+            ):
+                nxt_text = texts[j]
+                nxt_kind = kinds[j]
+                if not _is_operative_pleading_kind(nxt_kind):
+                    break
+                if _is_affirmation_or_service_filing(entries[j], nxt_text):
+                    break
+                if _page_starts_major_pleading_section(nxt_text):
+                    break
+                span.append(entries[j]["page_id"])
+                if _page_has_major_section_after_parties(nxt_text):
+                    break
+                # Stop when the continuation page no longer carries party-role signal.
+                if not (
+                    _page_has_role_bearing_language(nxt_text)
+                    or PARTY_ROLE_PASSAGE_RE.search(nxt_text or "")
+                    or _page_has_parties_section_heading(nxt_text)
+                ):
+                    break
+                j += 1
+            section_page_ids.extend(span)
+            idx = max(j, idx + 1)
+    # Preserve order while uniquifying.
+    seen = set()
+    ordered = []
+    for page_id in section_page_ids:
+        if page_id in seen:
+            continue
+        seen.add(page_id)
+        ordered.append(page_id)
+    return ordered
+
+
+def _build_party_role_section_candidate(
+    entry,
+    phrase,
+    tokens,
+    hints,
+    case_map_signals,
+    phrases=None,
+):
+    """Score/build a candidate for a contiguous PARTIES-section page."""
+    candidate = _score_page_candidate(
+        entry,
+        phrase,
+        tokens,
+        hints,
+        case_map_signals,
+        phrases=phrases,
+    )
+    # Section expansion pages remain available even with weak lexical scores.
+    if candidate["score"] <= 0:
+        priority = _party_role_pleading_priority_score(
+            entry, (entry.get("page") or {}).get("text") or "", hints
+        )
+        if priority:
+            bump = _round_retrieval_score(
+                max(0.15, priority) * RETRIEVAL_WEIGHTS["party_role_pleading"]
+            )
+            components = dict(candidate.get("component_scores") or {})
+            components["party_role_pleading"] = bump
+            candidate["component_scores"] = components
+            candidate["score"] = _round_retrieval_score(
+                sum(float(v) for v in components.values())
+            )
+            explanation = list(candidate.get("ranking_explanation") or [])
+            explanation.append("contiguous PARTIES-section expansion")
+            candidate["ranking_explanation"] = explanation
+    candidate["party_role_section_expanded"] = True
+    return candidate
+
+
+def _ensure_party_role_section_pages(
+    ranked,
+    *,
+    page_lookup,
+    phrase,
+    tokens,
+    hints,
+    case_map_signals,
+    phrases=None,
+    scored_by_page=None,
+):
+    """
+    Ensure contiguous PARTIES-section pages reach materiality/evidence packets.
+
+    Preserves ordinary diversification for pages already selected; injects any
+    missing section pages that ranking/top-k would otherwise drop.
+    """
+    if not (hints or {}).get("party_role_intent"):
+        return ranked
+
+    section_ids = _collect_parties_section_page_ids(page_lookup)
+    if not section_ids:
+        return ranked
+
+    selected_ids = {
+        item.get("page_id") for item in ranked if isinstance(item, dict)
+    }
+    scored_by_page = scored_by_page or {}
+    injected = list(ranked)
+    for page_id in section_ids:
+        if page_id in selected_ids:
+            continue
+        entry = page_lookup.get(page_id)
+        if not entry:
+            continue
+        existing = scored_by_page.get(page_id)
+        if existing is None:
+            existing = _build_party_role_section_candidate(
+                entry,
+                phrase,
+                tokens,
+                hints,
+                case_map_signals,
+                phrases=phrases,
+            )
+        else:
+            existing = dict(existing)
+            existing["party_role_section_expanded"] = True
+            if not existing.get("excerpt"):
+                existing["excerpt"] = _party_role_evidence_excerpt(
+                    entry,
+                    (entry.get("page") or {}).get("text") or "",
+                    phrase=phrase,
+                    tokens=tokens,
+                    phrases=list((_phrase_lists(phrases))[2]),
+                )
+            text = (entry.get("page") or {}).get("text") or ""
+            existing.setdefault("page_text", text)
+        if not validate_canonical_result_citation(existing, page_lookup):
+            continue
+        existing.setdefault(
+            "diversity_adjusted_score", existing.get("score") or 0.0
+        )
+        injected.append(existing)
+        selected_ids.add(page_id)
+
+    injected.sort(
+        key=lambda item: (
+            -item.get("diversity_adjusted_score", item.get("score") or 0.0),
+            -(item.get("score") or 0.0),
+            item.get("nyscef_document_number") is None,
+            item.get("nyscef_document_number")
+            if item.get("nyscef_document_number") is not None
+            else 10**9,
+            item.get("pdf_page") or 0,
+            item.get("result_id") or "",
+        )
+    )
+    return injected
 
 
 def _detect_retrieval_boilerplate(text):
@@ -4035,6 +4578,18 @@ def _score_page_candidate(
     excerpt = _retrieval_excerpt(
         text, phrase, tokens, phrases=phrase_list
     )
+    page_text_for_materiality = None
+    if (hints or {}).get("party_role_intent"):
+        excerpt = _party_role_evidence_excerpt(
+            entry,
+            text,
+            phrase=phrase,
+            tokens=tokens,
+            phrases=phrase_list,
+        )
+        # Full canonical page text supports materiality decisions downstream;
+        # compact evidence packets continue to use the focused excerpt only.
+        page_text_for_materiality = text
     grounding = _excerpt_query_grounding(excerpt, tokens, phrases=phrases)
     # Require meaningful excerpt/query grounding before case-map or relationship
     # boosts can materially elevate a result. Weakly grounded pages keep a
@@ -4202,6 +4757,7 @@ def _score_page_candidate(
         "document_type": entry["document_type"],
         "exhibit_segment": exhibit_payload,
         "excerpt": excerpt,
+        "page_text": page_text_for_materiality,
         "component_scores": components,
         "score": total,
         "ranking_explanation": explanation,
@@ -4516,6 +5072,25 @@ def retrieve_canonical_records(
         filing_penalty=filing_diversity_penalty,
         max_per_filing=max_per_filing,
     )
+
+    # Party-role intent: keep contiguous PARTIES-section pages available even
+    # when individual page scores fall below the ordinary top-page cutoff.
+    if hints.get("party_role_intent"):
+        scored_by_page = {
+            item.get("page_id"): item
+            for item in deduped
+            if isinstance(item, dict) and item.get("page_id")
+        }
+        ranked = _ensure_party_role_section_pages(
+            ranked,
+            page_lookup=page_lookup,
+            phrase=phrase,
+            tokens=tokens,
+            hints=hints,
+            case_map_signals=case_map_signals,
+            phrases=phrases,
+            scored_by_page=scored_by_page,
+        )
 
     # Final deterministic ordering key after diversity selection.
     ranked.sort(

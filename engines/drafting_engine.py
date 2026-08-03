@@ -157,7 +157,10 @@ _PARTY_ROLE_BEARING_RE = re.compile(
     r"sued\s+herein|"
     r"joined\s+(?:herein|as\s+a\s+party)|"
     r"necessary\s+party|"
-    r"real\s+party\s+in\s+interest"
+    r"real\s+party\s+in\s+interest|"
+    r"notice\s+defendants?|"
+    r"named\s+insured|"
+    r"additional\s+insured"
     r")"
 )
 
@@ -174,7 +177,10 @@ _PARTY_IDENTITY_ESTABLISHING_RE = re.compile(
     r"sued\s+(?:herein|as)\b|"
     r"(?:domestic|foreign)\s+corporation\b|"
     r"limited\s+liability\s+(?:company|corporation|partnership)\b|"
-    r"(?:authorized|organized)\s+to\s+do\s+business\b"
+    r"(?:authorized|organized)\s+to\s+do\s+business\b|"
+    r"notice\s+defendants?\b|"
+    r"named\s+insured\b|"
+    r"additional\s+insured\b"
     r")"
 )
 
@@ -894,8 +900,19 @@ def detect_party_role_question_intent(question: str) -> bool:
 
 
 def _hit_materiality_text(hit: dict) -> str:
+    """
+    Text used for party-role materiality decisions.
+
+    Prefers full canonical page text when available so short query-centered
+    excerpts cannot hide caption role labels or later party-role paragraphs.
+    Isolated metadata / filenames remain secondary context only.
+    """
+    page_text = normalize_whitespace(
+        hit.get("page_text") or hit.get("full_page_text") or ""
+    )
+    primary = page_text or normalize_whitespace(hit.get("excerpt") or "")
     parts = [
-        hit.get("excerpt"),
+        primary,
         hit.get("source_filename"),
         hit.get("document_type"),
         " ".join(str(x) for x in (hit.get("classifications") or [])),
@@ -907,8 +924,11 @@ def _hit_materiality_text(hit: dict) -> str:
 def _classify_hit_filing_kind(hit: dict) -> str:
     doc_type = normalize_whitespace(hit.get("document_type")).lower()
     filename = normalize_whitespace(hit.get("source_filename")).lower()
-    excerpt_head = normalize_whitespace(hit.get("excerpt") or "")[:240].lower()
-    hay = f"{filename} {doc_type} {excerpt_head}"
+    # Prefer a short head of full-page text when present; fall back to excerpt.
+    body = normalize_whitespace(
+        hit.get("page_text") or hit.get("full_page_text") or hit.get("excerpt") or ""
+    )[:240].lower()
+    hay = f"{filename} {doc_type} {body}"
 
     if "rji" in hay or "request for judicial intervention" in hay:
         return "rji"
@@ -950,9 +970,12 @@ def _hit_establishes_party_identity_or_role(text: str) -> bool:
         return False
     if _PARTY_IDENTITY_ESTABLISHING_RE.search(text):
         return True
+    # Require role-bearing language plus identity/relationship verbs or entity
+    # status words. Bare "Inc." / "LLC" inside a caption name is not enough.
     if _PARTY_ROLE_BEARING_RE.search(text) and re.search(
         r"(?i)\b(?:is|are|was|were|named|joined|sued|authorized|organized|"
-        r"corporation|partnership|llc|inc\.?)\b",
+        r"corporation|partnership|notice\s+defendant|"
+        r"named\s+insured)\b",
         text,
     ):
         return True
@@ -975,13 +998,29 @@ def _hit_is_mere_procedural_noise(text: str, kind: str) -> bool:
     return False
 
 
+def _hit_has_isolated_name_only_signal(text: str) -> bool:
+    """
+    True when text lacks role/identity language (a bare name is not material).
+    """
+    if not text:
+        return True
+    if _hit_establishes_party_identity_or_role(text):
+        return False
+    if _PARTY_ROLE_BEARING_RE.search(text):
+        return False
+    if _hit_qualifies_or_changes_party_role(text):
+        return False
+    return True
+
+
 def hit_is_material_for_party_role_question(hit: dict) -> bool:
     """
     Question-conditioned materiality for party-and-role intent.
 
     Prefers identity/role/entity/joinder/operative-pleading evidence and later
     filings that change, qualify, or conflict with a party's role. Excludes
-    unrelated motion/RJI/affirmation/order/chronology noise.
+    unrelated motion/RJI/affirmation/order/chronology noise. Uses full-page
+    text when available; an isolated party name alone is not material.
     """
     if not isinstance(hit, dict):
         return False
@@ -991,6 +1030,8 @@ def hit_is_material_for_party_role_question(hit: dict) -> bool:
     if _hit_qualifies_or_changes_party_role(text):
         return True
     if _hit_is_mere_procedural_noise(text, kind):
+        return False
+    if _hit_has_isolated_name_only_signal(text):
         return False
     if kind in {"motion", "rji"}:
         return _hit_establishes_party_identity_or_role(text)
