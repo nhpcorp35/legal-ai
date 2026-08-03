@@ -533,19 +533,34 @@ class PartyRoleEvidenceCompletenessTests(unittest.TestCase):
         retrieval["provisional_answer"] = "PROVISIONAL_SHOULD_NOT_APPEAR"
         retrieval["gold_answer"] = "GOLD_SHOULD_NOT_APPEAR"
 
-        captured = {}
+        captured = {"calls": []}
 
         def _model(system_prompt, user_prompt):
-            captured["system"] = system_prompt
-            captured["user"] = user_prompt
+            captured["calls"].append(
+                {"system": system_prompt, "user": user_prompt}
+            )
             packet = de.build_evidence_packet(self.party_query, retrieval)
             hit = packet["retrieval_hits"][0]
+            expected = de.extract_party_role_expected_attributes(packet)
+            answer_bits = []
+            for party in expected:
+                bit = (
+                    f"{party.get('procedural_role') or 'party'} "
+                    f"{party.get('identity')}"
+                ).strip()
+                if party.get("entity_type"):
+                    bit += f" is a {party['entity_type']}"
+                if party.get("residence_or_ppb"):
+                    bit += f"; {party['residence_or_ppb']}"
+                if party.get("pleaded_role_basis"):
+                    bit += f" ({party['pleaded_role_basis']})"
+                answer_bits.append(bit + ".")
             return {
-                "proposed_answer": "Parties are identified on the pleading.",
+                "proposed_answer": " ".join(answer_bits) or "Parties identified.",
                 "propositions": [
                     {
                         "proposition_id": "P1",
-                        "text": "Plaintiff is identified on the complaint.",
+                        "text": answer_bits[0] if answer_bits else "Plaintiff identified.",
                         "classification": "verified_record_fact",
                         "nyscef_document_number": hit["nyscef_document_number"],
                         "page_id": hit["page_id"],
@@ -579,12 +594,17 @@ class PartyRoleEvidenceCompletenessTests(unittest.TestCase):
             model_call=_model,
         )
         self.assertEqual(result["status"], de.STATUS_READY)
-        blob = (captured["system"] + "\n" + captured["user"]).lower()
-        self.assertNotIn("provisional_should_not_appear", blob)
-        self.assertNotIn("gold_should_not_appear", blob)
-        self.assertNotIn("provisional_answer", blob)
-        self.assertNotIn("gold_answer", blob)
-        user_packet = json.loads(captured["user"].split("\n\n", 1)[1])
+        for call in captured["calls"]:
+            blob = (call["system"] + "\n" + call["user"]).lower()
+            self.assertNotIn("provisional_should_not_appear", blob)
+            self.assertNotIn("gold_should_not_appear", blob)
+            self.assertNotIn("provisional_answer", blob)
+            self.assertNotIn("gold_answer", blob)
+        first_user = captured["calls"][0]["user"]
+        # Packet JSON sits between the two leading instruction paragraphs and
+        # any trailing party-role completeness instruction.
+        packet_json = first_user.split("\n\n", 2)[1]
+        user_packet = json.loads(packet_json)
         self.assertNotIn("provisional_answer", user_packet)
         self.assertNotIn("gold_answer", user_packet)
         for hit in user_packet.get("retrieval_hits") or []:
@@ -1401,6 +1421,383 @@ class CitationValidationImprovementTests(unittest.TestCase):
         self.assertIn("P1", kept_ids)
         self.assertIn("P3", kept_ids)
         self.assertNotIn("P2", kept_ids)
+
+
+class PartyRoleDraftingCompletenessTests(unittest.TestCase):
+    """Focused regressions for party-role drafting completeness enforcement."""
+
+    def setUp(self):
+        self.party_question = (
+            "Who are the parties and what are their roles in this action?"
+        )
+        self.motion_question = (
+            "What relief does the notice of motion for summary judgment seek?"
+        )
+        self.excerpt = (
+            "PARTIES\n"
+            "1. Plaintiff Cedar Ridge Logistics LLC is a domestic corporation "
+            "authorized to do business in this state.\n"
+            "2. Cedar Ridge Logistics LLC maintained a principal place of business "
+            "located at 10 Harbor Way, Albany, NY 12207.\n"
+            "3. Defendant Pine Harbor Depot Inc. is a notice defendant.\n"
+            "4. Pine Harbor Depot Inc. is a limited liability company.\n"
+            "5. Defendant Oakline Carrier LP is a resident of the State of New York "
+            "residing in Erie County.\n"
+        )
+        self.hit = {
+            "result_id": "cret-nyscef-810-page-0001",
+            "page_id": "nyscef-810-page-0001",
+            "nyscef_document_number": 810,
+            "pdf_page": 1,
+            "source_filename": "nyscef_doc_no_810_complaint.pdf",
+            "document_type": "complaint",
+            "excerpt": self.excerpt,
+            "classifications": ["party_identity"],
+            "assertion_kind": "party_allegation",
+            "score": 10.0,
+        }
+        self.retrieval = {
+            "query": self.party_question,
+            "results": [self.hit],
+            "provisional_answer": "PROVISIONAL_SHOULD_NOT_APPEAR",
+            "gold_answer": "GOLD_SHOULD_NOT_APPEAR",
+            "attorney_feedback": "FEEDBACK_SHOULD_NOT_APPEAR",
+        }
+
+    def _complete_payload(self, packet):
+        hit = packet["retrieval_hits"][0]
+        expected = de.extract_party_role_expected_attributes(packet)
+        bits = []
+        for party in expected:
+            bit = f"{party.get('procedural_role')} {party.get('identity')}"
+            if party.get("entity_type"):
+                bit += f" is a {party['entity_type']}"
+            if party.get("residence_or_ppb"):
+                bit += f"; {party['residence_or_ppb']}"
+            if party.get("pleaded_role_basis"):
+                bit += f" ({party['pleaded_role_basis']})"
+            bits.append(bit + ".")
+        answer = " ".join(bits)
+        return {
+            "proposed_answer": answer,
+            "propositions": [
+                {
+                    "proposition_id": "P1",
+                    "text": answer,
+                    "classification": "party_allegation",
+                    "nyscef_document_number": hit["nyscef_document_number"],
+                    "page_id": hit["page_id"],
+                    "pdf_page": hit["pdf_page"],
+                    "source_excerpt": "Plaintiff Cedar Ridge Logistics LLC is a domestic corporation",
+                    "confidence": 0.9,
+                    "rationale": "Party roster from pleading.",
+                    "polarity": "supporting",
+                }
+            ],
+            "supporting_evidence": [],
+            "contrary_evidence": [],
+            "unresolved_questions": [],
+            "documents_pages_reviewed": [],
+            "confidence": 0.9,
+            "attorney_review": {
+                "requires_attorney_review": True,
+                "review_notes": "Complete party roster.",
+                "legal_conclusions_labeled": True,
+                "coverage_conclusion": None,
+            },
+            "review_scope": {
+                "completeness": "not_established",
+                "qualification": "Limited to retrieved pleading.",
+            },
+        }
+
+    def _incomplete_payload(self, packet):
+        hit = packet["retrieval_hits"][0]
+        return {
+            "proposed_answer": "Cedar Ridge is plaintiff; Pine Harbor is defendant.",
+            "propositions": [
+                {
+                    "proposition_id": "P1",
+                    "text": "Cedar Ridge Logistics LLC is plaintiff.",
+                    "classification": "party_allegation",
+                    "nyscef_document_number": hit["nyscef_document_number"],
+                    "page_id": hit["page_id"],
+                    "pdf_page": hit["pdf_page"],
+                    "source_excerpt": "Plaintiff Cedar Ridge Logistics LLC is a domestic corporation",
+                    "confidence": 0.5,
+                    "rationale": "Identity only.",
+                    "polarity": "supporting",
+                }
+            ],
+            "supporting_evidence": [],
+            "contrary_evidence": [],
+            "unresolved_questions": [],
+            "documents_pages_reviewed": [],
+            "confidence": 0.5,
+            "attorney_review": {
+                "requires_attorney_review": True,
+                "review_notes": "Incomplete roster.",
+                "legal_conclusions_labeled": True,
+                "coverage_conclusion": None,
+            },
+            "review_scope": {
+                "completeness": "not_established",
+                "qualification": "Sparse draft.",
+            },
+        }
+
+    def test_final_party_role_prompt_requires_all_five_attribute_categories(self):
+        packet = de.build_evidence_packet(self.party_question, self.retrieval)
+        prompt = de.build_user_prompt(packet, party_role_completeness=True)
+        lowered = prompt.lower()
+        self.assertIn("identity", lowered)
+        self.assertIn("procedural role", lowered)
+        self.assertIn("entity type", lowered)
+        self.assertIn("residence or principal place of business", lowered)
+        self.assertIn("pleaded role basis", lowered)
+        self.assertIn("notice-defendant", lowered)
+        self.assertIn("not optional", lowered)
+        self.assertIn("cannot be omitted for brevity", lowered)
+
+        # Requirement must follow concision/materiality system guidance and
+        # evidence serialization in the exact final model prompt.
+        system = de.RECORD_ANALYSIS_SYSTEM_PROMPT.lower()
+        self.assertIn("concise practical attorney work product", system)
+        self.assertIn("materially useful", system)
+        evidence_json = de._stable_json(packet)
+        self.assertIn(evidence_json, prompt)
+        self.assertGreater(
+            prompt.lower().rfind("party-role drafting requirement"),
+            prompt.find(evidence_json),
+        )
+        # Trailing instruction is after the serialized evidence block.
+        self.assertTrue(
+            prompt.rstrip().endswith(
+                "Do not invent attributes absent from the evidence."
+            )
+        )
+
+    def test_complete_initial_response_causes_no_retry(self):
+        calls = []
+
+        def _model(system_prompt, user_prompt):
+            calls.append(user_prompt)
+            packet = de.build_evidence_packet(self.party_question, self.retrieval)
+            return self._complete_payload(packet)
+
+        result = de.answer_attorney_record_question(
+            self.party_question,
+            self.retrieval,
+            model_call=_model,
+        )
+        self.assertEqual(result["status"], de.STATUS_READY)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(result["audit"].get("party_role_provider_calls"), 1)
+        self.assertFalse(result["audit"].get("party_role_repair_attempted"))
+        self.assertIn("PARTY-ROLE DRAFTING REQUIREMENT", calls[0])
+
+    def test_incomplete_triggers_one_repair_then_success(self):
+        calls = []
+
+        def _model(system_prompt, user_prompt):
+            calls.append(user_prompt)
+            packet = de.build_evidence_packet(self.party_question, self.retrieval)
+            if len(calls) == 1:
+                return self._incomplete_payload(packet)
+            return self._complete_payload(packet)
+
+        result = de.answer_attorney_record_question(
+            self.party_question,
+            self.retrieval,
+            model_call=_model,
+        )
+        self.assertEqual(result["status"], de.STATUS_READY)
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(result["audit"].get("party_role_repair_attempted"))
+        self.assertEqual(result["audit"].get("party_role_provider_calls"), 2)
+        repair = calls[1].lower()
+        self.assertIn("missing required attributes", repair)
+        self.assertIn("original question", repair)
+        self.assertIn("evidence packet", repair)
+        self.assertIn("current draft", repair)
+        self.assertIn("cedar ridge logistics llc", repair)
+        # Repair prompt includes only permitted context — no protected refs.
+        self.assertNotIn("provisional_should_not_appear", repair)
+        self.assertNotIn("gold_should_not_appear", repair)
+        self.assertNotIn("feedback_should_not_appear", repair)
+        self.assertNotIn("attorney_feedback", repair)
+        self.assertIn("domestic corporation", result["proposed_answer"].lower())
+
+    def test_failed_repair_is_generation_failure_without_second_retry(self):
+        calls = []
+
+        def _model(system_prompt, user_prompt):
+            calls.append(user_prompt)
+            packet = de.build_evidence_packet(self.party_question, self.retrieval)
+            return self._incomplete_payload(packet)
+
+        result = de.answer_attorney_record_question(
+            self.party_question,
+            self.retrieval,
+            model_call=_model,
+        )
+        self.assertEqual(result["status"], de.STATUS_NOT_READY)
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(result["audit"].get("party_role_completeness_failed"))
+        self.assertTrue(result["audit"].get("party_role_repair_attempted"))
+        self.assertEqual(result["audit"].get("party_role_provider_calls"), 2)
+        self.assertTrue(result["audit"].get("missing_party_role_attributes"))
+        self.assertEqual(result["proposed_answer"], "")
+        self.assertEqual(result["propositions"], [])
+
+    def test_non_party_questions_skip_instruction_and_repair(self):
+        motion_hit = {
+            "result_id": "m1",
+            "page_id": "nyscef-811-p1",
+            "nyscef_document_number": 811,
+            "pdf_page": 1,
+            "source_filename": "nyscef_doc_no_811_notice_of_motion.pdf",
+            "document_type": "motion",
+            "excerpt": (
+                "Notice of Motion for Summary Judgment returnable June 1, 2024. "
+                "Movant seeks dismissal of the complaint."
+            ),
+            "classifications": ["motion"],
+            "assertion_kind": "unknown",
+            "score": 8.0,
+        }
+        retrieval = {
+            "query": self.motion_question,
+            "results": [motion_hit],
+            "provisional_answer": "PROVISIONAL_SHOULD_NOT_APPEAR",
+            "gold_answer": "GOLD_SHOULD_NOT_APPEAR",
+        }
+        calls = []
+
+        def _model(system_prompt, user_prompt):
+            calls.append(user_prompt)
+            return {
+                "proposed_answer": "Movant seeks dismissal of the complaint.",
+                "propositions": [
+                    {
+                        "proposition_id": "P1",
+                        "text": "Movant seeks dismissal of the complaint.",
+                        "classification": "verified_record_fact",
+                        "nyscef_document_number": 811,
+                        "page_id": "nyscef-811-p1",
+                        "pdf_page": 1,
+                        "source_excerpt": "Movant seeks dismissal of the complaint.",
+                        "confidence": 0.8,
+                        "rationale": "Motion relief.",
+                        "polarity": "supporting",
+                    }
+                ],
+                "supporting_evidence": [],
+                "contrary_evidence": [],
+                "unresolved_questions": [],
+                "documents_pages_reviewed": [],
+                "confidence": 0.8,
+                "attorney_review": {
+                    "requires_attorney_review": True,
+                    "review_notes": "Motion relief.",
+                    "legal_conclusions_labeled": True,
+                    "coverage_conclusion": None,
+                },
+                "review_scope": {
+                    "completeness": "not_established",
+                    "qualification": "Motion packet.",
+                },
+            }
+
+        result = de.answer_attorney_record_question(
+            self.motion_question,
+            retrieval,
+            model_call=_model,
+        )
+        self.assertEqual(result["status"], de.STATUS_READY)
+        self.assertEqual(len(calls), 1)
+        self.assertNotIn("PARTY-ROLE DRAFTING REQUIREMENT", calls[0])
+        self.assertNotIn("party_role_repair_attempted", result["audit"])
+        self.assertNotIn("party_role_provider_calls", result["audit"])
+
+    def test_protected_references_never_loaded_into_prompts(self):
+        calls = []
+
+        def _model(system_prompt, user_prompt):
+            calls.append(system_prompt + "\n" + user_prompt)
+            packet = de.build_evidence_packet(self.party_question, self.retrieval)
+            if "Missing required attributes" in user_prompt:
+                return self._complete_payload(packet)
+            return self._incomplete_payload(packet)
+
+        result = de.answer_attorney_record_question(
+            self.party_question,
+            self.retrieval,
+            model_call=_model,
+        )
+        self.assertEqual(result["status"], de.STATUS_READY)
+        self.assertEqual(len(calls), 2)
+        for blob in calls:
+            lowered = blob.lower()
+            self.assertNotIn("provisional_should_not_appear", lowered)
+            self.assertNotIn("gold_should_not_appear", lowered)
+            self.assertNotIn("feedback_should_not_appear", lowered)
+            self.assertNotIn("provisional_answer", lowered)
+            self.assertNotIn("gold_answer", lowered)
+            self.assertNotIn("attorney_feedback", lowered)
+
+    def test_expected_attribute_extraction_is_generic_and_ocr_tolerant(self):
+        packet = {
+            "question": self.party_question,
+            "retrieval_hits": [
+                {
+                    "excerpt": (
+                        "1. Plaintiff Ortov Lighting Inc. is a domesti c corporation.\n"
+                        "2. Ortov Lighting Inc. maintained a principal place of business "
+                        "in Albany.\n"
+                        "3. Defendant Meadow Bridge Repair Inc. is a notice defendant.\n"
+                    )
+                }
+            ],
+        }
+        expected = de.extract_party_role_expected_attributes(packet)
+        by_name = {
+            de.normalize_citation_text(item["identity"]): item for item in expected
+        }
+        self.assertIn("ortov lighting inc", by_name)
+        ortov = by_name["ortov lighting inc"]
+        self.assertEqual(ortov["procedural_role"], "plaintiff")
+        self.assertEqual(ortov["entity_type"], "domestic corporation")
+        self.assertIn("principal place of business", ortov["residence_or_ppb"].lower())
+        meadow = by_name.get("meadow bridge repair inc")
+        self.assertIsNotNone(meadow)
+        self.assertEqual(meadow["procedural_role"], "defendant")
+        self.assertEqual(meadow["pleaded_role_basis"], "notice defendant")
+
+        # Validation tolerates OCR surface forms without accepting missing values.
+        draft = {
+            "proposed_answer": (
+                "Plaintiff Ortov Lighting Inc. is a domestic corporation; "
+                "principal place of business in Albany. "
+                "Defendant Meadow Bridge Repair Inc. is a notice defendant."
+            ),
+            "propositions": [],
+        }
+        self.assertEqual(de.find_missing_party_role_attributes(draft, expected), [])
+        incomplete = {
+            "proposed_answer": "Ortov Lighting Inc. is plaintiff.",
+            "propositions": [],
+        }
+        missing = de.find_missing_party_role_attributes(incomplete, expected)
+        categories = {item["category"] for item in missing}
+        self.assertIn("entity_type", categories)
+        self.assertIn("residence_or_ppb", categories)
+        self.assertTrue(
+            any(
+                "Meadow Bridge Repair Inc" in (m.get("party") or "")
+                for m in missing
+            )
+        )
 
 
 if __name__ == "__main__":

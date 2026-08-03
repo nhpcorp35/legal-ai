@@ -411,19 +411,34 @@ class PartyRoleAnswerMaterialityTests(unittest.TestCase):
         self.assertIn("P2", removed_ids)
 
     def test_no_provisional_or_gold_in_generation_inputs(self):
-        captured = {}
+        captured = {"calls": []}
 
         def _model(system_prompt, user_prompt):
-            captured["system"] = system_prompt
-            captured["user"] = user_prompt
+            captured["calls"].append(
+                {"system": system_prompt, "user": user_prompt}
+            )
             packet = de.build_evidence_packet(self.party_question, self.retrieval)
             pleading = packet["retrieval_hits"][0]
+            expected = de.extract_party_role_expected_attributes(packet)
+            answer_bits = []
+            for party in expected:
+                bit = (
+                    f"{party.get('procedural_role') or 'party'} "
+                    f"{party.get('identity')}"
+                ).strip()
+                if party.get("entity_type"):
+                    bit += f" is a {party['entity_type']}"
+                if party.get("residence_or_ppb"):
+                    bit += f"; {party['residence_or_ppb']}"
+                if party.get("pleaded_role_basis"):
+                    bit += f" ({party['pleaded_role_basis']})"
+                answer_bits.append(bit + ".")
             return {
-                "proposed_answer": "Parties are identified on the pleading.",
+                "proposed_answer": " ".join(answer_bits) or "Parties identified.",
                 "propositions": [
                     {
                         "proposition_id": "P1",
-                        "text": "Plaintiff is identified on the complaint.",
+                        "text": answer_bits[0] if answer_bits else "Plaintiff identified.",
                         "classification": "verified_record_fact",
                         "nyscef_document_number": pleading["nyscef_document_number"],
                         "page_id": pleading["page_id"],
@@ -457,16 +472,19 @@ class PartyRoleAnswerMaterialityTests(unittest.TestCase):
             model_call=_model,
         )
         self.assertEqual(result["status"], de.STATUS_READY)
-        blob = (captured["system"] + "\n" + captured["user"]).lower()
-        self.assertNotIn("provisional_should_not_appear", blob)
-        self.assertNotIn("gold_should_not_appear", blob)
-        self.assertNotIn("provisional_answer", blob)
-        self.assertNotIn("gold_answer", blob)
-        user_packet = json.loads(captured["user"].split("\n\n", 1)[1])
+        for call in captured["calls"]:
+            blob = (call["system"] + "\n" + call["user"]).lower()
+            self.assertNotIn("provisional_should_not_appear", blob)
+            self.assertNotIn("gold_should_not_appear", blob)
+            self.assertNotIn("provisional_answer", blob)
+            self.assertNotIn("gold_answer", blob)
+        first = captured["calls"][0]
+        packet_json = first["user"].split("\n\n", 2)[1]
+        user_packet = json.loads(packet_json)
         self.assertNotIn("provisional_answer", user_packet)
         self.assertNotIn("gold_answer", user_packet)
-        self.assertIn("materially useful", captured["system"].lower())
-        self.assertIn("citation-grounded", captured["system"].lower())
+        self.assertIn("materially useful", first["system"].lower())
+        self.assertIn("citation-grounded", first["system"].lower())
 
     def test_non_party_questions_preserve_unfiltered_packet(self):
         order_hit = self.hits[6]

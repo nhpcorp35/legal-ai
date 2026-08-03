@@ -307,6 +307,23 @@ _PROCEDURAL_HARD_EXCLUDE_KINDS = frozenset(
 PARTY_ROLE_PACKET_MAX_HITS = 12
 PARTY_ROLE_PACKET_MAX_CHARS = 24000
 
+# Final party-role drafting instruction. Appended after evidence serialization so
+# it is not weakened by earlier concision / materiality / formatting guidance.
+PARTY_ROLE_DRAFTING_COMPLETENESS_INSTRUCTION = (
+    "PARTY-ROLE DRAFTING REQUIREMENT (mandatory; not optional):\n"
+    "For every evidence-supported party present in the packet, the answer must "
+    "report each of the following attributes when the supplied evidence supports "
+    "them:\n"
+    "1. identity\n"
+    "2. procedural role\n"
+    "3. entity type / entity form\n"
+    "4. residence or principal place of business\n"
+    "5. pleaded role basis, including notice-defendant basis where applicable\n"
+    "Prefer concise practical attorney work product, but required party "
+    "attributes are not optional and cannot be omitted for brevity, concision, "
+    "or materiality. Do not invent attributes absent from the evidence."
+)
+
 
 ModelCall = Callable[[str, str], Any]
 
@@ -1708,12 +1725,438 @@ def build_evidence_packet(
     return packet
 
 
-def build_user_prompt(evidence_packet: dict) -> str:
-    return (
+def build_user_prompt(
+    evidence_packet: dict,
+    *,
+    party_role_completeness: bool = False,
+) -> str:
+    prompt = (
         "Analyze the attorney question using only this evidence packet.\n"
         "Return the required JSON object and nothing else.\n\n"
         + _stable_json(evidence_packet)
     )
+    if party_role_completeness:
+        # Must follow evidence serialization so no later instruction weakens it.
+        prompt = (
+            prompt
+            + "\n\n"
+            + PARTY_ROLE_DRAFTING_COMPLETENESS_INSTRUCTION
+        )
+    return prompt
+
+
+# ---------------------------------------------------------------------------
+# Party-role drafting completeness (extract → validate → one repair)
+# ---------------------------------------------------------------------------
+
+_PARTY_ROLE_DRAFT_LABEL = (
+    r"third[\s-]+party\s+plaintiffs?|"
+    r"third[\s-]+party\s+defendants?|"
+    r"respondents?\s+on\s+(?:the\s+)?appeal|"
+    r"plaintiffs?|"
+    r"defendants?|"
+    r"petitioners?|"
+    r"respondents?|"
+    r"appellants?|"
+    r"appellees?"
+)
+
+_PARTY_ROLE_DRAFT_RE = re.compile(
+    r"(?:"
+    r"\b(?P<role_leading>" + _PARTY_ROLE_DRAFT_LABEL + r")\s+"
+    r"(?P<name_leading>(?-i:[A-Z])[A-Za-z0-9&.,' -]{0,80}?)"
+    r"(?=\s+(?:is|was|are|were|has|have|brings|commenced|,|\.|$|;))|"
+    r"\b(?P<name>(?-i:[A-Z])[A-Za-z0-9&.,' -]{0,80}?),\s*"
+    r"(?P<role>" + _PARTY_ROLE_DRAFT_LABEL + r")\b"
+    r")",
+    re.IGNORECASE,
+)
+
+_PARTY_ROLE_ENTITY_TYPE_PATTERNS: Tuple[Tuple[str, str], ...] = (
+    (
+        r"domestic\s+limited\s+liability\s+compan(?:y|ies)",
+        "domestic limited liability company",
+    ),
+    (
+        r"foreign\s+limited\s+liability\s+compan(?:y|ies)",
+        "foreign limited liability company",
+    ),
+    (r"limited\s+liability\s+partnership", "limited liability partnership"),
+    (r"limited\s+liability\s+corporation", "limited liability corporation"),
+    (r"limited\s+liability\s+compan(?:y|ies)", "limited liability company"),
+    (r"domestic\s+corporation", "domestic corporation"),
+    (r"foreign\s+corporation", "foreign corporation"),
+    (r"\bcorporation\b", "corporation"),
+    (r"\bpartnership\b", "partnership"),
+    (r"\bindividuals?\b", "individual"),
+)
+
+_PARTY_ROLE_RESIDENCE_PPB_RE = re.compile(
+    r"(?i)("
+    r"(?:principal\s+)?place\s+of\s+business\b[^.]{0,140}"
+    r"|resident\s+of\b[^.]{0,100}"
+    r"|residing\s+in\b[^.]{0,100}"
+    r"|resides\s+in\b[^.]{0,100}"
+    r"|is\s+a\s+resident\b[^.]{0,100}"
+    r")"
+)
+
+_PARTY_ROLE_PLEADED_BASIS_PATTERNS: Tuple[Tuple[str, str], ...] = (
+    (r"notice\s+defendants?", "notice defendant"),
+    (r"named\s+insured", "named insured"),
+    (r"additional\s+insured", "additional insured"),
+    (
+        r"joined\s+herein\s+as\s+a\s+necessary\s+party",
+        "joined herein as a necessary party",
+    ),
+    (r"necessary\s+party", "necessary party"),
+    (r"real\s+party\s+in\s+interest", "real party in interest"),
+    (r"sued\s+herein", "sued herein"),
+)
+
+_PARTY_ROLE_NAME_BLOCKLIST = frozenset(
+    {
+        "parties",
+        "wherefore",
+        "venue",
+        "jurisdiction",
+        "introduction",
+        "preliminary statement",
+        "nature of the action",
+        "nature of action",
+        "verification",
+        "plaintiff",
+        "plaintiffs",
+        "defendant",
+        "defendants",
+        "petitioner",
+        "petitioners",
+        "respondent",
+        "respondents",
+    }
+)
+
+
+def _normalize_party_role_draft_label(value: Any) -> Optional[str]:
+    role = normalize_whitespace(value).lower().replace("third party", "third-party")
+    role = role.strip(" .,;:")
+    if not role:
+        return None
+    if role.startswith("third-party plaintiff"):
+        return "third-party plaintiff"
+    if role.startswith("third-party defendant"):
+        return "third-party defendant"
+    if re.match(r"respondents?\s+on\s+(?:the\s+)?appeal$", role):
+        return "respondent on appeal"
+    if role.startswith("plaintiff"):
+        return "plaintiff"
+    if role.startswith("defendant"):
+        return "defendant"
+    if role.startswith("petitioner"):
+        return "petitioner"
+    if role.startswith("respondent"):
+        return "respondent"
+    if role.startswith("appellant"):
+        return "appellant"
+    if role.startswith("appellee"):
+        return "appellee"
+    return None
+
+
+def _plausible_party_role_draft_name(name: Any) -> bool:
+    cleaned = normalize_whitespace(name).strip(" .,;:")
+    if not cleaned or len(cleaned) < 3:
+        return False
+    lowered = cleaned.lower()
+    if lowered in _PARTY_ROLE_NAME_BLOCKLIST:
+        return False
+    if re.match(
+        r"(?i)^(is|was|are|were|has|have|seeks?|brings?|joined|authorized)\b",
+        cleaned,
+    ):
+        return False
+    return True
+
+
+def _ocr_flexible_phrase_present(phrase: str, haystack_norm: str) -> bool:
+    """OCR-tolerant substring check for multi-word attribute values."""
+    words = [w for w in re.split(r"\s+", normalize_whitespace(phrase).lower()) if w]
+    if not words:
+        return False
+    if " ".join(words) in haystack_norm:
+        return True
+    word_patterns = []
+    for word in words:
+        letters = [re.escape(ch) for ch in word if ch.isalnum() or ch in {"'", "-"}]
+        if not letters:
+            continue
+        word_patterns.append(r"\s*".join(letters))
+    if not word_patterns:
+        return False
+    pattern = re.compile(r"\s+".join(word_patterns), re.I)
+    return bool(pattern.search(haystack_norm))
+
+
+def _party_role_attribute_present(value: Any, draft_norm: str) -> bool:
+    text = normalize_whitespace(value)
+    if not text or not draft_norm:
+        return False
+    needle = normalize_citation_text(text)
+    if needle and needle in draft_norm:
+        return True
+    return _ocr_flexible_phrase_present(text, draft_norm)
+
+
+def _evidence_text_from_packet(evidence_packet: dict) -> str:
+    """
+    Text of the exact evidence supplied to the model.
+
+    Uses the same packet object that ``build_user_prompt`` serializes: question
+    plus retrieval-hit excerpts only (no protected references).
+    """
+    parts: List[str] = [str((evidence_packet or {}).get("question") or "")]
+    for hit in (evidence_packet or {}).get("retrieval_hits") or []:
+        if not isinstance(hit, dict):
+            continue
+        parts.append(str(hit.get("excerpt") or ""))
+    return "\n".join(parts)
+
+
+def _split_party_role_evidence_units(text: str) -> List[str]:
+    raw = str(text or "")
+    if not raw:
+        return []
+    units = re.split(r"(?:\n+|(?<=\.)\s+(?=\d+\.)|(?<=\.)\s+(?=[A-Z]))", raw)
+    return [normalize_whitespace(unit) for unit in units if normalize_whitespace(unit)]
+
+
+def _extract_entity_type_from_unit(unit: str) -> Optional[str]:
+    healed = heal_ocr_intra_word_spaces(unit)
+    for pattern, label in _PARTY_ROLE_ENTITY_TYPE_PATTERNS:
+        if re.search(pattern, healed, re.I) or re.search(pattern, unit, re.I):
+            return label
+    return None
+
+
+def _extract_residence_or_ppb_from_unit(unit: str) -> Optional[str]:
+    healed = heal_ocr_intra_word_spaces(unit)
+    match = _PARTY_ROLE_RESIDENCE_PPB_RE.search(healed) or _PARTY_ROLE_RESIDENCE_PPB_RE.search(
+        unit
+    )
+    if not match:
+        return None
+    value = normalize_whitespace(match.group(1))
+    return value or None
+
+
+def _extract_pleaded_role_basis_from_unit(unit: str) -> Optional[str]:
+    healed = heal_ocr_intra_word_spaces(unit)
+    for pattern, label in _PARTY_ROLE_PLEADED_BASIS_PATTERNS:
+        if re.search(pattern, healed, re.I) or re.search(pattern, unit, re.I):
+            return label
+    return None
+
+
+def _merge_party_role_expected(bucket: Dict[str, dict], party: dict) -> None:
+    key = normalize_citation_text(party.get("identity") or "")
+    if not key:
+        return
+    existing = bucket.get(key)
+    if existing is None:
+        bucket[key] = {
+            "identity": party.get("identity"),
+            "procedural_role": party.get("procedural_role"),
+            "entity_type": party.get("entity_type"),
+            "residence_or_ppb": party.get("residence_or_ppb"),
+            "pleaded_role_basis": party.get("pleaded_role_basis"),
+        }
+        return
+    for field in (
+        "procedural_role",
+        "entity_type",
+        "residence_or_ppb",
+        "pleaded_role_basis",
+    ):
+        if not existing.get(field) and party.get(field):
+            existing[field] = party[field]
+
+
+def extract_party_role_expected_attributes(evidence_packet: dict) -> List[dict]:
+    """
+    Deterministically extract evidence-supported party attributes.
+
+    Only attributes present in the exact serialized evidence packet are
+    returned. Missing categories are omitted (never invented).
+    """
+    serialized = _evidence_text_from_packet(evidence_packet)
+    parties: Dict[str, dict] = {}
+    for unit in _split_party_role_evidence_units(serialized):
+        entity_type = _extract_entity_type_from_unit(unit)
+        residence = _extract_residence_or_ppb_from_unit(unit)
+        pleaded_basis = _extract_pleaded_role_basis_from_unit(unit)
+        matched = False
+        for match in _PARTY_ROLE_DRAFT_RE.finditer(unit):
+            groups = match.groupdict()
+            raw_name = groups.get("name_leading") or groups.get("name")
+            raw_role = groups.get("role_leading") or groups.get("role")
+            name = normalize_whitespace(raw_name).strip(" .,;:")
+            role = _normalize_party_role_draft_label(raw_role)
+            if not _plausible_party_role_draft_name(name) or not role:
+                continue
+            matched = True
+            _merge_party_role_expected(
+                parties,
+                {
+                    "identity": name,
+                    "procedural_role": role,
+                    "entity_type": entity_type,
+                    "residence_or_ppb": residence,
+                    "pleaded_role_basis": pleaded_basis,
+                },
+            )
+        if matched:
+            continue
+        # Attribute-bearing follow-on lines that name a known party without a
+        # fresh role tag (e.g. residence lines) attach to an already-seen party.
+        if not (entity_type or residence or pleaded_basis) or not parties:
+            continue
+        unit_norm = normalize_citation_text(unit)
+        for key, existing in parties.items():
+            identity = existing.get("identity") or ""
+            if identity and _party_role_attribute_present(identity, unit_norm):
+                _merge_party_role_expected(
+                    parties,
+                    {
+                        "identity": identity,
+                        "procedural_role": existing.get("procedural_role"),
+                        "entity_type": entity_type,
+                        "residence_or_ppb": residence,
+                        "pleaded_role_basis": pleaded_basis,
+                    },
+                )
+                break
+
+    # Stable order by identity for deterministic missing-attribute lists.
+    ordered = sorted(
+        parties.values(),
+        key=lambda item: normalize_citation_text(item.get("identity") or ""),
+    )
+    return ordered
+
+
+def _draft_text_for_party_role_completeness(raw_response: Any) -> str:
+    payload = _parse_model_payload(raw_response)
+    parts: List[str] = [str(payload.get("proposed_answer") or "")]
+    props = payload.get("propositions")
+    if isinstance(props, list):
+        for prop in props:
+            if not isinstance(prop, dict):
+                continue
+            parts.append(str(prop.get("text") or ""))
+            parts.append(str(prop.get("source_excerpt") or prop.get("excerpt") or ""))
+    return "\n".join(parts)
+
+
+def find_missing_party_role_attributes(
+    raw_response: Any,
+    expected_parties: Sequence[dict],
+) -> List[dict]:
+    """
+    Return evidence-supported attributes absent from the draft.
+
+    Deterministic: identical draft + expected inputs yield identical missing lists.
+    """
+    draft_norm = normalize_citation_text(
+        _draft_text_for_party_role_completeness(raw_response)
+    )
+    missing: List[dict] = []
+    for party in expected_parties or []:
+        identity = normalize_whitespace(party.get("identity"))
+        if not identity:
+            continue
+        if not _party_role_attribute_present(identity, draft_norm):
+            missing.append(
+                {
+                    "party": identity,
+                    "category": "identity",
+                    "value": identity,
+                }
+            )
+            # Without identity, still report other supported categories so the
+            # repair prompt lists every omission for that party.
+        category_fields = (
+            ("procedural_role", party.get("procedural_role")),
+            ("entity_type", party.get("entity_type")),
+            ("residence_or_ppb", party.get("residence_or_ppb")),
+            ("pleaded_role_basis", party.get("pleaded_role_basis")),
+        )
+        for category, value in category_fields:
+            text = normalize_whitespace(value)
+            if not text:
+                continue
+            if not _party_role_attribute_present(text, draft_norm):
+                missing.append(
+                    {
+                        "party": identity,
+                        "category": category,
+                        "value": text,
+                    }
+                )
+    return missing
+
+
+def build_party_role_repair_prompt(
+    *,
+    question: str,
+    evidence_packet: dict,
+    current_draft: Any,
+    missing_attributes: Sequence[dict],
+) -> str:
+    """
+    Bounded repair prompt: original question, original evidence, current draft,
+    and the deterministic missing-attribute list only.
+    """
+    draft_payload = _parse_model_payload(current_draft)
+    return (
+        "Repair the party-role draft for completeness.\n"
+        "Preserve all correct content. Add only the missing required attributes "
+        "listed below that are supported by the evidence. Do not omit required "
+        "party attributes for brevity. Do not invent attributes absent from the "
+        "evidence.\n"
+        "Return the required JSON object and nothing else.\n\n"
+        f"Original question:\n{normalize_whitespace(question)}\n\n"
+        f"Evidence packet:\n{_stable_json(evidence_packet)}\n\n"
+        f"Current draft:\n{_stable_json(draft_payload)}\n\n"
+        f"Missing required attributes:\n{_stable_json(list(missing_attributes))}\n"
+    )
+
+
+def _party_role_completeness_failure(
+    *,
+    question: str,
+    retrieval: Optional[dict],
+    missing_attributes: Sequence[dict],
+    provider_error: Optional[str] = None,
+) -> dict:
+    reason = (
+        "Party-role drafting completeness failed after one repair retry; "
+        "required evidence-supported party attributes remain missing."
+    )
+    result = _empty_answer_shell(
+        status=STATUS_NOT_READY,
+        question=question,
+        retrieval=retrieval,
+        reason=reason,
+    )
+    result["audit"]["provider_available"] = True
+    result["audit"]["party_role_completeness_failed"] = True
+    result["audit"]["party_role_repair_attempted"] = True
+    result["audit"]["party_role_provider_calls"] = 2
+    result["audit"]["missing_party_role_attributes"] = list(missing_attributes)
+    result["audit"]["notes"].append(reason)
+    if provider_error:
+        result["audit"]["provider_error"] = provider_error
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -2316,6 +2759,9 @@ def answer_attorney_record_question(
 
     If no model provider is available, returns structured NOT READY with the
     retrieved evidence packet (does not fabricate an answer).
+
+    Party-and-role questions receive a final completeness instruction and, when
+    evidence-supported attributes are omitted, exactly one bounded repair retry.
     """
     question_text = normalize_whitespace(question)
     retrieval = retrieval or {"query": question_text, "results": []}
@@ -2342,11 +2788,17 @@ def answer_attorney_record_question(
         exhibit_context=exhibit_context,
         allowed_sources=allowed_sources,
     )
-    user_prompt = build_user_prompt(evidence_packet)
+    party_role_intent = detect_party_role_question_intent(question_text)
+    user_prompt = build_user_prompt(
+        evidence_packet,
+        party_role_completeness=party_role_intent,
+    )
     active_system = system_prompt or RECORD_ANALYSIS_SYSTEM_PROMPT
 
+    provider_calls = 0
     try:
         raw = provider(active_system, user_prompt)
+        provider_calls = 1
     except Exception as exc:  # noqa: BLE001 — surface as NOT READY, never fabricate
         result = _empty_answer_shell(
             status=STATUS_NOT_READY,
@@ -2356,7 +2808,38 @@ def answer_attorney_record_question(
         )
         result["audit"]["provider_available"] = True
         result["audit"]["provider_error"] = str(exc)
+        result["audit"]["party_role_provider_calls"] = 0
         return result
+
+    repair_attempted = False
+    if party_role_intent:
+        expected = extract_party_role_expected_attributes(evidence_packet)
+        missing = find_missing_party_role_attributes(raw, expected)
+        if missing:
+            repair_attempted = True
+            repair_prompt = build_party_role_repair_prompt(
+                question=question_text,
+                evidence_packet=evidence_packet,
+                current_draft=raw,
+                missing_attributes=missing,
+            )
+            try:
+                raw = provider(active_system, repair_prompt)
+                provider_calls = 2
+            except Exception as exc:  # noqa: BLE001
+                return _party_role_completeness_failure(
+                    question=question_text,
+                    retrieval=retrieval,
+                    missing_attributes=missing,
+                    provider_error=f"{type(exc).__name__}: {exc}",
+                )
+            missing_after = find_missing_party_role_attributes(raw, expected)
+            if missing_after:
+                return _party_role_completeness_failure(
+                    question=question_text,
+                    retrieval=retrieval,
+                    missing_attributes=missing_after,
+                )
 
     validated = validate_attorney_qa_response(
         raw,
@@ -2367,6 +2850,9 @@ def answer_attorney_record_question(
     )
     validated["audit"]["provider_available"] = True
     validated["evidence_packet_hit_count"] = evidence_packet["retrieval_hit_count"]
+    if party_role_intent:
+        validated["audit"]["party_role_provider_calls"] = provider_calls
+        validated["audit"]["party_role_repair_attempted"] = repair_attempted
     return validated
 
 
