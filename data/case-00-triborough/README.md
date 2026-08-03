@@ -17,3 +17,11 @@ Notes:
 - `LEGALAI_NYSCEF_INVENTORY_PATH` must be set explicitly; unrelated matters do not load Triborough metadata.
 - The misspelled `Tribrough` / `original:` volume segment is part of the mounted path and must be supplied via configuration, not hard-coded in application logic.
 - `Archive.zip` remains excluded by allowed-extension filtering.
+
+## Attorney-feedback evaluation
+
+See `ATTORNEY_FEEDBACK_EVAL.md` for the Case-00 evaluation command, inputs, and output paths.
+
+```bash
+python run_case00_attorney_eval.py
+```
