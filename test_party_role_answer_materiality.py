@@ -504,5 +504,161 @@ class PartyRoleAnswerMaterialityTests(unittest.TestCase):
         )
 
 
+class PartyRoleDraftingCompletenessTests(unittest.TestCase):
+    """Focused synthetic regressions for party-role expected-attribute parsing."""
+
+    def setUp(self):
+        self.party_question = (
+            "Who are the parties and what are their roles in this action?"
+        )
+
+    def _extract(self, excerpt: str, question: str = None):
+        packet = {
+            "question": question or self.party_question,
+            "retrieval_hits": [{"excerpt": excerpt}],
+        }
+        return de.extract_party_role_expected_attributes(packet)
+
+    def _by_identity(self, expected):
+        return {
+            de.normalize_citation_text(item["identity"]): item for item in expected
+        }
+
+    def test_corporation_with_principal_place_of_business(self):
+        expected = self._extract(
+            "1. Defendant Atlas Hauling Inc. was and still is a domestic "
+            "corporation with its principal place of business at 100 Main "
+            "Street, Albany, NY."
+        )
+        party = self._by_identity(expected)["atlas hauling inc"]
+        self.assertEqual(party["procedural_role"], "defendant")
+        self.assertEqual(party["entity_type"], "domestic corporation")
+        self.assertIn("principal place of business", party["residence_or_ppb"].lower())
+        self.assertIn("100 main street", party["residence_or_ppb"].lower())
+
+    def test_individual_with_residence(self):
+        expected = self._extract(
+            "3. Victor Rodriguez is an individual residing at 12 Oak Lane, "
+            "Buffalo, NY."
+        )
+        party = self._by_identity(expected)["victor rodriguez"]
+        self.assertEqual(party["entity_type"], "individual")
+        self.assertIn("residing at", party["residence_or_ppb"].lower())
+        self.assertIn("12 oak lane", party["residence_or_ppb"].lower())
+
+    def test_llc_with_principal_place_of_business(self):
+        expected = self._extract(
+            "4. XYZ LLC is a limited liability company with a principal place "
+            "of business at 55 Commerce Blvd, Rochester, NY."
+        )
+        party = self._by_identity(expected)["xyz llc"]
+        self.assertEqual(party["entity_type"], "limited liability company")
+        self.assertIn("principal place of business", party["residence_or_ppb"].lower())
+        self.assertIn("55 commerce blvd", party["residence_or_ppb"].lower())
+
+    def test_ocr_fractured_corporation_and_company_wording(self):
+        expected = self._extract(
+            "1. Defendant Harbor Gate Carrier Inc. was and still is a "
+            "domesti c corporation with its principal place of business at "
+            "9 Pier Road, Queens, NY.\n"
+            "2. Nimbus Freight LLC is a limited liability com pany with a "
+            "principal place of business at 3 Depot Ave."
+        )
+        by_name = self._by_identity(expected)
+        harbor = by_name["harbor gate carrier inc"]
+        self.assertEqual(harbor["entity_type"], "domestic corporation")
+        self.assertIn("principal place of business", harbor["residence_or_ppb"].lower())
+        nimbus = by_name["nimbus freight llc"]
+        self.assertEqual(nimbus["entity_type"], "limited liability company")
+        self.assertIn("principal place of business", nimbus["residence_or_ppb"].lower())
+
+    def test_role_before_name(self):
+        expected = self._extract(
+            "Defendant Summit Bridge Corp. is a domestic corporation."
+        )
+        party = self._by_identity(expected)["summit bridge corp"]
+        self.assertEqual(party["procedural_role"], "defendant")
+        self.assertEqual(party["entity_type"], "domestic corporation")
+
+    def test_role_after_name(self):
+        expected = self._extract(
+            "Summit Bridge Corp. is a defendant and a domestic corporation."
+        )
+        party = self._by_identity(expected)["summit bridge corp"]
+        self.assertEqual(party["procedural_role"], "defendant")
+        self.assertEqual(party["entity_type"], "domestic corporation")
+
+    def test_numbered_multiline_allegation(self):
+        expected = self._extract(
+            "1. Defendant Harbor Gate Carrier Inc. was and still is a\n"
+            "domestic corporation with its principal place of business\n"
+            "at 9 Pier Road, Queens, NY."
+        )
+        self.assertEqual(len(expected), 1)
+        party = expected[0]
+        self.assertEqual(party["identity"], "Harbor Gate Carrier Inc")
+        self.assertEqual(party["procedural_role"], "defendant")
+        self.assertEqual(party["entity_type"], "domestic corporation")
+        self.assertIn("9 pier road", party["residence_or_ppb"].lower())
+
+    def test_multiple_distinct_parties(self):
+        expected = self._extract(
+            "1. Plaintiff Cedar Ridge Logistics LLC is a domestic corporation.\n"
+            "2. Defendant Pine Harbor Depot Inc. is a limited liability company.\n"
+            "3. Victor Rodriguez is an individual residing at 12 Oak Lane."
+        )
+        by_name = self._by_identity(expected)
+        self.assertEqual(len(by_name), 3)
+        self.assertEqual(by_name["cedar ridge logistics llc"]["procedural_role"], "plaintiff")
+        self.assertEqual(by_name["pine harbor depot inc"]["procedural_role"], "defendant")
+        self.assertEqual(by_name["victor rodriguez"]["entity_type"], "individual")
+
+    def test_grouped_notice_defendant_basis(self):
+        expected = self._extract(
+            "1. Defendant Atlas Hauling Inc. is a domestic corporation.\n"
+            "2. Defendant Beta Logistics LLC is a limited liability company.\n"
+            "3. The foregoing defendants are notice defendants because they "
+            "were served with the notice of pendency."
+        )
+        by_name = self._by_identity(expected)
+        self.assertEqual(len(by_name), 2)
+        self.assertEqual(by_name["atlas hauling inc"]["pleaded_role_basis"], "notice defendant")
+        self.assertEqual(by_name["beta logistics llc"]["pleaded_role_basis"], "notice defendant")
+        self.assertNotIn("foregoing defendants", by_name)
+
+    def test_no_cross_party_attribute_assignment(self):
+        expected = self._extract(
+            "1. Defendant Alpha Corp. is a domestic corporation with its "
+            "principal place of business at 1 Main St.\n"
+            "2. Defendant Beta LLC is a limited liability company."
+        )
+        by_name = self._by_identity(expected)
+        alpha = by_name["alpha corp"]
+        beta = by_name["beta llc"]
+        self.assertEqual(alpha["entity_type"], "domestic corporation")
+        self.assertIn("1 main st", alpha["residence_or_ppb"].lower())
+        self.assertEqual(beta["entity_type"], "limited liability company")
+        self.assertIsNone(beta["residence_or_ppb"])
+        self.assertNotIn("1 main st", (beta.get("residence_or_ppb") or "").lower())
+
+    def test_placeholder_identity_group(self):
+        expected = self._extract(
+            "5. The John Does 1-10 are placeholder defendants whose identities "
+            "are presently unknown."
+        )
+        party = self._by_identity(expected)["john does 1-10"]
+        self.assertEqual(party["procedural_role"], "defendant")
+        self.assertIsNone(party.get("entity_type"))
+
+    def test_non_party_isolation_preserved(self):
+        expected = self._extract(
+            "Notice of Motion for Summary Judgment returnable June 1, 2024. "
+            "Movant seeks dismissal of the complaint. The contract was signed "
+            "in Albany without assigning procedural roles.",
+            question="What relief does the notice of motion seek?",
+        )
+        self.assertEqual(expected, [])
+
+
 if __name__ == "__main__":
     unittest.main()

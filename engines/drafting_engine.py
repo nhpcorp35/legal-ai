@@ -1772,6 +1772,61 @@ _PARTY_ROLE_DRAFT_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Generic pleading-allegation identity/role discovery (primary parser path).
+_PARTY_ROLE_NAME_FRAGMENT = (
+    r"(?-i:[A-Z][A-Za-z0-9&'’.-]*|"
+    r"LLC|LLP|LP|Inc\.?|Corp\.?|Co\.?|Ltd\.?|PLLC|PC|PLC)"
+)
+_PARTY_ROLE_NAME_RE = (
+    r"(?P<name>"
+    r"(?!(?:the\s+)?(?:" + _PARTY_ROLE_DRAFT_LABEL + r")\b)"
+    r"(?:John\s+Does?|Jane\s+Does?|"
+    r"(?-i:[A-Z]{2,})\s+CORPS?\.?|"
+    + _PARTY_ROLE_NAME_FRAGMENT
+    + r")"
+    r"(?:\s+" + _PARTY_ROLE_NAME_FRAGMENT + r"){0,8}"
+    r"(?:\s+\d+(?:\s*(?:[-–—]|through)\s*\d+)?)?"
+    r")"
+)
+_PARTY_ROLE_COPULA = (
+    r"(?:was\s+and\s+still\s+is|is|are|was|were|has\s+been|have\s+been)"
+)
+_PARTY_ROLE_ALLEGATION_ROLE_BEFORE_RE = re.compile(
+    r"(?i)(?:^\s*\d+\.\s*)?\s*"
+    r"(?:the\s+)?(?P<role>" + _PARTY_ROLE_DRAFT_LABEL + r")\s+"
+    + _PARTY_ROLE_NAME_RE
+    + r"\s*(?:,|\s+" + _PARTY_ROLE_COPULA + r")",
+)
+_PARTY_ROLE_ALLEGATION_ROLE_AFTER_RE = re.compile(
+    r"(?i)(?:^\s*\d+\.\s*)?\s*"
+    r"(?:the\s+)?" + _PARTY_ROLE_NAME_RE + r"\s*"
+    r"(?:"
+    r",\s*(?P<role_comma>" + _PARTY_ROLE_DRAFT_LABEL + r")\b|"
+    r"\s+" + _PARTY_ROLE_COPULA + r"\s+(?:(?:a|an|the)\s+)?"
+    r"(?P<role_pred>" + _PARTY_ROLE_DRAFT_LABEL + r")\b"
+    r")",
+)
+_PARTY_ROLE_ALLEGATION_ENTITY_RE = re.compile(
+    r"(?i)(?:^\s*\d+\.\s*)?\s*"
+    r"(?:the\s+)?" + _PARTY_ROLE_NAME_RE + r"\s+"
+    + _PARTY_ROLE_COPULA + r"\s+"
+    r"(?:(?:a|an|the)\s+)?"
+    r"(?:"
+    r"domestic|foreign|limited|individual|corporation|partnership|"
+    r"association|company|llc|llp"
+    r")\b",
+)
+_PARTY_ROLE_GROUPED_BASIS_RE = re.compile(
+    r"(?i)\b(?:the\s+)?(?:foregoing|said|these|those|above(?:-|\s+)named)\s+"
+    r"defendants?\b.*\bnotice\s+defendants?\b",
+)
+_PARTY_ROLE_PLACEHOLDER_GROUP_RE = re.compile(
+    r"(?i)\b(?P<name>"
+    r"(?:John\s+Does?|Jane\s+Does?|(?-i:[A-Z]{2,})\s+CORPS?\.?)"
+    r"\s+\d+(?:\s*(?:[-–—]|through)\s*\d+)?)\b"
+    r"(?:[^.]{0,80}?\b(?P<role>" + _PARTY_ROLE_DRAFT_LABEL + r")\b)?",
+)
+
 _PARTY_ROLE_ENTITY_TYPE_PATTERNS: Tuple[Tuple[str, str], ...] = (
     (
         r"domestic\s+limited\s+liability\s+compan(?:y|ies)",
@@ -1786,6 +1841,7 @@ _PARTY_ROLE_ENTITY_TYPE_PATTERNS: Tuple[Tuple[str, str], ...] = (
     (r"limited\s+liability\s+compan(?:y|ies)", "limited liability company"),
     (r"domestic\s+corporation", "domestic corporation"),
     (r"foreign\s+corporation", "foreign corporation"),
+    (r"\bassociations?\b", "association"),
     (r"\bcorporation\b", "corporation"),
     (r"\bpartnership\b", "partnership"),
     (r"\bindividuals?\b", "individual"),
@@ -1795,8 +1851,8 @@ _PARTY_ROLE_RESIDENCE_PPB_RE = re.compile(
     r"(?i)("
     r"(?:principal\s+)?place\s+of\s+business\b[^.]{0,140}"
     r"|resident\s+of\b[^.]{0,100}"
-    r"|residing\s+in\b[^.]{0,100}"
-    r"|resides\s+in\b[^.]{0,100}"
+    r"|residing\s+(?:in|at)\b[^.]{0,100}"
+    r"|resides\s+(?:in|at)\b[^.]{0,100}"
     r"|is\s+a\s+resident\b[^.]{0,100}"
     r")"
 )
@@ -1923,11 +1979,61 @@ def _evidence_text_from_packet(evidence_packet: dict) -> str:
 
 
 def _split_party_role_evidence_units(text: str) -> List[str]:
+    """
+    Split serialized pleading evidence into allegation-sized units.
+
+    Keeps numbered paragraphs intact (including multiline continuations) and
+    avoids fracturing ``1. Defendant ...`` into a bare ``1.`` token.
+    """
     raw = str(text or "")
     if not raw:
         return []
-    units = re.split(r"(?:\n+|(?<=\.)\s+(?=\d+\.)|(?<=\.)\s+(?=[A-Z]))", raw)
-    return [normalize_whitespace(unit) for unit in units if normalize_whitespace(unit)]
+    numbered = re.compile(r"^\s*\d+\.\s+\S")
+    units: List[str] = []
+    buf: List[str] = []
+
+    def flush() -> None:
+        if not buf:
+            return
+        joined = normalize_whitespace(" ".join(buf))
+        if joined:
+            units.append(joined)
+        buf.clear()
+
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            flush()
+            continue
+        if numbered.match(stripped):
+            flush()
+            buf.append(stripped)
+            continue
+        if buf and not re.search(r"[.!?]\s*$", buf[-1]):
+            # Unambiguous immediate continuation of an unfinished allegation.
+            buf.append(stripped)
+            continue
+        flush()
+        buf.append(stripped)
+    flush()
+
+    # Sentence-level split for dense single-line blocks, but never after a
+    # leading paragraph number (``1. Name ...``).
+    expanded: List[str] = []
+    sentence_split = re.compile(
+        r"(?<=[a-z0-9)\"'])\.\s+(?=[A-Z])|(?<=\.)\s+(?=\d+\.\s+)"
+    )
+    for unit in units:
+        if numbered.match(unit):
+            expanded.append(unit)
+            continue
+        parts = [
+            normalize_whitespace(part)
+            for part in sentence_split.split(unit)
+            if normalize_whitespace(part)
+        ]
+        expanded.extend(parts or [unit])
+    return expanded
 
 
 def _extract_entity_type_from_unit(unit: str) -> Optional[str]:
@@ -1955,6 +2061,86 @@ def _extract_pleaded_role_basis_from_unit(unit: str) -> Optional[str]:
         if re.search(pattern, healed, re.I) or re.search(pattern, unit, re.I):
             return label
     return None
+
+
+def _clean_party_role_identity_name(raw_name: Any) -> str:
+    name = normalize_whitespace(raw_name).strip(" .,;:")
+    name = re.sub(r"^(?:the|a|an)\s+", "", name, flags=re.I).strip(" .,;:")
+    # If a role label was absorbed into the name, peel it off.
+    peeled = re.match(
+        r"(?i)^(" + _PARTY_ROLE_DRAFT_LABEL + r")\s+(.+)$",
+        name,
+    )
+    if peeled:
+        name = peeled.group(2).strip(" .,;:")
+    return name
+
+
+def _discover_party_role_identities_in_unit(unit: str) -> List[dict]:
+    """
+    Discover party identities from generic numbered pleading allegations.
+
+    Supports role-before-name, role-after-name, entity/residence-only
+    allegations, and placeholder identity groups. Does not invent roles.
+    """
+    healed = heal_ocr_intra_word_spaces(unit)
+    found: Dict[str, dict] = {}
+
+    def remember(raw_name: Any, raw_role: Any = None) -> None:
+        name = _clean_party_role_identity_name(raw_name)
+        role = _normalize_party_role_draft_label(raw_role) if raw_role else None
+        # Recover role when the raw span still began with a role label.
+        if not role:
+            leading = re.match(
+                r"(?i)^(" + _PARTY_ROLE_DRAFT_LABEL + r")\s+",
+                normalize_whitespace(raw_name or ""),
+            )
+            if leading:
+                role = _normalize_party_role_draft_label(leading.group(1))
+        if not _plausible_party_role_draft_name(name):
+            return
+        # Reject grouped referents that are not concrete identities.
+        if re.match(
+            r"(?i)^(foregoing|said|these|those|above(?:-|\s+)named)\b",
+            name,
+        ):
+            return
+        key = normalize_citation_text(name)
+        existing = found.get(key)
+        if existing is None:
+            found[key] = {"identity": name, "procedural_role": role}
+            return
+        if role and not existing.get("procedural_role"):
+            existing["procedural_role"] = role
+
+    for match in _PARTY_ROLE_ALLEGATION_ROLE_BEFORE_RE.finditer(healed):
+        remember(match.group("name"), match.group("role"))
+    for match in _PARTY_ROLE_ALLEGATION_ROLE_AFTER_RE.finditer(healed):
+        remember(
+            match.group("name"),
+            match.group("role_comma") or match.group("role_pred"),
+        )
+    for match in _PARTY_ROLE_ALLEGATION_ENTITY_RE.finditer(healed):
+        remember(match.group("name"), None)
+    for match in _PARTY_ROLE_PLACEHOLDER_GROUP_RE.finditer(healed):
+        remember(match.group("name"), match.group("role"))
+
+    # Legacy role-leading / "name, role" forms remain as a fallback.
+    if not found:
+        for match in _PARTY_ROLE_DRAFT_RE.finditer(healed):
+            groups = match.groupdict()
+            remember(
+                groups.get("name_leading") or groups.get("name"),
+                groups.get("role_leading") or groups.get("role"),
+            )
+
+    return list(found.values())
+
+
+def _unit_names_party(identity: str, unit: str) -> bool:
+    if not identity or not unit:
+        return False
+    return _party_role_attribute_present(identity, normalize_citation_text(unit))
 
 
 def _merge_party_role_expected(bucket: Dict[str, dict], party: dict) -> None:
@@ -1990,51 +2176,104 @@ def extract_party_role_expected_attributes(evidence_packet: dict) -> List[dict]:
     """
     serialized = _evidence_text_from_packet(evidence_packet)
     parties: Dict[str, dict] = {}
+    pending_grouped_basis: Optional[str] = None
+
     for unit in _split_party_role_evidence_units(serialized):
+        healed = heal_ocr_intra_word_spaces(unit)
         entity_type = _extract_entity_type_from_unit(unit)
         residence = _extract_residence_or_ppb_from_unit(unit)
         pleaded_basis = _extract_pleaded_role_basis_from_unit(unit)
-        matched = False
-        for match in _PARTY_ROLE_DRAFT_RE.finditer(unit):
-            groups = match.groupdict()
-            raw_name = groups.get("name_leading") or groups.get("name")
-            raw_role = groups.get("role_leading") or groups.get("role")
-            name = normalize_whitespace(raw_name).strip(" .,;:")
-            role = _normalize_party_role_draft_label(raw_role)
-            if not _plausible_party_role_draft_name(name) or not role:
-                continue
-            matched = True
-            _merge_party_role_expected(
-                parties,
-                {
-                    "identity": name,
-                    "procedural_role": role,
-                    "entity_type": entity_type,
-                    "residence_or_ppb": residence,
-                    "pleaded_role_basis": pleaded_basis,
-                },
-            )
-        if matched:
+
+        # Grouped pleaded-role bases apply to known defendant identities without
+        # collapsing them into a single synthetic party.
+        if _PARTY_ROLE_GROUPED_BASIS_RE.search(healed):
+            basis = pleaded_basis or "notice defendant"
+            applied = False
+            for existing in parties.values():
+                role = (existing.get("procedural_role") or "").lower()
+                if role == "defendant" or role.endswith("defendant"):
+                    _merge_party_role_expected(
+                        parties,
+                        {
+                            "identity": existing.get("identity"),
+                            "procedural_role": existing.get("procedural_role"),
+                            "pleaded_role_basis": basis,
+                        },
+                    )
+                    applied = True
+            if not applied:
+                pending_grouped_basis = basis
             continue
-        # Attribute-bearing follow-on lines that name a known party without a
-        # fresh role tag (e.g. residence lines) attach to an already-seen party.
-        if not (entity_type or residence or pleaded_basis) or not parties:
-            continue
-        unit_norm = normalize_citation_text(unit)
-        for key, existing in parties.items():
-            identity = existing.get("identity") or ""
-            if identity and _party_role_attribute_present(identity, unit_norm):
+
+        discovered = _discover_party_role_identities_in_unit(unit)
+        if discovered:
+            # Attributes attach only to parties named in this allegation.
+            named = [
+                item
+                for item in discovered
+                if _unit_names_party(item.get("identity") or "", healed)
+            ]
+            targets = named or discovered
+            share_attrs = len(targets) == 1
+            for item in targets:
                 _merge_party_role_expected(
                     parties,
                     {
-                        "identity": identity,
-                        "procedural_role": existing.get("procedural_role"),
-                        "entity_type": entity_type,
-                        "residence_or_ppb": residence,
-                        "pleaded_role_basis": pleaded_basis,
+                        "identity": item.get("identity"),
+                        "procedural_role": item.get("procedural_role"),
+                        "entity_type": entity_type if share_attrs else None,
+                        "residence_or_ppb": residence if share_attrs else None,
+                        "pleaded_role_basis": (
+                            pleaded_basis if share_attrs else None
+                        ),
                     },
                 )
-                break
+                if (
+                    pending_grouped_basis
+                    and (item.get("procedural_role") or "").lower().endswith(
+                        "defendant"
+                    )
+                ):
+                    _merge_party_role_expected(
+                        parties,
+                        {
+                            "identity": item.get("identity"),
+                            "procedural_role": item.get("procedural_role"),
+                            "pleaded_role_basis": pending_grouped_basis,
+                        },
+                    )
+            if pending_grouped_basis:
+                # Clear once at least one defendant identity exists to receive it.
+                if any(
+                    (p.get("procedural_role") or "").lower().endswith("defendant")
+                    for p in parties.values()
+                ):
+                    pending_grouped_basis = None
+            continue
+
+        # Attribute-bearing follow-on lines that name a known party without a
+        # fresh role tag (e.g. residence lines) attach to that party only.
+        if not (entity_type or residence or pleaded_basis) or not parties:
+            continue
+        unit_norm = normalize_citation_text(healed)
+        matches = [
+            existing
+            for existing in parties.values()
+            if _party_role_attribute_present(existing.get("identity") or "", unit_norm)
+        ]
+        if len(matches) != 1:
+            continue
+        existing = matches[0]
+        _merge_party_role_expected(
+            parties,
+            {
+                "identity": existing.get("identity"),
+                "procedural_role": existing.get("procedural_role"),
+                "entity_type": entity_type,
+                "residence_or_ppb": residence,
+                "pleaded_role_basis": pleaded_basis,
+            },
+        )
 
     # Stable order by identity for deterministic missing-attribute lists.
     ordered = sorted(
