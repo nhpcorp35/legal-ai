@@ -798,10 +798,15 @@ def clean_case_party(value):
     value = re.sub(r"(?i)\bSTATE OF NEW YORK\b", "", value)
     value = re.sub(r"(?i)\bCOUNTY OF [A-Z\s]+\b", "", value)
     value = re.sub(r"(?i)\bINDEX\s*(NO\.?|NUMBER)?\s*[:#]?\s*[0-9]{4,8}/?[0-9]{0,4}\b", "", value)
+    value = re.sub(r"(?i)\bthird[\s-]+party\s+plaintiffs?\b", "", value)
+    value = re.sub(r"(?i)\bthird[\s-]+party\s+defendants?\b", "", value)
+    value = re.sub(r"(?i)\brespondents?\s+on\s+(?:the\s+)?appeal\b", "", value)
     value = re.sub(r"(?i)\bPlaintiff[s]?\b", "", value)
     value = re.sub(r"(?i)\bDefendant[s]?\b", "", value)
     value = re.sub(r"(?i)\bPetitioner[s]?\b", "", value)
     value = re.sub(r"(?i)\bRespondent[s]?\b", "", value)
+    value = re.sub(r"(?i)\bAppellants?\b", "", value)
+    value = re.sub(r"(?i)\bAppellees?\b", "", value)
 
     value = value.replace(" -against- ", " ")
     value = value.replace(" against ", " ")
@@ -1560,9 +1565,82 @@ ALLEGATION_SPEAKER_RE = re.compile(
     r"(?:alleges?|contends?|claims?|avers?)(?:\s+that)?\b"
 )
 
+# Procedural roles supported for party extraction (name-first and role-first).
+_PARTY_ROLE_LABEL = (
+    r"third[\s-]+party\s+plaintiffs?|"
+    r"third[\s-]+party\s+defendants?|"
+    r"respondents?\s+on\s+(?:the\s+)?appeal|"
+    r"plaintiffs?|"
+    r"defendants?|"
+    r"petitioners?|"
+    r"respondents?|"
+    r"appellants?|"
+    r"appellees?"
+)
+
+# Role-first covers "Plaintiff Acme LLC is ..."; name-first requires a comma
+# ("Acme LLC, plaintiff") so section headings like PARTIES are not captured.
+# (?-i:[A-Z]) keeps a true capital start even though roles are case-insensitive.
 PARTY_ROLE_RE = re.compile(
-    r"(?i)\b(?P<name>[A-Z][A-Za-z0-9&.,'\\-\\s]{1,80}?)\s*,?\s*"
-    r"(?P<role>plaintiffs?|defendants?|petitioners?|respondents?)\b"
+    r"(?:"
+    r"\b(?P<role_leading>" + _PARTY_ROLE_LABEL + r")\s+"
+    r"(?P<name_leading>(?-i:[A-Z])[A-Za-z0-9&.,' -]{0,80}?)"
+    r"(?=\s+(?:is|was|are|were|has|have|brings|commenced|,|\.|$|;))|"
+    r"\b(?P<name>(?-i:[A-Z])[A-Za-z0-9&.,' -]{0,80}?),\s*"
+    r"(?P<role>" + _PARTY_ROLE_LABEL + r")\b"
+    r")",
+    re.IGNORECASE,
+)
+
+_PARTY_NAME_BLOCKLIST = frozenset(
+    {
+        "parties",
+        "wherefore",
+        "venue",
+        "jurisdiction",
+        "introduction",
+        "preliminary statement",
+        "nature of the action",
+        "nature of action",
+        "verification",
+    }
+)
+
+_PARTY_NAME_SUFFIX_ONLY = frozenset(
+    {
+        "inc",
+        "llc",
+        "lp",
+        "llp",
+        "co",
+        "corp",
+        "ltd",
+        "pc",
+        "pa",
+        "fund",
+        "company",
+        "corporation",
+        "partnership",
+    }
+)
+
+# Role-bearing pleading body / PARTIES-section cues (retrieval preference).
+PARTY_ROLE_BEARING_RE = re.compile(
+    r"(?i)\b(?:"
+    r"parties\b|"
+    r"third[\s-]+party\s+(?:plaintiffs?|defendants?)|"
+    r"plaintiffs?\b|"
+    r"defendants?\b|"
+    r"petitioners?\b|"
+    r"respondents?(?:\s+on\s+(?:the\s+)?appeal)?\b|"
+    r"appellants?\b|"
+    r"appellees?\b|"
+    r"limited\s+liability\s+(?:company|corporation)|"
+    r"sued\s+herein|"
+    r"joined\s+(?:herein|as\s+a\s+party)|"
+    r"necessary\s+party|"
+    r"real\s+party\s+in\s+interest"
+    r")"
 )
 
 MOTION_HEADING_RE = re.compile(
@@ -1785,6 +1863,72 @@ def _normalize_speaker_party(value):
     return value or None
 
 
+def _normalize_party_role(value):
+    """
+    Normalize procedural party roles for case-map extraction.
+
+    Returns a supported role label, or None when the evidence is unclear.
+    Does not invent roles or collapse distinct appellate/petition postures.
+    """
+    role = clean_text(value).lower()
+    role = re.sub(r"\s+", " ", role).strip(" .,;:")
+    if not role:
+        return None
+    role = role.replace("third party", "third-party")
+    if role.startswith("third-party plaintiff"):
+        return "third-party plaintiff"
+    if role.startswith("third-party defendant"):
+        return "third-party defendant"
+    if re.match(r"respondents?\s+on\s+(?:the\s+)?appeal$", role):
+        return "respondent on appeal"
+    if role.startswith("plaintiff"):
+        return "plaintiff"
+    if role.startswith("defendant"):
+        return "defendant"
+    if role.startswith("petitioner"):
+        return "petitioner"
+    if role.startswith("respondent"):
+        return "respondent"
+    if role.startswith("appellant"):
+        return "appellant"
+    if role.startswith("appellee"):
+        return "appellee"
+    return None
+
+
+def _party_role_match_groups(match):
+    """Extract (name, role_raw) from PARTY_ROLE_RE match variants."""
+    name = match.groupdict().get("name") or match.groupdict().get("name_leading")
+    role_raw = match.groupdict().get("role") or match.groupdict().get("role_leading")
+    return name, role_raw
+
+
+def _is_plausible_party_name(name):
+    """Reject section headings and bare corporate suffixes as party names."""
+    cleaned = clean_case_party(name)
+    if not cleaned or len(cleaned) < 3:
+        return False
+    lowered = cleaned.lower().strip(" .,")
+    if lowered in _PARTY_NAME_BLOCKLIST:
+        return False
+    # Sentence fragments glued across a prior period are not party names.
+    if ". " in cleaned or re.search(r"\d+\.", cleaned):
+        return False
+    if re.match(
+        r"(?i)^(is|was|are|were|has|have|seeks?|brings?|joined|authorized)\b",
+        cleaned,
+    ):
+        return False
+    tokens = [tok for tok in re.split(r"[\s,]+", lowered) if tok]
+    if not tokens:
+        return False
+    if len(tokens) == 1 and tokens[0] in _PARTY_NAME_SUFFIX_ONLY:
+        return False
+    if all(tok in _PARTY_NAME_SUFFIX_ONLY for tok in tokens):
+        return False
+    return True
+
+
 def _append_unique_node(collection, node, by_id):
     existing = by_id.get(node["id"])
     if existing is None:
@@ -1871,7 +2015,7 @@ def _extract_parties_for_case_map(case_map, document, pages, by_id):
     if not pages:
         return
 
-    # Prefer caption-like text on the first few pages only.
+    # Caption-style extraction stays on early pages; role evidence may appear later.
     caption_pages = pages[:3]
     caption_text = "\n".join(page.get("text") or "" for page in caption_pages)
     case_name = extract_case_name(caption_text)
@@ -1925,12 +2069,48 @@ def _extract_parties_for_case_map(case_map, document, pages, by_id):
         _append_unique_node(case_map["parties"], node, by_id)
         _mark_review_candidate(case_map, node, "Confirm caption party spelling/role")
 
-    # Role-tagged name lines (still candidates; names can be OCR-noisy).
-    for page in caption_pages:
-        for match in PARTY_ROLE_RE.finditer(page.get("text") or ""):
-            name = clean_case_party(match.group("name"))
-            role = _normalize_speaker_party(match.group("role"))
-            if not name or len(name) < 3:
+    # Role-tagged lines from caption and later pleading pages (e.g. PARTIES).
+    caption_page_ids = {page.get("page_id") for page in caption_pages}
+    for page in pages:
+        page_text = page.get("text") or ""
+        parties_heading = bool(
+            re.search(r"(?im)^\s*parties\b", page_text)
+            or re.search(r"(?i)\bparties\b", page_text[:80])
+        )
+        if page.get("page_id") in caption_page_ids:
+            posture = "caption"
+        elif parties_heading:
+            posture = "parties_section"
+        else:
+            posture = "pleading_body"
+
+        for match in PARTY_ROLE_RE.finditer(page_text):
+            raw_name, raw_role = _party_role_match_groups(match)
+            name = clean_case_party(raw_name)
+            role = _normalize_party_role(raw_role)
+            if not _is_plausible_party_name(name):
+                continue
+            # Do not invent a role when the matched label is unclear.
+            if role is None:
+                node = build_case_map_node(
+                    "party",
+                    name,
+                    nyscef_document_number=nyscef,
+                    page_ids=[page["page_id"]],
+                    assertion_kind="unknown",
+                    stable_key=f"unassigned-role:{name}",
+                    excerpt=_excerpt_around_match(page_text, match),
+                    procedural_posture=posture,
+                    confidence="low",
+                    extraction_signals=["role_tagged_party_unclear"],
+                    requires_review=True,
+                    status="candidate",
+                    extra={"role": None, "role_qualification": "unclear_from_record"},
+                )
+                _append_unique_node(case_map["parties"], node, by_id)
+                _mark_review_candidate(
+                    case_map, node, "Party name found but role unclear from record"
+                )
                 continue
             node = build_case_map_node(
                 "party",
@@ -1938,10 +2118,10 @@ def _extract_parties_for_case_map(case_map, document, pages, by_id):
                 nyscef_document_number=nyscef,
                 page_ids=[page["page_id"]],
                 assertion_kind="verified_record_fact",
-                stable_key=f"{role or 'party'}:{name}",
-                excerpt=_excerpt_around_match(page.get("text") or "", match),
-                procedural_posture="caption",
-                confidence="low",
+                stable_key=f"{role}:{name}",
+                excerpt=_excerpt_around_match(page_text, match),
+                procedural_posture=posture,
+                confidence="medium" if posture == "parties_section" else "low",
                 extraction_signals=["role_tagged_party"],
                 requires_review=True,
                 status="candidate",
@@ -2830,6 +3010,7 @@ RETRIEVAL_WEIGHTS = {
     "case_map": 14.0,
     "relationship": 8.0,
     "boilerplate_penalty": 16.0,
+    "party_role_pleading": 14.0,
 }
 
 # Case-map / relationship boosts require at least this excerpt grounding ratio
@@ -2923,6 +3104,31 @@ RETRIEVAL_SUBSTANTIVE_QUERY_HINTS = (
     "indemnif",
     "misrepresentation",
 )
+
+# Party-and-role identity questions (intent-specific pleading preference).
+PARTY_ROLE_QUERY_PHRASES = (
+    "party role",
+    "party roles",
+    "roles of the parties",
+    "parties and their roles",
+    "parties and roles",
+    "who are the parties",
+    "who is the plaintiff",
+    "who is the defendant",
+    "identify the parties",
+    "identify parties",
+    "named parties",
+    "parties to the action",
+    "parties to this action",
+    "procedural roles",
+    "each party's role",
+    "plaintiff and defendant",
+    "petitioner and respondent",
+    "third-party plaintiff",
+    "third-party defendant",
+    "respondent on appeal",
+)
+
 
 
 def normalize_retrieval_text(value):
@@ -3078,6 +3284,178 @@ def _query_seeks_substantive_content(normalized_query, tokens, hints):
     return False
 
 
+def _query_explicitly_targets_answer_pleading(normalized_query, tokens):
+    """True only when the query is about an answer filing, not incidental 'answer'."""
+    joined = normalized_query or ""
+    token_set = set(tokens or [])
+    if "affirmative defense" in joined or (
+        "affirmative" in token_set and "defense" in token_set
+    ):
+        return True
+    if re.search(
+        r"\b(?:verified\s+)?answer\s+to\s+(?:the\s+)?complaint\b", joined
+    ):
+        return True
+    if re.search(r"\b(?:defendant'?s?|verified)\s+answer\b", joined):
+        return True
+    if re.search(r"\banswer\s+(?:filing|pleading|papers?)\b", joined):
+        return True
+    return False
+
+
+def _query_seeks_motion_primary(normalized_query, tokens, hints):
+    """Motion-record questions should keep motion priority over party-role pleading."""
+    joined = normalized_query or ""
+    token_set = set(tokens or [])
+    doc_types = set((hints or {}).get("document_types") or [])
+    motion_phrases = (
+        "notice of motion",
+        "summary judgment",
+        "motion to dismiss",
+        "motion for",
+        "returnable",
+    )
+    if any(phrase in joined for phrase in motion_phrases):
+        return True
+    if "motion" in doc_types or "motion" in token_set:
+        # Explicit party-role framing can coexist in rare queries; treat strong
+        # motion wording as motion-primary so pleading preference stays gated.
+        if any(phrase in joined for phrase in PARTY_ROLE_QUERY_PHRASES):
+            return False
+        return True
+    return False
+
+
+def _detect_party_role_query_intent(normalized_query, tokens, hints=None):
+    """
+    Detect party-and-role identity questions using general language.
+
+    Intent-specific: does not fire for motion-primary queries, so motion
+    records continue to receive ordinary motion metadata priority.
+    """
+    joined = normalized_query or ""
+    token_set = set(tokens or [])
+    hints = hints or {}
+
+    if _query_seeks_motion_primary(joined, token_set, hints):
+        return False
+
+    if any(phrase in joined for phrase in PARTY_ROLE_QUERY_PHRASES):
+        return True
+
+    if "parties" in token_set and any(
+        cue in joined
+        for cue in ("role", "roles", "who", "identify", "named", "caption")
+    ):
+        return True
+
+    role_identity = token_set.intersection(
+        {
+            "plaintiff",
+            "defendant",
+            "petitioner",
+            "respondent",
+            "appellant",
+            "appellee",
+        }
+    )
+    if role_identity and any(
+        cue in joined
+        for cue in (
+            "who is",
+            "who are",
+            "role",
+            "roles",
+            "named as",
+            "identify",
+            "caption",
+            "parties",
+        )
+    ):
+        return True
+
+    if "plaintiff" in token_set and "defendant" in token_set:
+        return True
+    if "petitioner" in token_set and "respondent" in token_set:
+        return True
+    if "third-party" in joined or (
+        "third" in token_set and "party" in token_set
+    ):
+        if role_identity or "party" in token_set or "parties" in token_set:
+            return True
+
+    return False
+
+
+def _pleading_kind_for_party_role(entry, text=""):
+    """Classify a page's filing for soft party-role source priority."""
+    doc_type = normalize_retrieval_text(entry.get("document_type") or "")
+    filename = normalize_retrieval_text(entry.get("filename") or "")
+    document = entry.get("document") or {}
+    title = normalize_retrieval_text(
+        document.get("title") or document.get("name") or ""
+    )
+    hay = f"{filename} {title} {doc_type}"
+    body_head = normalize_retrieval_text((text or "")[:240])
+
+    if "rji" in hay or "request for judicial intervention" in hay:
+        return "rji"
+    if doc_type == "motion" or "notice of motion" in hay or (
+        re.search(r"\bmotion\b", hay) and "summons" not in hay
+    ):
+        return "motion"
+    if "amended" in hay or "amended" in body_head:
+        if any(
+            token in hay or token in body_head
+            for token in (
+                "complaint",
+                "petition",
+                "answer",
+                "summons",
+                "pleading",
+            )
+        ):
+            return "amended_pleading"
+    if doc_type == "complaint" or any(
+        token in hay for token in ("complaint", "summons", "petition")
+    ):
+        return "initiating"
+    if doc_type == "answer" or re.search(r"\banswers?\b", hay):
+        return "answer"
+    return "other"
+
+
+def _page_has_role_bearing_language(text):
+    return bool(text and PARTY_ROLE_BEARING_RE.search(text))
+
+
+def _party_role_pleading_priority_score(entry, text, hints):
+    """
+    Soft source priority for party-role intent only.
+
+    Prefers initiating/operative pleadings and role-bearing pages; does not
+    let incidental answer metadata outrank a controlling complaint.
+    """
+    if not (hints or {}).get("party_role_intent"):
+        return 0.0
+
+    kind = _pleading_kind_for_party_role(entry, text)
+    role_bearing = _page_has_role_bearing_language(text)
+
+    if kind in {"motion", "rji"}:
+        return 0.0
+    if kind == "initiating":
+        return 1.0 if role_bearing else 0.55
+    if kind == "amended_pleading":
+        return 0.92 if role_bearing else 0.5
+    if kind == "answer":
+        # Operative pleading, but below initiating/complaint role pages.
+        return 0.4 if role_bearing else 0.15
+    if role_bearing:
+        return 0.25
+    return 0.0
+
+
 def _detect_retrieval_boilerplate(text):
     """
     Classify stamp / service / caption-shell pages.
@@ -3205,6 +3583,24 @@ def _detect_query_category_hints(normalized_query, tokens):
                     case_map_categories.add(category)
             elif hint in token_set or hint in joined:
                 case_map_categories.add(category)
+
+    provisional = {
+        "document_types": sorted(doc_types),
+        "case_map_categories": sorted(case_map_categories),
+    }
+    party_role_intent = _detect_party_role_query_intent(
+        joined, token_set, provisional
+    )
+    if party_role_intent:
+        case_map_categories.add("parties")
+        # Soft initiating preference without letting bare "answer" dominate.
+        if not doc_types.intersection({"complaint", "motion", "order"}):
+            doc_types.add("complaint")
+        if "answer" in doc_types and not _query_explicitly_targets_answer_pleading(
+            joined, token_set
+        ):
+            doc_types.discard("answer")
+
     exhibit_labels = set()
     for match in re.finditer(
         r"\bexhibit\s+([a-z0-9]{1,4})\b", joined, flags=re.IGNORECASE
@@ -3214,6 +3610,7 @@ def _detect_query_category_hints(normalized_query, tokens):
         "document_types": sorted(doc_types),
         "case_map_categories": sorted(case_map_categories),
         "exhibit_labels": sorted(label for label in exhibit_labels if label),
+        "party_role_intent": bool(party_role_intent),
     }
 
 
@@ -3667,6 +4064,7 @@ def _score_page_candidate(
         tokens=tokens,
         hints=hints,
     )
+    party_role_priority = _party_role_pleading_priority_score(entry, text, hints)
 
     components = {
         "exact_phrase": _round_retrieval_score(
@@ -3686,6 +4084,9 @@ def _score_page_candidate(
         "boilerplate_penalty": _round_retrieval_score(-penalty_value)
         if penalty_value
         else 0.0,
+        "party_role_pleading": _round_retrieval_score(
+            party_role_priority * RETRIEVAL_WEIGHTS["party_role_pleading"]
+        ),
     }
     total = _round_retrieval_score(sum(components.values()))
 
@@ -3714,6 +4115,10 @@ def _score_page_candidate(
     if penalty_value and boilerplate_kind:
         explanation.append(
             f"boilerplate penalty ({boilerplate_kind}: -{penalty_value})"
+        )
+    if party_role_priority:
+        explanation.append(
+            f"party-role pleading preference ({party_role_priority:.2f})"
         )
 
     assertion_kind = None
