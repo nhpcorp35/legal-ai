@@ -1646,16 +1646,23 @@ PARTY_ROLE_BEARING_RE = re.compile(
     r")"
 )
 
+# Optional page / section / article / Roman-numeral / punctuation prefix before a
+# pleading section heading (e.g. "14 PARTIES", "SECTION 2 — PARTIES", "ARTICLE III:").
+_SECTION_HEADING_PREFIX = (
+    r"(?:"
+    r"(?:section|article|part)\s+[ivxlcdm\d]+(?:\s*[.:=\-—–]\s*|\s+)|"
+    r"(?:[ivxlcdm]+|\d+)(?:\.\d+)*[.)]?\s+"
+    r")?"
+)
+
 # Contiguous PARTIES-section heading (works on newline or whitespace-collapsed text).
 PARTIES_SECTION_HEADING_RE = re.compile(
-    r"(?i)(?:^|[\n\r])\s*(?:the\s+)?parties(?:\s+to\s+(?:this\s+)?"
+    r"(?i)(?:^|[\n\r])\s*" + _SECTION_HEADING_PREFIX + r"(?:the\s+)?parties(?:\s+to\s+(?:this\s+)?"
     r"(?:action|proceeding|litigation))?\s*:?(?=\s*(?:$|\d+\.|"
     r"(?:plaintiffs?|defendants?|petitioners?|respondents?|third\b)))"
 )
 
-# Major pleading sections that end contiguous PARTIES expansion.
-MAJOR_PLEADING_SECTION_HEADING_RE = re.compile(
-    r"(?i)(?:^|[\n\r]|(?<=\.)\s)(?:"
+_MAJOR_PLEADING_SECTION_NAMES = (
     r"jurisdiction(?:\s+and\s+venue)?|"
     r"venue|"
     r"facts?(?:\s+common\s+to\s+all\s+(?:counts|claims))?|"
@@ -1673,34 +1680,28 @@ MAJOR_PLEADING_SECTION_HEADING_RE = re.compile(
     r"prayer\s+for\s+relief|"
     r"affirmative\s+defenses|"
     r"verification"
-    r")\s*:?(?=\s*(?:$|\d+\.|(?:[A-Z(\"'])))"
+)
+
+# Major pleading sections that end contiguous PARTIES expansion.
+MAJOR_PLEADING_SECTION_HEADING_RE = re.compile(
+    r"(?i)(?:^|[\n\r]|(?<=\.)\s)" + _SECTION_HEADING_PREFIX + r"(?:"
+    + _MAJOR_PLEADING_SECTION_NAMES
+    + r")\s*:?(?=\s*(?:$|\d+\.|(?:[A-Z(\"'])))"
 )
 
 _MAJOR_SECTION_START_RE = re.compile(
-    r"(?i)^\s*(?:"
-    r"jurisdiction(?:\s+and\s+venue)?|"
-    r"venue|"
-    r"facts?(?:\s+common\s+to\s+all\s+(?:counts|claims))?|"
-    r"factual\s+background|"
-    r"background|"
-    r"nature\s+of\s+(?:the\s+)?action|"
-    r"preliminary\s+statement|"
-    r"introduction|"
-    r"general\s+allegations|"
-    r"causes?\s+of\s+action|"
-    r"(?:first|second|third|fourth|fifth)\s+cause\s+of\s+action|"
-    r"count\s+(?:[ivxlcdm]+|\d+)|"
-    r"as\s+and\s+for\s+(?:a\s+)?(?:first\s+)?cause\s+of\s+action|"
-    r"wherefore|"
-    r"prayer\s+for\s+relief|"
-    r"affirmative\s+defenses|"
-    r"verification"
-    r")\s*:?(?=\s*(?:$|\d+\.|(?:[A-Z(\"'])))"
+    r"(?i)^\s*" + _SECTION_HEADING_PREFIX + r"(?:"
+    + _MAJOR_PLEADING_SECTION_NAMES
+    + r")\s*:?(?=\s*(?:$|\d+\.|(?:[A-Z(\"'])))"
+)
+
+_PARTIES_HEADING_START_RE = re.compile(
+    r"(?i)^\s*" + _SECTION_HEADING_PREFIX + r"(?:the\s+)?parties\b"
 )
 
 # Body markers that end a pleading caption block.
 PLEADING_CAPTION_END_RE = re.compile(
-    r"(?i)(?:^|[\n\r]|(?<=\.)\s)\s*(?:"
+    r"(?i)(?:^|[\n\r]|(?<=\.)\s)\s*" + _SECTION_HEADING_PREFIX + r"(?:"
     r"parties|"
     r"the\s+parties|"
     r"jurisdiction|"
@@ -3109,6 +3110,7 @@ RETRIEVAL_SCORE_PRECISION = 6
 PARTY_ROLE_CAPTION_EXCERPT_MAX = 3500
 PARTY_ROLE_PASSAGE_EXCERPT_MAX = 2500
 PARTY_ROLE_COMBINED_EXCERPT_MAX = 4000
+# Contiguous PARTIES-section expansion hard cap (pages per pleading span).
 PARTY_ROLE_SECTION_EXPAND_MAX_PAGES = 6
 
 # Transparent hybrid weights (sum intentionally > 1; absolute scale is relative).
@@ -3607,7 +3609,8 @@ def _page_starts_major_pleading_section(text):
     cleaned = clean_text(text or "")
     if not cleaned:
         return False
-    if re.match(r"(?i)^\s*(?:the\s+)?parties\b", cleaned):
+    # Prefixed PARTIES headings (e.g. "14 PARTIES") are not stop headings.
+    if _PARTIES_HEADING_START_RE.match(cleaned):
         return False
     return bool(_MAJOR_SECTION_START_RE.match(cleaned))
 
@@ -3710,12 +3713,12 @@ def _extract_party_role_passages(text):
     kept = []
     for unit in units:
         stripped = unit.strip()
-        if re.match(r"(?i)^(?:the\s+)?parties\b", stripped):
+        if _PARTIES_HEADING_START_RE.match(stripped):
             # Preserve the section marker when it is its own unit or prefix.
-            if PARTIES_SECTION_HEADING_RE.search(stripped[:48]):
-                kept.append("PARTIES")
+            kept.append("PARTIES")
             # Continue into role content on the same unit after the heading.
-            remainder = PARTIES_SECTION_HEADING_RE.sub("", stripped, count=1).strip()
+            remainder = _PARTIES_HEADING_START_RE.sub("", stripped, count=1).strip()
+            remainder = re.sub(r"^[:.\-—–]\s*", "", remainder)
             if remainder:
                 unit = remainder
                 stripped = remainder

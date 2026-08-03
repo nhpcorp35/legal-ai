@@ -211,6 +211,40 @@ _PARTY_ROLE_QUALIFICATION_OR_CHANGE_RE = re.compile(
     r")"
 )
 
+# Affirmative change / qualification / conflict language required before a
+# procedural record (motion/RJI/affirmation/service/order/history) may survive
+# party-role materiality. Caption labels and incidental role words are not enough.
+_PARTY_ROLE_MATERIAL_CHANGE_RE = re.compile(
+    r"(?i)\b(?:"
+    r"amended\s+(?:complaint|petition|answer|pleading|caption|summons)\b|"
+    r"incorrectly\s+named\b|"
+    r"sued\s+(?:herein\s+)?as\b|"
+    r"also\s+known\s+as\b|"
+    r"now\s+known\s+as\b|"
+    r"formerly\s+known\s+as\b|"
+    r"substituted\s+(?:as\s+)?(?:party|plaintiff|defendant)\b|"
+    r"successor\s+(?:in\s+interest|party)\b|"
+    r"dismissed\s+as\s+(?:a\s+)?(?:party|defendant|plaintiff)\b|"
+    r"discontinued\s+as\s+to\b|"
+    r"leave\s+to\s+(?:amend|add|drop|serve)\b|"
+    r"(?:add(?:ed|ing)?|join(?:ed|ing)?)\s+(?:as\s+)?(?:a\s+)?"
+    r"(?:necessary\s+)?(?:party|defendant|plaintiff)\b|"
+    r"misnomer\b|"
+    r"without\s+prejudice\s+to\b|"
+    r"appears?\s+specially\b|"
+    r"(?:role|caption|party\s+status)\s+(?:is\s+)?(?:disputed|uncertain|unclear|unresolved)\b|"
+    r"(?:disputed|uncertain|unclear|unresolved)\s+(?:role|caption|party\s+status)\b|"
+    r"conflict(?:s|ing)?\s+(?:as\s+to\s+)?(?:party|role|caption)\b|"
+    r"(?:appear(?:s|ing)?\s+in\s+(?:a\s+)?representative\s+capacity|"
+    r"capacity\s+(?:as|of)\s+(?:a\s+)?(?:party|plaintiff|defendant|fiduciary)|"
+    r"in\s+(?:his|her|its|their)\s+capacity\s+as|"
+    r"if\s+capacity\s+is\s+later\s+established)\b|"
+    r"nominally\b|"
+    r"purportedly\b|"
+    r"allegedly\s+(?:a\s+)?(?:party|plaintiff|defendant)\b"
+    r")"
+)
+
 _PROCEDURAL_NOISE_RE = re.compile(
     r"(?i)\b(?:"
     r"notice\s+of\s+motion\b|"
@@ -218,10 +252,47 @@ _PROCEDURAL_NOISE_RE = re.compile(
     r"\brji\b|"
     r"returnable\b|"
     r"procedural\s+calendar\b|"
+    r"procedural\s+history\b|"
     r"conference\s+(?:date|scheduled)\b|"
-    r"affirmation\s+of\s+(?:service|mailing|good\s+faith)\b"
+    r"scheduling\s+order\b|"
+    r"affirmation\s+of\s+(?:service|mailing|good\s+faith)\b|"
+    r"affidavit\s+of\s+(?:service|mailing)\b|"
+    r"proof\s+of\s+service\b|"
+    r"admission\s+of\s+service\b|"
+    r"certificate\s+of\s+service\b"
     r")"
 )
+
+_SERVICE_FILING_RE = re.compile(
+    r"(?i)\b(?:"
+    r"affirmation\s+of\s+(?:service|mailing)|"
+    r"affidavit\s+of\s+(?:service|mailing)|"
+    r"proof\s+of\s+service|"
+    r"admission\s+of\s+service|"
+    r"certificate\s+of\s+service|"
+    r"affixing\s+to\b"
+    r")\b"
+)
+
+# Hard-excluded filing kinds for party-role questions unless material-change
+# language is affirmatively present.
+_PROCEDURAL_HARD_EXCLUDE_KINDS = frozenset(
+    {
+        "motion",
+        "rji",
+        "affirmation",
+        "service",
+        "order",
+        "procedural_history",
+    }
+)
+
+# Total party-role evidence-packet budget (across the whole packet, not per hit).
+# Selection is deterministic: protected controlling-pleading pages are kept first,
+# then material change/qualification hits, then remaining material hits by score.
+# Excerpts are never truncated to meet the budget.
+PARTY_ROLE_PACKET_MAX_HITS = 12
+PARTY_ROLE_PACKET_MAX_CHARS = 24000
 
 
 ModelCall = Callable[[str, str], Any]
@@ -932,6 +1003,10 @@ def _classify_hit_filing_kind(hit: dict) -> str:
 
     if "rji" in hay or "request for judicial intervention" in hay:
         return "rji"
+    if _SERVICE_FILING_RE.search(hay) or re.search(
+        r"\b(?:affidavit|affirmation)\s+of\s+service\b", filename
+    ):
+        return "service"
     if doc_type == "motion" or "notice of motion" in hay or (
         re.search(r"\bmotion\b", hay) and "summons" not in hay
     ):
@@ -941,7 +1016,8 @@ def _classify_hit_filing_kind(hit: dict) -> str:
     ):
         return "affirmation"
     if doc_type == "order" or re.search(
-        r"\b(?:decision and order|it is hereby ordered|ordered that)\b", hay
+        r"\b(?:decision and order|it is hereby ordered|ordered that|scheduling\s+order)\b",
+        hay,
     ):
         return "order"
     if "amended" in hay:
@@ -962,6 +1038,10 @@ def _classify_hit_filing_kind(hit: dict) -> str:
         return "initiating"
     if doc_type == "answer" or re.search(r"\banswers?\b", hay):
         return "answer"
+    if _PROCEDURAL_NOISE_RE.search(hay) and not any(
+        token in hay for token in ("complaint", "summons", "petition", "answer")
+    ):
+        return "procedural_history"
     return "other"
 
 
@@ -986,10 +1066,21 @@ def _hit_qualifies_or_changes_party_role(text: str) -> bool:
     return bool(text and _PARTY_ROLE_QUALIFICATION_OR_CHANGE_RE.search(text))
 
 
+def _hit_materially_changes_party_role(text: str) -> bool:
+    """
+    Affirmative change / qualification / conflict evidence.
+
+    Used as the sole survival path for hard-excluded procedural records.
+    Generic caption labels, isolated names, and incidental role words do not
+    satisfy this gate.
+    """
+    return bool(text and _PARTY_ROLE_MATERIAL_CHANGE_RE.search(text))
+
+
 def _hit_is_mere_procedural_noise(text: str, kind: str) -> bool:
-    if kind in {"motion", "rji"} and not _hit_establishes_party_identity_or_role(text):
-        return True
-    if kind in {"affirmation", "order", "other"}:
+    if kind in _PROCEDURAL_HARD_EXCLUDE_KINDS:
+        return not _hit_materially_changes_party_role(text)
+    if kind == "other":
         if _PROCEDURAL_NOISE_RE.search(text or "") and not (
             _hit_establishes_party_identity_or_role(text)
             or _hit_qualifies_or_changes_party_role(text)
@@ -1018,14 +1109,20 @@ def hit_is_material_for_party_role_question(hit: dict) -> bool:
     Question-conditioned materiality for party-and-role intent.
 
     Prefers identity/role/entity/joinder/operative-pleading evidence and later
-    filings that change, qualify, or conflict with a party's role. Excludes
-    unrelated motion/RJI/affirmation/order/chronology noise. Uses full-page
-    text when available; an isolated party name alone is not material.
+    filings that change, qualify, or conflict with a party's role. Hard-excludes
+    motions, RJI, affirmations, service papers, orders, and procedural-history
+    records unless they affirmatively change/qualify/conflict party role.
+    Isolated name/caption/incidental role words cannot override that exclusion.
+    Uses full-page text when available.
     """
     if not isinstance(hit, dict):
         return False
     text = _hit_materiality_text(hit)
     kind = _classify_hit_filing_kind(hit)
+
+    # Procedural noise: only affirmative material-change language survives.
+    if kind in _PROCEDURAL_HARD_EXCLUDE_KINDS:
+        return _hit_materially_changes_party_role(text)
 
     if _hit_qualifies_or_changes_party_role(text):
         return True
@@ -1033,15 +1130,165 @@ def hit_is_material_for_party_role_question(hit: dict) -> bool:
         return False
     if _hit_has_isolated_name_only_signal(text):
         return False
-    if kind in {"motion", "rji"}:
-        return _hit_establishes_party_identity_or_role(text)
-    if kind in {"affirmation", "order"}:
-        return _hit_establishes_party_identity_or_role(text)
     if kind in {"initiating", "amended_pleading", "answer"}:
         return _hit_establishes_party_identity_or_role(text) or bool(
             _PARTY_ROLE_BEARING_RE.search(text)
         )
     return _hit_establishes_party_identity_or_role(text)
+
+
+def _hit_serialized_char_count(hit: dict) -> int:
+    """Approximate serialized size of a packet hit (excerpt-focused)."""
+    parts = [
+        hit.get("result_id"),
+        hit.get("page_id"),
+        hit.get("nyscef_document_number"),
+        hit.get("pdf_page"),
+        hit.get("source_filename"),
+        hit.get("document_type"),
+        hit.get("excerpt"),
+        hit.get("assertion_kind"),
+        " ".join(str(x) for x in (hit.get("classifications") or [])),
+    ]
+    return len(normalize_whitespace(" ".join(str(p or "") for p in parts)))
+
+
+def _hit_is_controlling_party_role_pleading(hit: dict) -> bool:
+    """True for initiating/operative pleading caption or PARTIES-section pages."""
+    kind = _classify_hit_filing_kind(hit)
+    if kind not in {"initiating", "amended_pleading", "answer"}:
+        return False
+    if hit.get("party_role_section_expanded"):
+        return True
+    text = _hit_materiality_text(hit)
+    if re.search(
+        r"(?i)(?:^|[\n\r])\s*(?:(?:section|article|part)\s+[ivxlcdm\d]+"
+        r"(?:\s*[.:=\-—–]\s*|\s+)|(?:[ivxlcdm]+|\d+)(?:\.\d+)*[.)]?\s+)?"
+        r"(?:the\s+)?parties\b",
+        text,
+    ):
+        return True
+    # Caption-bearing early pleading pages.
+    page_no = hit.get("pdf_page")
+    try:
+        early = page_no is None or int(page_no) <= 3
+    except (TypeError, ValueError):
+        early = True
+    if early and re.search(r"(?i)\bv\.|\bagainst\b", text):
+        if re.search(
+            r"(?i)\b(?:plaintiffs?|defendants?|petitioners?|respondents?)\b",
+            text,
+        ):
+            return True
+    return False
+
+
+def _party_role_hit_dedupe_key(hit: dict) -> str:
+    page_id = normalize_whitespace(hit.get("page_id") or "")
+    if page_id:
+        return f"page:{page_id}"
+    excerpt = normalize_whitespace(hit.get("excerpt") or "").lower()
+    return (
+        f"ex:{hit.get('nyscef_document_number')}-"
+        f"{hit.get('pdf_page')}-{excerpt[:160]}"
+    )
+
+
+def apply_party_role_packet_budget(
+    hits: Sequence[dict],
+    *,
+    max_hits: int = PARTY_ROLE_PACKET_MAX_HITS,
+    max_chars: int = PARTY_ROLE_PACKET_MAX_CHARS,
+) -> Tuple[List[dict], dict]:
+    """
+    Enforce a total party-role evidence budget after materiality filtering.
+
+    Deterministic selection:
+    1. Deduplicate redundant pages/propositions (stable first-seen order).
+    2. Always retain controlling initiating/operative caption + PARTIES pages.
+    3. Then retain material change/qualification/conflict evidence.
+    4. Then remaining material hits by descending score, then citation order.
+    5. Never truncate party names or role paragraphs — omit whole non-protected
+       hits when the budget would otherwise be exceeded.
+    """
+    source = [hit for hit in (hits or []) if isinstance(hit, dict)]
+    deduped = []
+    seen = set()
+    for hit in source:
+        key = _party_role_hit_dedupe_key(hit)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(hit)
+
+    protected = []
+    qualifying = []
+    other = []
+    for hit in deduped:
+        text = _hit_materiality_text(hit)
+        if _hit_is_controlling_party_role_pleading(hit):
+            protected.append(hit)
+        elif _hit_materially_changes_party_role(text) or _hit_qualifies_or_changes_party_role(
+            text
+        ):
+            qualifying.append(hit)
+        else:
+            other.append(hit)
+
+    def _sort_key(item: dict):
+        return (
+            -(float(item.get("score") or 0.0)),
+            item.get("nyscef_document_number") is None,
+            item.get("nyscef_document_number")
+            if item.get("nyscef_document_number") is not None
+            else 10**9,
+            item.get("pdf_page") or 0,
+            item.get("result_id") or "",
+        )
+
+    qualifying.sort(key=_sort_key)
+    other.sort(key=_sort_key)
+
+    selected: List[dict] = []
+    selected_ids = set()
+    chars = 0
+
+    def _try_add(hit: dict, *, force: bool) -> bool:
+        nonlocal chars
+        key = _party_role_hit_dedupe_key(hit)
+        if key in selected_ids:
+            return False
+        size = _hit_serialized_char_count(hit)
+        if not force:
+            if max_hits is not None and len(selected) >= max_hits:
+                return False
+            if max_chars is not None and chars + size > max_chars:
+                return False
+        selected.append(hit)
+        selected_ids.add(key)
+        chars += size
+        return True
+
+    for hit in protected:
+        _try_add(hit, force=True)
+    for hit in qualifying:
+        _try_add(hit, force=False)
+    for hit in other:
+        _try_add(hit, force=False)
+
+    meta = {
+        "max_hits": max_hits,
+        "max_chars": max_chars,
+        "input_hit_count": len(source),
+        "deduped_hit_count": len(deduped),
+        "kept_hit_count": len(selected),
+        "excluded_by_budget": max(0, len(deduped) - len(selected)),
+        "serialized_chars": chars,
+        "protected_hit_count": sum(
+            1 for hit in selected if _hit_is_controlling_party_role_pleading(hit)
+        ),
+    }
+    return selected, meta
 
 
 def filter_hits_for_party_role_materiality(
@@ -1051,7 +1298,8 @@ def filter_hits_for_party_role_materiality(
     Apply party-role materiality filtering while preserving hit order.
 
     Falls back to initiating/operative pleadings, then to the original hits,
-    when filtering would otherwise empty the generation packet.
+    when filtering would otherwise empty the generation packet. After
+    materiality, applies the total party-role evidence-packet budget.
     """
     source = [hit for hit in (hits or []) if isinstance(hit, dict)]
     kept = [hit for hit in source if hit_is_material_for_party_role_question(hit)]
@@ -1067,12 +1315,14 @@ def filter_hits_for_party_role_materiality(
         if not kept:
             kept = list(source)
     excluded_count = max(0, len(source) - len(kept))
+    kept, budget_meta = apply_party_role_packet_budget(kept)
     meta = {
         "intent": "party_role",
         "input_hit_count": len(source),
         "kept_hit_count": len(kept),
-        "excluded_hit_count": excluded_count,
+        "excluded_hit_count": excluded_count + int(budget_meta.get("excluded_by_budget") or 0),
         "fallback": fallback,
+        "packet_budget": budget_meta,
     }
     return kept, meta
 

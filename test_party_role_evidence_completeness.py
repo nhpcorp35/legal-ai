@@ -614,5 +614,388 @@ class PartyRoleExpansionBoundTests(unittest.TestCase):
         self.assertEqual(len(section_ids), mb.PARTY_ROLE_SECTION_EXPAND_MAX_PAGES)
 
 
+class PrefixedPartiesHeadingTests(unittest.TestCase):
+    """Synthetic proofs for numbered/prefixed PARTIES heading recognition."""
+
+    def test_number_prefixed_parties_headings_recognized(self):
+        for heading in ("14 PARTIES", "14. PARTIES", "14) PARTIES"):
+            text = (
+                f"{heading}\n"
+                "1. Plaintiff Cedar Ridge Logistics LLC is a domestic corporation.\n"
+            )
+            self.assertTrue(
+                mb._page_has_parties_section_heading(text),
+                msg=f"failed for {heading!r}",
+            )
+            self.assertTrue(mb._PARTIES_HEADING_START_RE.match(text))
+
+    def test_section_article_roman_punctuation_prefixed_headings(self):
+        samples = (
+            "SECTION 2 — PARTIES",
+            "SECTION 2: PARTIES",
+            "ARTICLE III: PARTIES",
+            "ARTICLE III — PARTIES",
+            "PART IV. PARTIES",
+            "IV. PARTIES",
+        )
+        for heading in samples:
+            text = (
+                f"{heading}\n"
+                "1. Plaintiff Oakline Carrier Inc. is a domestic corporation.\n"
+                "2. Defendant Pine Harbor Depot LLC is a limited liability company.\n"
+            )
+            self.assertTrue(
+                mb._page_has_parties_section_heading(text),
+                msg=f"failed for {heading!r}",
+            )
+
+    def test_prefixed_stopping_headings_end_contiguous_span(self):
+        doc = _normalized(
+            _doc(
+                520,
+                "complaint",
+                [
+                    "SUPREME COURT OF THE STATE OF NEW YORK\n"
+                    "Cedar Ridge Logistics LLC v. Pine Harbor Depot LLC\n",
+                    "14 PARTIES\n"
+                    "1. Plaintiff Cedar Ridge Logistics LLC is a domestic corporation.\n",
+                    "2. Defendant Pine Harbor Depot LLC is a limited liability company.\n",
+                    "15 FACTS\n"
+                    "3. A shipment was damaged on March 1, 2024.\n",
+                ],
+                filename="nyscef_doc_no_520_complaint.pdf",
+            )
+        )
+        section_ids = mb._collect_parties_section_page_ids(
+            mb._page_lookup_from_documents([doc])
+        )
+        pages = [
+            mb._page_lookup_from_documents([doc])[pid]["page"]["page_number"]
+            for pid in section_ids
+        ]
+        self.assertEqual(pages, [2, 3])
+        self.assertNotIn(4, pages)
+        self.assertTrue(mb._page_starts_major_pleading_section("15 FACTS\n3. Event.\n"))
+        self.assertTrue(
+            mb._page_starts_major_pleading_section("SECTION 3 — FACTS\n3. Event.\n")
+        )
+        self.assertTrue(
+            mb._page_starts_major_pleading_section(
+                "ARTICLE IV: JURISDICTION\n1. This court has jurisdiction.\n"
+            )
+        )
+
+    def test_below_cutoff_prefixed_section_pages_force_retained(self):
+        docs = [
+            _normalized(
+                _doc(
+                    521,
+                    "complaint",
+                    [
+                        "Summons cover page without role paragraphs.\n",
+                        "SECTION 2 — PARTIES\n"
+                        "1. Plaintiff North Quay Freight LP is a limited liability "
+                        "partnership authorized to do business in this state.\n",
+                        "2. Defendant South Pier Warehouse Inc. is a domestic "
+                        "corporation.\n",
+                        "ARTICLE III: FACTS\n"
+                        "3. Cargo was lost in transit.\n",
+                    ],
+                    filename="nyscef_doc_no_521_summons_complaint.pdf",
+                )
+            )
+        ] + _filler_filings()
+        result = mb.retrieve_canonical_records(
+            docs,
+            "Who are the parties and what are their roles in this action?",
+            top_k=4,
+        )
+        complaint_pages = {
+            hit["pdf_page"]
+            for hit in result["results"]
+            if hit["nyscef_document_number"] == 521
+        }
+        self.assertTrue({2, 3}.issubset(complaint_pages))
+        for page in (2, 3):
+            hit = next(
+                h
+                for h in result["results"]
+                if h["nyscef_document_number"] == 521 and h["pdf_page"] == page
+            )
+            self.assertEqual(hit["page_id"], f"nyscef-521-page-{page:04d}")
+            self.assertTrue(str(hit["result_id"]).startswith("cret-nyscef-521-page-"))
+
+
+class ProceduralNoiseHardExclusionTests(unittest.TestCase):
+    def setUp(self):
+        self.party_query = (
+            "Who are the parties and what are their roles in this action?"
+        )
+
+    def _hit(self, **kwargs):
+        base = {
+            "result_id": kwargs.get("result_id", "x1"),
+            "page_id": kwargs.get("page_id", "nyscef-1-p1"),
+            "nyscef_document_number": kwargs.get("nyscef", 1),
+            "pdf_page": kwargs.get("page", 1),
+            "source_filename": kwargs.get("filename", "doc.pdf"),
+            "document_type": kwargs.get("doc_type", "other"),
+            "excerpt": kwargs.get("excerpt", ""),
+            "page_text": kwargs.get("page_text", kwargs.get("excerpt", "")),
+            "classifications": list(kwargs.get("classifications") or []),
+            "assertion_kind": kwargs.get("assertion_kind", "unknown"),
+            "score": kwargs.get("score", 1.0),
+        }
+        return base
+
+    def test_motions_rji_affirmations_service_orders_with_names_excluded(self):
+        noise_hits = [
+            self._hit(
+                result_id="m1",
+                page_id="nyscef-601-p1",
+                nyscef=601,
+                doc_type="motion",
+                filename="nyscef_doc_no_601_notice_of_motion.pdf",
+                page_text=(
+                    "Notice of Motion for Summary Judgment returnable June 1, 2024. "
+                    "Alpha Freight LP are Plaintiffs. Beta Depot Inc. are Defendants. "
+                    "Movant seeks dismissal on the procedural calendar."
+                ),
+            ),
+            self._hit(
+                result_id="r1",
+                page_id="nyscef-602-p1",
+                nyscef=602,
+                doc_type="other",
+                filename="nyscef_doc_no_602_rji.pdf",
+                page_text=(
+                    "Request for Judicial Intervention. RJI addendum repeats "
+                    "Plaintiff Alpha Freight LP and Defendant Beta Depot Inc. "
+                    "without changing party status."
+                ),
+            ),
+            self._hit(
+                result_id="a1",
+                page_id="nyscef-603-p1",
+                nyscef=603,
+                doc_type="affirmation",
+                filename="nyscef_doc_no_603_affirmation_of_service.pdf",
+                page_text=(
+                    "Affirmation of service. Plaintiff Alpha Freight LP is named in "
+                    "the caption. Defendant Beta Depot Inc. received papers by mail."
+                ),
+            ),
+            self._hit(
+                result_id="s1",
+                page_id="nyscef-604-p1",
+                nyscef=604,
+                doc_type="affidavit",
+                filename="nyscef_doc_no_604_affidavit_of_service.pdf",
+                page_text=(
+                    "Affidavit of service. Proof of service on Beta Depot Inc. "
+                    "Plaintiff Alpha Freight LP appears in the caption block."
+                ),
+            ),
+            self._hit(
+                result_id="o1",
+                page_id="nyscef-605-p1",
+                nyscef=605,
+                doc_type="order",
+                filename="nyscef_doc_no_605_scheduling_order.pdf",
+                page_text=(
+                    "Scheduling Order. IT IS HEREBY ORDERED that the conference is "
+                    "adjourned. Plaintiff Alpha Freight LP and Defendant Beta Depot "
+                    "Inc. shall appear. Procedural calendar updated."
+                ),
+            ),
+        ]
+        for hit in noise_hits:
+            self.assertFalse(
+                de.hit_is_material_for_party_role_question(hit),
+                msg=hit["page_id"],
+            )
+
+        pleading = self._hit(
+            result_id="p1",
+            page_id="nyscef-500-p2",
+            nyscef=500,
+            page=2,
+            doc_type="complaint",
+            filename="nyscef_doc_no_500_complaint.pdf",
+            page_text=(
+                "14 PARTIES\n"
+                "1. Plaintiff Alpha Freight LP is a limited liability partnership.\n"
+                "2. Defendant Beta Depot Inc. is a domestic corporation.\n"
+            ),
+            excerpt="14 PARTIES\n1. Plaintiff Alpha Freight LP is a limited liability partnership.",
+            classifications=["party_identity"],
+            assertion_kind="verified_record_fact",
+            score=20.0,
+        )
+        packet = de.build_evidence_packet(
+            self.party_query,
+            {"query": self.party_query, "results": [pleading] + noise_hits},
+        )
+        page_ids = {hit["page_id"] for hit in packet["retrieval_hits"]}
+        self.assertEqual(page_ids, {"nyscef-500-p2"})
+
+    def test_procedural_record_material_party_change_retained(self):
+        order = self._hit(
+            result_id="ord-keep",
+            page_id="nyscef-610-p1",
+            nyscef=610,
+            doc_type="order",
+            filename="nyscef_doc_no_610_decision_and_order.pdf",
+            page_text=(
+                "Decision and Order. IT IS HEREBY ORDERED that Canyon Repair LLC is "
+                "dismissed as a party, without prejudice to renewal if capacity is "
+                "later established. The caption role conflict remains unresolved."
+            ),
+            excerpt=(
+                "Canyon Repair LLC is dismissed as a party, without prejudice to "
+                "renewal if capacity is later established."
+            ),
+            classifications=["court_order"],
+            score=8.0,
+        )
+        motion_add = self._hit(
+            result_id="mot-keep",
+            page_id="nyscef-611-p1",
+            nyscef=611,
+            doc_type="motion",
+            filename="nyscef_doc_no_611_motion.pdf",
+            page_text=(
+                "Notice of Motion. Movant seeks leave to amend the complaint to add "
+                "as a party Prairie Notice Carrier LP, substituted as defendant for "
+                "the incorrectly named Prairie Notice Co."
+            ),
+            excerpt=(
+                "leave to amend the complaint to add as a party Prairie Notice "
+                "Carrier LP, substituted as defendant"
+            ),
+            classifications=["motion"],
+            score=7.0,
+        )
+        self.assertTrue(de.hit_is_material_for_party_role_question(order))
+        self.assertTrue(de.hit_is_material_for_party_role_question(motion_add))
+        packet = de.build_evidence_packet(
+            self.party_query,
+            {"query": self.party_query, "results": [order, motion_add]},
+        )
+        page_ids = {hit["page_id"] for hit in packet["retrieval_hits"]}
+        self.assertEqual(page_ids, {"nyscef-610-p1", "nyscef-611-p1"})
+
+
+class PartyRolePacketBudgetTests(unittest.TestCase):
+    def setUp(self):
+        self.party_query = (
+            "Who are the parties and what are their roles in this action?"
+        )
+
+    def test_controlling_pleading_survives_total_budget(self):
+        plaintiffs = ", ".join(f"Budget Plaintiff {i} LLC" for i in range(1, 12))
+        defendants = ", ".join(f"Budget Defendant {i} Inc" for i in range(1, 12))
+        caption = (
+            "SUPREME COURT OF THE STATE OF NEW YORK\n"
+            f"{plaintiffs},\n"
+            "                                   Plaintiffs,\n"
+            "                 -against-\n"
+            f"{defendants},\n"
+            "                                   Defendants.\n"
+            "Index No. 121212/2024\n"
+        )
+        parties = (
+            "14 PARTIES\n"
+            "1. Plaintiff Budget Plaintiff 1 LLC is a domestic corporation "
+            "authorized to do business in this state.\n"
+            "2. Defendant Budget Defendant 1 Inc is a domestic corporation.\n"
+            "3. Mesa Trailer Repair LLC, third-party defendant, was joined herein "
+            "as a necessary party.\n"
+        )
+        hits = [
+            {
+                "result_id": "cap-1",
+                "page_id": "nyscef-700-page-0001",
+                "nyscef_document_number": 700,
+                "pdf_page": 1,
+                "source_filename": "nyscef_doc_no_700_complaint.pdf",
+                "document_type": "complaint",
+                "excerpt": caption,
+                "page_text": caption + "COMPLAINT\n",
+                "classifications": ["party_identity"],
+                "assertion_kind": "verified_record_fact",
+                "score": 30.0,
+            },
+            {
+                "result_id": "par-2",
+                "page_id": "nyscef-700-page-0002",
+                "nyscef_document_number": 700,
+                "pdf_page": 2,
+                "source_filename": "nyscef_doc_no_700_complaint.pdf",
+                "document_type": "complaint",
+                "excerpt": parties,
+                "page_text": parties,
+                "classifications": ["party_identity"],
+                "assertion_kind": "verified_record_fact",
+                "party_role_section_expanded": True,
+                "score": 28.0,
+            },
+        ]
+        # Many redundant low-value operative pages to pressure the budget.
+        for i in range(20):
+            hits.append(
+                {
+                    "result_id": f"extra-{i}",
+                    "page_id": f"nyscef-8{i:02d}-p1",
+                    "nyscef_document_number": 800 + i,
+                    "pdf_page": 1,
+                    "source_filename": f"nyscef_doc_no_{800 + i}_answer.pdf",
+                    "document_type": "answer",
+                    "excerpt": (
+                        f"Answer paragraph restating that Plaintiff Budget Plaintiff "
+                        f"1 LLC is plaintiff and Defendant Budget Defendant 1 Inc is "
+                        f"defendant without new qualifications. Filler {i}. " + ("x" * 400)
+                    ),
+                    "page_text": (
+                        f"ANSWER. Plaintiff Budget Plaintiff 1 LLC is plaintiff. "
+                        f"Defendant Budget Defendant 1 Inc is a domestic corporation. "
+                        f"Filler {i}."
+                    ),
+                    "classifications": ["party_identity"],
+                    "assertion_kind": "verified_record_fact",
+                    "score": 2.0,
+                }
+            )
+        # Duplicate of controlling parties page (redundant).
+        hits.append(dict(hits[1], result_id="par-2-dup"))
+
+        packet = de.build_evidence_packet(
+            self.party_query,
+            {"query": self.party_query, "results": hits},
+        )
+        page_ids = [hit["page_id"] for hit in packet["retrieval_hits"]]
+        self.assertIn("nyscef-700-page-0001", page_ids)
+        self.assertIn("nyscef-700-page-0002", page_ids)
+        self.assertEqual(page_ids.count("nyscef-700-page-0002"), 1)
+        self.assertLessEqual(len(packet["retrieval_hits"]), de.PARTY_ROLE_PACKET_MAX_HITS)
+        self.assertIn("packet_budget", packet["materiality_filter"])
+        budget = packet["materiality_filter"]["packet_budget"]
+        self.assertLessEqual(budget["serialized_chars"], de.PARTY_ROLE_PACKET_MAX_CHARS)
+        self.assertGreaterEqual(budget["excluded_by_budget"], 1)
+
+        caption_hit = next(
+            hit for hit in packet["retrieval_hits"] if hit["page_id"] == "nyscef-700-page-0001"
+        )
+        parties_hit = next(
+            hit for hit in packet["retrieval_hits"] if hit["page_id"] == "nyscef-700-page-0002"
+        )
+        self.assertIn("Budget Plaintiff 11 LLC", caption_hit["excerpt"])
+        self.assertIn("Budget Defendant 11 Inc", caption_hit["excerpt"])
+        self.assertIn("joined herein as a necessary party", parties_hit["excerpt"])
+        # Never truncate mid-name to meet budget.
+        self.assertFalse(caption_hit["excerpt"].endswith("Budget"))
+        self.assertFalse(parties_hit["excerpt"].endswith("Mesa"))
+
+
 if __name__ == "__main__":
     unittest.main()
