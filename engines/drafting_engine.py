@@ -90,6 +90,10 @@ Hard rules:
 8. Claims of absence, completeness, chronology, conflict, or strongest evidence require an explained review_scope and must stay qualified when the retrieved record cannot establish completeness.
 9. Cite only page_id / NYSCEF / pdf_page values present in the evidence packet. Quote minimally and preserve exact wording in source_excerpt.
 10. Express uncertainty explicitly. Label any legal conclusion as legal_position or inference for attorney review. Do not give a final coverage conclusion unless the record and question clearly justify it.
+11. Answer the specific attorney question directly. Include only facts that are materially useful to that question.
+12. Prefer concise practical attorney work product. Exclude irrelevant procedural narrative, motion calendars, RJI boilerplate, and chronology that does not affect the answer.
+13. Preserve necessary qualifications, conflicts, amendments, and uncertainty about identity or role when the supplied record shows them.
+14. Remain fully citation-grounded: every substantive claim must rest on retrieval evidence in the packet. Do not use provisional answers, gold answers, or outside knowledge.
 
 Return a single JSON object with keys:
 proposed_answer, propositions, supporting_evidence, contrary_evidence,
@@ -102,6 +106,116 @@ page_id, pdf_page, source_excerpt, confidence, rationale, polarity
 attorney_review must include: requires_attorney_review (true), review_notes,
 legal_conclusions_labeled, coverage_conclusion (null unless justified and qualified).
 """
+
+
+# ---------------------------------------------------------------------------
+# Party-and-role question intent & materiality filtering
+# ---------------------------------------------------------------------------
+
+_PARTY_ROLE_QUERY_PHRASES = (
+    "party role",
+    "party roles",
+    "roles of the parties",
+    "parties and their roles",
+    "parties and roles",
+    "who are the parties",
+    "who is the plaintiff",
+    "who is the defendant",
+    "identify the parties",
+    "identify parties",
+    "named parties",
+    "parties to the action",
+    "parties to this action",
+    "procedural roles",
+    "each party's role",
+    "plaintiff and defendant",
+    "petitioner and respondent",
+    "third-party plaintiff",
+    "third-party defendant",
+    "respondent on appeal",
+)
+
+_MOTION_PRIMARY_QUERY_PHRASES = (
+    "notice of motion",
+    "summary judgment",
+    "motion to dismiss",
+    "motion for",
+    "returnable",
+)
+
+_PARTY_ROLE_BEARING_RE = re.compile(
+    r"(?i)\b(?:"
+    r"parties\b|"
+    r"third[\s-]+party\s+(?:plaintiffs?|defendants?)|"
+    r"plaintiffs?\b|"
+    r"defendants?\b|"
+    r"petitioners?\b|"
+    r"respondents?(?:\s+on\s+(?:the\s+)?appeal)?\b|"
+    r"appellants?\b|"
+    r"appellees?\b|"
+    r"limited\s+liability\s+(?:company|corporation)|"
+    r"sued\s+herein|"
+    r"joined\s+(?:herein|as\s+a\s+party)|"
+    r"necessary\s+party|"
+    r"real\s+party\s+in\s+interest"
+    r")"
+)
+
+_PARTY_IDENTITY_ESTABLISHING_RE = re.compile(
+    r"(?i)\b(?:"
+    r"(?:plaintiffs?|defendants?|petitioners?|respondents?|appellants?|appellees?)"
+    r"\s+(?:is|are|was|were)\b|"
+    r"(?:is|are|was|were)\s+(?:a\s+|the\s+)?"
+    r"(?:plaintiffs?|defendants?|petitioners?|respondents?|appellants?|appellees?)\b|"
+    r"third[\s-]+party\s+(?:plaintiffs?|defendants?)\b|"
+    r"joined\s+(?:herein|as\s+a\s+party|as\s+(?:an?\s+)?(?:additional\s+)?party)\b|"
+    r"necessary\s+party\b|"
+    r"real\s+party\s+in\s+interest\b|"
+    r"sued\s+(?:herein|as)\b|"
+    r"(?:domestic|foreign)\s+corporation\b|"
+    r"limited\s+liability\s+(?:company|corporation|partnership)\b|"
+    r"(?:authorized|organized)\s+to\s+do\s+business\b"
+    r")"
+)
+
+_PARTY_ROLE_QUALIFICATION_OR_CHANGE_RE = re.compile(
+    r"(?i)\b(?:"
+    r"amended\s+(?:complaint|petition|answer|pleading|caption|summons)\b|"
+    r"incorrectly\s+named\b|"
+    r"sued\s+(?:herein\s+)?as\b|"
+    r"also\s+known\s+as\b|"
+    r"now\s+known\s+as\b|"
+    r"formerly\s+known\s+as\b|"
+    r"substituted\s+(?:as\s+)?(?:party|plaintiff|defendant)\b|"
+    r"successor\s+(?:in\s+interest|party)?\b|"
+    r"capacity\b|"
+    r"dismissed\s+as\s+(?:a\s+)?(?:party|defendant|plaintiff)\b|"
+    r"discontinued\s+as\s+to\b|"
+    r"leave\s+to\s+(?:amend|add|drop|serve)\b|"
+    r"joined\s+(?:herein|as)\b|"
+    r"misnomer\b|"
+    r"without\s+prejudice\s+to\b|"
+    r"appears?\s+specially\b|"
+    r"(?:role|caption|party\s+status)\s+(?:is\s+)?(?:disputed|uncertain|unclear|unresolved)\b|"
+    r"(?:disputed|uncertain|unclear|unresolved)\s+(?:role|caption|party\s+status)\b|"
+    r"conflict(?:s|ing)?\s+(?:as\s+to\s+)?(?:party|role|caption)\b|"
+    r"nominally\b|"
+    r"purportedly\b|"
+    r"allegedly\s+(?:a\s+)?(?:party|plaintiff|defendant)\b"
+    r")"
+)
+
+_PROCEDURAL_NOISE_RE = re.compile(
+    r"(?i)\b(?:"
+    r"notice\s+of\s+motion\b|"
+    r"request\s+for\s+judicial\s+intervention\b|"
+    r"\brji\b|"
+    r"returnable\b|"
+    r"procedural\s+calendar\b|"
+    r"conference\s+(?:date|scheduled)\b|"
+    r"affirmation\s+of\s+(?:service|mailing|good\s+faith)\b"
+    r")"
+)
 
 
 ModelCall = Callable[[str, str], Any]
@@ -706,6 +820,223 @@ def _parse_model_payload(raw: Any) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Party-role intent detection & question-conditioned materiality
+# ---------------------------------------------------------------------------
+
+
+def _question_tokens(question: str) -> set:
+    return set(re.findall(r"[a-z0-9']+", normalize_whitespace(question).lower()))
+
+
+def _query_seeks_motion_primary(question: str) -> bool:
+    joined = normalize_whitespace(question).lower()
+    tokens = _question_tokens(question)
+    if any(phrase in joined for phrase in _MOTION_PRIMARY_QUERY_PHRASES):
+        return True
+    if "motion" in tokens:
+        if any(phrase in joined for phrase in _PARTY_ROLE_QUERY_PHRASES):
+            return False
+        return True
+    return False
+
+
+def detect_party_role_question_intent(question: str) -> bool:
+    """
+    Detect party-and-role identity questions using general language.
+
+    Does not fire for motion-primary queries so motion evidence stays available.
+    """
+    joined = normalize_whitespace(question).lower()
+    tokens = _question_tokens(question)
+    if not joined:
+        return False
+    if _query_seeks_motion_primary(question):
+        return False
+    if any(phrase in joined for phrase in _PARTY_ROLE_QUERY_PHRASES):
+        return True
+    if "parties" in tokens and any(
+        cue in joined
+        for cue in ("role", "roles", "who", "identify", "named", "caption")
+    ):
+        return True
+    role_identity = tokens.intersection(
+        {
+            "plaintiff",
+            "defendant",
+            "petitioner",
+            "respondent",
+            "appellant",
+            "appellee",
+        }
+    )
+    if role_identity and any(
+        cue in joined
+        for cue in (
+            "who is",
+            "who are",
+            "role",
+            "roles",
+            "named as",
+            "identify",
+            "caption",
+            "parties",
+        )
+    ):
+        return True
+    if "plaintiff" in tokens and "defendant" in tokens:
+        return True
+    if "petitioner" in tokens and "respondent" in tokens:
+        return True
+    if "third-party" in joined or ("third" in tokens and "party" in tokens):
+        if role_identity or "party" in tokens or "parties" in tokens:
+            return True
+    return False
+
+
+def _hit_materiality_text(hit: dict) -> str:
+    parts = [
+        hit.get("excerpt"),
+        hit.get("source_filename"),
+        hit.get("document_type"),
+        " ".join(str(x) for x in (hit.get("classifications") or [])),
+        hit.get("assertion_kind"),
+    ]
+    return normalize_whitespace(" ".join(str(p or "") for p in parts))
+
+
+def _classify_hit_filing_kind(hit: dict) -> str:
+    doc_type = normalize_whitespace(hit.get("document_type")).lower()
+    filename = normalize_whitespace(hit.get("source_filename")).lower()
+    excerpt_head = normalize_whitespace(hit.get("excerpt") or "")[:240].lower()
+    hay = f"{filename} {doc_type} {excerpt_head}"
+
+    if "rji" in hay or "request for judicial intervention" in hay:
+        return "rji"
+    if doc_type == "motion" or "notice of motion" in hay or (
+        re.search(r"\bmotion\b", hay) and "summons" not in hay
+    ):
+        return "motion"
+    if doc_type in {"affirmation", "affidavit"} or re.search(
+        r"\b(?:affirmation|affidavit)\b", hay
+    ):
+        return "affirmation"
+    if doc_type == "order" or re.search(
+        r"\b(?:decision and order|it is hereby ordered|ordered that)\b", hay
+    ):
+        return "order"
+    if "amended" in hay:
+        if any(
+            token in hay
+            for token in (
+                "complaint",
+                "petition",
+                "answer",
+                "summons",
+                "pleading",
+            )
+        ):
+            return "amended_pleading"
+    if doc_type == "complaint" or any(
+        token in hay for token in ("complaint", "summons", "petition")
+    ):
+        return "initiating"
+    if doc_type == "answer" or re.search(r"\banswers?\b", hay):
+        return "answer"
+    return "other"
+
+
+def _hit_establishes_party_identity_or_role(text: str) -> bool:
+    if not text:
+        return False
+    if _PARTY_IDENTITY_ESTABLISHING_RE.search(text):
+        return True
+    if _PARTY_ROLE_BEARING_RE.search(text) and re.search(
+        r"(?i)\b(?:is|are|was|were|named|joined|sued|authorized|organized|"
+        r"corporation|partnership|llc|inc\.?)\b",
+        text,
+    ):
+        return True
+    return False
+
+
+def _hit_qualifies_or_changes_party_role(text: str) -> bool:
+    return bool(text and _PARTY_ROLE_QUALIFICATION_OR_CHANGE_RE.search(text))
+
+
+def _hit_is_mere_procedural_noise(text: str, kind: str) -> bool:
+    if kind in {"motion", "rji"} and not _hit_establishes_party_identity_or_role(text):
+        return True
+    if kind in {"affirmation", "order", "other"}:
+        if _PROCEDURAL_NOISE_RE.search(text or "") and not (
+            _hit_establishes_party_identity_or_role(text)
+            or _hit_qualifies_or_changes_party_role(text)
+        ):
+            return True
+    return False
+
+
+def hit_is_material_for_party_role_question(hit: dict) -> bool:
+    """
+    Question-conditioned materiality for party-and-role intent.
+
+    Prefers identity/role/entity/joinder/operative-pleading evidence and later
+    filings that change, qualify, or conflict with a party's role. Excludes
+    unrelated motion/RJI/affirmation/order/chronology noise.
+    """
+    if not isinstance(hit, dict):
+        return False
+    text = _hit_materiality_text(hit)
+    kind = _classify_hit_filing_kind(hit)
+
+    if _hit_qualifies_or_changes_party_role(text):
+        return True
+    if _hit_is_mere_procedural_noise(text, kind):
+        return False
+    if kind in {"motion", "rji"}:
+        return _hit_establishes_party_identity_or_role(text)
+    if kind in {"affirmation", "order"}:
+        return _hit_establishes_party_identity_or_role(text)
+    if kind in {"initiating", "amended_pleading", "answer"}:
+        return _hit_establishes_party_identity_or_role(text) or bool(
+            _PARTY_ROLE_BEARING_RE.search(text)
+        )
+    return _hit_establishes_party_identity_or_role(text)
+
+
+def filter_hits_for_party_role_materiality(
+    hits: Sequence[dict],
+) -> Tuple[List[dict], dict]:
+    """
+    Apply party-role materiality filtering while preserving hit order.
+
+    Falls back to initiating/operative pleadings, then to the original hits,
+    when filtering would otherwise empty the generation packet.
+    """
+    source = [hit for hit in (hits or []) if isinstance(hit, dict)]
+    kept = [hit for hit in source if hit_is_material_for_party_role_question(hit)]
+    fallback = "none"
+    if not kept:
+        pleading_kinds = {"initiating", "amended_pleading", "answer"}
+        kept = [
+            hit
+            for hit in source
+            if _classify_hit_filing_kind(hit) in pleading_kinds
+        ]
+        fallback = "operative_pleadings" if kept else "unfiltered"
+        if not kept:
+            kept = list(source)
+    excluded_count = max(0, len(source) - len(kept))
+    meta = {
+        "intent": "party_role",
+        "input_hit_count": len(source),
+        "kept_hit_count": len(kept),
+        "excluded_hit_count": excluded_count,
+        "fallback": fallback,
+    }
+    return kept, meta
+
+
+# ---------------------------------------------------------------------------
 # Prompt assembly
 # ---------------------------------------------------------------------------
 
@@ -719,6 +1050,10 @@ def build_evidence_packet(
     allowed_sources: Optional[Sequence[str]] = None,
 ) -> dict:
     results = list((retrieval or {}).get("results") or [])
+    materiality_filter = None
+    if detect_party_role_question_intent(question):
+        results, materiality_filter = filter_hits_for_party_role_materiality(results)
+
     compact_hits = []
     for hit in results:
         if not isinstance(hit, dict):
@@ -765,7 +1100,7 @@ def build_evidence_packet(
             },
         }
 
-    return {
+    packet = {
         "question": normalize_whitespace(question),
         "retrieval_query": (retrieval or {}).get("query"),
         "retrieval_hit_count": len(compact_hits),
@@ -775,6 +1110,9 @@ def build_evidence_packet(
         "allowed_sources": list(allowed_sources or []),
         "record_only_default": True,
     }
+    if materiality_filter is not None:
+        packet["materiality_filter"] = materiality_filter
+    return packet
 
 
 def build_user_prompt(evidence_packet: dict) -> str:
