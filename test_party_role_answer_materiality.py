@@ -209,6 +209,116 @@ class PartyRoleAnswerMaterialityTests(unittest.TestCase):
         self.assertIn("capacity", order["excerpt"])
         self.assertIn("unresolved", order["excerpt"].lower())
 
+    def test_strict_necessity_prunes_everything_outside_protected_group(self):
+        caption = _hit(
+            result_id="caption", nyscef=301, page=1, doc_type="complaint",
+            filename="initiating_pleading.pdf",
+            excerpt=("SUPREME COURT\nFirst Listed Ventures LLC and Late Listed "
+                     "Holdings Inc., Plaintiffs, v. Common Carrier LLC, Defendant."),
+        )
+        same_filing_narrative = _hit(
+            result_id="narrative", nyscef=301, page=2, doc_type="complaint",
+            filename="initiating_pleading.pdf",
+            excerpt="Plaintiffs describe a commercial relationship with the defendant.",
+        )
+        parties_one = _hit(
+            result_id="parties-1", nyscef=301, page=3, doc_type="complaint",
+            filename="initiating_pleading.pdf",
+            excerpt="PARTIES\nPlaintiff First Listed Ventures LLC is a domestic company.",
+        )
+        parties_one["party_role_section_expanded"] = True
+        parties_two = _hit(
+            result_id="parties-2", nyscef=301, page=4, doc_type="complaint",
+            filename="initiating_pleading.pdf",
+            excerpt=("Plaintiff Late Listed Holdings Inc. is a domestic corporation. "
+                     "Defendant Common Carrier LLC is a limited liability company."),
+        )
+        parties_two["party_role_section_expanded"] = True
+        name_only = _hit(
+            result_id="name-only", nyscef=301, page=5, doc_type="complaint",
+            filename="initiating_pleading.pdf", excerpt="Late Listed Holdings Inc.",
+        )
+        later_answer = _hit(
+            result_id="later-answer", nyscef=302, page=1, doc_type="answer",
+            filename="later_answer.pdf",
+            excerpt="Defendant Common Carrier LLC answers and denies the allegations.",
+        )
+        exhibit = _hit(
+            result_id="exhibit", nyscef=303, page=1, doc_type="other",
+            filename="relationship_exhibit.pdf",
+            excerpt="The companies maintained a commercial relationship.",
+        )
+        adjacent = _hit(
+            result_id="adjacent", nyscef=304, page=1, doc_type="other",
+            filename="change_filing.pdf", excerpt="Background facts only.",
+        )
+        actual_change = _hit(
+            result_id="actual-change", nyscef=304, page=2, doc_type="other",
+            filename="change_filing.pdf",
+            excerpt="New Harbor LLC was added as a defendant and necessary party.",
+        )
+        metadata_only = _hit(
+            result_id="metadata-only", nyscef=305, page=1, doc_type="complaint",
+            filename="amended_complaint_substitution.pdf",
+            excerpt="Defendant Common Carrier LLC denies a shipping allegation.",
+        )
+        duplicate_change = copy.deepcopy(actual_change)
+        duplicate_change["result_id"] = "actual-change-duplicate"
+
+        packet = de.build_evidence_packet(
+            self.party_question,
+            {"results": [caption, same_filing_narrative, parties_one, parties_two,
+                         name_only, later_answer, exhibit, adjacent, actual_change,
+                         metadata_only, duplicate_change]},
+        )
+        kept = packet["retrieval_hits"]
+        kept_ids = [hit["result_id"] for hit in kept]
+
+        self.assertEqual(
+            set(kept_ids), {"caption", "parties-1", "parties-2", "actual-change"}
+        )
+        self.assertEqual(kept_ids.count("actual-change"), 1)
+        self.assertLessEqual(len(kept), 12)
+        self.assertLessEqual(
+            packet["materiality_filter"]["packet_budget"]["serialized_chars"],
+            24000,
+        )
+        citations = {(hit["nyscef_document_number"], hit["pdf_page"], hit["page_id"])
+                     for hit in kept}
+        self.assertIn((301, 4, "nyscef-301-p4"), citations)
+        combined = " ".join(hit["excerpt"] for hit in kept)
+        for identity in (
+            "First Listed Ventures LLC", "Late Listed Holdings Inc.",
+            "Common Carrier LLC",
+        ):
+            self.assertIn(identity, combined)
+
+    def test_each_text_demonstrated_material_change_kind_survives(self):
+        controlling = _hit(
+            result_id="control", nyscef=401, page=1, doc_type="complaint",
+            filename="pleading.pdf",
+            excerpt="Alpha LLC, Plaintiff, v. Beta Inc., Defendant.",
+        )
+        exception_texts = {
+            "addition": "Gamma LLC was added as a defendant.",
+            "dismissal": "Gamma LLC was dismissed as a party.",
+            "substitution": "Gamma LLC was substituted as defendant.",
+            "amendment": "The amended complaint adds Gamma LLC.",
+            "role": "Gamma LLC's party status is disputed.",
+            "identity": "Gamma LLC was incorrectly named as Gamma Inc.",
+            "capacity": "Gamma LLC appears in a representative capacity.",
+            "joinder": "Gamma LLC was joined as a necessary party.",
+        }
+        exceptions = [
+            _hit(result_id=key, nyscef=410 + index, page=1, doc_type="other",
+                 filename="filing.pdf", excerpt=text)
+            for index, (key, text) in enumerate(exception_texts.items())
+        ]
+        kept, _ = de.filter_hits_for_party_role_materiality([controlling] + exceptions)
+        self.assertEqual(
+            {hit["result_id"] for hit in kept}, {"control", *exception_texts.keys()}
+        )
+
     def test_motion_questions_keep_motion_evidence(self):
         motion_hit = self.hits[1]
         retrieval = {

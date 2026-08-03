@@ -992,6 +992,14 @@ def _hit_materiality_text(hit: dict) -> str:
     return normalize_whitespace(" ".join(str(p or "") for p in parts))
 
 
+def _hit_page_materiality_text(hit: dict) -> str:
+    """Actual page/excerpt text, excluding filenames, types, and metadata."""
+    page_text = normalize_whitespace(
+        hit.get("page_text") or hit.get("full_page_text") or ""
+    )
+    return page_text or normalize_whitespace(hit.get("excerpt") or "")
+
+
 def _classify_hit_filing_kind(hit: dict) -> str:
     doc_type = normalize_whitespace(hit.get("document_type")).lower()
     filename = normalize_whitespace(hit.get("source_filename")).lower()
@@ -1075,6 +1083,11 @@ def _hit_materially_changes_party_role(text: str) -> bool:
     satisfy this gate.
     """
     return bool(text and _PARTY_ROLE_MATERIAL_CHANGE_RE.search(text))
+
+
+def _hit_is_necessary_party_role_exception(hit: dict) -> bool:
+    """Require the page's own text to demonstrate a material role exception."""
+    return _hit_materially_changes_party_role(_hit_page_materiality_text(hit))
 
 
 def _hit_is_mere_procedural_noise(text: str, kind: str) -> bool:
@@ -1307,9 +1320,8 @@ def apply_party_role_packet_budget(
     Deterministic selection:
     1. Deduplicate redundant pages/propositions (stable first-seen order).
     2. Always retain controlling initiating/operative caption + PARTIES pages.
-    3. Then retain material change/qualification/conflict evidence.
-    4. Then remaining material hits by descending score, then citation order.
-    5. Never truncate party names or role paragraphs — omit whole non-protected
+    3. Then retain only page-text-demonstrated change/qualification/conflict evidence.
+    4. Never truncate party names or role paragraphs — omit whole non-protected
        hits when the budget would otherwise be exceeded.
     """
     source = [hit for hit in (hits or []) if isinstance(hit, dict)]
@@ -1326,17 +1338,11 @@ def apply_party_role_packet_budget(
 
     protected = []
     qualifying = []
-    other = []
     for hit in deduped:
-        text = _hit_materiality_text(hit)
         if hit.get("controlling_party_role_pleading"):
             protected.append(hit)
-        elif _hit_materially_changes_party_role(text) or _hit_qualifies_or_changes_party_role(
-            text
-        ):
+        elif _hit_is_necessary_party_role_exception(hit):
             qualifying.append(hit)
-        else:
-            other.append(hit)
 
     # If the protected group itself creates character pressure, deterministically
     # remove only nonresponsive prose from each page.  Complete role-bearing
@@ -1359,7 +1365,6 @@ def apply_party_role_packet_budget(
         )
 
     qualifying.sort(key=_sort_key)
-    other.sort(key=_sort_key)
 
     selected: List[dict] = []
     selected_ids = set()
@@ -1384,8 +1389,6 @@ def apply_party_role_packet_budget(
     for hit in protected:
         _try_add(hit, force=True)
     for hit in qualifying:
-        _try_add(hit, force=False)
-    for hit in other:
         _try_add(hit, force=False)
 
     meta = {
@@ -1414,7 +1417,13 @@ def filter_hits_for_party_role_materiality(
     materiality, applies the total party-role evidence-packet budget.
     """
     source = [hit for hit in (hits or []) if isinstance(hit, dict)]
-    kept = [hit for hit in source if hit_is_material_for_party_role_question(hit)]
+    marked_source = _mark_controlling_party_role_group(source)
+    kept = [
+        hit
+        for hit in marked_source
+        if hit.get("controlling_party_role_pleading")
+        or hit_is_material_for_party_role_question(hit)
+    ]
     fallback = "none"
     if not kept:
         pleading_kinds = {"initiating", "amended_pleading", "answer"}
