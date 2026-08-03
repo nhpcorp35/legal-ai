@@ -160,7 +160,13 @@ _PARTY_ROLE_BEARING_RE = re.compile(
     r"real\s+party\s+in\s+interest|"
     r"notice\s+defendants?|"
     r"named\s+insured|"
-    r"additional\s+insured"
+    r"additional\s+insured|"
+    r"principal\s+place\s+of\s+business|"
+    r"place\s+of\s+business|"
+    r"residen(?:t|ce|ts)\b|"
+    r"resid(?:es|ed|ing)\b|"
+    r"\bindividuals?\b|"
+    r"(?:domestic|foreign)\s+corporation"
     r")"
 )
 
@@ -180,7 +186,14 @@ _PARTY_IDENTITY_ESTABLISHING_RE = re.compile(
     r"(?:authorized|organized)\s+to\s+do\s+business\b|"
     r"notice\s+defendants?\b|"
     r"named\s+insured\b|"
-    r"additional\s+insured\b"
+    r"additional\s+insured\b|"
+    r"principal\s+place\s+of\s+business\b|"
+    r"place\s+of\s+business\b|"
+    r"(?:is|are|was|were)\s+(?:an?\s+)?(?:individual|resident)s?\b|"
+    r"resid(?:es|ed|ing)\s+in\b|"
+    r"resident\s+of\b|"
+    r"was\s+and\s+still\s+is\s+a\b|"
+    r"duly\s+authorized\s+and\s+existing\b"
     r")"
 )
 
@@ -772,12 +785,154 @@ def normalize_whitespace(value: Any) -> str:
     return " ".join(str(value or "").split()).strip()
 
 
+# Vocabulary used only to heal OCR-fractured words during citation matching.
+_OCR_CITATION_JOIN_WORDS = frozenset(
+    {
+        "additional",
+        "association",
+        "authorized",
+        "business",
+        "companies",
+        "company",
+        "corporation",
+        "corporations",
+        "declaration",
+        "defendant",
+        "defendants",
+        "domestic",
+        "existing",
+        "foreign",
+        "individual",
+        "individuals",
+        "insured",
+        "liability",
+        "limited",
+        "maintained",
+        "named",
+        "notice",
+        "organized",
+        "partnership",
+        "partnerships",
+        "plaintiff",
+        "plaintiffs",
+        "principal",
+        "resident",
+        "residents",
+        "residing",
+        "residence",
+        "underwriters",
+    }
+)
+
+_ELLIPSIS_SPLIT_RE = re.compile(r"(?:\.{3}|…|\[\s*\.\.\.\s*\])")
+
+
+def heal_ocr_intra_word_spaces(text: Any) -> str:
+    """Join OCR-fractured vocabulary words for citation matching only."""
+    raw = str(text or "")
+    if not raw:
+        return ""
+
+    def _pass(value: str) -> str:
+        tokens = re.findall(r"\S+|\s+", value)
+        if len(tokens) <= 1:
+            return value
+        out: List[str] = []
+        i = 0
+        while i < len(tokens):
+            tok = tokens[i]
+            if tok.isspace() or i + 2 >= len(tokens):
+                out.append(tok)
+                i += 1
+                continue
+            nxt = tokens[i + 2] if tokens[i + 1].isspace() else None
+            if nxt is None:
+                out.append(tok)
+                i += 1
+                continue
+            left_m = re.match(r"^([^A-Za-z]*)([A-Za-z]+)([^A-Za-z]*)$", tok)
+            right_m = re.match(r"^([^A-Za-z]*)([A-Za-z]+)([^A-Za-z]*)$", nxt)
+            if not left_m or not right_m or right_m.group(1) or left_m.group(3):
+                out.append(tok)
+                i += 1
+                continue
+            joined_alpha = f"{left_m.group(2)}{right_m.group(2)}".lower()
+            if joined_alpha in _OCR_CITATION_JOIN_WORDS:
+                out.append(
+                    f"{left_m.group(1)}{left_m.group(2)}"
+                    f"{right_m.group(2)}{right_m.group(3)}"
+                )
+                i += 3
+                continue
+            out.append(tok)
+            i += 1
+        return "".join(out)
+
+    prev = None
+    current = raw
+    for _ in range(6):
+        if current == prev:
+            break
+        prev = current
+        current = _pass(current)
+    return current
+
+
+def normalize_citation_text(value: Any) -> str:
+    """Whitespace-normalize and OCR-heal text for citation comparisons."""
+    return heal_ocr_intra_word_spaces(normalize_whitespace(value)).lower()
+
+
+def _substantive_citation_segment(segment: str) -> bool:
+    tokens = re.findall(r"[A-Za-z0-9]+", segment or "")
+    if not tokens:
+        return False
+    if len(tokens) >= 2:
+        return True
+    return len(tokens[0]) >= 4
+
+
+def _citation_segment_occurs(segment: str, hay_raw: str, hay_ocr: str) -> bool:
+    needle = normalize_whitespace(segment)
+    if not needle:
+        return False
+    if needle in hay_raw:
+        return True
+    needle_ocr = normalize_citation_text(needle)
+    return bool(needle_ocr and needle_ocr in hay_ocr)
+
+
 def excerpt_occurs_on_page(excerpt: Any, page_text: Any) -> bool:
+    """
+    True when a cited excerpt is supported by page text.
+
+    Accepts whitespace-normalized contiguous matches, OCR-healed word matches,
+    and ellipsis-separated quotations when every substantive segment is
+    independently supported. Unsupported segments fail the whole quotation.
+    """
     needle = normalize_whitespace(excerpt)
     hay = normalize_whitespace(page_text)
     if not needle or not hay:
         return False
-    return needle in hay
+    if needle in hay:
+        return True
+
+    hay_ocr = normalize_citation_text(hay)
+    needle_ocr = normalize_citation_text(needle)
+    if needle_ocr and needle_ocr in hay_ocr:
+        return True
+
+    if _ELLIPSIS_SPLIT_RE.search(needle):
+        segments = [
+            part.strip()
+            for part in _ELLIPSIS_SPLIT_RE.split(needle)
+            if _substantive_citation_segment(part)
+        ]
+        if not segments:
+            return False
+        return all(_citation_segment_occurs(seg, hay, hay_ocr) for seg in segments)
+
+    return False
 
 
 def _page_lookup_from_documents(documents: Optional[Sequence[dict]]) -> Dict[str, dict]:
@@ -1058,13 +1213,18 @@ def _hit_establishes_party_identity_or_role(text: str) -> bool:
         return False
     if _PARTY_IDENTITY_ESTABLISHING_RE.search(text):
         return True
+    healed = heal_ocr_intra_word_spaces(text)
+    if healed != text and _PARTY_IDENTITY_ESTABLISHING_RE.search(healed):
+        return True
     # Require role-bearing language plus identity/relationship verbs or entity
     # status words. Bare "Inc." / "LLC" inside a caption name is not enough.
-    if _PARTY_ROLE_BEARING_RE.search(text) and re.search(
+    probe = healed if healed else text
+    if _PARTY_ROLE_BEARING_RE.search(probe) and re.search(
         r"(?i)\b(?:is|are|was|were|named|joined|sued|authorized|organized|"
-        r"corporation|partnership|notice\s+defendant|"
-        r"named\s+insured)\b",
-        text,
+        r"corporation|partnership|company|individual|resident|residing|"
+        r"principal\s+place|place\s+of\s+business|"
+        r"notice\s+defendant|named\s+insured)\b",
+        probe,
     ):
         return True
     return False
@@ -1292,11 +1452,32 @@ def _compress_protected_party_role_hit(hit: dict) -> dict:
     if len(lines) < 2:
         return hit
     responsive = []
+    identity_line_re = re.compile(
+        r"(?i)\b(?:"
+        r"principal\s+place\s+of\s+business|place\s+of\s+business|"
+        r"residen(?:t|ce|ts)|resid(?:es|ed|ing)|"
+        r"individual|corporation|partnership|company|"
+        r"domestic|foreign|authorized|organized|"
+        r"notice\s+defendant|named\s+insured|"
+        r"was\s+and\s+still\s+is"
+        r")\b"
+    )
     for line in lines:
         if (
             _PARTY_ROLE_BEARING_RE.search(line)
             or _PARTY_ROLE_QUALIFICATION_OR_CHANGE_RE.search(line)
+            or _PARTY_IDENTITY_ESTABLISHING_RE.search(line)
+            or identity_line_re.search(line)
             or re.search(r"(?i)\b(?:parties|against|index\s+no\.?|supreme\s+court)\b", line)
+        ):
+            responsive.append(line.rstrip())
+            continue
+        # OCR-tolerant retention for fractured entity / residence cues.
+        healed = heal_ocr_intra_word_spaces(line)
+        if healed != line and (
+            _PARTY_ROLE_BEARING_RE.search(healed)
+            or _PARTY_IDENTITY_ESTABLISHING_RE.search(healed)
+            or identity_line_re.search(healed)
         ):
             responsive.append(line.rstrip())
     compressed = "\n".join(line for line in responsive if line.strip()).strip()
@@ -1857,7 +2038,8 @@ def validate_attorney_qa_response(
                     removal_reason = "excerpt_mismatch"
                     detail = (
                         "source_excerpt does not occur on the cited page "
-                        "(whitespace-normalized)."
+                        "(whitespace/OCR-normalized; ellipsis segments checked "
+                        "independently)."
                     )
 
         if removal_reason is None and classification == "verified_record_fact":

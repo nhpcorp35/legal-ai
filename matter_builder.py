@@ -1642,7 +1642,13 @@ PARTY_ROLE_BEARING_RE = re.compile(
     r"real\s+party\s+in\s+interest|"
     r"notice\s+defendants?|"
     r"named\s+insured|"
-    r"additional\s+insured"
+    r"additional\s+insured|"
+    r"principal\s+place\s+of\s+business|"
+    r"place\s+of\s+business|"
+    r"residen(?:t|ce|ts)\b|"
+    r"resid(?:es|ed|ing)\b|"
+    r"\bindividuals?\b|"
+    r"(?:domestic|foreign)\s+corporation"
     r")"
 )
 
@@ -1744,9 +1750,210 @@ PARTY_ROLE_PASSAGE_RE = re.compile(
     r"authorized\s+to\s+do\s+business|organized\s+(?:under|to)|"
     r"incorrectly\s+named|substituted\s+as|capacity|"
     r"is\s+a\s+(?:corporation|partnership|limited)|"
-    r"are\s+(?:corporations|partnerships|limited)"
-    r")\b"
+    r"are\s+(?:corporations|partnerships|limited)|"
+    r"principal\s+place\s+of\s+business|place\s+of\s+business|"
+    r"residen(?:t|ce|ts|cies)|resid(?:es|ed|ing)\b|"
+    r"\bindividuals?\b|"
+    r"(?:domestic|foreign)\s+(?:limited\s+liability\s+)?"
+    r"(?:company|corporation|partnership)|"
+    r"was\s+and\s+still\s+is\s+a\b|"
+    r"duly\s+authorized\s+and\s+existing"
+    r")"
 )
+
+# Words commonly fractured by OCR; used only for match-time healing.
+_OCR_PARTY_ROLE_JOIN_WORDS = frozenset(
+    {
+        "additional",
+        "association",
+        "authorized",
+        "business",
+        "companies",
+        "company",
+        "condominium",
+        "construction",
+        "corporation",
+        "corporations",
+        "declaration",
+        "defendant",
+        "defendants",
+        "domestic",
+        "existing",
+        "fictitious",
+        "foreign",
+        "individual",
+        "individuals",
+        "industries",
+        "insured",
+        "liability",
+        "limited",
+        "maintained",
+        "named",
+        "notice",
+        "organized",
+        "partnership",
+        "partnerships",
+        "plaintiff",
+        "plaintiffs",
+        "policies",
+        "principal",
+        "resident",
+        "residents",
+        "residing",
+        "residence",
+        "underwriters",
+    }
+)
+
+# Identity / entity / residence cues matched with optional intra-word OCR spaces.
+_PARTY_ROLE_ENTITY_RESIDENCE_PHRASES = (
+    "principal place of business",
+    "place of business",
+    "domestic corporation",
+    "foreign corporation",
+    "domestic limited liability company",
+    "foreign limited liability company",
+    "limited liability company",
+    "limited liability corporation",
+    "limited liability partnership",
+    "duly authorized and existing",
+    "authorized to do business",
+    "notice defendant",
+    "notice defendants",
+    "named insured",
+    "additional insured",
+    "resident of",
+    "residents of",
+    "residing in",
+    "resides in",
+    "is a resident",
+    "is an individual",
+    "are individuals",
+    "was and still is a",
+)
+
+
+def _ocr_flexible_phrase_re(phrase):
+    """Build a regex that tolerates OCR spaces inside and between words."""
+    words = [w for w in re.split(r"\s+", str(phrase or "").strip()) if w]
+    if not words:
+        return None
+    word_patterns = []
+    for word in words:
+        letters = [re.escape(ch) for ch in word if ch.isalnum() or ch in {"'", "-"}]
+        if not letters:
+            continue
+        word_patterns.append(r"\s*".join(letters))
+    if not word_patterns:
+        return None
+    return re.compile(r"(?i)" + r"\s+".join(word_patterns))
+
+
+_PARTY_ROLE_ENTITY_RESIDENCE_OCR_RES = tuple(
+    pat
+    for pat in (_ocr_flexible_phrase_re(p) for p in _PARTY_ROLE_ENTITY_RESIDENCE_PHRASES)
+    if pat is not None
+)
+
+
+def heal_ocr_intra_word_spaces(text):
+    """
+    Join alphabetic fragments split by OCR for matching only.
+
+    Examples: "domesti c" -> "domestic", "com pany" -> "company".
+    Does not invent content; only merges when the joined token is a known
+    party-role vocabulary word.
+    """
+    raw = str(text or "")
+    if not raw:
+        return ""
+
+    def _pass(value):
+        tokens = re.findall(r"\S+|\s+", value)
+        if len(tokens) <= 1:
+            return value
+        out = []
+        i = 0
+        while i < len(tokens):
+            tok = tokens[i]
+            if tok.isspace() or i + 2 >= len(tokens):
+                out.append(tok)
+                i += 1
+                continue
+            nxt = tokens[i + 2] if tokens[i + 1].isspace() else None
+            if nxt is None:
+                out.append(tok)
+                i += 1
+                continue
+            left_m = re.match(r"^([^A-Za-z]*)([A-Za-z]+)([^A-Za-z]*)$", tok)
+            right_m = re.match(r"^([^A-Za-z]*)([A-Za-z]+)([^A-Za-z]*)$", nxt)
+            if not left_m or not right_m or right_m.group(1) or left_m.group(3):
+                out.append(tok)
+                i += 1
+                continue
+            joined_alpha = f"{left_m.group(2)}{right_m.group(2)}".lower()
+            if joined_alpha in _OCR_PARTY_ROLE_JOIN_WORDS:
+                out.append(
+                    f"{left_m.group(1)}{left_m.group(2)}"
+                    f"{right_m.group(2)}{right_m.group(3)}"
+                )
+                i += 3
+                continue
+            out.append(tok)
+            i += 1
+        return "".join(out)
+
+    prev = None
+    current = raw
+    # Bounded passes for multi-fragment breaks (e.g. "li a bility").
+    for _ in range(6):
+        if current == prev:
+            break
+        prev = current
+        current = _pass(current)
+    return current
+
+
+def _party_role_unit_has_identity_signal(unit):
+    """True when a passage unit carries party identity/role/entity/residence cues."""
+    text = unit or ""
+    if not text.strip():
+        return False
+    if PARTY_ROLE_PASSAGE_RE.search(text) or PARTY_ROLE_BEARING_RE.search(text):
+        if (
+            PARTY_ROLE_PASSAGE_RE.search(text)
+            or re.search(
+                r"(?i)\b(?:is|are|was|were|named|joined|sued|authorized|"
+                r"organized|corporation|partnership|company|individual|"
+                r"resident|residing|resides|residence|"
+                r"principal\s+place|place\s+of\s+business|"
+                r"notice\s+defendant|named\s+insured)\b",
+                text,
+            )
+        ):
+            return True
+    for pattern in _PARTY_ROLE_ENTITY_RESIDENCE_OCR_RES:
+        if pattern.search(text):
+            return True
+    healed = heal_ocr_intra_word_spaces(text)
+    if healed != text:
+        if PARTY_ROLE_PASSAGE_RE.search(healed) or PARTY_ROLE_BEARING_RE.search(healed):
+            if (
+                PARTY_ROLE_PASSAGE_RE.search(healed)
+                or re.search(
+                    r"(?i)\b(?:is|are|was|were|named|joined|sued|authorized|"
+                    r"organized|corporation|partnership|company|individual|"
+                    r"resident|residing|resides|residence|"
+                    r"principal\s+place|place\s+of\s+business|"
+                    r"notice\s+defendant|named\s+insured)\b",
+                    healed,
+                )
+            ):
+                return True
+        for pattern in _PARTY_ROLE_ENTITY_RESIDENCE_OCR_RES:
+            if pattern.search(healed):
+                return True
+    return False
 
 MOTION_HEADING_RE = re.compile(
     r"(?i)\b(?:notice\s+of\s+motion|motion\s+for\s+(?:an\s+)?"
@@ -3686,14 +3893,15 @@ def _split_passage_units(text):
     if not cleaned:
         return []
     # Numbered pleading paragraphs are the primary unit.
-    if re.search(r"\b\d+\.\s+", cleaned):
-        parts = re.split(r"(?=\b\d+\.\s+)", cleaned)
+    # Limit to 1-4 digits so ZIP codes like "11354." are not treated as markers.
+    if re.search(r"\b\d{1,4}\.\s+", cleaned):
+        parts = re.split(r"(?=\b\d{1,4}\.\s+)", cleaned)
         return [part.strip() for part in parts if part and part.strip()]
     units = []
     # Avoid splitting on entity abbreviations such as "Inc." / "LLC."
     pieces = re.split(
         r"(?<!\bInc)(?<!\bLLC)(?<!\bLLP)(?<!\bCorp)(?<!\bLtd)(?<!\bCo)"
-        r"(?<=[.;])\s+(?=(?:[A-Z\"(]|\d+\.))",
+        r"(?<=[.;])\s+(?=(?:[A-Z\"(]|\d{1,4}\.))",
         cleaned,
     )
     for piece in pieces:
@@ -3707,7 +3915,10 @@ def _extract_party_role_passages(text):
     """
     Keep all concise sentences/paragraphs that establish party identity/role.
 
-    Does not stop after the first match; returns citation-grounded focused text.
+    Preserves identity, procedural role, entity type, residence / principal place
+    of business, and notice-defendant (or equivalent) allegations together.
+    OCR intra-word spacing does not prevent matching. Does not stop after the
+    first match; returns citation-grounded focused text.
     """
     units = _split_passage_units(text)
     kept = []
@@ -3724,21 +3935,23 @@ def _extract_party_role_passages(text):
                 stripped = remainder
             else:
                 continue
-        if _MAJOR_SECTION_START_RE.match(stripped):
+        # Stop at a major section heading even when it follows party text in-unit.
+        major_mid = MAJOR_PLEADING_SECTION_HEADING_RE.search(stripped)
+        stop_after = False
+        if major_mid and major_mid.start() > 0:
+            stripped = stripped[: major_mid.start()].strip()
+            unit = stripped
+            stop_after = True
+            if not stripped:
+                break
+        elif _MAJOR_SECTION_START_RE.match(stripped) or MAJOR_PLEADING_SECTION_HEADING_RE.match(
+            stripped
+        ):
             break
-        if MAJOR_PLEADING_SECTION_HEADING_RE.match(stripped):
+        if _party_role_unit_has_identity_signal(unit):
+            kept.append(stripped)
+        if stop_after:
             break
-        if PARTY_ROLE_PASSAGE_RE.search(unit) or PARTY_ROLE_BEARING_RE.search(unit):
-            if (
-                PARTY_ROLE_PASSAGE_RE.search(unit)
-                or re.search(
-                    r"(?i)\b(?:is|are|was|were|named|joined|sued|authorized|"
-                    r"organized|corporation|partnership|"
-                    r"notice\s+defendant|named\s+insured)\b",
-                    unit,
-                )
-            ):
-                kept.append(stripped)
     if not kept:
         return ""
     # De-duplicate while preserving order.

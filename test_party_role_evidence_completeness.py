@@ -1062,5 +1062,346 @@ class PartyRolePacketBudgetTests(unittest.TestCase):
         self.assertEqual(meta["protected_hit_count"], 5)
 
 
+class PartyRoleEntityResidenceExtractionTests(unittest.TestCase):
+    """Focused regressions for entity/residence/OCR party-role extraction."""
+
+    def setUp(self):
+        self.party_query = (
+            "Who are the parties and what are their roles in this action?"
+        )
+        self.motion_query = (
+            "What relief does the notice of motion for summary judgment seek?"
+        )
+
+    def test_entity_form_and_residence_ppb_lines_retained(self):
+        doc = _normalized(
+            _doc(
+                531,
+                "complaint",
+                [
+                    "SUPREME COURT caption.\nAlpha Carrier LP v. Beta Depot Inc.\n",
+                    "PARTIES\n"
+                    "1. Plaintiff Alpha Carrier LP is a limited liability partnership "
+                    "authorized to do business in this state.\n"
+                    "2. Alpha Carrier LP maintained a principal place of business "
+                    "located at 10 Harbor Way, Buffalo, NY 14201.\n"
+                    "3. Defendant Beta Depot Inc. is a domestic corporation.\n"
+                    "4. Beta Depot Inc. maintained a principal place of business "
+                    "located at 20 Pier Street, Buffalo, NY 14202.\n"
+                    "5. Defendant Carla Rivers is a notice defendant.\n"
+                    "6. Carla Rivers is a resident of the State of New York "
+                    "residing in Erie County.\n"
+                    "7. Defendant Delta Notice Carrier LLC is a notice defendant.\n",
+                ],
+                filename="nyscef_doc_no_531_complaint.pdf",
+            )
+        )
+        excerpt = mb._party_role_evidence_excerpt(
+            {
+                "page": doc["pages"][1],
+                "document": doc,
+                "nyscef_document_number": 531,
+                "filename": doc["filename"],
+                "document_type": "complaint",
+                "segment": None,
+            },
+            doc["pages"][1]["text"],
+        )
+        self.assertIn("limited liability partnership", excerpt)
+        self.assertIn("domestic corporation", excerpt)
+        self.assertIn("principal place of business", excerpt)
+        self.assertIn("14201", excerpt)
+        self.assertIn("resident of the State of New York", excerpt)
+        self.assertIn("notice defendant", excerpt)
+
+    def test_intra_word_ocr_spacing_tolerated_for_entity_forms(self):
+        text = (
+            "PARTIES\n"
+            "1. Defendant Ortov Lighting Inc. is a notice defendant.\n"
+            "2. Ortov was and still is a domesti c corporation duly authorized "
+            "and existing under the laws of the State of New York.\n"
+            "3. President Sai was and still is a domestic limited liability "
+            "com pany duly authorized and existing under the laws of the "
+            "State of New York.\n"
+            "4. Sovereign was and still is a do mestic corporation.\n"
+        )
+        excerpt = mb._extract_party_role_passages(text)
+        self.assertIn("domesti c corporation", excerpt)
+        self.assertIn("com pany", excerpt)
+        self.assertIn("do mestic corporation", excerpt)
+        self.assertIn("notice defendant", excerpt)
+        self.assertTrue(
+            mb._party_role_unit_has_identity_signal(
+                "Ortov was and still is a domesti c corporation duly authorized."
+            )
+        )
+        self.assertEqual(
+            mb.heal_ocr_intra_word_spaces("domesti c corporation"),
+            "domestic corporation",
+        )
+        self.assertEqual(
+            mb.heal_ocr_intra_word_spaces("limited liability com pany"),
+            "limited liability company",
+        )
+
+    def test_notice_defendant_allegations_remain_retained(self):
+        text = (
+            "PARTIES\n"
+            "1. Defendant Meadow Bridge Repair Inc. is a notice defendant to "
+            "the instant action.\n"
+            "2. Meadow is a domestic corporation.\n"
+            "3. Prairie Notice Carrier LP is a notice defendant under the policy.\n"
+        )
+        excerpt = mb._extract_party_role_passages(text)
+        self.assertIn("notice defendant", excerpt)
+        self.assertIn("Meadow Bridge Repair Inc.", excerpt)
+        self.assertIn("Prairie Notice Carrier LP", excerpt)
+
+    def test_non_party_behavior_unchanged_and_procedural_noise_not_retained(self):
+        docs = [
+            _normalized(
+                _doc(
+                    532,
+                    "complaint",
+                    [
+                        "Caption page.\n",
+                        "PARTIES\n"
+                        "1. Plaintiff North Quay Freight LP is a domestic corporation.\n"
+                        "2. Defendant South Pier Warehouse Inc. is a domestic "
+                        "corporation with its principal place of business in Albany.\n",
+                        "FACTS\n3. Cargo was lost in transit on March 1, 2024.\n",
+                    ],
+                    filename="nyscef_doc_no_532_summons_complaint.pdf",
+                )
+            ),
+            _normalized(
+                _doc(
+                    533,
+                    "motion",
+                    [
+                        "Notice of Motion for Summary Judgment returnable June 1, 2024. "
+                        "Movant seeks dismissal on procedural calendar grounds. "
+                        + ("z" * 80)
+                    ],
+                    filename="nyscef_doc_no_533_notice_of_motion.pdf",
+                )
+            ),
+        ]
+        party_result = mb.retrieve_canonical_records(
+            docs, self.party_query, top_k=8
+        )
+        party_packet = de.build_evidence_packet(
+            self.party_query, party_result
+        )
+        combined = " ".join(
+            hit.get("excerpt") or "" for hit in party_packet["retrieval_hits"]
+        )
+        self.assertIn("principal place of business", combined)
+        self.assertIn("domestic corporation", combined)
+
+        motion_result = mb.retrieve_canonical_records(
+            docs, self.motion_query, top_k=5
+        )
+        motion_packet = de.build_evidence_packet(
+            self.motion_query, motion_result
+        )
+        self.assertNotIn("materiality_filter", motion_packet)
+        for hit in motion_packet["retrieval_hits"]:
+            self.assertNotIn("party_role_section_expanded", hit)
+
+        noise = {
+            "result_id": "m1",
+            "page_id": "nyscef-533-p1",
+            "nyscef_document_number": 533,
+            "pdf_page": 1,
+            "source_filename": "nyscef_doc_no_533_notice_of_motion.pdf",
+            "document_type": "motion",
+            "excerpt": "Notice of Motion for Summary Judgment.",
+            "page_text": (
+                "Notice of Motion for Summary Judgment returnable June 1, 2024. "
+                "North Quay Freight LP are Plaintiffs. South Pier Warehouse Inc. "
+                "are Defendants. Movant seeks dismissal on the procedural calendar."
+            ),
+            "classifications": [],
+            "assertion_kind": "unknown",
+        }
+        self.assertFalse(de.hit_is_material_for_party_role_question(noise))
+
+    def test_zip_codes_do_not_split_party_paragraphs(self):
+        text = (
+            "79. Triborough maintained a principal place of business located at "
+            "35-06 Farrington St, 2nd Fl, Flushing, NY 11354. "
+            "80. That at all times mentioned herein, Triborough transacted "
+            "business in the State of New York."
+        )
+        units = mb._split_passage_units(text)
+        self.assertTrue(
+            any("11354" in unit and unit.strip().startswith("79.") for unit in units)
+        )
+        excerpt = mb._extract_party_role_passages("PARTIES\n" + text)
+        self.assertIn("11354", excerpt)
+        self.assertNotIn("transacted business in the State of New York", excerpt)
+
+
+class CitationValidationImprovementTests(unittest.TestCase):
+    def test_healed_ocr_citations_validate_when_supported(self):
+        page = (
+            "Ortov was and still is a domesti c corporation duly authorized "
+            "and existing under the laws of the State of New York."
+        )
+        self.assertTrue(
+            de.excerpt_occurs_on_page(
+                "Ortov was and still is a domestic corporation duly authorized",
+                page,
+            )
+        )
+        self.assertTrue(
+            de.excerpt_occurs_on_page(
+                "domesti c corporation duly authorized",
+                page,
+            )
+        )
+
+    def test_ellipsis_segments_validate_independently(self):
+        page = (
+            "Plaintiff Alpha Carrier LP is a domestic corporation. "
+            "Defendant Beta Depot Inc. maintained a principal place of business "
+            "in Albany. Unrelated calendar notation."
+        )
+        self.assertTrue(
+            de.excerpt_occurs_on_page(
+                "Alpha Carrier LP is a domestic corporation ... "
+                "principal place of business in Albany",
+                page,
+            )
+        )
+        # Every substantive segment must be independently supported.
+        self.assertFalse(
+            de.excerpt_occurs_on_page(
+                "Alpha Carrier LP is a domestic corporation ... "
+                "completely unsupported invented clause",
+                page,
+            )
+        )
+
+    def test_unsupported_segments_still_fail(self):
+        page = "Defendant Beta Depot Inc. is a notice defendant."
+        self.assertFalse(
+            de.excerpt_occurs_on_page(
+                "Beta Depot Inc. is a notice defendant ... phantom third party",
+                page,
+            )
+        )
+        self.assertFalse(
+            de.excerpt_occurs_on_page(
+                "entirely absent quotation",
+                page,
+            )
+        )
+
+    def test_proposition_specific_citations_survive_independently(self):
+        docs = [
+            _normalized(
+                _doc(
+                    540,
+                    "complaint",
+                    [
+                        "PARTIES\n"
+                        "1. Plaintiff Alpha Carrier LP is a domestic corporation.\n"
+                        "2. Defendant Beta Depot Inc. is a notice defendant.\n"
+                    ],
+                    filename="nyscef_doc_no_540_complaint.pdf",
+                )
+            )
+        ]
+        page = docs[0]["pages"][0]
+        retrieval = {
+            "query": "Who are the parties?",
+            "results": [
+                {
+                    "result_id": "cret-nyscef-540-page-0001",
+                    "page_id": page["page_id"],
+                    "nyscef_document_number": 540,
+                    "pdf_page": 1,
+                    "source_filename": docs[0]["filename"],
+                    "document_type": "complaint",
+                    "excerpt": page["text"],
+                    "classifications": ["party_identity"],
+                    "assertion_kind": "party_allegation",
+                    "score": 10.0,
+                }
+            ],
+        }
+        payload = {
+            "proposed_answer": "Alpha is plaintiff; Beta is notice defendant.",
+            "propositions": [
+                {
+                    "proposition_id": "P1",
+                    "text": "Alpha Carrier LP is a domestic corporation.",
+                    "classification": "party_allegation",
+                    "nyscef_document_number": 540,
+                    "page_id": page["page_id"],
+                    "pdf_page": 1,
+                    "source_excerpt": (
+                        "Plaintiff Alpha Carrier LP is a domestic corporation"
+                    ),
+                    "confidence": 0.9,
+                    "rationale": "Entity form on pleading.",
+                    "polarity": "supporting",
+                },
+                {
+                    "proposition_id": "P2",
+                    "text": "Invented unsupported claim.",
+                    "classification": "party_allegation",
+                    "nyscef_document_number": 540,
+                    "page_id": page["page_id"],
+                    "pdf_page": 1,
+                    "source_excerpt": "Alpha Carrier LP ... completely invented segment",
+                    "confidence": 0.2,
+                    "rationale": "Bad ellipsis citation.",
+                    "polarity": "supporting",
+                },
+                {
+                    "proposition_id": "P3",
+                    "text": "Beta Depot Inc. is a notice defendant.",
+                    "classification": "party_allegation",
+                    "nyscef_document_number": 540,
+                    "page_id": page["page_id"],
+                    "pdf_page": 1,
+                    "source_excerpt": (
+                        "Defendant Beta Depot Inc. is a notice defendant"
+                    ),
+                    "confidence": 0.9,
+                    "rationale": "Notice-defendant allegation.",
+                    "polarity": "supporting",
+                },
+            ],
+            "unresolved_questions": [],
+            "needs_review": [],
+            "confidence": 0.7,
+            "attorney_review": {
+                "requires_attorney_review": True,
+                "review_notes": "Mixed citations.",
+                "legal_conclusions_labeled": True,
+                "coverage_conclusion": None,
+            },
+            "review_scope": {
+                "completeness": "not_established",
+                "qualification": "Limited to retrieved pleading page.",
+            },
+        }
+
+        result = de.answer_attorney_record_question(
+            "Who are the parties and what are their roles?",
+            retrieval,
+            documents=docs,
+            model_call=lambda _system, _user: json.dumps(payload),
+        )
+        kept_ids = {p["proposition_id"] for p in result["propositions"]}
+        self.assertIn("P1", kept_ids)
+        self.assertIn("P3", kept_ids)
+        self.assertNotIn("P2", kept_ids)
+
+
 if __name__ == "__main__":
     unittest.main()
