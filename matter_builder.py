@@ -3967,6 +3967,153 @@ def _extract_party_role_passages(text):
     return _truncate_at_token_boundary(joined, PARTY_ROLE_PASSAGE_EXCERPT_MAX)
 
 
+# Procedural boilerplate removed only from party-role evidence excerpts.
+# Line patterns drop pure stamp/summons/admin lines; span patterns strip the same
+# material from newline-collapsed page text without discarding caption/PARTIES.
+_PARTY_ROLE_PROCEDURAL_BOILERPLATE_LINE_RES = (
+    re.compile(r"(?i)^\s*FILED\s*:"),
+    re.compile(r"(?i)^\s*RECEIVED\s+NYSCEF\s*:"),
+    re.compile(r"(?i)^\s*NYSCEF\s+DOC\.?\s*NO\.?\s*[:#]?\s*\d+\s*$"),
+    re.compile(r"(?i)^\s*INDEX\s+NO\.?\s*[:#]?\s*[\dA-Z/\-]+\s*$"),
+    re.compile(
+        r"(?i)^\s*\d{1,2}/\d{1,2}/\d{2,4}\s+\d{1,2}:\d{2}(?::\d{2})?\s*[ap]m\s*$"
+    ),
+    re.compile(r"(?i)^\s*you\s+are\s+hereby\s+summoned\b"),
+    re.compile(
+        r"(?i)\bwithin\s+(?:twenty|thirty|20|30)\s*"
+        r"(?:\([^)]*\))?\s*days?\s+after\s+(?:the\s+)?service\b"
+    ),
+    re.compile(r"(?i)\bserve\s+a\s+copy\s+of\s+(?:your|the)\s+answer\b"),
+    re.compile(
+        r"(?i)\b(?:must|shall)\s+appear\s+(?:and|or)\s+(?:answer|defend)\b"
+    ),
+    re.compile(
+        r"(?i)\bthe\s+place\s+of\s+trial\s+(?:is|shall\s+be)\s+(?:hereby\s+)?"
+        r"designated\b"
+    ),
+    re.compile(
+        r"(?i)\bjudgment\s+will\s+be\s+taken\s+against\s+you\s+by\s+default\b"
+    ),
+    re.compile(r"(?i)\bdefault\s+will\s+be\s+taken\s+against\s+you\b"),
+    re.compile(
+        r"(?i)\bupon\s+your\s+failure\s+to\s+(?:appear|answer|defend)\b"
+    ),
+    re.compile(
+        r"(?i)\bthis\s+(?:document|filing|pleading)\s+(?:was|has\s+been)\s+"
+        r"electronically\s+(?:filed|uploaded)\b"
+    ),
+    re.compile(
+        r"(?i)\belectronically\s+filed\s+(?:and\s+served\s+)?"
+        r"(?:through|via|using|with)\s+nyscef\b"
+    ),
+    re.compile(r"(?i)^\s*confirmation\s+notice\b.*\bnyscef\b"),
+    re.compile(
+        r"(?i)\bnyscef\s+(?:case\s+)?(?:processing|upload|administration)\b"
+    ),
+)
+
+# Narrow span removals for collapsed (single-line) page text.
+_PARTY_ROLE_PROCEDURAL_BOILERPLATE_SPAN_RES = (
+    re.compile(
+        r"(?i)\bFILED\s*:\s*.{0,160}?(?=\s*(?:INDEX\s+NO\.?|NYSCEF\s+DOC\.?|"
+        r"RECEIVED\s+NYSCEF|SUPREME\s+COURT|PARTIES|COMPLAINT|SUMMONS)\b|$)"
+    ),
+    re.compile(r"(?i)\bINDEX\s+NO\.?\s*[:#]?\s*[\dA-Z/\-]+"),
+    re.compile(r"(?i)\bNYSCEF\s+DOC\.?\s*NO\.?\s*[:#]?\s*\d+"),
+    re.compile(r"(?i)\bRECEIVED\s+NYSCEF\s*:\s*\d{1,2}/\d{1,2}/\d{2,4}"),
+    re.compile(
+        r"(?i)\bYOU\s+ARE\s+HEREBY\s+SUMMONED\b[^.]{0,400}(?:\.|$)"
+    ),
+    re.compile(
+        r"(?i)\bwithin\s+(?:twenty|thirty|20|30)\s*"
+        r"(?:\([^)]*\))?\s*days?\s+after\s+(?:the\s+)?service\b[^.]{0,200}(?:\.|$)"
+    ),
+    re.compile(
+        r"(?i)\bserve\s+a\s+copy\s+of\s+(?:your|the)\s+answer\b[^.]{0,200}(?:\.|$)"
+    ),
+    re.compile(
+        r"(?i)\b(?:must|shall)\s+appear\s+(?:and|or)\s+(?:answer|defend)\b"
+        r"[^.]{0,160}(?:\.|$)"
+    ),
+    re.compile(
+        r"(?i)\bthe\s+place\s+of\s+trial\s+(?:is|shall\s+be)\s+(?:hereby\s+)?"
+        r"designated\b[^.]{0,120}(?:\.|$)"
+    ),
+    re.compile(
+        r"(?i)\b(?:upon\s+your\s+failure\s+to\s+(?:appear|answer|defend)\b|"
+        r"judgment\s+will\s+be\s+taken\s+against\s+you\s+by\s+default\b|"
+        r"default\s+will\s+be\s+taken\s+against\s+you\b)[^.]{0,200}(?:\.|$)"
+    ),
+    re.compile(
+        r"(?i)\bthis\s+(?:document|filing|pleading)\s+(?:was|has\s+been)\s+"
+        r"electronically\s+(?:filed|uploaded)\b[^.]{0,160}(?:\.|$)"
+    ),
+    re.compile(
+        r"(?i)\belectronically\s+filed\s+(?:and\s+served\s+)?"
+        r"(?:through|via|using|with)\s+nyscef\b[^.]{0,160}(?:\.|$)"
+    ),
+    re.compile(
+        r"(?i)\bconfirmation\s+notice\b[^.]{0,120}\bnyscef\b[^.]{0,80}(?:\.|$)"
+    ),
+    re.compile(
+        r"(?i)\bnyscef\s+(?:case\s+)?(?:processing|upload|administration)\b"
+        r"[^.]{0,120}(?:\.|$)"
+    ),
+)
+
+_PARTY_ROLE_BOILERPLATE_MIXED_CONTENT_RE = re.compile(
+    r"(?i)\b(?:supreme\s+court|parties|plaintiffs?|defendants?|"
+    r"petitioners?|respondents?|against|complaint|limited\s+liability|"
+    r"domestic\s+corporation|principal\s+place|notice\s+defendant)\b"
+)
+
+
+def _strip_party_role_procedural_boilerplate_spans(text):
+    """Remove known boilerplate spans while preserving surrounding role prose."""
+    out = str(text or "")
+    if not out:
+        return ""
+    for pattern in _PARTY_ROLE_PROCEDURAL_BOILERPLATE_SPAN_RES:
+        out = pattern.sub(" ", out)
+    return re.sub(r"[ \t]{2,}", " ", out).strip()
+
+
+def _is_party_role_procedural_boilerplate_line(line):
+    """True when a single line is filing/summons/admin boilerplate."""
+    stripped = str(line or "").strip()
+    if not stripped:
+        return False
+    if not any(pat.search(stripped) for pat in _PARTY_ROLE_PROCEDURAL_BOILERPLATE_LINE_RES):
+        return False
+    # Mixed caption/PARTIES lines are span-stripped instead of dropped whole.
+    if _PARTY_ROLE_BOILERPLATE_MIXED_CONTENT_RE.search(stripped):
+        residual = _strip_party_role_procedural_boilerplate_spans(stripped)
+        return not residual
+    return True
+
+
+def _filter_party_role_procedural_boilerplate(text):
+    """
+    Strip line/passage-level procedural boilerplate from party-role excerpt text.
+
+    Removes filing stamps, NYSCEF docket headers/footers, summons instructions,
+    default-warning language, and court-upload administration text while
+    preserving caption, PARTIES, and other identity/role material in order.
+    """
+    if text is None:
+        return ""
+    raw = str(text)
+    if not raw:
+        return ""
+    if "\n" in raw:
+        kept = [
+            line
+            for line in raw.splitlines()
+            if not _is_party_role_procedural_boilerplate_line(line)
+        ]
+        raw = "\n".join(kept)
+    return _strip_party_role_procedural_boilerplate_spans(raw)
+
 def _party_role_evidence_excerpt(entry, text, phrase=None, tokens=None, phrases=None):
     """
     Build focused party-role evidence from complete captions and role passages.
@@ -3978,18 +4125,20 @@ def _party_role_evidence_excerpt(entry, text, phrase=None, tokens=None, phrases=
     page = entry.get("page") or {}
     page_number = page.get("page_number")
     parts = []
+    # Filter only excerpt source text; page-level decisions still use full text.
+    filtered = _filter_party_role_procedural_boilerplate(text)
 
     if (
         _is_operative_pleading_kind(kind)
         and not _is_affirmation_or_service_filing(entry, text)
         and _looks_like_caption_bearing_page(text, page_number, kind)
     ):
-        caption = _extract_complete_pleading_caption(text)
+        caption = _extract_complete_pleading_caption(filtered)
         if caption:
             parts.append(caption)
 
     if _is_operative_pleading_kind(kind) or _page_has_role_bearing_language(text):
-        passages = _extract_party_role_passages(text)
+        passages = _extract_party_role_passages(filtered)
         if passages:
             # Avoid duplicating caption text already captured.
             if not parts or normalize_retrieval_text(passages) not in normalize_retrieval_text(
@@ -3998,13 +4147,14 @@ def _party_role_evidence_excerpt(entry, text, phrase=None, tokens=None, phrases=
                 parts.append(passages)
 
     if parts:
-        combined = "\n\n".join(parts)
+        combined = _filter_party_role_procedural_boilerplate("\n\n".join(parts))
         return _truncate_at_token_boundary(combined, PARTY_ROLE_COMBINED_EXCERPT_MAX)
 
     # Fallback: ordinary excerpt with token-safe truncation.
     fallback = _retrieval_excerpt(
-        text, phrase=phrase, tokens=tokens, phrases=phrases
+        filtered, phrase=phrase, tokens=tokens, phrases=phrases
     )
+    fallback = _filter_party_role_procedural_boilerplate(fallback)
     return _truncate_at_token_boundary(fallback, RETRIEVAL_EXCERPT_MAX)
 
 

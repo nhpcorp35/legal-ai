@@ -611,6 +611,154 @@ class PartyRoleEvidenceCompletenessTests(unittest.TestCase):
             self.assertNotIn("page_text", hit)
 
 
+class PartyRoleProceduralBoilerplateFilterTests(unittest.TestCase):
+    """Focused synthetic coverage for party-role line-level boilerplate filtering."""
+
+    def _entry(self, text, nyscef=540, doc_type="complaint"):
+        doc = _normalized(
+            _doc(
+                nyscef,
+                doc_type,
+                [text],
+                filename=f"nyscef_doc_no_{nyscef}_{doc_type}.pdf",
+            )
+        )
+        return {
+            "page": doc["pages"][0],
+            "document": doc,
+            "nyscef_document_number": nyscef,
+            "filename": doc["filename"],
+            "document_type": doc_type,
+            "segment": None,
+        }, doc["pages"][0]["text"]
+
+    def test_filing_header_and_nyscef_footer_removed(self):
+        text = (
+            "FILED: EXAMPLE COUNTY CLERK 03/15/2024 09:41 AM\n"
+            "INDEX NO. 812345/2024\n"
+            "NYSCEF DOC. NO. 1\n"
+            "RECEIVED NYSCEF: 03/15/2024\n"
+            "SUPREME COURT OF THE STATE OF NEW YORK\n"
+            "COUNTY OF EXAMPLE\n"
+            "Harbor Quay Freight LP,\n"
+            "                                   Plaintiff,\n"
+            "                 -against-\n"
+            "Pier Gate Depot Inc.,\n"
+            "                                   Defendant.\n"
+            "COMPLAINT\n"
+            "Plaintiffs, by their attorneys, allege as follows.\n"
+        )
+        entry, page_text = self._entry(text)
+        excerpt = mb._party_role_evidence_excerpt(entry, page_text)
+        self.assertNotIn("FILED:", excerpt)
+        self.assertNotIn("RECEIVED NYSCEF:", excerpt)
+        self.assertNotIn("NYSCEF DOC. NO.", excerpt)
+        self.assertNotIn("812345/2024", excerpt)
+        self.assertIn("Harbor Quay Freight LP", excerpt)
+        self.assertIn("Plaintiff", excerpt)
+        self.assertIn("Pier Gate Depot Inc.", excerpt)
+        self.assertIn("Defendant", excerpt)
+
+    def test_summons_and_default_warning_boilerplate_removed(self):
+        text = (
+            "SUPREME COURT OF THE STATE OF NEW YORK\n"
+            "Riverfront Carrier Co., Plaintiff,\n"
+            "                 -against-\n"
+            "Lakeside Warehouse Inc., Defendant.\n"
+            "SUMMONS\n"
+            "YOU ARE HEREBY SUMMONED to answer the complaint in this action "
+            "and to serve a copy of your answer on plaintiff's attorneys "
+            "within twenty (20) days after the service of this summons.\n"
+            "Upon your failure to appear or answer, judgment will be taken "
+            "against you by default for the relief demanded in the complaint.\n"
+            "The place of trial is designated as the County of Example.\n"
+            "COMPLAINT\n"
+            "PARTIES\n"
+            "1. Plaintiff Riverfront Carrier Co. is a domestic corporation.\n"
+            "2. Defendant Lakeside Warehouse Inc. is a limited liability company.\n"
+        )
+        entry, page_text = self._entry(text, nyscef=541)
+        excerpt = mb._party_role_evidence_excerpt(entry, page_text)
+        self.assertNotIn("YOU ARE HEREBY SUMMONED", excerpt)
+        self.assertNotIn("serve a copy of your answer", excerpt)
+        self.assertNotIn("within twenty (20) days after the service", excerpt)
+        self.assertNotIn("judgment will be taken against you by default", excerpt)
+        self.assertNotIn("Upon your failure to appear or answer", excerpt)
+        self.assertIn("Riverfront Carrier Co.", excerpt)
+        self.assertIn("Lakeside Warehouse Inc.", excerpt)
+        self.assertIn("domestic corporation", excerpt)
+        self.assertIn("limited liability company", excerpt)
+
+    def test_mixed_page_retains_caption_parties_and_identity(self):
+        text = (
+            "FILED: EXAMPLE COUNTY CLERK 04/01/2024 11:15 AM\n"
+            "RECEIVED NYSCEF: 04/01/2024\n"
+            "This document was electronically filed through NYSCEF case processing.\n"
+            "SUPREME COURT OF THE STATE OF NEW YORK\n"
+            "North Quay Logistics LP,\n"
+            "                                   Plaintiff,\n"
+            "                 -against-\n"
+            "South Pier Terminal Inc.,\n"
+            "                                   Defendant.\n"
+            "YOU ARE HEREBY SUMMONED to answer this complaint.\n"
+            "Default will be taken against you if you fail to appear.\n"
+            "PARTIES\n"
+            "1. Plaintiff North Quay Logistics LP is a limited liability partnership "
+            "with its principal place of business in Albany County.\n"
+            "2. Defendant South Pier Terminal Inc. is a notice defendant and a "
+            "domestic corporation residing in Erie County.\n"
+        )
+        entry, page_text = self._entry(text, nyscef=542)
+        excerpt = mb._party_role_evidence_excerpt(entry, page_text)
+        self.assertNotIn("FILED:", excerpt)
+        self.assertNotIn("RECEIVED NYSCEF:", excerpt)
+        self.assertNotIn("electronically filed through NYSCEF", excerpt)
+        self.assertNotIn("YOU ARE HEREBY SUMMONED", excerpt)
+        self.assertNotIn("Default will be taken against you", excerpt)
+        self.assertIn("North Quay Logistics LP", excerpt)
+        self.assertIn("South Pier Terminal Inc.", excerpt)
+        self.assertIn("Plaintiff", excerpt)
+        self.assertIn("Defendant", excerpt)
+        self.assertIn("PARTIES", excerpt)
+        self.assertIn("limited liability partnership", excerpt)
+        self.assertIn("principal place of business", excerpt)
+        self.assertIn("notice defendant", excerpt)
+        self.assertIn("domestic corporation", excerpt)
+
+    def test_ordinary_legal_prose_not_over_filtered(self):
+        text = (
+            "PARTIES\n"
+            "1. Plaintiff Atlas Parcel Group LLC is a domestic corporation "
+            "authorized to do business in this state.\n"
+            "2. Defendant Canyon Freight Inc. denied the material allegations "
+            "of the complaint and asserted affirmative defenses under the Policies.\n"
+            "3. Plaintiff filed this action seeking damages for breach of contract "
+            "after the shipment was lost in transit.\n"
+            "4. Defendant Canyon Freight Inc. is a notice defendant with its "
+            "principal place of business in Kings County.\n"
+        )
+        entry, page_text = self._entry(text, nyscef=543)
+        excerpt = mb._party_role_evidence_excerpt(entry, page_text)
+        self.assertIn("Atlas Parcel Group LLC", excerpt)
+        self.assertIn("domestic corporation", excerpt)
+        self.assertIn("denied the material allegations", excerpt)
+        self.assertIn("filed this action seeking damages", excerpt)
+        self.assertIn("notice defendant", excerpt)
+        self.assertIn("principal place of business", excerpt)
+        # Narrow patterns must not strip ordinary uses of file/default vocabulary.
+        self.assertNotIn("FILED:", excerpt)
+        self.assertFalse(
+            mb._is_party_role_procedural_boilerplate_line(
+                "3. Plaintiff filed this action seeking damages for breach of contract."
+            )
+        )
+        self.assertFalse(
+            mb._is_party_role_procedural_boilerplate_line(
+                "Defendant defaulted on premium payment obligations under the Policies."
+            )
+        )
+
+
 class PartyRoleExpansionBoundTests(unittest.TestCase):
     def test_section_expansion_respects_explicit_page_bound(self):
         pages = ["PARTIES\n1. Plaintiff Bound Test Co. is a corporation.\n"]
