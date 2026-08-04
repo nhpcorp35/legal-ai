@@ -903,6 +903,70 @@ class PartyRoleDraftingCompletenessTests(unittest.TestCase):
             all("Alpha" not in name for name in identities if "Beta" in name)
         )
 
+    def test_caption_boundary_x_horizontal_rule_plaintiff(self):
+        expected = self._extract(
+            "-----------------------------------X\n"
+            "PARTY NAME,\n"
+            "Plaintiff"
+        )
+        by_name = self._by_identity(expected)
+        self.assertEqual(len(by_name), 1)
+        party = by_name["party name"]
+        self.assertEqual(party["identity"], "PARTY NAME")
+        self.assertEqual(party["procedural_role"], "plaintiff")
+        self.assertNotIn("x party name", by_name)
+
+    def test_caption_boundary_x_ocr_spaced_role(self):
+        expected = self._extract(
+            "-----------------------------------X\n"
+            "ACME CORP,\n"
+            "Pla intiff"
+        )
+        by_name = self._by_identity(expected)
+        self.assertEqual(len(by_name), 1)
+        party = by_name["acme corp"]
+        self.assertEqual(party["identity"], "ACME CORP")
+        self.assertEqual(party["procedural_role"], "plaintiff")
+        self.assertNotIn("x acme corp", by_name)
+
+    def test_caption_without_boundary_x(self):
+        expected = self._extract(
+            "PARTY NAME,\n"
+            "Plaintiff"
+        )
+        by_name = self._by_identity(expected)
+        self.assertEqual(len(by_name), 1)
+        party = by_name["party name"]
+        self.assertEqual(party["identity"], "PARTY NAME")
+        self.assertEqual(party["procedural_role"], "plaintiff")
+
+    def test_legitimate_ordinary_x_leading_identity(self):
+        expected = self._extract(
+            "1. Defendant X Freight LLC is a domestic corporation."
+        )
+        by_name = self._by_identity(expected)
+        self.assertEqual(len(by_name), 1)
+        party = by_name["x freight llc"]
+        self.assertEqual(party["identity"], "X Freight LLC")
+        self.assertEqual(party["procedural_role"], "defendant")
+        self.assertEqual(party["entity_type"], "domestic corporation")
+
+    def test_caption_boundary_x_no_duplicate_after_normalization(self):
+        expected = self._extract(
+            "-----------------------------------X\n"
+            "PARTY NAME,\n"
+            "Plaintiff\n"
+            "\n"
+            "1. Plaintiff PARTY NAME is a domestic corporation."
+        )
+        by_name = self._by_identity(expected)
+        self.assertEqual(len(by_name), 1)
+        party = by_name["party name"]
+        self.assertEqual(party["identity"], "PARTY NAME")
+        self.assertEqual(party["procedural_role"], "plaintiff")
+        self.assertEqual(party["entity_type"], "domestic corporation")
+        self.assertNotIn("x party name", by_name)
+
 
 if __name__ == "__main__":
     unittest.main()

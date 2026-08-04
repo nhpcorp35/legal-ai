@@ -2165,6 +2165,21 @@ def _extract_pleaded_role_basis_from_unit(unit: str) -> Optional[str]:
     return None
 
 
+# Caption horizontal-rule (or spaced equivalent) immediately followed by the
+# standalone boundary marker ``X``. Only this boundary syntax is stripped;
+# ordinary X-leading party names are left intact.
+_PARTY_ROLE_CAPTION_BOUNDARY_X_RE = re.compile(
+    r"(?P<sep>(?:[-_═=─—–]\s*){3,})\s*X\b"
+)
+
+
+def _strip_caption_boundary_marker_x(text: str) -> str:
+    """Exclude caption-boundary ``X`` that immediately follows a rule separator."""
+    if not text:
+        return text
+    return _PARTY_ROLE_CAPTION_BOUNDARY_X_RE.sub(r"\g<sep>", text)
+
+
 def _clean_party_role_identity_name(raw_name: Any) -> str:
     name = normalize_whitespace(raw_name).strip(" .,;:")
     name = re.sub(r"^(?:the|a|an)\s+", "", name, flags=re.I).strip(" .,;:")
@@ -2190,7 +2205,7 @@ def _discover_party_role_identities_in_unit(unit: str) -> List[dict]:
     Parenthetical defined terms are recorded as aliases; the pre-parenthetical
     identity remains canonical.
     """
-    healed = heal_ocr_intra_word_spaces(unit)
+    healed = _strip_caption_boundary_marker_x(heal_ocr_intra_word_spaces(unit))
     found: Dict[str, dict] = {}
 
     def remember(
