@@ -3978,6 +3978,11 @@ _PARTY_ROLE_PROCEDURAL_BOILERPLATE_LINE_RES = (
     re.compile(
         r"(?i)^\s*\d{1,2}/\d{1,2}/\d{2,4}\s+\d{1,2}:\d{2}(?::\d{2})?\s*[ap]m\s*$"
     ),
+    # Standalone page footers such as "2 of 15".
+    re.compile(r"(?i)^\s*\d{1,4}\s+of\s+\d{1,4}\s*$"),
+    # Residual summons / directed-appearance headings.
+    re.compile(r"(?i)^\s*SUMMONS\s*:?\s*$"),
+    re.compile(r"(?i)^\s*TO\s+THE\s+ABOVE\s+NAMED\s+DEFENDANTS?\s*:?\s*$"),
     re.compile(r"(?i)^\s*you\s+are\s+hereby\s+summoned\b"),
     re.compile(
         r"(?i)\bwithin\s+(?:twenty|thirty|20|30)\s*"
@@ -3988,8 +3993,15 @@ _PARTY_ROLE_PROCEDURAL_BOILERPLATE_LINE_RES = (
         r"(?i)\b(?:must|shall)\s+appear\s+(?:and|or)\s+(?:answer|defend)\b"
     ),
     re.compile(
+        r"(?i)\byou\s+(?:are\s+)?(?:hereby\s+)?required\s+to\s+(?:appear|answer)\b"
+    ),
+    re.compile(
         r"(?i)\bthe\s+place\s+of\s+trial\s+(?:is|shall\s+be)\s+(?:hereby\s+)?"
         r"designated\b"
+    ),
+    re.compile(
+        r"(?i)\b(?:venue|place\s+of\s+trial)\s+(?:is|shall\s+be)\s+"
+        r"(?:hereby\s+)?(?:designated|laid)\b"
     ),
     re.compile(
         r"(?i)\bjudgment\s+will\s+be\s+taken\s+against\s+you\s+by\s+default\b"
@@ -3997,6 +4009,10 @@ _PARTY_ROLE_PROCEDURAL_BOILERPLATE_LINE_RES = (
     re.compile(r"(?i)\bdefault\s+will\s+be\s+taken\s+against\s+you\b"),
     re.compile(
         r"(?i)\bupon\s+your\s+failure\s+to\s+(?:appear|answer|defend)\b"
+    ),
+    re.compile(
+        r"(?i)\bfailure\s+to\s+(?:appear|answer|defend)\s+(?:or\s+appear\s+)?"
+        r"(?:will|shall)\b"
     ),
     re.compile(
         r"(?i)\bthis\s+(?:document|filing|pleading)\s+(?:was|has\s+been)\s+"
@@ -4012,7 +4028,7 @@ _PARTY_ROLE_PROCEDURAL_BOILERPLATE_LINE_RES = (
     ),
 )
 
-# Narrow span removals for collapsed (single-line) page text.
+# Narrow span removals for collapsed (single-line) page text / linkage labels.
 _PARTY_ROLE_PROCEDURAL_BOILERPLATE_SPAN_RES = (
     re.compile(
         r"(?i)\bFILED\s*:\s*.{0,160}?(?=\s*(?:INDEX\s+NO\.?|NYSCEF\s+DOC\.?|"
@@ -4021,6 +4037,18 @@ _PARTY_ROLE_PROCEDURAL_BOILERPLATE_SPAN_RES = (
     re.compile(r"(?i)\bINDEX\s+NO\.?\s*[:#]?\s*[\dA-Z/\-]+"),
     re.compile(r"(?i)\bNYSCEF\s+DOC\.?\s*NO\.?\s*[:#]?\s*\d+"),
     re.compile(r"(?i)\bRECEIVED\s+NYSCEF\s*:\s*\d{1,2}/\d{1,2}/\d{2,4}"),
+    # Standalone "N of N" page footers embedded in collapsed text.
+    re.compile(r"(?i)(?<!\d)\b\d{1,4}\s+of\s+\d{1,4}\b(?!\d)"),
+    # Residual summons heading token — require a heading-like neighbor so ordinary
+    # "service of this summons" prose is preserved.
+    re.compile(
+        r"(?i)(?<![A-Za-z])SUMMONS(?![A-Za-z])\s*:?"
+        r"(?=\s*(?:$|\d{1,4}\s+of\s+\d{1,4}|COMPLAINT|PARTIES|YOU\s+ARE|"
+        r"TO\s+THE\s+ABOVE))"
+    ),
+    re.compile(
+        r"(?i)\bTO\s+THE\s+ABOVE\s+NAMED\s+DEFENDANTS?\s*:?"
+    ),
     re.compile(
         r"(?i)\bYOU\s+ARE\s+HEREBY\s+SUMMONED\b[^.]{0,400}(?:\.|$)"
     ),
@@ -4036,13 +4064,23 @@ _PARTY_ROLE_PROCEDURAL_BOILERPLATE_SPAN_RES = (
         r"[^.]{0,160}(?:\.|$)"
     ),
     re.compile(
+        r"(?i)\byou\s+(?:are\s+)?(?:hereby\s+)?required\s+to\s+(?:appear|answer)\b"
+        r"[^.]{0,160}(?:\.|$)"
+    ),
+    re.compile(
         r"(?i)\bthe\s+place\s+of\s+trial\s+(?:is|shall\s+be)\s+(?:hereby\s+)?"
         r"designated\b[^.]{0,120}(?:\.|$)"
     ),
     re.compile(
+        r"(?i)\b(?:venue|place\s+of\s+trial)\s+(?:is|shall\s+be)\s+"
+        r"(?:hereby\s+)?(?:designated|laid)\b[^.]{0,120}(?:\.|$)"
+    ),
+    re.compile(
         r"(?i)\b(?:upon\s+your\s+failure\s+to\s+(?:appear|answer|defend)\b|"
         r"judgment\s+will\s+be\s+taken\s+against\s+you\s+by\s+default\b|"
-        r"default\s+will\s+be\s+taken\s+against\s+you\b)[^.]{0,200}(?:\.|$)"
+        r"default\s+will\s+be\s+taken\s+against\s+you\b|"
+        r"failure\s+to\s+(?:appear|answer|defend)\s+(?:or\s+appear\s+)?"
+        r"(?:will|shall)\b)[^.]{0,200}(?:\.|$)"
     ),
     re.compile(
         r"(?i)\bthis\s+(?:document|filing|pleading)\s+(?:was|has\s+been)\s+"
@@ -4113,6 +4151,22 @@ def _filter_party_role_procedural_boilerplate(text):
         ]
         raw = "\n".join(kept)
     return _strip_party_role_procedural_boilerplate_spans(raw)
+
+
+def _sanitize_party_role_case_map_linkage_label(label):
+    """
+    Sanitize case_map_linkage.label for party-role evidence packets.
+
+    Removes procedural boilerplate spans/lines. Returns the residual responsive
+    text, or an empty string when nothing responsive remains (caller may omit).
+    """
+    if label is None:
+        return ""
+    cleaned = _filter_party_role_procedural_boilerplate(str(label))
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip(" \t\r\n-–—,:;")
+    return cleaned
+
 
 def _party_role_evidence_excerpt(entry, text, phrase=None, tokens=None, phrases=None):
     """

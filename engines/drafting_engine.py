@@ -1780,13 +1780,34 @@ def build_evidence_packet(
 ) -> dict:
     results = list((retrieval or {}).get("results") or [])
     materiality_filter = None
-    if detect_party_role_question_intent(question):
+    party_role_intent = detect_party_role_question_intent(question)
+    if party_role_intent:
         results, materiality_filter = filter_hits_for_party_role_materiality(results)
+
+    # Lazy import avoids the matter_builder ↔ drafting_engine import cycle.
+    sanitize_linkage_label = None
+    if party_role_intent:
+        from matter_builder import (  # noqa: WPS433
+            _sanitize_party_role_case_map_linkage_label,
+        )
+
+        sanitize_linkage_label = _sanitize_party_role_case_map_linkage_label
 
     compact_hits = []
     for hit in results:
         if not isinstance(hit, dict):
             continue
+        linkage = hit.get("case_map_linkage")
+        if party_role_intent and isinstance(linkage, dict):
+            linkage = dict(linkage)
+            raw_label = linkage.get("label")
+            if raw_label is not None and sanitize_linkage_label is not None:
+                cleaned_label = sanitize_linkage_label(raw_label)
+                if cleaned_label:
+                    linkage["label"] = cleaned_label
+                else:
+                    # Omit label when only procedural boilerplate remained.
+                    linkage.pop("label", None)
         compact_hits.append(
             {
                 "result_id": hit.get("result_id"),
@@ -1798,7 +1819,7 @@ def build_evidence_packet(
                 "excerpt": hit.get("excerpt"),
                 "classifications": list(hit.get("classifications") or []),
                 "assertion_kind": hit.get("assertion_kind"),
-                "case_map_linkage": hit.get("case_map_linkage"),
+                "case_map_linkage": linkage,
                 "exhibit_segment": hit.get("exhibit_segment"),
                 "score": hit.get("score"),
             }
