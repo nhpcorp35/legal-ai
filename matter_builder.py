@@ -3999,6 +3999,7 @@ _PARTY_ROLE_PROCEDURAL_BOILERPLATE_LINE_RES = (
         r"(?i)\bthe\s+place\s+of\s+trial\s+(?:is|shall\s+be)\s+(?:hereby\s+)?"
         r"designated\b"
     ),
+    re.compile(r"(?i)\bthe\s+basis\s+for\s+venue\s+is\b"),
     re.compile(
         r"(?i)\b(?:venue|place\s+of\s+trial)\s+(?:is|shall\s+be)\s+"
         r"(?:hereby\s+)?(?:designated|laid)\b"
@@ -4009,6 +4010,10 @@ _PARTY_ROLE_PROCEDURAL_BOILERPLATE_LINE_RES = (
     re.compile(r"(?i)\bdefault\s+will\s+be\s+taken\s+against\s+you\b"),
     re.compile(
         r"(?i)\bupon\s+your\s+failure\s+to\s+(?:appear|answer|defend)\b"
+    ),
+    re.compile(
+        r"(?i)\bin\s+case\s+of\s+your\s+failure\s+to\s+"
+        r"(?:appear|answer|defend)\b"
     ),
     re.compile(
         r"(?i)\bfailure\s+to\s+(?:appear|answer|defend)\s+(?:or\s+appear\s+)?"
@@ -4072,10 +4077,12 @@ _PARTY_ROLE_PROCEDURAL_BOILERPLATE_SPAN_RES = (
     re.compile(r"(?i)(?<!\d)\b\d{1,4}\s+of\s+\d{1,4}\b(?!\d)"),
     # Residual summons heading token — require a heading-like neighbor so ordinary
     # "service of this summons" prose is preserved (reject "this/the/a summons").
+    # Also strip when followed by recognized venue-basis / default-warning spans.
     re.compile(
         r"(?i)(?<![A-Za-z])(?<!this )(?<!the )(?<!a )SUMMONS(?![A-Za-z])\s*:?"
         r"(?=\s*(?:$|\d{1,4}\s+of\s+\d{1,4}|COMPLAINT|PARTIES|YOU\s+ARE|"
-        r"TO\s+THE\s+ABOVE))"
+        r"TO\s+THE\s+ABOVE|THE\s+BASIS\s+FOR\s+VENUE|"
+        r"IN\s+CASE\s+OF\s+YOUR\s+FAILURE))"
     ),
     re.compile(
         r"(?i)\bTO\s+THE\s+ABOVE\s+NAMED\s+DEFENDANTS?\s*:?\s*\.?"
@@ -4103,6 +4110,14 @@ _PARTY_ROLE_PROCEDURAL_BOILERPLATE_SPAN_RES = (
         r"designated\b",
         120,
     ),
+    # Prefer the longer "basis for venue is …" form before the shorter
+    # "venue is designated/laid" core so collapsed summons text is not orphaned.
+    # Body budget matches default-warning spans so adjacent collapsed clauses
+    # without an intervening period still clear through to PARTIES.
+    _party_role_boilerplate_span_re(
+        r"\bthe\s+basis\s+for\s+venue\s+is\b",
+        200,
+    ),
     _party_role_boilerplate_span_re(
         r"\b(?:venue|place\s+of\s+trial)\s+(?:is|shall\s+be)\s+"
         r"(?:hereby\s+)?(?:designated|laid)\b",
@@ -4110,6 +4125,8 @@ _PARTY_ROLE_PROCEDURAL_BOILERPLATE_SPAN_RES = (
     ),
     _party_role_boilerplate_span_re(
         r"\b(?:upon\s+your\s+failure\s+to\s+(?:appear|answer|defend)\b|"
+        r"in\s+case\s+of\s+your\s+failure\s+to\s+"
+        r"(?:appear|answer|defend)\b|"
         r"judgment\s+will\s+be\s+taken\s+against\s+you\s+by\s+default\b|"
         r"default\s+will\s+be\s+taken\s+against\s+you\b|"
         r"failure\s+to\s+(?:appear|answer|defend)\s+(?:or\s+appear\s+)?"

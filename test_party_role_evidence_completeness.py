@@ -1025,6 +1025,131 @@ class PartyRoleProceduralBoilerplateFilterTests(unittest.TestCase):
         self.assertIn("notice defendant", excerpt)
         self.assertIn("limited liability company", excerpt)
 
+    def test_collapsed_summons_basis_for_venue_span_removed(self):
+        text = (
+            "Riverfront Carrier Co., Plaintiff, -against- "
+            "Lakeside Warehouse Inc., Defendant. "
+            "SUMMONS The basis for venue is the County of Example "
+            "PARTIES 1. Plaintiff Riverfront Carrier Co. is a domestic corporation."
+        )
+        excerpt = mb._filter_party_role_procedural_boilerplate(text)
+        self.assertNotIn("SUMMONS", excerpt)
+        self.assertNotIn("The basis for venue is", excerpt)
+        self.assertNotIn("basis for venue", excerpt)
+        self.assertIn("Riverfront Carrier Co.", excerpt)
+        self.assertIn("Lakeside Warehouse Inc.", excerpt)
+        self.assertIn("Plaintiff", excerpt)
+        self.assertIn("Defendant", excerpt)
+        self.assertIn("-against-", excerpt)
+        self.assertIn("PARTIES", excerpt)
+        self.assertIn("domestic corporation", excerpt)
+
+    def test_collapsed_in_case_of_your_failure_span_removed(self):
+        text = (
+            "Beacon Pier Logistics LLC, Plaintiff, -against- "
+            "Harbor Crane Depot Inc., Defendant. "
+            "In case of your failure to appear or answer, judgment will be taken "
+            "against you by default for the relief demanded in the complaint "
+            "PARTIES 1. Plaintiff Beacon Pier Logistics LLC is a domestic corporation."
+        )
+        excerpt = mb._filter_party_role_procedural_boilerplate(text)
+        self.assertNotIn("In case of your failure to appear or answer", excerpt)
+        self.assertNotIn("failure to appear", excerpt)
+        self.assertNotIn("judgment will be taken against you by default", excerpt)
+        self.assertIn("Beacon Pier Logistics LLC", excerpt)
+        self.assertIn("Harbor Crane Depot Inc.", excerpt)
+        self.assertIn("Plaintiff", excerpt)
+        self.assertIn("Defendant", excerpt)
+        self.assertIn("-against-", excerpt)
+        self.assertIn("PARTIES", excerpt)
+        self.assertIn("domestic corporation", excerpt)
+
+    def test_collapsed_summons_venue_and_failure_variants_removed_together(self):
+        text = (
+            "North Quay Logistics LP, Plaintiff, -against- "
+            "South Pier Terminal Inc., Defendant. "
+            "SUMMONS The basis for venue is the County of Kings "
+            "In case of your failure to appear or answer, judgment will be taken "
+            "against you by default "
+            "PARTIES 1. Plaintiff North Quay Logistics LP is a limited liability "
+            "partnership. 2. Defendant South Pier Terminal Inc. is a notice defendant."
+        )
+        excerpt = mb._filter_party_role_procedural_boilerplate(text)
+        self.assertNotIn("SUMMONS", excerpt)
+        self.assertNotIn("The basis for venue is", excerpt)
+        self.assertNotIn("basis for venue", excerpt)
+        self.assertNotIn("In case of your failure to appear or answer", excerpt)
+        self.assertNotIn("failure to appear", excerpt)
+        self.assertNotIn("judgment will be taken against you by default", excerpt)
+        self.assertIn("North Quay Logistics LP", excerpt)
+        self.assertIn("South Pier Terminal Inc.", excerpt)
+        self.assertIn("Plaintiff", excerpt)
+        self.assertIn("Defendant", excerpt)
+        self.assertIn("-against-", excerpt)
+        self.assertIn("PARTIES", excerpt)
+        self.assertIn("limited liability partnership", excerpt)
+        self.assertIn("notice defendant", excerpt)
+
+    def test_collapsed_responsive_caption_preserved_before_venue_failure_variants(self):
+        text = (
+            "Cedar Basin Freight LLC, Plaintiff, -against- "
+            "Maple Depot Inc., Defendant. "
+            "SUMMONS The basis for venue is designated as Kings County "
+            "In case of your failure to appear or answer, judgment will be taken "
+            "against you by default for the relief demanded "
+            "PARTIES 1. Plaintiff Cedar Basin Freight LLC is a domestic corporation "
+            "with its principal place of business in Kings County."
+        )
+        excerpt = mb._filter_party_role_procedural_boilerplate(text)
+        self.assertNotIn("SUMMONS", excerpt)
+        self.assertNotIn("basis for venue", excerpt)
+        self.assertNotIn("In case of your failure", excerpt)
+        # Responsive caption immediately before the removed spans must remain.
+        self.assertIn("Cedar Basin Freight LLC", excerpt)
+        self.assertIn("Maple Depot Inc.", excerpt)
+        self.assertIn("Plaintiff", excerpt)
+        self.assertIn("Defendant", excerpt)
+        self.assertIn("-against-", excerpt)
+        self.assertRegex(
+            excerpt,
+            r"Cedar Basin Freight LLC,\s*Plaintiff,\s*-against-\s*"
+            r"Maple Depot Inc.,\s*Defendant\.",
+        )
+        self.assertIn("PARTIES", excerpt)
+        self.assertIn("domestic corporation", excerpt)
+        self.assertIn("principal place of business", excerpt)
+
+    def test_ordinary_substantive_venue_language_not_removed(self):
+        text = (
+            "PARTIES 1. Plaintiff Atlas Parcel Group LLC is a domestic corporation. "
+            "2. Venue is proper in this County because Defendant Canyon Freight Inc. "
+            "maintains its principal place of business here and the shipment transit "
+            "occurred in this venue."
+        )
+        excerpt = mb._filter_party_role_procedural_boilerplate(text)
+        self.assertIn("Venue is proper in this County", excerpt)
+        self.assertIn("occurred in this venue", excerpt)
+        self.assertIn("Atlas Parcel Group LLC", excerpt)
+        self.assertIn("Canyon Freight Inc.", excerpt)
+        self.assertIn("principal place of business", excerpt)
+        self.assertNotIn("The basis for venue is", excerpt)
+
+    def test_ordinary_substantive_failure_answer_language_not_removed(self):
+        text = (
+            "PARTIES 1. Plaintiff Harbor Quay Freight LP is a limited liability "
+            "partnership. 2. Defendant Pier Gate Depot Inc. denied the material "
+            "allegations of the complaint and asserted that any failure to answer "
+            "interrogatories was cured before the motion practice, and that its "
+            "answer raised affirmative defenses under the Policies."
+        )
+        excerpt = mb._filter_party_role_procedural_boilerplate(text)
+        self.assertIn("failure to answer", excerpt)
+        self.assertIn("answer raised affirmative defenses", excerpt)
+        self.assertIn("denied the material allegations", excerpt)
+        self.assertIn("Harbor Quay Freight LP", excerpt)
+        self.assertIn("Pier Gate Depot Inc.", excerpt)
+        self.assertNotIn("In case of your failure to appear or answer", excerpt)
+
     def test_ordinary_legal_prose_not_over_filtered(self):
         text = (
             "PARTIES\n"
