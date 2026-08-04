@@ -844,11 +844,56 @@ _OCR_CITATION_JOIN_WORDS = frozenset(
 _ELLIPSIS_SPLIT_RE = re.compile(r"(?:\.{3}|…|\[\s*\.\.\.\s*\])")
 
 
-def heal_ocr_intra_word_spaces(text: Any) -> str:
-    """Join OCR-fractured vocabulary words for citation matching only."""
+# Legal-entity suffixes commonly fractured by OCR inside party identities.
+_OCR_PARTY_IDENTITY_JOIN_WORDS = frozenset(
+    set(_OCR_CITATION_JOIN_WORDS)
+    | {
+        "co",
+        "corp",
+        "inc",
+        "incorporated",
+        "llc",
+        "llp",
+        "lp",
+        "ltd",
+        "pc",
+        "plc",
+        "pllc",
+    }
+)
+
+# Short left tokens that are legitimate standalone name particles, not OCR
+# prefix fragments (keeps ``of London`` / ``de Vito`` word boundaries).
+_OCR_IDENTITY_PREFIX_PARTICLES = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "at",
+        "by",
+        "da",
+        "de",
+        "for",
+        "in",
+        "of",
+        "on",
+        "the",
+        "to",
+        "van",
+        "von",
+    }
+)
+
+
+def heal_ocr_intra_word_spaces(
+    text: Any,
+    join_words: Optional[frozenset] = None,
+) -> str:
+    """Join OCR-fractured vocabulary words for matching / identity healing."""
     raw = str(text or "")
     if not raw:
         return ""
+    vocab = join_words if join_words is not None else _OCR_CITATION_JOIN_WORDS
 
     def _pass(value: str) -> str:
         tokens = re.findall(r"\S+|\s+", value)
@@ -874,7 +919,7 @@ def heal_ocr_intra_word_spaces(text: Any) -> str:
                 i += 1
                 continue
             joined_alpha = f"{left_m.group(2)}{right_m.group(2)}".lower()
-            if joined_alpha in _OCR_CITATION_JOIN_WORDS:
+            if joined_alpha in vocab:
                 out.append(
                     f"{left_m.group(1)}{left_m.group(2)}"
                     f"{right_m.group(2)}{right_m.group(3)}"
@@ -893,6 +938,80 @@ def heal_ocr_intra_word_spaces(text: Any) -> str:
         prev = current
         current = _pass(current)
     return current
+
+
+def _heal_party_identity_prefix_fractures(text: str) -> str:
+    """
+    Join short alphabetic OCR prefixes onto the remainder of a fractured word.
+
+    Recognizes splits such as ``CO LLINS`` → ``COLLINS`` without joining
+    legitimate multi-word boundaries (``John Smith``, ``of London``).
+    """
+
+    def _pass(value: str) -> str:
+        tokens = re.findall(r"\S+|\s+", value)
+        if len(tokens) <= 1:
+            return value
+        out: List[str] = []
+        i = 0
+        while i < len(tokens):
+            tok = tokens[i]
+            if tok.isspace() or i + 2 >= len(tokens):
+                out.append(tok)
+                i += 1
+                continue
+            nxt = tokens[i + 2] if tokens[i + 1].isspace() else None
+            if nxt is None:
+                out.append(tok)
+                i += 1
+                continue
+            left_m = re.match(r"^([^A-Za-z]*)([A-Za-z]+)([^A-Za-z]*)$", tok)
+            right_m = re.match(r"^([^A-Za-z]*)([A-Za-z]+)([^A-Za-z]*)$", nxt)
+            if not left_m or not right_m or right_m.group(1) or left_m.group(3):
+                out.append(tok)
+                i += 1
+                continue
+            left_alpha = left_m.group(2)
+            right_alpha = right_m.group(2)
+            left_l = left_alpha.lower()
+            if (
+                left_l in _OCR_IDENTITY_PREFIX_PARTICLES
+                or len(left_alpha) != 2
+                or len(right_alpha) < 3
+                or not left_alpha.isalpha()
+                or not right_alpha.isalpha()
+            ):
+                out.append(tok)
+                i += 1
+                continue
+            out.append(
+                f"{left_m.group(1)}{left_alpha}{right_alpha}{right_m.group(3)}"
+            )
+            i += 3
+        return "".join(out)
+
+    prev = None
+    current = text
+    for _ in range(6):
+        if current == prev:
+            break
+        prev = current
+        current = _pass(current)
+    return current
+
+
+def heal_party_identity_ocr_spaces(text: Any) -> str:
+    """
+    Apply OCR intra-word healing to party identity text.
+
+    Uses legal-suffix vocabulary healing plus short-prefix fracture repair.
+    Clean identities and legitimate multi-word names pass through unchanged.
+    """
+    raw = str(text or "")
+    if not raw:
+        return ""
+    healed = heal_ocr_intra_word_spaces(raw, join_words=_OCR_PARTY_IDENTITY_JOIN_WORDS)
+    return _heal_party_identity_prefix_fractures(healed)
 
 
 def normalize_citation_text(value: Any) -> str:
@@ -2038,9 +2157,11 @@ def _normalize_party_role_match_text(value: Any) -> str:
     """
     Comparison-only identity key: case-fold and unify hyphen/en-dash/em-dash.
 
-    Does not alter the pleaded identity string returned to callers.
+    Applies party-identity OCR intra-word healing before keying so fractured
+    and clean surface forms share one inventory bucket. Does not itself mutate
+    the pleaded identity string stored on party records.
     """
-    text = normalize_citation_text(value)
+    text = heal_party_identity_ocr_spaces(normalize_whitespace(value)).lower()
     if not text:
         return ""
     for dash in ("\u2013", "\u2014", "\u2212"):
@@ -2323,7 +2444,7 @@ def _split_caption_party_name_list(block: str) -> List[str]:
 
 def _unit_looks_like_party_role_caption(unit: str) -> bool:
     """True for caption-style units (not numbered allegation paragraphs)."""
-    healed = heal_ocr_intra_word_spaces(unit or "")
+    healed = heal_party_identity_ocr_spaces(unit or "")
     if not healed or re.match(r"^\s*\d+\.\s+\S", healed):
         return False
     if re.search(r"(?i)\b(?:-?\s*against\s*-?|\bv\.?)\b", healed):
@@ -2343,7 +2464,9 @@ def _discover_caption_party_identities(unit: str) -> List[dict]:
     Supports plaintiff names before Plaintiff, defendant names in an against
     block, multiline caption lists, and OCR-healed role labels.
     """
-    healed = _strip_caption_horizontal_rules(heal_ocr_intra_word_spaces(unit))
+    healed = heal_party_identity_ocr_spaces(
+        _strip_caption_horizontal_rules(unit)
+    )
     healed = normalize_whitespace(healed)
     if not healed or not _unit_looks_like_party_role_caption(healed):
         return []
@@ -2527,7 +2650,8 @@ def _clean_party_role_identity_name(raw_name: Any) -> str:
     if peeled:
         name = peeled.group(2).strip(" .,;:")
         name = re.sub(r"\s*\([^)]*\)\s*$", "", name).strip(" .,;:")
-    return name
+    # Heal OCR-fractured identity tokens; already-clean forms are unchanged.
+    return heal_party_identity_ocr_spaces(name)
 
 
 def _discover_party_role_identities_in_unit(unit: str) -> List[dict]:
@@ -2539,7 +2663,9 @@ def _discover_party_role_identities_in_unit(unit: str) -> List[dict]:
     Parenthetical defined terms are recorded as aliases; the pre-parenthetical
     identity remains canonical. Caption blocks contribute listed identities.
     """
-    healed = _strip_caption_boundary_marker_x(heal_ocr_intra_word_spaces(unit))
+    healed = heal_party_identity_ocr_spaces(
+        _strip_caption_boundary_marker_x(unit)
+    )
     found: Dict[str, dict] = {}
 
     def remember(
@@ -2657,6 +2783,19 @@ def _unit_refers_via_alias(alias: str, unit: str) -> bool:
     return False
 
 
+def _prefer_healed_party_identity(current: Any, candidate: Any) -> str:
+    """Prefer the OCR-healed surface form when consolidating duplicate identities."""
+    cur = normalize_whitespace(current)
+    cand = normalize_whitespace(candidate)
+    cur_healed = heal_party_identity_ocr_spaces(cur)
+    cand_healed = heal_party_identity_ocr_spaces(cand)
+    if cand and cand_healed == cand and cur_healed != cur:
+        return cand
+    if cur and cur_healed == cur:
+        return cur
+    return cand_healed or cur_healed or cand or cur
+
+
 def _merge_party_role_expected(
     bucket: Dict[str, dict],
     party: dict,
@@ -2664,6 +2803,9 @@ def _merge_party_role_expected(
     alias_to_canon: Optional[Dict[str, str]] = None,
 ) -> None:
     identity = party.get("identity")
+    # Heal before keying so fractured / clean forms share one inventory bucket.
+    if identity:
+        identity = heal_party_identity_ocr_spaces(normalize_whitespace(identity))
     key = _normalize_party_role_match_text(identity or "")
     if not key:
         return
@@ -2671,7 +2813,9 @@ def _merge_party_role_expected(
     if alias_to_canon and key in alias_to_canon:
         key = alias_to_canon[key]
         if key in bucket:
-            identity = bucket[key].get("identity") or identity
+            identity = _prefer_healed_party_identity(
+                bucket[key].get("identity"), identity
+            )
     existing = bucket.get(key)
     if existing is None:
         bucket[key] = {
@@ -2682,6 +2826,9 @@ def _merge_party_role_expected(
             "pleaded_role_basis": party.get("pleaded_role_basis"),
         }
         return
+    existing["identity"] = _prefer_healed_party_identity(
+        existing.get("identity"), identity
+    )
     for field in (
         "procedural_role",
         "entity_type",
@@ -2730,7 +2877,7 @@ def extract_party_role_expected_attributes(evidence_packet: dict) -> List[dict]:
                 alias_to_canon[alias_key] = canon_key
 
     for unit in _split_party_role_evidence_units(serialized):
-        healed = heal_ocr_intra_word_spaces(unit)
+        healed = heal_party_identity_ocr_spaces(unit)
         entity_type = _extract_entity_type_from_unit(unit)
         residence = _extract_residence_or_ppb_from_unit(unit)
         pleaded_basis = _extract_pleaded_role_basis_from_unit(unit)

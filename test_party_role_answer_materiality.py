@@ -1252,6 +1252,95 @@ class PartyRoleDraftingCompletenessTests(unittest.TestCase):
             "domestic corporation",
         )
 
+    def test_ocr_split_legal_suffix_in_c_healed_to_inc(self):
+        expected = self._extract(
+            "1. Defendant Harbor Bulkheading IN C. is a domestic corporation."
+        )
+        by_name = self._by_identity(expected)
+        self.assertIn("harbor bulkheading inc", by_name)
+        self.assertNotIn("harbor bulkheading in c", by_name)
+        party = by_name["harbor bulkheading inc"]
+        self.assertEqual(party["identity"], "Harbor Bulkheading INC")
+        self.assertEqual(party["procedural_role"], "defendant")
+        self.assertEqual(party["entity_type"], "domestic corporation")
+
+    def test_ocr_split_surname_co_llins_healed_to_collins(self):
+        expected = self._extract(
+            "1. Defendant CO LLINS is an individual residing at "
+            "12 Oak Lane, Buffalo, NY."
+        )
+        by_name = self._by_identity(expected)
+        self.assertIn("collins", by_name)
+        self.assertNotIn("co llins", by_name)
+        party = by_name["collins"]
+        self.assertEqual(party["identity"], "COLLINS")
+        self.assertEqual(party["entity_type"], "individual")
+        self.assertIn("12 oak lane", party["residence_or_ppb"].lower())
+
+    def test_ocr_multiple_fractures_in_one_identity(self):
+        expected = self._extract(
+            "1. Plaintiff CO LLINS Freight IN C. is a domestic corporation."
+        )
+        by_name = self._by_identity(expected)
+        self.assertIn("collins freight inc", by_name)
+        self.assertEqual(len(by_name), 1)
+        party = by_name["collins freight inc"]
+        self.assertEqual(party["identity"], "COLLINS Freight INC")
+        self.assertEqual(party["procedural_role"], "plaintiff")
+        self.assertEqual(party["entity_type"], "domestic corporation")
+
+    def test_ocr_clean_identity_unchanged(self):
+        expected = self._extract(
+            "1. Defendant Atlas Hauling Inc. is a domestic corporation."
+        )
+        by_name = self._by_identity(expected)
+        party = by_name["atlas hauling inc"]
+        self.assertEqual(party["identity"], "Atlas Hauling Inc")
+        self.assertEqual(party["procedural_role"], "defendant")
+
+    def test_ocr_legitimate_multiword_name_stays_separated(self):
+        expected = self._extract(
+            "1. Plaintiff John Smith is an individual residing at "
+            "9 Pier Road, Queens, NY."
+        )
+        by_name = self._by_identity(expected)
+        self.assertIn("john smith", by_name)
+        self.assertNotIn("johnsmith", by_name)
+        party = by_name["john smith"]
+        self.assertEqual(party["identity"], "John Smith")
+        self.assertEqual(party["entity_type"], "individual")
+
+    def test_ocr_healed_and_unhealed_identity_buckets_merge(self):
+        expected = self._extract(
+            "1. Defendant Harbor Bulkheading IN C. is a domestic corporation.\n"
+            "2. Harbor Bulkheading Inc. has its principal place of business at "
+            "100 Main Street, Albany, NY."
+        )
+        by_name = self._by_identity(expected)
+        self.assertEqual(len(by_name), 1)
+        self.assertIn("harbor bulkheading inc", by_name)
+        self.assertNotIn("harbor bulkheading in c", by_name)
+        party = by_name["harbor bulkheading inc"]
+        self.assertEqual(party["procedural_role"], "defendant")
+        self.assertEqual(party["entity_type"], "domestic corporation")
+        self.assertIn("principal place of business", party["residence_or_ppb"].lower())
+        self.assertIn("100 main street", party["residence_or_ppb"].lower())
+
+    def test_ocr_merge_preserves_party_attributes(self):
+        expected = self._extract(
+            "1. CO LLINS is a domestic corporation.\n"
+            "2. Defendant COLLINS has its principal place of business at "
+            "55 Commerce Blvd, Rochester, NY and is a notice defendant."
+        )
+        by_name = self._by_identity(expected)
+        self.assertEqual(len(by_name), 1)
+        party = by_name["collins"]
+        self.assertEqual(party["identity"], "COLLINS")
+        self.assertEqual(party["procedural_role"], "defendant")
+        self.assertEqual(party["entity_type"], "domestic corporation")
+        self.assertIn("55 commerce blvd", party["residence_or_ppb"].lower())
+        self.assertEqual(party["pleaded_role_basis"], "notice defendant")
+
 
 if __name__ == "__main__":
     unittest.main()
