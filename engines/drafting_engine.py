@@ -1795,15 +1795,21 @@ _PARTY_ROLE_NAME_RE = (
 _PARTY_ROLE_COPULA = (
     r"(?:was\s+and\s+still\s+is|is|are|was|were|has\s+been|have\s+been)"
 )
+# Optional parenthetical defined-term after the full identity; never part of the
+# canonical name capture (alias body is recorded separately when present).
+_PARTY_ROLE_DEFINED_ALIAS_PAREN = r"(?:\s*\(\s*(?P<alias_body>[^)]{1,80})\))?"
 _PARTY_ROLE_ALLEGATION_ROLE_BEFORE_RE = re.compile(
     r"(?i)(?:^\s*\d+\.\s*)?\s*"
     r"(?:the\s+)?(?P<role>" + _PARTY_ROLE_DRAFT_LABEL + r")\s+"
     + _PARTY_ROLE_NAME_RE
+    + _PARTY_ROLE_DEFINED_ALIAS_PAREN
     + r"\s*(?:,|\s+" + _PARTY_ROLE_COPULA + r")",
 )
 _PARTY_ROLE_ALLEGATION_ROLE_AFTER_RE = re.compile(
     r"(?i)(?:^\s*\d+\.\s*)?\s*"
-    r"(?:the\s+)?" + _PARTY_ROLE_NAME_RE + r"\s*"
+    r"(?:the\s+)?" + _PARTY_ROLE_NAME_RE
+    + _PARTY_ROLE_DEFINED_ALIAS_PAREN
+    + r"\s*"
     r"(?:"
     r",\s*(?P<role_comma>" + _PARTY_ROLE_DRAFT_LABEL + r")\b|"
     r"\s+" + _PARTY_ROLE_COPULA + r"\s+(?:(?:a|an|the)\s+)?"
@@ -1812,7 +1818,9 @@ _PARTY_ROLE_ALLEGATION_ROLE_AFTER_RE = re.compile(
 )
 _PARTY_ROLE_ALLEGATION_ENTITY_RE = re.compile(
     r"(?i)(?:^\s*\d+\.\s*)?\s*"
-    r"(?:the\s+)?" + _PARTY_ROLE_NAME_RE + r"\s+"
+    r"(?:the\s+)?" + _PARTY_ROLE_NAME_RE
+    + _PARTY_ROLE_DEFINED_ALIAS_PAREN
+    + r"\s+"
     + _PARTY_ROLE_COPULA + r"\s+"
     r"(?:(?:a|an|the)\s+)?"
     r"(?:"
@@ -1964,10 +1972,97 @@ def _party_role_attribute_present(value: Any, draft_norm: str) -> bool:
     text = normalize_whitespace(value)
     if not text or not draft_norm:
         return False
-    needle = normalize_citation_text(text)
-    if needle and needle in draft_norm:
+    hay = _normalize_party_role_match_text(draft_norm)
+    needle = _normalize_party_role_match_text(text)
+    if needle and needle in hay:
         return True
-    return _ocr_flexible_phrase_present(text, draft_norm)
+    return _ocr_flexible_phrase_present(text, hay)
+
+
+def _normalize_party_role_match_text(value: Any) -> str:
+    """
+    Comparison-only identity key: case-fold and unify hyphen/en-dash/em-dash.
+
+    Does not alter the pleaded identity string returned to callers.
+    """
+    text = normalize_citation_text(value)
+    if not text:
+        return ""
+    for dash in ("\u2013", "\u2014", "\u2212"):
+        text = text.replace(dash, "-")
+    return text
+
+
+def _clean_party_role_alias(raw_alias: Any) -> Optional[str]:
+    """Extract a defined-term alias from parenthetical body text."""
+    body = normalize_whitespace(raw_alias)
+    if not body:
+        return None
+    body = re.sub(
+        r"^(?:hereinafter|a/?k/?a\.?|also\s+known\s+as)\s+",
+        "",
+        body,
+        flags=re.I,
+    ).strip()
+    generic = {
+        "company",
+        "corporation",
+        "partnership",
+        "association",
+        "llc",
+        "llp",
+        "inc",
+        "corp",
+        "ltd",
+        "limited",
+    }
+    # Common form: (the "Company") → the Company
+    wrapped = re.match(
+        r"(?i)^(?P<article>the|a|an)\s+[\"'“”](.+?)[\"'“”]\s*$",
+        body,
+    )
+    if wrapped:
+        inner = normalize_whitespace(wrapped.group(2)).strip(" .,;:")
+        if not inner:
+            return None
+        if inner.lower() in generic:
+            return f"the {inner}"
+        return inner
+    alias = body.strip(" \"'“”'")
+    alias = normalize_whitespace(alias).strip(" .,;:")
+    if not alias or len(alias) < 2:
+        return None
+    # Reject role labels and empty defined terms.
+    if _normalize_party_role_draft_label(alias):
+        return None
+    # Bare generic nouns are too ambiguous without their article.
+    if alias.lower() in generic:
+        return None
+    return alias
+
+
+def _alias_variants(alias: str) -> List[str]:
+    """Shorthand forms that should resolve to the same canonical identity."""
+    variants = [alias]
+    stripped = re.sub(r"^(?:the|a|an)\s+", "", alias, flags=re.I).strip(" .,;:")
+    if not stripped or stripped.lower() == alias.lower():
+        return variants
+    # Avoid bare entity nouns ("Company") matching entity-type clauses.
+    if stripped.lower() in {
+        "company",
+        "corporation",
+        "partnership",
+        "association",
+        "llc",
+        "llp",
+        "inc",
+        "corp",
+        "ltd",
+        "limited",
+    }:
+        return variants
+    variants.append(stripped)
+    return variants
 
 
 def _evidence_text_from_packet(evidence_packet: dict) -> str:
@@ -2073,6 +2168,8 @@ def _extract_pleaded_role_basis_from_unit(unit: str) -> Optional[str]:
 def _clean_party_role_identity_name(raw_name: Any) -> str:
     name = normalize_whitespace(raw_name).strip(" .,;:")
     name = re.sub(r"^(?:the|a|an)\s+", "", name, flags=re.I).strip(" .,;:")
+    # Strip a trailing parenthetical defined term; never keep the alias alone.
+    name = re.sub(r"\s*\([^)]*\)\s*$", "", name).strip(" .,;:")
     # If a role label was absorbed into the name, peel it off.
     peeled = re.match(
         r"(?i)^(" + _PARTY_ROLE_DRAFT_LABEL + r")\s+(.+)$",
@@ -2080,6 +2177,7 @@ def _clean_party_role_identity_name(raw_name: Any) -> str:
     )
     if peeled:
         name = peeled.group(2).strip(" .,;:")
+        name = re.sub(r"\s*\([^)]*\)\s*$", "", name).strip(" .,;:")
     return name
 
 
@@ -2089,11 +2187,17 @@ def _discover_party_role_identities_in_unit(unit: str) -> List[dict]:
 
     Supports role-before-name, role-after-name, entity/residence-only
     allegations, and placeholder identity groups. Does not invent roles.
+    Parenthetical defined terms are recorded as aliases; the pre-parenthetical
+    identity remains canonical.
     """
     healed = heal_ocr_intra_word_spaces(unit)
     found: Dict[str, dict] = {}
 
-    def remember(raw_name: Any, raw_role: Any = None) -> None:
+    def remember(
+        raw_name: Any,
+        raw_role: Any = None,
+        raw_alias_body: Any = None,
+    ) -> None:
         name = _clean_party_role_identity_name(raw_name)
         role = _normalize_party_role_draft_label(raw_role) if raw_role else None
         # Recover role when the raw span still began with a role label.
@@ -2112,25 +2216,41 @@ def _discover_party_role_identities_in_unit(unit: str) -> List[dict]:
             name,
         ):
             return
-        key = normalize_citation_text(name)
+        # Never promote a parenthetical alias over the full pleaded identity.
+        alias = _clean_party_role_alias(raw_alias_body)
+        if alias and _normalize_party_role_match_text(
+            alias
+        ) == _normalize_party_role_match_text(name):
+            alias = None
+        key = _normalize_party_role_match_text(name)
         existing = found.get(key)
         if existing is None:
-            found[key] = {"identity": name, "procedural_role": role}
+            found[key] = {
+                "identity": name,
+                "procedural_role": role,
+                "_aliases": list(_alias_variants(alias)) if alias else [],
+            }
             return
         if role and not existing.get("procedural_role"):
             existing["procedural_role"] = role
+        if alias:
+            alias_list = existing.setdefault("_aliases", [])
+            for variant in _alias_variants(alias):
+                if variant not in alias_list:
+                    alias_list.append(variant)
 
     for match in _PARTY_ROLE_ALLEGATION_ROLE_BEFORE_RE.finditer(healed):
-        remember(match.group("name"), match.group("role"))
+        remember(match.group("name"), match.group("role"), match.group("alias_body"))
     for match in _PARTY_ROLE_ALLEGATION_ROLE_AFTER_RE.finditer(healed):
         remember(
             match.group("name"),
             match.group("role_comma") or match.group("role_pred"),
+            match.group("alias_body"),
         )
     for match in _PARTY_ROLE_ALLEGATION_ENTITY_RE.finditer(healed):
-        remember(match.group("name"), None)
+        remember(match.group("name"), None, match.group("alias_body"))
     for match in _PARTY_ROLE_PLACEHOLDER_GROUP_RE.finditer(healed):
-        remember(match.group("name"), match.group("role"))
+        remember(match.group("name"), match.group("role"), None)
 
     # Legacy role-leading / "name, role" forms remain as a fallback.
     if not found:
@@ -2139,6 +2259,7 @@ def _discover_party_role_identities_in_unit(unit: str) -> List[dict]:
             remember(
                 groups.get("name_leading") or groups.get("name"),
                 groups.get("role_leading") or groups.get("role"),
+                None,
             )
 
     return list(found.values())
@@ -2150,14 +2271,24 @@ def _unit_names_party(identity: str, unit: str) -> bool:
     return _party_role_attribute_present(identity, normalize_citation_text(unit))
 
 
-def _merge_party_role_expected(bucket: Dict[str, dict], party: dict) -> None:
-    key = normalize_citation_text(party.get("identity") or "")
+def _merge_party_role_expected(
+    bucket: Dict[str, dict],
+    party: dict,
+    *,
+    alias_to_canon: Optional[Dict[str, str]] = None,
+) -> None:
+    identity = party.get("identity")
+    key = _normalize_party_role_match_text(identity or "")
     if not key:
         return
+    if alias_to_canon and key in alias_to_canon:
+        key = alias_to_canon[key]
+        if key in bucket:
+            identity = bucket[key].get("identity") or identity
     existing = bucket.get(key)
     if existing is None:
         bucket[key] = {
-            "identity": party.get("identity"),
+            "identity": identity,
             "procedural_role": party.get("procedural_role"),
             "entity_type": party.get("entity_type"),
             "residence_or_ppb": party.get("residence_or_ppb"),
@@ -2183,7 +2314,18 @@ def extract_party_role_expected_attributes(evidence_packet: dict) -> List[dict]:
     """
     serialized = _evidence_text_from_packet(evidence_packet)
     parties: Dict[str, dict] = {}
+    alias_to_canon: Dict[str, str] = {}
     pending_grouped_basis: Optional[str] = None
+
+    def register_aliases(canon_key: str, aliases: Sequence[str]) -> None:
+        for alias in aliases or []:
+            alias_key = _normalize_party_role_match_text(alias)
+            if not alias_key or alias_key == canon_key:
+                continue
+            # Do not let an alias key collide with a distinct canonical party.
+            if alias_key in parties and alias_key != canon_key:
+                continue
+            alias_to_canon[alias_key] = canon_key
 
     for unit in _split_party_role_evidence_units(serialized):
         healed = heal_ocr_intra_word_spaces(unit)
@@ -2206,6 +2348,7 @@ def extract_party_role_expected_attributes(evidence_packet: dict) -> List[dict]:
                             "procedural_role": existing.get("procedural_role"),
                             "pleaded_role_basis": basis,
                         },
+                        alias_to_canon=alias_to_canon,
                     )
                     applied = True
             if not applied:
@@ -2223,6 +2366,7 @@ def extract_party_role_expected_attributes(evidence_packet: dict) -> List[dict]:
             targets = named or discovered
             share_attrs = len(targets) == 1
             for item in targets:
+                aliases = list(item.get("_aliases") or [])
                 _merge_party_role_expected(
                     parties,
                     {
@@ -2234,7 +2378,11 @@ def extract_party_role_expected_attributes(evidence_packet: dict) -> List[dict]:
                             pleaded_basis if share_attrs else None
                         ),
                     },
+                    alias_to_canon=alias_to_canon,
                 )
+                raw_key = _normalize_party_role_match_text(item.get("identity") or "")
+                canon_key = alias_to_canon.get(raw_key, raw_key)
+                register_aliases(canon_key, aliases)
                 if (
                     pending_grouped_basis
                     and (item.get("procedural_role") or "").lower().endswith(
@@ -2248,6 +2396,7 @@ def extract_party_role_expected_attributes(evidence_packet: dict) -> List[dict]:
                             "procedural_role": item.get("procedural_role"),
                             "pleaded_role_basis": pending_grouped_basis,
                         },
+                        alias_to_canon=alias_to_canon,
                     )
             if pending_grouped_basis:
                 # Clear once at least one defendant identity exists to receive it.
@@ -2263,10 +2412,24 @@ def extract_party_role_expected_attributes(evidence_packet: dict) -> List[dict]:
         if not (entity_type or residence or pleaded_basis) or not parties:
             continue
         unit_norm = normalize_citation_text(healed)
+
+        def _unit_refers_to_party(existing: dict) -> bool:
+            if _party_role_attribute_present(
+                existing.get("identity") or "", unit_norm
+            ):
+                return True
+            existing_key = _normalize_party_role_match_text(
+                existing.get("identity") or ""
+            )
+            for alias_key, canon_key in alias_to_canon.items():
+                if canon_key != existing_key:
+                    continue
+                if _party_role_attribute_present(alias_key, unit_norm):
+                    return True
+            return False
+
         matches = [
-            existing
-            for existing in parties.values()
-            if _party_role_attribute_present(existing.get("identity") or "", unit_norm)
+            existing for existing in parties.values() if _unit_refers_to_party(existing)
         ]
         if len(matches) != 1:
             continue
@@ -2280,12 +2443,13 @@ def extract_party_role_expected_attributes(evidence_packet: dict) -> List[dict]:
                 "residence_or_ppb": residence,
                 "pleaded_role_basis": pleaded_basis,
             },
+            alias_to_canon=alias_to_canon,
         )
 
     # Stable order by identity for deterministic missing-attribute lists.
     ordered = sorted(
         parties.values(),
-        key=lambda item: normalize_citation_text(item.get("identity") or ""),
+        key=lambda item: _normalize_party_role_match_text(item.get("identity") or ""),
     )
     return ordered
 

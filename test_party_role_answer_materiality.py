@@ -745,6 +745,164 @@ class PartyRoleDraftingCompletenessTests(unittest.TestCase):
         )
         self.assertEqual(expected, [])
 
+    def test_corporation_with_quoted_parenthetical_alias(self):
+        expected = self._extract(
+            '1. Defendant Acme Shipping Corporation ("Acme") is a domestic '
+            "corporation with its principal place of business at 100 Main "
+            "Street, Albany, NY."
+        )
+        by_name = self._by_identity(expected)
+        self.assertEqual(len(by_name), 1)
+        party = by_name["acme shipping corporation"]
+        self.assertEqual(party["identity"], "Acme Shipping Corporation")
+        self.assertEqual(party["procedural_role"], "defendant")
+        self.assertEqual(party["entity_type"], "domestic corporation")
+        self.assertNotIn("acme", by_name)
+
+    def test_llc_with_the_company_alias(self):
+        expected = self._extract(
+            '2. Plaintiff Harbor Logistics LLC ("the Company") is a limited '
+            "liability company with a principal place of business at "
+            "55 Commerce Blvd, Rochester, NY."
+        )
+        by_name = self._by_identity(expected)
+        self.assertEqual(len(by_name), 1)
+        party = by_name["harbor logistics llc"]
+        self.assertEqual(party["identity"], "Harbor Logistics LLC")
+        self.assertEqual(party["procedural_role"], "plaintiff")
+        self.assertEqual(party["entity_type"], "limited liability company")
+        self.assertNotIn("the company", by_name)
+        self.assertNotIn("company", by_name)
+
+    def test_individual_with_surname_alias(self):
+        expected = self._extract(
+            '3. Defendant Victor Rodriguez ("Rodriguez") is an individual '
+            "residing at 12 Oak Lane, Buffalo, NY."
+        )
+        by_name = self._by_identity(expected)
+        self.assertEqual(len(by_name), 1)
+        party = by_name["victor rodriguez"]
+        self.assertEqual(party["identity"], "Victor Rodriguez")
+        self.assertEqual(party["procedural_role"], "defendant")
+        self.assertEqual(party["entity_type"], "individual")
+        self.assertIn("12 oak lane", party["residence_or_ppb"].lower())
+        self.assertNotIn("rodriguez", by_name)
+
+    def test_later_shorthand_maps_to_canonical(self):
+        expected = self._extract(
+            '1. Defendant Acme Shipping Corporation ("Acme") is a domestic '
+            "corporation.\n"
+            "2. Acme is a defendant that received notice of the action."
+        )
+        by_name = self._by_identity(expected)
+        self.assertEqual(len(by_name), 1)
+        self.assertEqual(
+            by_name["acme shipping corporation"]["identity"],
+            "Acme Shipping Corporation",
+        )
+        self.assertNotIn("acme", by_name)
+
+    def test_alias_not_emitted_as_separate_identity(self):
+        expected = self._extract(
+            '1. Defendant Acme Shipping Corporation ("Acme") is a domestic '
+            "corporation.\n"
+            '2. Plaintiff Harbor Logistics LLC ("the Company") is a limited '
+            "liability company.\n"
+            "3. Acme denies the Harbor Logistics LLC allegations."
+        )
+        identities = [item["identity"] for item in expected]
+        self.assertEqual(
+            sorted(identities),
+            ["Acme Shipping Corporation", "Harbor Logistics LLC"],
+        )
+        by_name = self._by_identity(expected)
+        self.assertNotIn("acme", by_name)
+        self.assertNotIn("the company", by_name)
+
+    def test_slash_individual_placeholder_preserved(self):
+        expected = self._extract(
+            "4. The John/Jane Does 1-10 are placeholder defendants whose "
+            "identities are presently unknown."
+        )
+        self.assertEqual(len(expected), 1)
+        party = expected[0]
+        self.assertEqual(party["identity"], "John/Jane Does 1-10")
+        self.assertEqual(party["procedural_role"], "defendant")
+        by_name = self._by_identity(expected)
+        self.assertNotIn("jane does 1-10", by_name)
+        self.assertNotIn("john does 1-10", by_name)
+
+    def test_organization_placeholder_numeric_range_preserved(self):
+        expected = self._extract(
+            "6. The XYZ CORPS. 1–5 are placeholder defendants."
+        )
+        self.assertEqual(len(expected), 1)
+        party = expected[0]
+        self.assertEqual(party["identity"], "XYZ CORPS. 1–5")
+        self.assertIn("1–5", party["identity"])
+        self.assertEqual(party["procedural_role"], "defendant")
+
+    def test_hyphen_en_dash_comparison_normalization(self):
+        expected = self._extract(
+            "6. The XYZ CORPS. 1–5 are placeholder defendants."
+        )
+        party = expected[0]
+        self.assertEqual(party["identity"], "XYZ CORPS. 1–5")
+        self.assertTrue(
+            de._party_role_attribute_present(
+                party["identity"],
+                de.normalize_citation_text("Caption lists xyz corps. 1-5."),
+            )
+        )
+        self.assertEqual(
+            de._normalize_party_role_match_text("XYZ CORPS. 1–5"),
+            de._normalize_party_role_match_text("xyz corps. 1-5"),
+        )
+
+    def test_case_tolerant_canonical_comparison(self):
+        expected = self._extract(
+            "4. The John/Jane Does 1-10 are placeholder defendants."
+        )
+        party = expected[0]
+        self.assertEqual(party["identity"], "John/Jane Does 1-10")
+        self.assertTrue(
+            de._party_role_attribute_present(
+                party["identity"],
+                de.normalize_citation_text(
+                    "The pleading names john/jane does 1-10 as placeholders."
+                ),
+            )
+        )
+
+    def test_parenthetical_alias_no_trailing_text_capture(self):
+        expected = self._extract(
+            '1. Defendant Acme Shipping Corporation ("Acme") was and still is '
+            "a domestic corporation and denies each and every allegation herein."
+        )
+        self.assertEqual(len(expected), 1)
+        party = expected[0]
+        self.assertEqual(party["identity"], "Acme Shipping Corporation")
+        self.assertNotIn("denies", party["identity"].lower())
+        self.assertNotIn("allegation", party["identity"].lower())
+        self.assertNotIn("acme)", party["identity"].lower())
+
+    def test_parenthetical_alias_no_adjacent_party_merging(self):
+        expected = self._extract(
+            '1. Defendant Alpha Corp. ("Alpha") is a domestic corporation.\n'
+            '2. Defendant Beta LLC ("Beta") is a limited liability company.'
+        )
+        by_name = self._by_identity(expected)
+        self.assertEqual(len(by_name), 2)
+        self.assertEqual(by_name["alpha corp"]["identity"], "Alpha Corp")
+        self.assertEqual(by_name["beta llc"]["identity"], "Beta LLC")
+        identities = [item["identity"] for item in expected]
+        self.assertTrue(
+            all("Beta" not in name for name in identities if "Alpha" in name)
+        )
+        self.assertTrue(
+            all("Alpha" not in name for name in identities if "Beta" in name)
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
