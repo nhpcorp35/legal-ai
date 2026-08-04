@@ -908,6 +908,123 @@ class PartyRoleProceduralBoilerplateFilterTests(unittest.TestCase):
         self.assertIn("Atlas Parcel Group LLC", out["case_map_linkage"]["label"])
         self.assertNotIn("FILED:", out["case_map_linkage"]["label"])
 
+    def test_collapsed_caption_summons_span_removed(self):
+        text = (
+            "SUPREME COURT OF THE STATE OF NEW YORK "
+            "Riverfront Carrier Co., Plaintiff, -against- "
+            "Lakeside Warehouse Inc., Defendant. "
+            "SUMMONS TO THE ABOVE NAMED DEFENDANTS "
+            "YOU ARE HEREBY SUMMONED to answer the complaint in this action "
+            "and to serve a copy of your answer on plaintiff's attorneys "
+            "within twenty (20) days after the service of this summons "
+            "PARTIES 1. Plaintiff Riverfront Carrier Co. is a domestic corporation "
+            "with its principal place of business in Albany County."
+        )
+        excerpt = mb._filter_party_role_procedural_boilerplate(text)
+        self.assertNotIn("SUMMONS", excerpt)
+        self.assertNotIn("TO THE ABOVE NAMED DEFENDANTS", excerpt)
+        self.assertNotIn("YOU ARE HEREBY SUMMONED", excerpt)
+        self.assertNotIn("serve a copy of your answer", excerpt)
+        self.assertNotIn("within twenty (20) days after the service", excerpt)
+        self.assertNotIn("complaint in this action", excerpt)
+        self.assertIn("Riverfront Carrier Co.", excerpt)
+        self.assertIn("Lakeside Warehouse Inc.", excerpt)
+        self.assertIn("Plaintiff", excerpt)
+        self.assertIn("Defendant", excerpt)
+        self.assertIn("PARTIES", excerpt)
+        self.assertIn("domestic corporation", excerpt)
+        self.assertIn("principal place of business", excerpt)
+
+    def test_collapsed_caption_venue_span_removed(self):
+        text = (
+            "Harbor Quay Freight LP, Plaintiff, -against- "
+            "Pier Gate Depot Inc., Defendant. "
+            "The place of trial is designated as the County of Example "
+            "PARTIES 1. Plaintiff Harbor Quay Freight LP is a limited liability "
+            "partnership. 2. Defendant Pier Gate Depot Inc. is a notice defendant."
+        )
+        excerpt = mb._filter_party_role_procedural_boilerplate(text)
+        self.assertNotIn("place of trial is designated", excerpt)
+        self.assertIn("Harbor Quay Freight LP", excerpt)
+        self.assertIn("Pier Gate Depot Inc.", excerpt)
+        self.assertIn("Plaintiff", excerpt)
+        self.assertIn("Defendant", excerpt)
+        self.assertIn("PARTIES", excerpt)
+        self.assertIn("limited liability partnership", excerpt)
+        self.assertIn("notice defendant", excerpt)
+
+    def test_collapsed_caption_appearance_deadline_span_removed(self):
+        text = (
+            "Beacon Pier Logistics LLC, Plaintiff, -against- "
+            "Harbor Crane Depot Inc., Defendant. "
+            "You are hereby required to appear and answer "
+            "within twenty (20) days after the service of this summons "
+            "PARTIES 1. Plaintiff Beacon Pier Logistics LLC is a domestic corporation."
+        )
+        excerpt = mb._filter_party_role_procedural_boilerplate(text)
+        self.assertNotIn("required to appear", excerpt)
+        self.assertNotIn("within twenty (20) days after the service", excerpt)
+        self.assertIn("Beacon Pier Logistics LLC", excerpt)
+        self.assertIn("Harbor Crane Depot Inc.", excerpt)
+        self.assertIn("Plaintiff", excerpt)
+        self.assertIn("Defendant", excerpt)
+        self.assertIn("PARTIES", excerpt)
+        self.assertIn("domestic corporation", excerpt)
+
+    def test_collapsed_caption_failure_to_appear_default_warning_removed(self):
+        text = (
+            "North Quay Logistics LP, Plaintiff, -against- "
+            "South Pier Terminal Inc., Defendant. "
+            "Upon your failure to appear or answer, judgment will be taken "
+            "against you by default for the relief demanded in the complaint "
+            "PARTIES 1. Defendant South Pier Terminal Inc. is a domestic corporation "
+            "residing in Erie County."
+        )
+        excerpt = mb._filter_party_role_procedural_boilerplate(text)
+        self.assertNotIn("failure to appear", excerpt)
+        self.assertNotIn("judgment will be taken against you by default", excerpt)
+        self.assertIn("North Quay Logistics LP", excerpt)
+        self.assertIn("South Pier Terminal Inc.", excerpt)
+        self.assertIn("Plaintiff", excerpt)
+        self.assertIn("Defendant", excerpt)
+        self.assertIn("PARTIES", excerpt)
+        self.assertIn("domestic corporation", excerpt)
+        self.assertIn("residing in Erie County", excerpt)
+
+    def test_collapsed_responsive_caption_preserved_around_boilerplate(self):
+        text = (
+            "Cedar Basin Freight LLC, Plaintiff, -against- "
+            "Maple Depot Inc., Defendant. "
+            "SUMMONS TO THE ABOVE NAMED DEFENDANTS "
+            "YOU ARE HEREBY SUMMONED to answer the complaint "
+            "within thirty (30) days after the service of this summons "
+            "The place of trial is designated as the County of Kings "
+            "Upon your failure to appear or answer, judgment will be taken "
+            "against you by default "
+            "PARTIES 1. Plaintiff Cedar Basin Freight LLC is a domestic corporation "
+            "with its principal place of business in Kings County. "
+            "2. Defendant Maple Depot Inc. is a notice defendant and a "
+            "limited liability company."
+        )
+        excerpt = mb._filter_party_role_procedural_boilerplate(text)
+        self.assertNotIn("SUMMONS", excerpt)
+        self.assertNotIn("YOU ARE HEREBY SUMMONED", excerpt)
+        self.assertNotIn("within thirty (30) days after the service", excerpt)
+        self.assertNotIn("place of trial is designated", excerpt)
+        self.assertNotIn("failure to appear", excerpt)
+        self.assertNotIn("judgment will be taken against you by default", excerpt)
+        # Caption before and allegations after the removed spans must remain.
+        self.assertIn("Cedar Basin Freight LLC", excerpt)
+        self.assertIn("Maple Depot Inc.", excerpt)
+        self.assertIn("Plaintiff", excerpt)
+        self.assertIn("Defendant", excerpt)
+        self.assertIn("-against-", excerpt)
+        self.assertIn("PARTIES", excerpt)
+        self.assertIn("domestic corporation", excerpt)
+        self.assertIn("principal place of business", excerpt)
+        self.assertIn("notice defendant", excerpt)
+        self.assertIn("limited liability company", excerpt)
+
     def test_ordinary_legal_prose_not_over_filtered(self):
         text = (
             "PARTIES\n"
@@ -935,6 +1052,19 @@ class PartyRoleProceduralBoilerplateFilterTests(unittest.TestCase):
                 "3. Plaintiff filed this action seeking damages for breach of contract."
             )
         )
+        self.assertFalse(
+            mb._is_party_role_procedural_boilerplate_line(
+                "Defendant defaulted on premium payment obligations under the Policies."
+            )
+        )
+        # Collapsed ordinary prose must likewise survive span-level stripping.
+        collapsed = " ".join(text.splitlines())
+        collapsed_out = mb._filter_party_role_procedural_boilerplate(collapsed)
+        self.assertIn("Atlas Parcel Group LLC", collapsed_out)
+        self.assertIn("denied the material allegations", collapsed_out)
+        self.assertIn("filed this action seeking damages", collapsed_out)
+        self.assertIn("notice defendant", collapsed_out)
+        self.assertIn("principal place of business", collapsed_out)
         self.assertFalse(
             mb._is_party_role_procedural_boilerplate_line(
                 "Defendant defaulted on premium payment obligations under the Policies."

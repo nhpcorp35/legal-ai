@@ -4028,6 +4028,37 @@ _PARTY_ROLE_PROCEDURAL_BOILERPLATE_LINE_RES = (
     ),
 )
 
+# Responsive anchors that must survive collapsed-page span removal. Collapsed
+# caption pages often omit the period before PARTIES / numbered allegations;
+# sentence-only ends would otherwise eat party names and role labels.
+# Do not treat bare "complaint" as an anchor — summons prose says "answer the
+# complaint" and must not truncate there.
+_PARTY_ROLE_BOILERPLATE_SPAN_ANCHOR = (
+    r"PARTIES\b|WHEREFORE\b|SUPREME\s+COURT\b|"
+    r"\d{1,4}\s+of\s+\d{1,4}\b|"
+    r"\d{1,3}\.\s+(?:Plaintiffs?|Defendants?)\b"
+)
+_PARTY_ROLE_BOILERPLATE_SPAN_BODY = (
+    r"(?:(?!\b(?:PARTIES|WHEREFORE|SUPREME\s+COURT)\b)[^.])"
+)
+_PARTY_ROLE_BOILERPLATE_SPAN_END = (
+    r"(?:\.|(?=\s*(?:" + _PARTY_ROLE_BOILERPLATE_SPAN_ANCHOR + r"))|$)"
+)
+
+
+def _party_role_boilerplate_span_re(core, max_body):
+    """Compile a span removal that stops at '.' or a responsive caption anchor."""
+    return re.compile(
+        r"(?i)"
+        + core
+        + _PARTY_ROLE_BOILERPLATE_SPAN_BODY
+        + r"{0,"
+        + str(int(max_body))
+        + r"}"
+        + _PARTY_ROLE_BOILERPLATE_SPAN_END
+    )
+
+
 # Narrow span removals for collapsed (single-line) page text / linkage labels.
 _PARTY_ROLE_PROCEDURAL_BOILERPLATE_SPAN_RES = (
     re.compile(
@@ -4040,62 +4071,66 @@ _PARTY_ROLE_PROCEDURAL_BOILERPLATE_SPAN_RES = (
     # Standalone "N of N" page footers embedded in collapsed text.
     re.compile(r"(?i)(?<!\d)\b\d{1,4}\s+of\s+\d{1,4}\b(?!\d)"),
     # Residual summons heading token — require a heading-like neighbor so ordinary
-    # "service of this summons" prose is preserved.
+    # "service of this summons" prose is preserved (reject "this/the/a summons").
     re.compile(
-        r"(?i)(?<![A-Za-z])SUMMONS(?![A-Za-z])\s*:?"
+        r"(?i)(?<![A-Za-z])(?<!this )(?<!the )(?<!a )SUMMONS(?![A-Za-z])\s*:?"
         r"(?=\s*(?:$|\d{1,4}\s+of\s+\d{1,4}|COMPLAINT|PARTIES|YOU\s+ARE|"
         r"TO\s+THE\s+ABOVE))"
     ),
     re.compile(
-        r"(?i)\bTO\s+THE\s+ABOVE\s+NAMED\s+DEFENDANTS?\s*:?"
+        r"(?i)\bTO\s+THE\s+ABOVE\s+NAMED\s+DEFENDANTS?\s*:?\s*\.?"
     ),
-    re.compile(
-        r"(?i)\bYOU\s+ARE\s+HEREBY\s+SUMMONED\b[^.]{0,400}(?:\.|$)"
+    _party_role_boilerplate_span_re(
+        r"\bYOU\s+ARE\s+HEREBY\s+SUMMONED\b", 400
     ),
-    re.compile(
-        r"(?i)\bwithin\s+(?:twenty|thirty|20|30)\s*"
-        r"(?:\([^)]*\))?\s*days?\s+after\s+(?:the\s+)?service\b[^.]{0,200}(?:\.|$)"
+    _party_role_boilerplate_span_re(
+        r"\bwithin\s+(?:twenty|thirty|20|30)\s*"
+        r"(?:\([^)]*\))?\s*days?\s+after\s+(?:the\s+)?service\b",
+        200,
     ),
-    re.compile(
-        r"(?i)\bserve\s+a\s+copy\s+of\s+(?:your|the)\s+answer\b[^.]{0,200}(?:\.|$)"
+    _party_role_boilerplate_span_re(
+        r"\bserve\s+a\s+copy\s+of\s+(?:your|the)\s+answer\b", 200
     ),
-    re.compile(
-        r"(?i)\b(?:must|shall)\s+appear\s+(?:and|or)\s+(?:answer|defend)\b"
-        r"[^.]{0,160}(?:\.|$)"
+    _party_role_boilerplate_span_re(
+        r"\b(?:must|shall)\s+appear\s+(?:and|or)\s+(?:answer|defend)\b", 160
     ),
-    re.compile(
-        r"(?i)\byou\s+(?:are\s+)?(?:hereby\s+)?required\s+to\s+(?:appear|answer)\b"
-        r"[^.]{0,160}(?:\.|$)"
+    _party_role_boilerplate_span_re(
+        r"\byou\s+(?:are\s+)?(?:hereby\s+)?required\s+to\s+(?:appear|answer)\b",
+        160,
     ),
-    re.compile(
-        r"(?i)\bthe\s+place\s+of\s+trial\s+(?:is|shall\s+be)\s+(?:hereby\s+)?"
-        r"designated\b[^.]{0,120}(?:\.|$)"
+    _party_role_boilerplate_span_re(
+        r"\bthe\s+place\s+of\s+trial\s+(?:is|shall\s+be)\s+(?:hereby\s+)?"
+        r"designated\b",
+        120,
     ),
-    re.compile(
-        r"(?i)\b(?:venue|place\s+of\s+trial)\s+(?:is|shall\s+be)\s+"
-        r"(?:hereby\s+)?(?:designated|laid)\b[^.]{0,120}(?:\.|$)"
+    _party_role_boilerplate_span_re(
+        r"\b(?:venue|place\s+of\s+trial)\s+(?:is|shall\s+be)\s+"
+        r"(?:hereby\s+)?(?:designated|laid)\b",
+        120,
     ),
-    re.compile(
-        r"(?i)\b(?:upon\s+your\s+failure\s+to\s+(?:appear|answer|defend)\b|"
+    _party_role_boilerplate_span_re(
+        r"\b(?:upon\s+your\s+failure\s+to\s+(?:appear|answer|defend)\b|"
         r"judgment\s+will\s+be\s+taken\s+against\s+you\s+by\s+default\b|"
         r"default\s+will\s+be\s+taken\s+against\s+you\b|"
         r"failure\s+to\s+(?:appear|answer|defend)\s+(?:or\s+appear\s+)?"
-        r"(?:will|shall)\b)[^.]{0,200}(?:\.|$)"
+        r"(?:will|shall)\b)",
+        200,
     ),
-    re.compile(
-        r"(?i)\bthis\s+(?:document|filing|pleading)\s+(?:was|has\s+been)\s+"
-        r"electronically\s+(?:filed|uploaded)\b[^.]{0,160}(?:\.|$)"
+    _party_role_boilerplate_span_re(
+        r"\bthis\s+(?:document|filing|pleading)\s+(?:was|has\s+been)\s+"
+        r"electronically\s+(?:filed|uploaded)\b",
+        160,
     ),
-    re.compile(
-        r"(?i)\belectronically\s+filed\s+(?:and\s+served\s+)?"
-        r"(?:through|via|using|with)\s+nyscef\b[^.]{0,160}(?:\.|$)"
+    _party_role_boilerplate_span_re(
+        r"\belectronically\s+filed\s+(?:and\s+served\s+)?"
+        r"(?:through|via|using|with)\s+nyscef\b",
+        160,
     ),
-    re.compile(
-        r"(?i)\bconfirmation\s+notice\b[^.]{0,120}\bnyscef\b[^.]{0,80}(?:\.|$)"
+    _party_role_boilerplate_span_re(
+        r"\bconfirmation\s+notice\b[^.]{0,120}\bnyscef\b", 80
     ),
-    re.compile(
-        r"(?i)\bnyscef\s+(?:case\s+)?(?:processing|upload|administration)\b"
-        r"[^.]{0,120}(?:\.|$)"
+    _party_role_boilerplate_span_re(
+        r"\bnyscef\s+(?:case\s+)?(?:processing|upload|administration)\b", 120
     ),
 )
 
