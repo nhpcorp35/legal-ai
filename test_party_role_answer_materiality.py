@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 import unittest
 
 from engines import drafting_engine as de
@@ -1250,6 +1251,173 @@ class PartyRoleDraftingCompletenessTests(unittest.TestCase):
         self.assertEqual(
             by_name["full corporate name, inc"]["entity_type"],
             "domestic corporation",
+        )
+
+    def test_court_header_preserves_full_plaintiff_identity(self):
+        expected = self._extract(
+            "SUPREME COURT OF THE STATE OF NEW YORK\n"
+            "-----------------------------------X\n"
+            "Certain Underwriters at Lloyd's of London,\n"
+            "Plaintiff,\n"
+            "                 -against-\n"
+            "Full Corporate Name, Inc.,\n"
+            "Defendant"
+        )
+        by_name = self._by_identity(expected)
+        self.assertEqual(len(by_name), 2)
+        party = by_name["certain underwriters at lloyd's of london"]
+        self.assertEqual(
+            party["identity"], "Certain Underwriters at Lloyd's of London"
+        )
+        self.assertEqual(party["procedural_role"], "plaintiff")
+        self.assertNotIn("supreme court", by_name)
+        self.assertEqual(
+            by_name["full corporate name, inc"]["procedural_role"], "defendant"
+        )
+
+    def test_county_venue_header_preserves_full_plaintiff_identity(self):
+        expected = self._extract(
+            "COUNTY OF QUEENS\n"
+            "Venue: Kings County\n"
+            "-----------------------------------X\n"
+            "Alpha Harbor Logistics LLC,\n"
+            "Plaintiff,\n"
+            "                 -against-\n"
+            "Beta Carrier Inc.,\n"
+            "Defendant"
+        )
+        by_name = self._by_identity(expected)
+        self.assertEqual(len(by_name), 2)
+        party = by_name["alpha harbor logistics llc"]
+        self.assertEqual(party["identity"], "Alpha Harbor Logistics LLC")
+        self.assertEqual(party["procedural_role"], "plaintiff")
+        self.assertNotIn("county of queens", by_name)
+        self.assertNotIn("kings county", by_name)
+        self.assertEqual(by_name["beta carrier inc"]["procedural_role"], "defendant")
+
+    def test_index_number_header_stripped_before_plaintiff_parse(self):
+        expected = self._extract(
+            "Index No. 712345/2020\n"
+            "-----------------------------------X\n"
+            "Harbor Logistics LLC,\n"
+            "Plaintiff,\n"
+            "                 -against-\n"
+            "Summit Bridge Corp.,\n"
+            "Defendant"
+        )
+        by_name = self._by_identity(expected)
+        self.assertEqual(len(by_name), 2)
+        party = by_name["harbor logistics llc"]
+        self.assertEqual(party["identity"], "Harbor Logistics LLC")
+        self.assertEqual(party["procedural_role"], "plaintiff")
+        self.assertTrue(
+            all("712345" not in (item["identity"] or "") for item in expected)
+        )
+        self.assertEqual(by_name["summit bridge corp"]["procedural_role"], "defendant")
+
+    def test_multiline_caption_admin_headers_preserve_full_plaintiff(self):
+        expected = self._extract(
+            "SUPREME COURT OF THE STATE OF NEW YORK\n"
+            "COUNTY OF QUEENS\n"
+            "IAS Part 12\n"
+            "Index No. 712345/2020\n"
+            "-----------------------------------X\n"
+            "Certain Underwriters at Lloyd's of London,\n"
+            "Plaintiff,\n"
+            "                 -against-\n"
+            "Full Corporate Name, Inc.,\n"
+            "Defendant"
+        )
+        by_name = self._by_identity(expected)
+        self.assertEqual(len(by_name), 2)
+        party = by_name["certain underwriters at lloyd's of london"]
+        self.assertEqual(
+            party["identity"], "Certain Underwriters at Lloyd's of London"
+        )
+        self.assertEqual(party["procedural_role"], "plaintiff")
+        self.assertEqual(
+            by_name["full corporate name, inc"]["identity"], "Full Corporate Name, Inc"
+        )
+        self.assertEqual(
+            by_name["full corporate name, inc"]["procedural_role"], "defendant"
+        )
+
+    def test_caption_header_with_ocr_spaced_plaintiff_role(self):
+        expected = self._extract(
+            "SUPREME COURT OF THE STATE OF NEW YORK\n"
+            "COUNTY OF QUEENS\n"
+            "-----------------------------------X\n"
+            "PARTY NAME,\n"
+            "Pla intiff,\n"
+            "                 -against-\n"
+            "OTHER PARTY,\n"
+            "Defen dant"
+        )
+        by_name = self._by_identity(expected)
+        self.assertEqual(len(by_name), 2)
+        self.assertEqual(by_name["party name"]["identity"], "PARTY NAME")
+        self.assertEqual(by_name["party name"]["procedural_role"], "plaintiff")
+        self.assertEqual(by_name["other party"]["identity"], "OTHER PARTY")
+        self.assertEqual(by_name["other party"]["procedural_role"], "defendant")
+
+    def test_legitimate_party_name_with_geographic_word_preserved(self):
+        expected = self._extract(
+            "Queens Harbor Freight LLC,\n"
+            "Plaintiff,\n"
+            "                 -against-\n"
+            "County Logistics Inc.,\n"
+            "Defendant"
+        )
+        by_name = self._by_identity(expected)
+        self.assertEqual(len(by_name), 2)
+        self.assertEqual(
+            by_name["queens harbor freight llc"]["identity"],
+            "Queens Harbor Freight LLC",
+        )
+        self.assertEqual(
+            by_name["queens harbor freight llc"]["procedural_role"], "plaintiff"
+        )
+        self.assertEqual(
+            by_name["county logistics inc"]["identity"], "County Logistics Inc"
+        )
+        self.assertEqual(
+            by_name["county logistics inc"]["procedural_role"], "defendant"
+        )
+
+    def test_caption_headers_later_shorthand_consolidates_to_full_plaintiff(self):
+        expected = self._extract(
+            "SUPREME COURT OF THE STATE OF NEW YORK\n"
+            "COUNTY OF QUEENS\n"
+            "Index No. 712345/2020\n"
+            "-----------------------------------X\n"
+            "Certain Underwriters at Lloyd's of London,\n"
+            "Plaintiff,\n"
+            "                 -against-\n"
+            "Full Corporate Name, Inc.,\n"
+            "Defendant\n"
+            "\n"
+            "1. Underwriters are associations that issued the subject policy.\n"
+            "2. Corporate Name is a domestic corporation."
+        )
+        by_name = self._by_identity(expected)
+        self.assertEqual(len(by_name), 2)
+        party = by_name["certain underwriters at lloyd's of london"]
+        self.assertEqual(
+            party["identity"], "Certain Underwriters at Lloyd's of London"
+        )
+        self.assertEqual(party["procedural_role"], "plaintiff")
+        self.assertEqual(party["entity_type"], "association")
+        self.assertNotIn("underwriters", by_name)
+        self.assertNotIn("corporate name", by_name)
+        self.assertEqual(
+            by_name["full corporate name, inc"]["procedural_role"], "defendant"
+        )
+        identities = [item["identity"] for item in expected]
+        self.assertTrue(
+            all(
+                not re.search(r"(?i)\bsupreme\s+court\b|\bcounty\s+of\b|\bindex\s+no", name)
+                for name in identities
+            )
         )
 
     def test_ocr_split_legal_suffix_in_c_healed_to_inc(self):

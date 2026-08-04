@@ -2377,6 +2377,74 @@ def _strip_caption_boundary_marker_x(text: str) -> str:
     return _PARTY_ROLE_CAPTION_BOUNDARY_X_RE.sub(r"\g<sep>", text)
 
 
+# Leading caption-administration headers only (court / county / venue / index /
+# IAS part). Patterns are start-anchored and consumed iteratively so geographic
+# words inside party names after parsing begins are never stripped.
+_CAPTION_ADMIN_HEADER_STOP = (
+    r"ias|index|part|venue|venued|supreme|civil|county|state|court|"
+    r"plaintiffs?|defendants?|petitioners?|respondents?"
+)
+_LEADING_CAPTION_ADMIN_HEADER_RE = re.compile(
+    r"(?is)^\s*(?:"
+    r"(?:the\s+)?supreme\s+court(?:\s+of(?:\s+the)?\s+state\s+of\s+[a-z]+"
+    r"(?:\s+(?!" + _CAPTION_ADMIN_HEADER_STOP + r"\b)[a-z]+)?)?"
+    r"|(?:the\s+)?civil\s+court(?:\s+of(?:\s+the)?\s+city\s+of\s+[a-z]+"
+    r"(?:\s+(?!" + _CAPTION_ADMIN_HEADER_STOP + r"\b)[a-z]+)?)?"
+    r"|(?:the\s+)?county\s+court(?:\s+of(?:\s+the)?\s+(?:state|county)\s+of\s+[a-z]+"
+    r"(?:\s+(?!" + _CAPTION_ADMIN_HEADER_STOP + r"\b)[a-z]+)?)?"
+    r"|(?:the\s+)?surrogate'?s?\s+court(?:\s+of(?:\s+the)?\s+(?:state|county)\s+of\s+[a-z]+"
+    r"(?:\s+(?!" + _CAPTION_ADMIN_HEADER_STOP + r"\b)[a-z]+)?)?"
+    r"|appellate\s+division(?:\s+[^\n,.]{0,60})?"
+    r"|united\s+states(?:\s+district)?\s+court(?:\s+for\s+the\s+[^\n,.]{0,80})?"
+    r"|state\s+of\s+[a-z]+(?:\s+(?!" + _CAPTION_ADMIN_HEADER_STOP + r"\b)[a-z]+)?"
+    r"|county\s+of\s+[a-z]+(?:\s+(?!" + _CAPTION_ADMIN_HEADER_STOP + r"\b)[a-z]+)?"
+    r"|(?:venue|venued)\s*(?:[:.\-]|(?:\s+(?:in|at)))?\s*"
+    r"(?:county\s+of\s+)?[a-z]+(?:\s+(?!" + _CAPTION_ADMIN_HEADER_STOP + r"\b)[a-z]+)?"
+    r"(?:\s+county)?"
+    r"|index\s+(?:no\.?|number)\s*[:#]?\s*[0-9][0-9A-Za-z/-]*"
+    r"|ias\s+part\s+[a-z0-9-]+"
+    r")\s*"
+)
+
+
+def _strip_leading_caption_admin_headers(text: str) -> str:
+    """
+    Remove leading court/county/venue/index/caption-admin headers only.
+
+    Stops at the first non-header token so party identities (including names
+    that contain geographic words) remain intact. Preserves caption punctuation
+    and ordering needed by boundary-rule and against/v. parsing.
+    """
+    if not text:
+        return text
+    # Prefer line-oriented stripping when caption newlines are still present.
+    if re.search(r"\r?\n", text):
+        lines = re.split(r"\r?\n", text)
+        idx = 0
+        while idx < len(lines):
+            candidate = lines[idx]
+            stripped = candidate.strip()
+            if not stripped:
+                idx += 1
+                continue
+            if _LEADING_CAPTION_ADMIN_HEADER_RE.match(stripped) and (
+                _LEADING_CAPTION_ADMIN_HEADER_RE.sub("", stripped, count=1).strip()
+                == ""
+            ):
+                idx += 1
+                continue
+            break
+        text = "\n".join(lines[idx:])
+    # Also peel leading header phrases after whitespace-collapsed units.
+    cleaned = text
+    while True:
+        updated = _LEADING_CAPTION_ADMIN_HEADER_RE.sub("", cleaned, count=1)
+        if updated == cleaned:
+            break
+        cleaned = updated
+    return cleaned
+
+
 def _strip_caption_horizontal_rules(text: str) -> str:
     """Remove leading/trailing caption rule separators after boundary-X handling."""
     if not text:
@@ -2483,10 +2551,13 @@ def _discover_caption_party_identities(unit: str) -> List[dict]:
     Parse responsive caption identities/roles generically.
 
     Supports plaintiff names before Plaintiff, defendant names in an against
-    block, multiline caption lists, and OCR-healed role labels.
+    block, multiline caption lists, and OCR-healed role labels. Leading
+    court/county/venue/index caption-administration headers are stripped
+    before party-block capture so they do not pollute identities.
     """
+    without_headers = _strip_leading_caption_admin_headers(unit)
     healed = heal_party_identity_ocr_spaces(
-        _strip_caption_horizontal_rules(unit)
+        _strip_caption_horizontal_rules(without_headers)
     )
     healed = normalize_whitespace(healed)
     if not healed or not _unit_looks_like_party_role_caption(healed):
