@@ -1509,6 +1509,114 @@ class PartyRoleDraftingCompletenessTests(unittest.TestCase):
         self.assertIn("55 commerce blvd", party["residence_or_ppb"].lower())
         self.assertEqual(party["pleaded_role_basis"], "notice defendant")
 
+    def test_leading_folio_before_caption_header_preserves_plaintiff(self):
+        expected = self._extract(
+            "12\n"
+            "SUPREME COURT OF THE STATE OF NEW YORK\n"
+            "COUNTY OF QUEENS\n"
+            "-----------------------------------X\n"
+            "Certain Underwriters at Lloyd's of London,\n"
+            "Plaintiff,\n"
+            "                 -against-\n"
+            "Full Corporate Name, Inc.,\n"
+            "Defendant"
+        )
+        by_name = self._by_identity(expected)
+        self.assertEqual(len(by_name), 2)
+        party = by_name["certain underwriters at lloyd's of london"]
+        self.assertEqual(
+            party["identity"], "Certain Underwriters at Lloyd's of London"
+        )
+        self.assertEqual(party["procedural_role"], "plaintiff")
+        self.assertTrue(
+            all(not re.match(r"^\d+$", (item["identity"] or "").strip()) for item in expected)
+        )
+        self.assertEqual(
+            by_name["full corporate name, inc"]["procedural_role"], "defendant"
+        )
+
+    def test_same_line_folio_before_caption_header_preserves_plaintiff(self):
+        expected = self._extract(
+            "12 SUPREME COURT OF THE STATE OF NEW YORK\n"
+            "COUNTY OF QUEENS\n"
+            "-----------------------------------X\n"
+            "Harbor Logistics LLC,\n"
+            "Plaintiff,\n"
+            "                 -against-\n"
+            "Summit Bridge Corp.,\n"
+            "Defendant"
+        )
+        by_name = self._by_identity(expected)
+        self.assertEqual(len(by_name), 2)
+        party = by_name["harbor logistics llc"]
+        self.assertEqual(party["identity"], "Harbor Logistics LLC")
+        self.assertEqual(party["procedural_role"], "plaintiff")
+        self.assertEqual(by_name["summit bridge corp"]["procedural_role"], "defendant")
+
+    def test_caption_without_folio_still_extracts_full_plaintiff(self):
+        expected = self._extract(
+            "SUPREME COURT OF THE STATE OF NEW YORK\n"
+            "COUNTY OF QUEENS\n"
+            "-----------------------------------X\n"
+            "Certain Underwriters at Lloyd's of London,\n"
+            "Plaintiff,\n"
+            "                 -against-\n"
+            "Full Corporate Name, Inc.,\n"
+            "Defendant"
+        )
+        by_name = self._by_identity(expected)
+        self.assertEqual(len(by_name), 2)
+        party = by_name["certain underwriters at lloyd's of london"]
+        self.assertEqual(
+            party["identity"], "Certain Underwriters at Lloyd's of London"
+        )
+        self.assertEqual(party["procedural_role"], "plaintiff")
+
+    def test_roman_ii_llc_not_joined_by_prefix_fracture_healing(self):
+        expected = self._extract(
+            "1. Defendant II LLC is a limited liability company with a "
+            "principal place of business at 55 Commerce Blvd, Rochester, NY."
+        )
+        by_name = self._by_identity(expected)
+        self.assertIn("ii llc", by_name)
+        self.assertNotIn("iillc", by_name)
+        party = by_name["ii llc"]
+        self.assertEqual(party["identity"], "II LLC")
+        self.assertEqual(party["entity_type"], "limited liability company")
+
+    def test_roman_iii_llc_preserved(self):
+        expected = self._extract(
+            "1. Plaintiff III LLC is a limited liability company."
+        )
+        by_name = self._by_identity(expected)
+        self.assertIn("iii llc", by_name)
+        self.assertNotIn("iiillc", by_name)
+        party = by_name["iii llc"]
+        self.assertEqual(party["identity"], "III LLC")
+        self.assertEqual(party["procedural_role"], "plaintiff")
+
+    def test_roman_ii_corporation_not_over_joined(self):
+        expected = self._extract(
+            "1. Defendant II Corporation is a domestic corporation."
+        )
+        by_name = self._by_identity(expected)
+        self.assertIn("ii corporation", by_name)
+        self.assertNotIn("iicorporation", by_name)
+        party = by_name["ii corporation"]
+        self.assertEqual(party["identity"], "II Corporation")
+        self.assertEqual(party["entity_type"], "domestic corporation")
+
+    def test_ordinary_ocr_prefix_fracture_healing_unchanged(self):
+        expected = self._extract(
+            "1. Defendant CO LLINS Freight IN C. is a domestic corporation."
+        )
+        by_name = self._by_identity(expected)
+        self.assertIn("collins freight inc", by_name)
+        self.assertNotIn("co llins freight in c", by_name)
+        party = by_name["collins freight inc"]
+        self.assertEqual(party["identity"], "COLLINS Freight INC")
+        self.assertEqual(party["procedural_role"], "defendant")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -884,6 +884,28 @@ _OCR_IDENTITY_PREFIX_PARTICLES = frozenset(
     }
 )
 
+# Legal-entity suffixes that must never absorb a short OCR prefix token
+# (keeps ``II LLC`` / ``II Corporation``; ordinary-word healing unchanged).
+_OCR_IDENTITY_LEGAL_ENTITY_SUFFIXES = frozenset(
+    {
+        "co",
+        "company",
+        "companies",
+        "corp",
+        "corporation",
+        "corporations",
+        "inc",
+        "incorporated",
+        "llc",
+        "llp",
+        "lp",
+        "ltd",
+        "pc",
+        "plc",
+        "pllc",
+    }
+)
+
 
 def heal_ocr_intra_word_spaces(
     text: Any,
@@ -974,8 +996,10 @@ def _heal_party_identity_prefix_fractures(text: str) -> str:
             left_alpha = left_m.group(2)
             right_alpha = right_m.group(2)
             left_l = left_alpha.lower()
+            right_l = right_alpha.lower()
             if (
                 left_l in _OCR_IDENTITY_PREFIX_PARTICLES
+                or right_l in _OCR_IDENTITY_LEGAL_ENTITY_SUFFIXES
                 or len(left_alpha) != 2
                 or len(right_alpha) < 3
                 or not left_alpha.isalpha()
@@ -2406,6 +2430,36 @@ _LEADING_CAPTION_ADMIN_HEADER_RE = re.compile(
     r")\s*"
 )
 
+# Optional leading folio/page number immediately before a caption-admin header.
+# Scoped to header context only so digit-leading party names stay intact.
+_LEADING_CAPTION_FOLIO_RE = re.compile(r"(?is)^\s*\d{1,4}\b\s*")
+
+
+def _caption_admin_header_line_only(stripped: str) -> bool:
+    """True when ``stripped`` is entirely a caption-administration header."""
+    if not stripped:
+        return False
+    return bool(
+        _LEADING_CAPTION_ADMIN_HEADER_RE.match(stripped)
+        and _LEADING_CAPTION_ADMIN_HEADER_RE.sub("", stripped, count=1).strip() == ""
+    )
+
+
+def _strip_leading_caption_folio_before_header(text: str) -> str:
+    """
+    Remove an optional leading folio/page number only when a caption-admin
+    header follows. Does not strip digit-leading party identities.
+    """
+    if not text:
+        return text
+    folio_m = _LEADING_CAPTION_FOLIO_RE.match(text)
+    if not folio_m:
+        return text
+    remainder = text[folio_m.end() :]
+    if _LEADING_CAPTION_ADMIN_HEADER_RE.match(remainder):
+        return remainder
+    return text
+
 
 def _strip_leading_caption_admin_headers(text: str) -> str:
     """
@@ -2413,7 +2467,9 @@ def _strip_leading_caption_admin_headers(text: str) -> str:
 
     Stops at the first non-header token so party identities (including names
     that contain geographic words) remain intact. Preserves caption punctuation
-    and ordering needed by boundary-rule and against/v. parsing.
+    and ordering needed by boundary-rule and against/v. parsing. Optional
+    leading folio/page numbers are stripped only immediately before a caption
+    admin header.
     """
     if not text:
         return text
@@ -2427,17 +2483,36 @@ def _strip_leading_caption_admin_headers(text: str) -> str:
             if not stripped:
                 idx += 1
                 continue
-            if _LEADING_CAPTION_ADMIN_HEADER_RE.match(stripped) and (
-                _LEADING_CAPTION_ADMIN_HEADER_RE.sub("", stripped, count=1).strip()
-                == ""
+            # Folio-only line when the next non-empty line is an admin header.
+            if re.fullmatch(r"\d{1,4}", stripped):
+                j = idx + 1
+                while j < len(lines) and not lines[j].strip():
+                    j += 1
+                if j < len(lines) and _caption_admin_header_line_only(
+                    lines[j].strip()
+                ):
+                    idx += 1
+                    continue
+                break
+            # Same-line folio before header (``12 SUPREME COURT...``).
+            folio_header = re.match(r"^(\d{1,4})\s+(\S.*)$", stripped)
+            if folio_header and _caption_admin_header_line_only(
+                folio_header.group(2)
             ):
+                idx += 1
+                continue
+            if _caption_admin_header_line_only(stripped):
                 idx += 1
                 continue
             break
         text = "\n".join(lines[idx:])
-    # Also peel leading header phrases after whitespace-collapsed units.
+    # Also peel leading folio + header phrases after whitespace-collapsed units.
     cleaned = text
     while True:
+        with_folio = _strip_leading_caption_folio_before_header(cleaned)
+        if with_folio != cleaned:
+            cleaned = with_folio
+            continue
         updated = _LEADING_CAPTION_ADMIN_HEADER_RE.sub("", cleaned, count=1)
         if updated == cleaned:
             break
