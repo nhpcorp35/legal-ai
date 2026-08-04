@@ -1073,6 +1073,185 @@ class PartyRoleDraftingCompletenessTests(unittest.TestCase):
         self.assertEqual(party["entity_type"], "domestic corporation")
         self.assertNotIn("x party name", by_name)
 
+    def test_digit_leading_llc_later_shorthand_consolidates(self):
+        expected = self._extract(
+            "1. Defendant 123 Freight LLC is a limited liability company.\n"
+            "2. Freight is a defendant that received notice of the action."
+        )
+        by_name = self._by_identity(expected)
+        self.assertEqual(len(by_name), 1)
+        party = by_name["123 freight llc"]
+        self.assertEqual(party["identity"], "123 Freight LLC")
+        self.assertEqual(party["procedural_role"], "defendant")
+        self.assertEqual(party["entity_type"], "limited liability company")
+        self.assertNotIn("freight", by_name)
+
+    def test_alias_bucket_before_canonical_definition_rekeys(self):
+        expected = self._extract(
+            "1. Acme is a defendant with its principal place of business at "
+            "100 Main Street, Albany, NY.\n"
+            '2. Defendant Acme Shipping Corporation ("Acme") is a domestic '
+            "corporation."
+        )
+        by_name = self._by_identity(expected)
+        self.assertEqual(len(by_name), 1)
+        party = by_name["acme shipping corporation"]
+        self.assertEqual(party["identity"], "Acme Shipping Corporation")
+        self.assertEqual(party["procedural_role"], "defendant")
+        self.assertEqual(party["entity_type"], "domestic corporation")
+        self.assertIn("principal place of business", party["residence_or_ppb"].lower())
+        self.assertIn("100 main street", party["residence_or_ppb"].lower())
+        self.assertNotIn("acme", by_name)
+
+    def test_alias_rekey_to_canonical_removes_standalone_alias(self):
+        expected = self._extract(
+            "1. Short is a plaintiff organized under New York law.\n"
+            '2. Plaintiff Full LLC Name ("Short") is a limited liability company.'
+        )
+        by_name = self._by_identity(expected)
+        self.assertEqual(len(by_name), 1)
+        self.assertEqual(by_name["full llc name"]["identity"], "Full LLC Name")
+        self.assertEqual(by_name["full llc name"]["procedural_role"], "plaintiff")
+        self.assertNotIn("short", by_name)
+
+    def test_attributes_preserved_during_alias_rekey(self):
+        expected = self._extract(
+            "1. Harbor is a plaintiff with its principal place of business at "
+            "55 Commerce Blvd, Rochester, NY.\n"
+            '2. Plaintiff Harbor Logistics LLC ("Harbor") is a limited liability '
+            "company."
+        )
+        by_name = self._by_identity(expected)
+        self.assertEqual(len(by_name), 1)
+        party = by_name["harbor logistics llc"]
+        self.assertEqual(party["identity"], "Harbor Logistics LLC")
+        self.assertEqual(party["procedural_role"], "plaintiff")
+        self.assertEqual(party["entity_type"], "limited liability company")
+        self.assertIn("55 commerce blvd", party["residence_or_ppb"].lower())
+        self.assertNotIn("harbor", by_name)
+
+    def test_full_plaintiff_caption_collective_shorthand_consolidates(self):
+        expected = self._extract(
+            "Certain Underwriters at Lloyd's of London,\n"
+            "Plaintiff\n"
+            "\n"
+            "1. Underwriters are associations that issued the subject policy."
+        )
+        by_name = self._by_identity(expected)
+        self.assertEqual(len(by_name), 1)
+        party = by_name["certain underwriters at lloyd's of london"]
+        self.assertEqual(
+            party["identity"], "Certain Underwriters at Lloyd's of London"
+        )
+        self.assertEqual(party["procedural_role"], "plaintiff")
+        self.assertEqual(party["entity_type"], "association")
+        self.assertNotIn("underwriters", by_name)
+
+    def test_full_defendant_caption_shortened_company_reference(self):
+        expected = self._extract(
+            "PARTY NAME,\n"
+            "Plaintiff,\n"
+            "                 -against-\n"
+            "Full Corporate Name, Inc.,\n"
+            "Defendant\n"
+            "\n"
+            "1. Full Corporate Name, Inc. is a domestic corporation.\n"
+            "2. Corporate Name is a defendant that received notice of the action."
+        )
+        by_name = self._by_identity(expected)
+        self.assertEqual(len(by_name), 2)
+        defendant = by_name["full corporate name, inc"]
+        self.assertEqual(defendant["identity"], "Full Corporate Name, Inc")
+        self.assertEqual(defendant["procedural_role"], "defendant")
+        self.assertEqual(defendant["entity_type"], "domestic corporation")
+        self.assertEqual(by_name["party name"]["procedural_role"], "plaintiff")
+        self.assertNotIn("corporate name", by_name)
+        self.assertNotIn("inc", by_name)
+
+    def test_multiline_against_defendant_caption_lists(self):
+        expected = self._extract(
+            "Alpha Holdings LLC,\n"
+            "and\n"
+            "Beta Logistics Inc.,\n"
+            "Plaintiffs,\n"
+            "                 -against-\n"
+            "Gamma Corp.,\n"
+            "and\n"
+            "Delta Freight LLC,\n"
+            "Defendants."
+        )
+        by_name = self._by_identity(expected)
+        self.assertEqual(len(by_name), 4)
+        self.assertEqual(by_name["alpha holdings llc"]["procedural_role"], "plaintiff")
+        self.assertEqual(by_name["beta logistics inc"]["procedural_role"], "plaintiff")
+        self.assertEqual(by_name["gamma corp"]["procedural_role"], "defendant")
+        self.assertEqual(by_name["delta freight llc"]["procedural_role"], "defendant")
+
+    def test_ocr_spaced_plaintiff_defendant_caption_roles(self):
+        expected = self._extract(
+            "PARTY NAME,\n"
+            "Pla intiff,\n"
+            "                 -against-\n"
+            "OTHER PARTY,\n"
+            "Defen dant"
+        )
+        by_name = self._by_identity(expected)
+        self.assertEqual(len(by_name), 2)
+        self.assertEqual(by_name["party name"]["identity"], "PARTY NAME")
+        self.assertEqual(by_name["party name"]["procedural_role"], "plaintiff")
+        self.assertEqual(by_name["other party"]["identity"], "OTHER PARTY")
+        self.assertEqual(by_name["other party"]["procedural_role"], "defendant")
+
+    def test_ambiguous_shorthand_does_not_merge(self):
+        expected = self._extract(
+            "Alpha Harbor LLC,\n"
+            "Plaintiff,\n"
+            "                 -against-\n"
+            "Beta Harbor Inc.,\n"
+            "Defendant\n"
+            "\n"
+            "1. Harbor is a plaintiff that filed the complaint."
+        )
+        by_name = self._by_identity(expected)
+        self.assertIn("alpha harbor llc", by_name)
+        self.assertIn("beta harbor inc", by_name)
+        self.assertEqual(by_name["alpha harbor llc"]["procedural_role"], "plaintiff")
+        self.assertEqual(by_name["beta harbor inc"]["procedural_role"], "defendant")
+        # Shared token alone is ambiguous; do not collapse into either party.
+        self.assertEqual(len(by_name), 3)
+        self.assertIn("harbor", by_name)
+
+    def test_no_standalone_alias_after_caption_shorthand_consolidation(self):
+        expected = self._extract(
+            "Certain Underwriters at Lloyd's of London,\n"
+            "Plaintiff,\n"
+            "                 -against-\n"
+            "Full Corporate Name, Inc.,\n"
+            "Defendant\n"
+            "\n"
+            "1. Underwriters are associations.\n"
+            "2. Corporate Name is a domestic corporation."
+        )
+        by_name = self._by_identity(expected)
+        identities = sorted(item["identity"] for item in expected)
+        self.assertEqual(
+            identities,
+            [
+                "Certain Underwriters at Lloyd's of London",
+                "Full Corporate Name, Inc",
+            ],
+        )
+        self.assertNotIn("underwriters", by_name)
+        self.assertNotIn("corporate name", by_name)
+        self.assertEqual(
+            by_name["certain underwriters at lloyd's of london"]["entity_type"],
+            "association",
+        )
+        self.assertEqual(
+            by_name["full corporate name, inc"]["entity_type"],
+            "domestic corporation",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

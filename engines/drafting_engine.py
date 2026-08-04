@@ -1764,9 +1764,9 @@ _PARTY_ROLE_DRAFT_LABEL = (
 _PARTY_ROLE_DRAFT_RE = re.compile(
     r"(?:"
     r"\b(?P<role_leading>" + _PARTY_ROLE_DRAFT_LABEL + r")\s+"
-    r"(?P<name_leading>(?-i:[A-Z])[A-Za-z0-9&.,' -]{0,80}?)"
+    r"(?P<name_leading>(?-i:[A-Z0-9])[A-Za-z0-9&.,' -]{0,80}?)"
     r"(?=\s+(?:is|was|are|were|has|have|brings|commenced|,|\.|$|;))|"
-    r"\b(?P<name>(?-i:[A-Z])[A-Za-z0-9&.,' -]{0,80}?),\s*"
+    r"\b(?P<name>(?-i:[A-Z0-9])[A-Za-z0-9&.,' -]{0,80}?),\s*"
     r"(?P<role>" + _PARTY_ROLE_DRAFT_LABEL + r")\b"
     r")",
     re.IGNORECASE,
@@ -1776,6 +1776,11 @@ _PARTY_ROLE_DRAFT_RE = re.compile(
 _PARTY_ROLE_NAME_FRAGMENT = (
     r"(?-i:[A-Z][A-Za-z0-9&'’.\-–—]*|"
     r"LLC|LLP|LP|Inc\.?|Corp\.?|Co\.?|Ltd\.?|PLLC|PC|PLC|P\.C\.)"
+)
+# Digit-leading org tokens (``123``, ``21st``) only when a following alphabetic
+# name fragment makes an organization/party sequence plausible.
+_PARTY_ROLE_DIGIT_LEADING_FRAGMENT = (
+    r"(?-i:[0-9]+[A-Za-z][A-Za-z0-9&'’.\-–—]*|[0-9]+)"
 )
 # Join multi-token identities on spaces, commas (``Freight, Inc.``), or slashes
 # (``John/Jane``, ``Smith/Jones``). Optional lowercase particles keep collective
@@ -1791,6 +1796,15 @@ _PARTY_ROLE_NAME_RE = (
     r"(?:"
     r"(?:John|Jane)(?:\s*/\s*(?:John|Jane))?\s+Does?|"
     r"(?-i:[A-Z]{2,})(?:\s*/\s*(?-i:[A-Z]{2,}))*\s+CORPS?\.?|"
+    # Digits then at least one alphabetic/org fragment (``123 Freight LLC``).
+    + r"(?:"
+    + _PARTY_ROLE_DIGIT_LEADING_FRAGMENT
+    + _PARTY_ROLE_NAME_CONNECTOR
+    + _PARTY_ROLE_NAME_FRAGMENT
+    + r"(?:"
+    + _PARTY_ROLE_NAME_CONNECTOR
+    + _PARTY_ROLE_NAME_FRAGMENT
+    + r"){0,7})|"
     + _PARTY_ROLE_NAME_FRAGMENT
     + r")"
     r"(?:" + _PARTY_ROLE_NAME_CONNECTOR + _PARTY_ROLE_NAME_FRAGMENT + r"){0,8}"
@@ -1830,9 +1844,44 @@ _PARTY_ROLE_ALLEGATION_ENTITY_RE = re.compile(
     + _PARTY_ROLE_COPULA + r"\s+"
     r"(?:(?:a|an|the)\s+)?"
     r"(?:"
-    r"domestic|foreign|limited|individual|corporation|partnership|"
-    r"association|company|llc|llp"
+    r"domestic|foreign|limited|individuals?|corporations?|partnerships?|"
+    r"associations?|compan(?:y|ies)|llc|llp"
     r")\b",
+)
+
+# Tokens that alone cannot uniquely identify a party for shorthand consolidation.
+_PARTY_ROLE_GENERIC_NAME_TOKENS = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "at",
+        "by",
+        "co",
+        "company",
+        "corp",
+        "corporation",
+        "da",
+        "de",
+        "for",
+        "in",
+        "inc",
+        "limited",
+        "liability",
+        "llc",
+        "llp",
+        "lp",
+        "ltd",
+        "of",
+        "on",
+        "pc",
+        "plc",
+        "pllc",
+        "the",
+        "to",
+        "van",
+        "von",
+    }
 )
 _PARTY_ROLE_GROUPED_BASIS_RE = re.compile(
     r"(?i)\b(?:the\s+)?(?:foregoing|said|these|those|above(?:-|\s+)named)\s+"
@@ -2186,6 +2235,285 @@ def _strip_caption_boundary_marker_x(text: str) -> str:
     return _PARTY_ROLE_CAPTION_BOUNDARY_X_RE.sub(r"\g<sep>", text)
 
 
+def _strip_caption_horizontal_rules(text: str) -> str:
+    """Remove leading/trailing caption rule separators after boundary-X handling."""
+    if not text:
+        return text
+    cleaned = _strip_caption_boundary_marker_x(text)
+    cleaned = re.sub(
+        r"^(?:[-_═=─—–]\s*){3,}\s*",
+        "",
+        cleaned,
+    )
+    cleaned = re.sub(
+        r"\s*(?:[-_═=─—–]\s*){3,}\s*$",
+        "",
+        cleaned,
+    )
+    return cleaned
+
+
+def _party_role_identity_tokens(name: Any) -> List[str]:
+    return re.findall(r"[a-z0-9']+", _normalize_party_role_match_text(name))
+
+
+def _party_role_has_distinctive_token(tokens: Sequence[str]) -> bool:
+    return any(tok not in _PARTY_ROLE_GENERIC_NAME_TOKENS for tok in tokens)
+
+
+def _party_role_tokens_contiguous(
+    needle: Sequence[str], haystack: Sequence[str]
+) -> bool:
+    if not needle or len(needle) > len(haystack):
+        return False
+    n = len(needle)
+    needle_list = list(needle)
+    for idx in range(len(haystack) - n + 1):
+        if list(haystack[idx : idx + n]) == needle_list:
+            return True
+    return False
+
+
+def _split_caption_party_name_list(block: str) -> List[str]:
+    """Split a caption plaintiff/defendant block into individual party names."""
+    text = normalize_whitespace(block).strip(" .,;:")
+    if not text:
+        return []
+    # Drop a trailing role label if the block absorbed one.
+    text = re.sub(
+        r"(?i)(?:,\s*)?\b(?:" + _PARTY_ROLE_DRAFT_LABEL + r")\s*$",
+        "",
+        text,
+    ).strip(" .,;:")
+    # Keep ``Name, Inc.`` / ``Name, LLC`` intact while splitting list commas.
+    _suffix = (
+        r"LLC|LLP|LP|Inc\.?|Corp\.?|Co\.?|Ltd\.?|PLLC|PC|PLC|P\.C\.?"
+    )
+    protected = re.sub(
+        rf",\s*(?=(?:{_suffix})\b)",
+        r" «CS» ",
+        text,
+        flags=re.I,
+    )
+    parts = re.split(r"\s*,\s*|\s+and\s+", protected, flags=re.I)
+    names: List[str] = []
+    for part in parts:
+        part = part.replace(" «CS» ", ", ").replace("«CS»", ",")
+        part = re.sub(r"(?i)^(and|the|a|an)\s+", "", part).strip(" .,;:")
+        cleaned = _clean_party_role_identity_name(part)
+        if not cleaned:
+            continue
+        if _normalize_party_role_draft_label(cleaned):
+            continue
+        if not _plausible_party_role_draft_name(cleaned):
+            continue
+        # Require a plausible name-shaped token sequence.
+        if not _PARTY_ROLE_NAME_FIND_RE.search(cleaned):
+            continue
+        # Reject bare legal-suffix leftovers from list parsing.
+        if re.fullmatch(
+            r"(?i)(?:LLC|LLP|LP|Inc\.?|Corp\.?|Co\.?|Ltd\.?|PLLC|PC|PLC|P\.C\.?)",
+            cleaned,
+        ):
+            continue
+        if cleaned not in names:
+            names.append(cleaned)
+    return names
+
+
+def _unit_looks_like_party_role_caption(unit: str) -> bool:
+    """True for caption-style units (not numbered allegation paragraphs)."""
+    healed = heal_ocr_intra_word_spaces(unit or "")
+    if not healed or re.match(r"^\s*\d+\.\s+\S", healed):
+        return False
+    if re.search(r"(?i)\b(?:-?\s*against\s*-?|\bv\.?)\b", healed):
+        return True
+    if re.search(
+        r"(?i),\s*(?:plaintiffs?|defendants?|petitioners?|respondents?)\s*[,.]?\s*$",
+        healed,
+    ):
+        return True
+    return False
+
+
+def _discover_caption_party_identities(unit: str) -> List[dict]:
+    """
+    Parse responsive caption identities/roles generically.
+
+    Supports plaintiff names before Plaintiff, defendant names in an against
+    block, multiline caption lists, and OCR-healed role labels.
+    """
+    healed = _strip_caption_horizontal_rules(heal_ocr_intra_word_spaces(unit))
+    healed = normalize_whitespace(healed)
+    if not healed or not _unit_looks_like_party_role_caption(healed):
+        return []
+
+    found: List[dict] = []
+
+    def add_names(names: Sequence[str], role: Optional[str]) -> None:
+        for name in names:
+            found.append(
+                {
+                    "identity": name,
+                    "procedural_role": role,
+                    "_aliases": [],
+                }
+            )
+
+    against = re.search(
+        r"(?is)"
+        r"(?P<plaintiff_block>.+?)\s*,?\s*"
+        r"\b(?P<plaintiff_role>plaintiffs?|petitioners?)\b\s*[,.]?\s*"
+        r"(?:-+\s*)?(?:against|v\.?)\s*(?:-+\s*)?"
+        r"(?P<defendant_block>.+?)\s*,?\s*"
+        r"\b(?P<defendant_role>defendants?|respondents?)\b",
+        healed,
+    )
+    if against:
+        p_role = _normalize_party_role_draft_label(against.group("plaintiff_role"))
+        d_role = _normalize_party_role_draft_label(against.group("defendant_role"))
+        add_names(_split_caption_party_name_list(against.group("plaintiff_block")), p_role)
+        add_names(
+            _split_caption_party_name_list(against.group("defendant_block")), d_role
+        )
+        return found
+
+    # Single-side caption: names listed before a terminal role label.
+    single = re.search(
+        r"(?is)^(?P<block>.+?)\s*,?\s*"
+        r"\b(?P<role>" + _PARTY_ROLE_DRAFT_LABEL + r")\b\s*[,.]?\s*$",
+        healed,
+    )
+    if single:
+        role = _normalize_party_role_draft_label(single.group("role"))
+        add_names(_split_caption_party_name_list(single.group("block")), role)
+    return found
+
+
+def _shorthand_resolves_to_canonical(short_name: str, long_name: str) -> bool:
+    """
+    True when ``short_name`` is an unambiguous shortening of ``long_name``.
+
+    Supports collective/leading-token shorthand, omitted legal suffixes, and
+    abbreviated company phrases. Rejects generic-token-only matches.
+    """
+    short_key = _normalize_party_role_match_text(short_name)
+    long_key = _normalize_party_role_match_text(long_name)
+    if not short_key or not long_key or short_key == long_key:
+        return False
+    if len(short_key) > len(long_key):
+        return False
+    short_tokens = _party_role_identity_tokens(short_name)
+    long_tokens = _party_role_identity_tokens(long_name)
+    if not short_tokens or len(short_tokens) >= len(long_tokens):
+        return False
+    if not _party_role_has_distinctive_token(short_tokens):
+        return False
+    # Contiguous phrase inside the longer identity (incl. omitted suffix cases).
+    if _party_role_tokens_contiguous(short_tokens, long_tokens):
+        return True
+    # Distinctive leading token/phrase: short equals long's leading distinctive
+    # span (e.g. role+shorthand collective references).
+    long_distinctive = [
+        tok for tok in long_tokens if tok not in _PARTY_ROLE_GENERIC_NAME_TOKENS
+    ]
+    short_distinctive = [
+        tok for tok in short_tokens if tok not in _PARTY_ROLE_GENERIC_NAME_TOKENS
+    ]
+    if short_distinctive and long_distinctive[: len(short_distinctive)] == list(
+        short_distinctive
+    ):
+        return True
+    return False
+
+
+def _merge_party_role_bucket_attrs(target: dict, source: dict) -> None:
+    for field in (
+        "procedural_role",
+        "entity_type",
+        "residence_or_ppb",
+        "pleaded_role_basis",
+    ):
+        if not target.get(field) and source.get(field):
+            target[field] = source[field]
+
+
+def _rekey_party_alias_bucket(
+    parties: Dict[str, dict],
+    alias_to_canon: Dict[str, str],
+    alias_key: str,
+    canon_key: str,
+    canon_identity: str,
+) -> None:
+    """
+    Merge an existing alias-keyed party bucket into the canonical bucket.
+
+    Preserves prior attributes, removes the standalone alias identity, and
+    retargets alias map entries that pointed at the alias key.
+    """
+    if not alias_key or not canon_key or alias_key == canon_key:
+        return
+    alias_party = parties.pop(alias_key, None)
+    existing = parties.get(canon_key)
+    if existing is None:
+        parties[canon_key] = {
+            "identity": canon_identity,
+            "procedural_role": (alias_party or {}).get("procedural_role"),
+            "entity_type": (alias_party or {}).get("entity_type"),
+            "residence_or_ppb": (alias_party or {}).get("residence_or_ppb"),
+            "pleaded_role_basis": (alias_party or {}).get("pleaded_role_basis"),
+        }
+    else:
+        if canon_identity:
+            existing["identity"] = canon_identity
+        if alias_party:
+            _merge_party_role_bucket_attrs(existing, alias_party)
+    for mapped_alias, mapped_canon in list(alias_to_canon.items()):
+        if mapped_canon == alias_key:
+            alias_to_canon[mapped_alias] = canon_key
+    alias_to_canon[alias_key] = canon_key
+
+
+def _consolidate_unambiguous_party_shorthands(
+    parties: Dict[str, dict],
+    alias_to_canon: Dict[str, str],
+) -> None:
+    """
+    Merge shorter standalone identities into longer canonical ones when the
+    shorthand correspondence is unique. Does not merge on a common word alone.
+    """
+    changed = True
+    while changed:
+        changed = False
+        keys = list(parties.keys())
+        for short_key in keys:
+            if short_key not in parties:
+                continue
+            short_party = parties[short_key]
+            short_name = short_party.get("identity") or ""
+            matches = [
+                long_key
+                for long_key in keys
+                if long_key in parties
+                and long_key != short_key
+                and _shorthand_resolves_to_canonical(
+                    short_name, parties[long_key].get("identity") or ""
+                )
+            ]
+            if len(matches) != 1:
+                continue
+            long_key = matches[0]
+            long_identity = parties[long_key].get("identity") or short_name
+            _rekey_party_alias_bucket(
+                parties,
+                alias_to_canon,
+                short_key,
+                long_key,
+                long_identity,
+            )
+            changed = True
+
+
 def _clean_party_role_identity_name(raw_name: Any) -> str:
     name = normalize_whitespace(raw_name).strip(" .,;:")
     name = re.sub(r"^(?:the|a|an)\s+", "", name, flags=re.I).strip(" .,;:")
@@ -2209,7 +2537,7 @@ def _discover_party_role_identities_in_unit(unit: str) -> List[dict]:
     Supports role-before-name, role-after-name, entity/residence-only
     allegations, and placeholder identity groups. Does not invent roles.
     Parenthetical defined terms are recorded as aliases; the pre-parenthetical
-    identity remains canonical.
+    identity remains canonical. Caption blocks contribute listed identities.
     """
     healed = _strip_caption_boundary_marker_x(heal_ocr_intra_word_spaces(unit))
     found: Dict[str, dict] = {}
@@ -2259,6 +2587,15 @@ def _discover_party_role_identities_in_unit(unit: str) -> List[dict]:
             for variant in _alias_variants(alias):
                 if variant not in alias_list:
                     alias_list.append(variant)
+
+    # Caption lists first so multiline against blocks keep every named party.
+    caption_items = _discover_caption_party_identities(unit)
+    for item in caption_items:
+        remember(item.get("identity"), item.get("procedural_role"), None)
+    # Caption units are list/role structured; skip allegation parsers that would
+    # re-slice ``Name, Inc.`` into a bare suffix before the role label.
+    if caption_items:
+        return list(found.values())
 
     for match in _PARTY_ROLE_ALLEGATION_ROLE_BEFORE_RE.finditer(healed):
         remember(match.group("name"), match.group("role"), match.group("alias_body"))
@@ -2367,15 +2704,30 @@ def extract_party_role_expected_attributes(evidence_packet: dict) -> List[dict]:
     alias_to_canon: Dict[str, str] = {}
     pending_grouped_basis: Optional[str] = None
 
-    def register_aliases(canon_key: str, aliases: Sequence[str]) -> None:
+    def register_aliases(
+        canon_key: str,
+        aliases: Sequence[str],
+        *,
+        canon_identity: Optional[str] = None,
+    ) -> None:
         for alias in aliases or []:
             alias_key = _normalize_party_role_match_text(alias)
             if not alias_key or alias_key == canon_key:
                 continue
-            # Do not let an alias key collide with a distinct canonical party.
+            # Alias-first order: an earlier standalone alias bucket is re-keyed
+            # into the canonical identity when the defined-term mapping appears.
             if alias_key in parties and alias_key != canon_key:
-                continue
-            alias_to_canon[alias_key] = canon_key
+                _rekey_party_alias_bucket(
+                    parties,
+                    alias_to_canon,
+                    alias_key,
+                    canon_key,
+                    canon_identity
+                    or (parties.get(canon_key) or {}).get("identity")
+                    or alias,
+                )
+            else:
+                alias_to_canon[alias_key] = canon_key
 
     for unit in _split_party_role_evidence_units(serialized):
         healed = heal_ocr_intra_word_spaces(unit)
@@ -2420,8 +2772,12 @@ def extract_party_role_expected_attributes(evidence_packet: dict) -> List[dict]:
                 raw_key = _normalize_party_role_match_text(item.get("identity") or "")
                 # Record parenthetical alias -> canonical mapping before inventory
                 # insert so alias-only identities resolve on this same pass.
-                if aliases and raw_key and raw_key not in alias_to_canon:
-                    register_aliases(raw_key, aliases)
+                if aliases and raw_key:
+                    register_aliases(
+                        raw_key,
+                        aliases,
+                        canon_identity=item.get("identity"),
+                    )
                 _merge_party_role_expected(
                     parties,
                     {
@@ -2437,7 +2793,11 @@ def extract_party_role_expected_attributes(evidence_packet: dict) -> List[dict]:
                 )
                 canon_key = alias_to_canon.get(raw_key, raw_key)
                 if aliases:
-                    register_aliases(canon_key, aliases)
+                    register_aliases(
+                        canon_key,
+                        aliases,
+                        canon_identity=item.get("identity"),
+                    )
                 if (
                     pending_grouped_basis
                     and (item.get("procedural_role") or "").lower().endswith(
@@ -2483,6 +2843,25 @@ def extract_party_role_expected_attributes(evidence_packet: dict) -> List[dict]:
                 # inside an unrelated longer identity.
                 if _unit_refers_via_alias(alias_key, healed):
                     return True
+            # Unambiguous caption/canonical shorthand reference in this unit.
+            for match in _PARTY_ROLE_NAME_FIND_RE.finditer(healed):
+                ref_name = _clean_party_role_identity_name(match.group("name"))
+                if not ref_name:
+                    continue
+                if _shorthand_resolves_to_canonical(
+                    ref_name, existing.get("identity") or ""
+                ):
+                    # Require uniqueness across the inventory.
+                    others = [
+                        party
+                        for party in parties.values()
+                        if party is not existing
+                        and _shorthand_resolves_to_canonical(
+                            ref_name, party.get("identity") or ""
+                        )
+                    ]
+                    if not others:
+                        return True
             return False
 
         matches = [
@@ -2502,6 +2881,9 @@ def extract_party_role_expected_attributes(evidence_packet: dict) -> List[dict]:
             },
             alias_to_canon=alias_to_canon,
         )
+
+    # Merge caption/shorthand identities into unambiguous longer canonical forms.
+    _consolidate_unambiguous_party_shorthands(parties, alias_to_canon)
 
     # Stable order by identity for deterministic missing-attribute lists.
     ordered = sorted(
