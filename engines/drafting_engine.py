@@ -1778,8 +1778,13 @@ _PARTY_ROLE_NAME_FRAGMENT = (
     r"LLC|LLP|LP|Inc\.?|Corp\.?|Co\.?|Ltd\.?|PLLC|PC|PLC|P\.C\.)"
 )
 # Join multi-token identities on spaces, commas (``Freight, Inc.``), or slashes
-# (``John/Jane``, ``Smith/Jones``) without absorbing role/entity clauses.
-_PARTY_ROLE_NAME_CONNECTOR = r"(?:\s*/\s*|\s*,\s*|\s+)"
+# (``John/Jane``, ``Smith/Jones``). Optional lowercase particles keep collective
+# org names intact (``Underwriters at Lloyd's of London``) without absorbing
+# role/entity clauses.
+_PARTY_ROLE_NAME_PARTICLE = r"(?:of|at|the|and|for|in|by|on|to|de|da|von|van)"
+_PARTY_ROLE_NAME_CONNECTOR = (
+    r"(?:\s*/\s*|\s*,\s*|\s+(?:" + _PARTY_ROLE_NAME_PARTICLE + r"\s+)?)"
+)
 _PARTY_ROLE_NAME_RE = (
     r"(?P<name>"
     r"(?!(?:the\s+)?(?:" + _PARTY_ROLE_DRAFT_LABEL + r")\b)"
@@ -1792,6 +1797,7 @@ _PARTY_ROLE_NAME_RE = (
     r"(?:\s+\d+(?:\s*(?:[-–—]|through)\s*\d+)?)?"
     r")"
 )
+_PARTY_ROLE_NAME_FIND_RE = re.compile(_PARTY_ROLE_NAME_RE)
 _PARTY_ROLE_COPULA = (
     r"(?:was\s+and\s+still\s+is|is|are|was|were|has\s+been|have\s+been)"
 )
@@ -2286,6 +2292,34 @@ def _unit_names_party(identity: str, unit: str) -> bool:
     return _party_role_attribute_present(identity, normalize_citation_text(unit))
 
 
+def _unit_refers_via_alias(alias: str, unit: str) -> bool:
+    """
+    True when ``alias`` appears as a standalone party reference in ``unit``.
+
+    Rejects matches that are merely a short token embedded inside a longer
+    proper name (e.g. alias ``Acme`` inside ``North Acme Holdings LLC``).
+    """
+    alias_key = _normalize_party_role_match_text(alias)
+    if not alias_key or not unit:
+        return False
+    for match in _PARTY_ROLE_NAME_FIND_RE.finditer(unit):
+        raw_name = match.group("name")
+        cleaned_key = _normalize_party_role_match_text(
+            _clean_party_role_identity_name(raw_name)
+        )
+        raw_key = _normalize_party_role_match_text(raw_name)
+        if cleaned_key == alias_key or raw_key == alias_key:
+            return True
+        # Article may sit outside the name capture: ``the Company has...``.
+        before = unit[: match.start("name")]
+        for article in ("the", "a", "an"):
+            if alias_key == f"{article} {cleaned_key}" and re.search(
+                rf"(?i)\b{article}\s*$", before
+            ):
+                return True
+    return False
+
+
 def _merge_party_role_expected(
     bucket: Dict[str, dict],
     party: dict,
@@ -2296,6 +2330,7 @@ def _merge_party_role_expected(
     key = _normalize_party_role_match_text(identity or "")
     if not key:
         return
+    # Resolve defined-term aliases to the canonical inventory key before insert.
     if alias_to_canon and key in alias_to_canon:
         key = alias_to_canon[key]
         if key in bucket:
@@ -2382,6 +2417,11 @@ def extract_party_role_expected_attributes(evidence_packet: dict) -> List[dict]:
             share_attrs = len(targets) == 1
             for item in targets:
                 aliases = list(item.get("_aliases") or [])
+                raw_key = _normalize_party_role_match_text(item.get("identity") or "")
+                # Record parenthetical alias -> canonical mapping before inventory
+                # insert so alias-only identities resolve on this same pass.
+                if aliases and raw_key and raw_key not in alias_to_canon:
+                    register_aliases(raw_key, aliases)
                 _merge_party_role_expected(
                     parties,
                     {
@@ -2395,9 +2435,9 @@ def extract_party_role_expected_attributes(evidence_packet: dict) -> List[dict]:
                     },
                     alias_to_canon=alias_to_canon,
                 )
-                raw_key = _normalize_party_role_match_text(item.get("identity") or "")
                 canon_key = alias_to_canon.get(raw_key, raw_key)
-                register_aliases(canon_key, aliases)
+                if aliases:
+                    register_aliases(canon_key, aliases)
                 if (
                     pending_grouped_basis
                     and (item.get("procedural_role") or "").lower().endswith(
@@ -2439,7 +2479,9 @@ def extract_party_role_expected_attributes(evidence_packet: dict) -> List[dict]:
             for alias_key, canon_key in alias_to_canon.items():
                 if canon_key != existing_key:
                     continue
-                if _party_role_attribute_present(alias_key, unit_norm):
+                # Standalone alias reference only; ignore short tokens embedded
+                # inside an unrelated longer identity.
+                if _unit_refers_via_alias(alias_key, healed):
                     return True
             return False
 

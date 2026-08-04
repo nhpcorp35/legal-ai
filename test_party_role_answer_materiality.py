@@ -819,6 +819,112 @@ class PartyRoleDraftingCompletenessTests(unittest.TestCase):
         self.assertNotIn("acme", by_name)
         self.assertNotIn("the company", by_name)
 
+    def test_full_plaintiff_collective_underwriters_shorthand(self):
+        expected = self._extract(
+            '1. Plaintiff Certain Underwriters at Lloyd\'s of London '
+            '("Underwriters") are associations.\n'
+            "2. Underwriters are plaintiffs that issued the subject policy."
+        )
+        by_name = self._by_identity(expected)
+        self.assertEqual(len(by_name), 1)
+        party = by_name["certain underwriters at lloyd's of london"]
+        self.assertEqual(
+            party["identity"], "Certain Underwriters at Lloyd's of London"
+        )
+        self.assertEqual(party["procedural_role"], "plaintiff")
+        self.assertEqual(party["entity_type"], "association")
+        self.assertNotIn("underwriters", by_name)
+
+    def test_corporation_one_word_alias_consolidation(self):
+        expected = self._extract(
+            '1. Defendant Full Corporate Name, Inc. ("Short") is a domestic '
+            "corporation.\n"
+            "2. Short is a defendant that received notice of the action."
+        )
+        by_name = self._by_identity(expected)
+        self.assertEqual(len(by_name), 1)
+        self.assertEqual(
+            by_name["full corporate name, inc"]["identity"],
+            "Full Corporate Name, Inc",
+        )
+        self.assertNotIn("short", by_name)
+
+    def test_llc_shortened_alias_consolidation(self):
+        expected = self._extract(
+            '1. Plaintiff Full LLC Name ("Harbor") is a limited liability '
+            "company.\n"
+            "2. Harbor is a plaintiff organized under New York law."
+        )
+        by_name = self._by_identity(expected)
+        self.assertEqual(len(by_name), 1)
+        self.assertEqual(by_name["full llc name"]["identity"], "Full LLC Name")
+        self.assertEqual(by_name["full llc name"]["procedural_role"], "plaintiff")
+        self.assertNotIn("harbor", by_name)
+
+    def test_later_alias_only_allegation_maps_to_canonical(self):
+        expected = self._extract(
+            '1. Defendant Acme Shipping Corporation ("Acme") is a domestic '
+            "corporation.\n"
+            "2. Acme is a defendant that received notice of the action."
+        )
+        by_name = self._by_identity(expected)
+        self.assertEqual(len(by_name), 1)
+        self.assertEqual(
+            by_name["acme shipping corporation"]["identity"],
+            "Acme Shipping Corporation",
+        )
+        self.assertNotIn("acme", by_name)
+
+    def test_alias_only_attributes_merge_into_canonical(self):
+        expected = self._extract(
+            '1. Defendant Acme Shipping Corporation ("Acme") is a domestic '
+            "corporation.\n"
+            "2. Acme has its principal place of business at 100 Main Street, "
+            "Albany, NY."
+        )
+        by_name = self._by_identity(expected)
+        self.assertEqual(len(by_name), 1)
+        party = by_name["acme shipping corporation"]
+        self.assertEqual(party["identity"], "Acme Shipping Corporation")
+        self.assertEqual(party["entity_type"], "domestic corporation")
+        self.assertIn("principal place of business", party["residence_or_ppb"].lower())
+        self.assertIn("100 main street", party["residence_or_ppb"].lower())
+        self.assertNotIn("acme", by_name)
+
+    def test_unrelated_similar_token_does_not_merge(self):
+        expected = self._extract(
+            '1. Defendant Acme Shipping Corporation ("Acme") is a domestic '
+            "corporation.\n"
+            "2. Defendant North Acme Holdings LLC is a limited liability "
+            "company with its principal place of business at 9 Pier Road.\n"
+            "3. North Acme Holdings LLC has its principal place of business "
+            "at 9 Pier Road, Queens, NY."
+        )
+        by_name = self._by_identity(expected)
+        self.assertEqual(len(by_name), 2)
+        acme = by_name["acme shipping corporation"]
+        north = by_name["north acme holdings llc"]
+        self.assertEqual(acme["identity"], "Acme Shipping Corporation")
+        self.assertEqual(north["identity"], "North Acme Holdings LLC")
+        self.assertIsNone(acme.get("residence_or_ppb"))
+        self.assertIn("9 pier road", north["residence_or_ppb"].lower())
+        self.assertNotIn("acme", by_name)
+
+    def test_canonical_identity_preserved_when_only_later_shorthand_appears(self):
+        expected = self._extract(
+            '1. Plaintiff Harbor Logistics LLC ("the Company") is a limited '
+            "liability company.\n"
+            "2. the Company has a principal place of business at "
+            "55 Commerce Blvd, Rochester, NY."
+        )
+        by_name = self._by_identity(expected)
+        self.assertEqual(len(by_name), 1)
+        party = by_name["harbor logistics llc"]
+        self.assertEqual(party["identity"], "Harbor Logistics LLC")
+        self.assertIn("55 commerce blvd", party["residence_or_ppb"].lower())
+        self.assertNotIn("the company", by_name)
+        self.assertNotIn("company", by_name)
+
     def test_slash_individual_placeholder_preserved(self):
         expected = self._extract(
             "4. The John/Jane Does 1-10 are placeholder defendants whose "
