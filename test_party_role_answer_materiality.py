@@ -650,6 +650,92 @@ class PartyRoleDraftingCompletenessTests(unittest.TestCase):
         self.assertEqual(party["procedural_role"], "defendant")
         self.assertIsNone(party.get("entity_type"))
 
+    def test_multiword_organization_ending_inc(self):
+        expected = self._extract(
+            "1. Defendant North Star Shipping Lines Inc. was and still is a "
+            "domestic corporation."
+        )
+        party = self._by_identity(expected)["north star shipping lines inc"]
+        self.assertEqual(party["identity"], "North Star Shipping Lines Inc")
+        self.assertEqual(party["procedural_role"], "defendant")
+        self.assertEqual(party["entity_type"], "domestic corporation")
+
+    def test_organization_followed_by_entity_type_language(self):
+        expected = self._extract(
+            "2. Plaintiff Cedar Basin Holdings LLC is a limited liability "
+            "company organized under the laws of New York."
+        )
+        party = self._by_identity(expected)["cedar basin holdings llc"]
+        self.assertEqual(party["identity"], "Cedar Basin Holdings LLC")
+        self.assertEqual(party["procedural_role"], "plaintiff")
+        self.assertEqual(party["entity_type"], "limited liability company")
+
+    def test_slash_separated_john_jane_placeholder_with_numeric_range(self):
+        expected = self._extract(
+            "4. The John/Jane Does 1-10 are placeholder defendants whose "
+            "identities are presently unknown."
+        )
+        self.assertEqual(len(expected), 1)
+        party = expected[0]
+        self.assertEqual(party["identity"], "John/Jane Does 1-10")
+        self.assertEqual(party["procedural_role"], "defendant")
+        self.assertNotIn("Jane Does 1-10", self._by_identity(expected))
+
+    def test_slash_separated_ordinary_party_name(self):
+        expected = self._extract(
+            "5. Defendant Smith/Jones Partners LLP is a limited liability "
+            "partnership."
+        )
+        party = self._by_identity(expected)["smith/jones partners llp"]
+        self.assertEqual(party["identity"], "Smith/Jones Partners LLP")
+        self.assertEqual(party["procedural_role"], "defendant")
+        self.assertEqual(party["entity_type"], "limited liability partnership")
+        self.assertNotIn("jones partners llp", self._by_identity(expected))
+
+    def test_xyz_style_corporation_placeholder_with_numeric_range(self):
+        expected = self._extract(
+            "6. The XYZ CORPS. 1–5 are placeholder defendants."
+        )
+        self.assertEqual(len(expected), 1)
+        party = expected[0]
+        self.assertEqual(party["identity"], "XYZ CORPS. 1–5")
+        self.assertEqual(party["procedural_role"], "defendant")
+
+    def test_punctuation_inside_organization_name(self):
+        expected = self._extract(
+            "7. Defendant O'Brien-Marks Freight, Inc. is a domestic corporation."
+        )
+        party = self._by_identity(expected)["o'brien-marks freight, inc"]
+        self.assertEqual(party["identity"], "O'Brien-Marks Freight, Inc")
+        self.assertEqual(party["procedural_role"], "defendant")
+        self.assertEqual(party["entity_type"], "domestic corporation")
+        self.assertNotIn("inc", self._by_identity(expected))
+
+    def test_no_trailing_allegation_text_capture(self):
+        expected = self._extract(
+            "1. Defendant Atlas Hauling Inc. was and still is a domestic "
+            "corporation and denies each and every allegation herein."
+        )
+        self.assertEqual(len(expected), 1)
+        party = expected[0]
+        self.assertEqual(party["identity"], "Atlas Hauling Inc")
+        self.assertNotIn("denies", party["identity"].lower())
+        self.assertNotIn("allegation", party["identity"].lower())
+        self.assertEqual(party["entity_type"], "domestic corporation")
+
+    def test_no_adjacent_party_merging(self):
+        expected = self._extract(
+            "1. Defendant Alpha Corp. is a domestic corporation.\n"
+            "2. Defendant Beta LLC is a limited liability company."
+        )
+        by_name = self._by_identity(expected)
+        self.assertEqual(len(by_name), 2)
+        self.assertEqual(by_name["alpha corp"]["identity"], "Alpha Corp")
+        self.assertEqual(by_name["beta llc"]["identity"], "Beta LLC")
+        identities = [item["identity"] for item in expected]
+        self.assertTrue(all("Beta" not in name for name in identities if "Alpha" in name))
+        self.assertTrue(all("Alpha" not in name for name in identities if "Beta" in name))
+
     def test_non_party_isolation_preserved(self):
         expected = self._extract(
             "Notice of Motion for Summary Judgment returnable June 1, 2024. "

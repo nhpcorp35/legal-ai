@@ -1774,17 +1774,21 @@ _PARTY_ROLE_DRAFT_RE = re.compile(
 
 # Generic pleading-allegation identity/role discovery (primary parser path).
 _PARTY_ROLE_NAME_FRAGMENT = (
-    r"(?-i:[A-Z][A-Za-z0-9&'’.-]*|"
-    r"LLC|LLP|LP|Inc\.?|Corp\.?|Co\.?|Ltd\.?|PLLC|PC|PLC)"
+    r"(?-i:[A-Z][A-Za-z0-9&'’.\-–—]*|"
+    r"LLC|LLP|LP|Inc\.?|Corp\.?|Co\.?|Ltd\.?|PLLC|PC|PLC|P\.C\.)"
 )
+# Join multi-token identities on spaces, commas (``Freight, Inc.``), or slashes
+# (``John/Jane``, ``Smith/Jones``) without absorbing role/entity clauses.
+_PARTY_ROLE_NAME_CONNECTOR = r"(?:\s*/\s*|\s*,\s*|\s+)"
 _PARTY_ROLE_NAME_RE = (
     r"(?P<name>"
     r"(?!(?:the\s+)?(?:" + _PARTY_ROLE_DRAFT_LABEL + r")\b)"
-    r"(?:John\s+Does?|Jane\s+Does?|"
-    r"(?-i:[A-Z]{2,})\s+CORPS?\.?|"
+    r"(?:"
+    r"(?:John|Jane)(?:\s*/\s*(?:John|Jane))?\s+Does?|"
+    r"(?-i:[A-Z]{2,})(?:\s*/\s*(?-i:[A-Z]{2,}))*\s+CORPS?\.?|"
     + _PARTY_ROLE_NAME_FRAGMENT
     + r")"
-    r"(?:\s+" + _PARTY_ROLE_NAME_FRAGMENT + r"){0,8}"
+    r"(?:" + _PARTY_ROLE_NAME_CONNECTOR + _PARTY_ROLE_NAME_FRAGMENT + r"){0,8}"
     r"(?:\s+\d+(?:\s*(?:[-–—]|through)\s*\d+)?)?"
     r")"
 )
@@ -1821,9 +1825,12 @@ _PARTY_ROLE_GROUPED_BASIS_RE = re.compile(
     r"defendants?\b.*\bnotice\s+defendants?\b",
 )
 _PARTY_ROLE_PLACEHOLDER_GROUP_RE = re.compile(
-    r"(?i)\b(?P<name>"
-    r"(?:John\s+Does?|Jane\s+Does?|(?-i:[A-Z]{2,})\s+CORPS?\.?)"
-    r"\s+\d+(?:\s*(?:[-–—]|through)\s*\d+)?)\b"
+    r"(?i)(?<![/\w])(?P<name>"
+    r"(?:"
+    r"(?:John|Jane)(?:\s*/\s*(?:John|Jane))?\s+Does?|"
+    r"(?-i:[A-Z]{2,})(?:\s*/\s*(?-i:[A-Z]{2,}))*\s+CORPS?\.?"
+    r")"
+    r"\s+\d+(?:\s*(?:[-–—]|through)\s*\d+)?)"
     r"(?:[^.]{0,80}?\b(?P<role>" + _PARTY_ROLE_DRAFT_LABEL + r")\b)?",
 )
 
