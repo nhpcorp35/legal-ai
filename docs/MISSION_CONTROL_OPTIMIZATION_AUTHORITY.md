@@ -135,6 +135,12 @@ Supporting reliability tracks (schedule in parallel once telemetry exists): MCO-
 
 - If the same production symptom survives two verified fixes, perform a new diagnosis before any additional implementation.
 
+## 13. HAL Direct Submission
+
+- HAL submits Mission Control missions directly.
+- Mission prompts are implementation details and are not shown unless the user explicitly requests them.
+- HAL reports only the objective, run ID, status, result, and next recommended action.
+
 # Required Mission Sequence
 
 1. Read-only diagnosis
@@ -168,6 +174,7 @@ the current work must pause and:
 
 | Date | Decision |
 |------|----------|
+| 2026-08-05 | Adopt HAL direct structured submission of Mission Control missions (Rule 13) to reduce copy/paste, schema errors, context bloat, and user eye strain. |
 | 2026-08-05 | Adopt the Mandatory Mission Operating Rules; record creation of the durable generation CLI, separation of diagnosis from implementation, the production-first verification philosophy, execution-budget lessons learned, and the goal of reducing unnecessary Mission Control runs while preserving engineering knowledge. |
 | 2026-08-03 | Finish Case-00 before any Mission Control optimization implementation. |
 | 2026-08-03 | Create this authority file now as the single register for issues and optimizations. |
