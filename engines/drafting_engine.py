@@ -1486,6 +1486,22 @@ def _hit_serialized_char_count(hit: dict) -> int:
     return len(normalize_whitespace(" ".join(str(p or "") for p in parts)))
 
 
+_PARTY_ROLE_PARTIES_SECTION_HEADING_RE = re.compile(
+    r"(?i)(?:^|[\n\r]|(?<=\.)\s|(?<=:)\s*)"
+    r"(?:(?:section|article|part)\s+[ivxlcdm\d]+"
+    r"(?:\s*[.:=\-—–]\s*|\s+)|(?:[ivxlcdm]+|\d+)(?:\.\d+)*[.)]?\s+)?"
+    r"(?:the\s+)?parties\b"
+)
+
+_PARTY_ROLE_INTRO_SECTION_HEADING_RE = re.compile(
+    r"(?i)(?:^|[\n\r]|(?<=\.)\s|(?<=:)\s*)"
+    r"(?:(?:section|article|part)\s+[ivxlcdm\d]+"
+    r"(?:\s*[.:=\-—–]\s*|\s+)|(?:[ivxlcdm]+|\d+)(?:\.\d+)*[.)]?\s+)?"
+    r"(?:nature\s+of\s+(?:the\s+)?action|preliminary\s+statement|introduction)"
+    r"\s*:?(?=\s*(?:$|\d+\.|(?-i:[A-Z(\"'])))"
+)
+
+
 def _hit_is_party_role_caption_or_section_page(hit: dict) -> bool:
     """True for an operative pleading's caption, PARTIES, or intro-section pages."""
     kind = _classify_hit_filing_kind(hit)
@@ -1495,23 +1511,10 @@ def _hit_is_party_role_caption_or_section_page(hit: dict) -> bool:
         return True
     text = _hit_materiality_text(hit)
     # Contiguous PARTIES-section pages.
-    if re.search(
-        r"(?i)(?:^|[\n\r]|(?<=\.)\s|(?<=:)\s*)"
-        r"(?:(?:section|article|part)\s+[ivxlcdm\d]+"
-        r"(?:\s*[.:=\-—–]\s*|\s+)|(?:[ivxlcdm]+|\d+)(?:\.\d+)*[.)]?\s+)?"
-        r"(?:the\s+)?parties\b",
-        text,
-    ):
+    if _PARTY_ROLE_PARTIES_SECTION_HEADING_RE.search(text):
         return True
     # Concise initiating opening sections (intro / nature / preliminary).
-    if re.search(
-        r"(?i)(?:^|[\n\r]|(?<=\.)\s|(?<=:)\s*)"
-        r"(?:(?:section|article|part)\s+[ivxlcdm\d]+"
-        r"(?:\s*[.:=\-—–]\s*|\s+)|(?:[ivxlcdm]+|\d+)(?:\.\d+)*[.)]?\s+)?"
-        r"(?:nature\s+of\s+(?:the\s+)?action|preliminary\s+statement|introduction)"
-        r"\s*:?(?=\s*(?:$|\d+\.|(?-i:[A-Z(\"'])))",
-        text,
-    ):
+    if _PARTY_ROLE_INTRO_SECTION_HEADING_RE.search(text):
         return True
     # Caption-bearing early pleading pages.
     page_no = hit.get("pdf_page")
@@ -1526,6 +1529,34 @@ def _hit_is_party_role_caption_or_section_page(hit: dict) -> bool:
         ):
             return True
     return False
+
+
+def _hit_party_role_protected_section_kind(hit: dict) -> Optional[str]:
+    """
+    Classify a hit into a discrete protected section set.
+
+    Returns ``\"parties\"``, ``\"intro\"``, or ``None``. Caption-only pages are
+    not assigned here; they remain independently protectable.
+    """
+    text = _hit_materiality_text(hit)
+    if _PARTY_ROLE_PARTIES_SECTION_HEADING_RE.search(text):
+        return "parties"
+    if _PARTY_ROLE_INTRO_SECTION_HEADING_RE.search(text):
+        return "intro"
+    if not hit.get("party_role_section_expanded"):
+        return None
+    # Expanded continuation without a repeated heading stays inside its set.
+    if (
+        _PARTY_ROLE_BEARING_RE.search(text)
+        or _PARTY_IDENTITY_ESTABLISHING_RE.search(text)
+        or re.search(
+            r"(?i)\b(?:notice\s+defendant|named\s+insured|necessary\s+party|"
+            r"joined(?:\s+herein|\s+as)?|sued\s+herein)\b",
+            text,
+        )
+    ):
+        return "parties"
+    return "intro"
 
 
 def _party_role_source_key(hit: dict) -> str:
@@ -1562,8 +1593,23 @@ def _controlling_party_role_source(hits: Sequence[dict]) -> Optional[str]:
     return min(candidates)[2] if candidates else None
 
 
+def _discrete_section_page_range(
+    page_numbers: Sequence[int],
+) -> Optional[Tuple[int, int]]:
+    """
+    Min-max page span within one recognized section set.
+
+    Preserves unmarked cross-page continuation inside that set only. Callers
+    must not merge intro and PARTIES page lists before invoking this helper.
+    """
+    if not page_numbers:
+        return None
+    ordered = [int(p) for p in page_numbers]
+    return (min(ordered), max(ordered))
+
+
 def _mark_controlling_party_role_group(hits: Sequence[dict]) -> List[dict]:
-    """Mark the controlling caption, intro, and complete detected PARTIES span."""
+    """Mark controlling caption, discrete intro, and discrete PARTIES pages."""
     marked = [dict(hit) for hit in (hits or [])]
     source_key = _controlling_party_role_source(marked)
     if source_key is None:
@@ -1572,43 +1618,44 @@ def _mark_controlling_party_role_group(hits: Sequence[dict]) -> List[dict]:
     source_hits = [
         hit for hit in marked if _party_role_source_key(hit) == source_key
     ]
-    section_pages = []
+    intro_pages: List[int] = []
+    parties_pages: List[int] = []
     for hit in source_hits:
-        text = _hit_materiality_text(hit)
-        if hit.get("party_role_section_expanded") or re.search(
-            r"(?i)(?:^|[\n\r]|(?<=\.)\s|(?<=:)\s*)"
-            r"(?:(?:section|article|part)\s+[ivxlcdm\d]+"
-            r"(?:\s*[.:=\-—–]\s*|\s+)|(?:[ivxlcdm]+|\d+)(?:\.\d+)*[.)]?\s+)?"
-            r"(?:the\s+)?parties\b",
-            text,
-        ) or re.search(
-            r"(?i)(?:^|[\n\r]|(?<=\.)\s|(?<=:)\s*)"
-            r"(?:(?:section|article|part)\s+[ivxlcdm\d]+"
-            r"(?:\s*[.:=\-—–]\s*|\s+)|(?:[ivxlcdm]+|\d+)(?:\.\d+)*[.)]?\s+)?"
-            r"(?:nature\s+of\s+(?:the\s+)?action|preliminary\s+statement|introduction)"
-            r"\s*:?(?=\s*(?:$|\d+\.|(?-i:[A-Z(\"'])))",
-            text,
-        ):
-            try:
-                section_pages.append(int(hit.get("pdf_page")))
-            except (TypeError, ValueError):
-                pass
+        kind = _hit_party_role_protected_section_kind(hit)
+        if kind is None:
+            continue
+        try:
+            page_no = int(hit.get("pdf_page"))
+        except (TypeError, ValueError):
+            continue
+        if kind == "intro":
+            intro_pages.append(page_no)
+        elif kind == "parties":
+            parties_pages.append(page_no)
 
-    # Expansion provenance identifies the detected span.  Include every
-    # already-retrieved page between its endpoints even if that page entered
-    # before expansion and therefore lacked the provenance marker.
-    section_range = None
-    if section_pages:
-        section_range = (min(section_pages), max(section_pages))
+    # Within each recognized section, include already-retrieved pages between
+    # endpoints so unmarked intra-section continuations stay protected. Never
+    # min-max fill intervening pages between intro and PARTIES sets.
+    protected_ranges = [
+        span
+        for span in (
+            _discrete_section_page_range(intro_pages),
+            _discrete_section_page_range(parties_pages),
+        )
+        if span is not None
+    ]
 
     for hit in source_hits:
         protected = _hit_is_party_role_caption_or_section_page(hit)
-        if section_range is not None:
+        if not protected and protected_ranges:
             try:
                 page_no = int(hit.get("pdf_page"))
-                protected = protected or section_range[0] <= page_no <= section_range[1]
             except (TypeError, ValueError):
-                pass
+                page_no = None
+            if page_no is not None:
+                protected = any(
+                    start <= page_no <= end for start, end in protected_ranges
+                )
         if protected:
             hit["controlling_party_role_pleading"] = True
     return marked

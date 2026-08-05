@@ -2963,5 +2963,387 @@ class PartyRoleDraftingCompletenessTests(unittest.TestCase):
         )
 
 
+class PartyRoleDiscreteProtectionAndJurisdictionTests(unittest.TestCase):
+    """Discrete intro/PARTIES protection and named-party jurisdiction filtering."""
+
+    def setUp(self):
+        self.party_query = (
+            "Who are the parties and what are their roles in this action?"
+        )
+        self.motion_query = (
+            "What relief does the notice of motion for summary judgment seek?"
+        )
+        self.caption = (
+            "SUPREME COURT OF THE STATE OF NEW YORK\n"
+            "COUNTY OF KINGS\n"
+            "Harbor Mill Carrier Inc.,\n"
+            "Plaintiff,\n"
+            "-against-\n"
+            "Northshore Logistics LP,\n"
+            "Defendant.\n"
+        )
+
+    def _hit(self, doc_no, page, doc_type, text, *, expanded=False, score=1.0):
+        value = {
+            "result_id": f"r-{doc_no}-{page}",
+            "page_id": f"nyscef-{doc_no}-page-{page:04d}",
+            "nyscef_document_number": doc_no,
+            "pdf_page": page,
+            "source_filename": f"filing_{doc_no}_{doc_type}.pdf",
+            "document_type": doc_type,
+            "excerpt": text,
+            "page_text": text,
+            "classifications": ["party_identity"],
+            "assertion_kind": "verified_record_fact",
+            "score": score,
+        }
+        if expanded:
+            value["party_role_section_expanded"] = True
+        return value
+
+    def test_intro_and_parties_protected_separately(self):
+        hits = [
+            self._hit(
+                601,
+                1,
+                "complaint",
+                self.caption
+                + "INTRODUCTION\n"
+                + "1. This is an action for breach of a freight contract.\n",
+                expanded=True,
+                score=30.0,
+            ),
+            self._hit(
+                601,
+                2,
+                "complaint",
+                "2. The opening section continues without warehouse chronology.\n",
+                expanded=True,
+                score=29.0,
+            ),
+            self._hit(
+                601,
+                3,
+                "complaint",
+                "JURISDICTION AND VENUE\n"
+                "1. This Court has personal jurisdiction over the Defendants.\n",
+                score=28.0,
+            ),
+            self._hit(
+                601,
+                4,
+                "complaint",
+                "PARTIES\n"
+                "1. Plaintiff Harbor Mill Carrier Inc. is a domestic corporation.\n",
+                expanded=True,
+                score=27.0,
+            ),
+            self._hit(
+                601,
+                5,
+                "complaint",
+                "2. Defendant Northshore Logistics LP is a limited liability "
+                "partnership.\n",
+                expanded=True,
+                score=26.0,
+            ),
+        ]
+        marked = de._mark_controlling_party_role_group(hits)
+        by_page = {item["pdf_page"]: item for item in marked}
+        self.assertTrue(by_page[1].get("controlling_party_role_pleading"))
+        self.assertTrue(by_page[2].get("controlling_party_role_pleading"))
+        self.assertFalse(by_page[3].get("controlling_party_role_pleading"))
+        self.assertTrue(by_page[4].get("controlling_party_role_pleading"))
+        self.assertTrue(by_page[5].get("controlling_party_role_pleading"))
+        self.assertEqual(
+            de._hit_party_role_protected_section_kind(by_page[1]), "intro"
+        )
+        self.assertEqual(
+            de._hit_party_role_protected_section_kind(by_page[4]), "parties"
+        )
+
+    def test_intervening_pages_not_force_retained(self):
+        hits = [
+            self._hit(
+                602,
+                1,
+                "complaint",
+                self.caption
+                + "NATURE OF THE ACTION\n"
+                + "1. This is an action for breach of a freight contract.\n",
+                expanded=True,
+                score=30.0,
+            ),
+            self._hit(
+                602,
+                2,
+                "complaint",
+                "CALENDAR NOTE\nUnrelated procedural calendar filler without roles.\n",
+                score=5.0,
+            ),
+            self._hit(
+                602,
+                3,
+                "complaint",
+                "PARTIES\n"
+                "1. Plaintiff Harbor Mill Carrier Inc. is a domestic corporation.\n",
+                expanded=True,
+                score=28.0,
+            ),
+        ]
+        marked = de._mark_controlling_party_role_group(hits)
+        by_page = {item["pdf_page"]: item for item in marked}
+        self.assertTrue(by_page[1].get("controlling_party_role_pleading"))
+        self.assertFalse(by_page[2].get("controlling_party_role_pleading"))
+        self.assertTrue(by_page[3].get("controlling_party_role_pleading"))
+        selected, meta = de.apply_party_role_packet_budget(hits, max_hits=4)
+        selected_pages = {item["pdf_page"] for item in selected}
+        self.assertIn(1, selected_pages)
+        self.assertIn(3, selected_pages)
+        self.assertNotIn(2, selected_pages)
+        self.assertEqual(meta["protected_hit_count"], 2)
+
+    def test_continuation_within_intro_and_parties(self):
+        doc = _normalized(
+            _doc(
+                603,
+                "complaint",
+                [
+                    self.caption
+                    + "Plaintiffs allege as follows: INTRODUCTION\n"
+                    + "1. This is an action for breach of a freight contract.\n",
+                    "2. The opening section continues with a concise statement of "
+                    "the commercial carriage dispute.\n",
+                    "PARTIES\n"
+                    "3. Plaintiff Harbor Mill Carrier Inc. is a domestic corporation.\n",
+                    "4. Defendant Northshore Logistics LP is a limited liability "
+                    "partnership.\n",
+                    "FACTUAL BACKGROUND\n"
+                    "5. On March 1, 2024, cargo was diverted through warehouses.\n",
+                ],
+                filename="nyscef_doc_no_603_complaint.pdf",
+            )
+        )
+        lookup = mb._page_lookup_from_documents([doc])
+        intro_ids, intro_continuations = mb._collect_intro_section_page_ids(lookup)
+        parties_ids = mb._collect_parties_section_page_ids(lookup)
+        intro_pages = [lookup[pid]["page"]["page_number"] for pid in intro_ids]
+        parties_pages = [lookup[pid]["page"]["page_number"] for pid in parties_ids]
+        self.assertEqual(intro_pages, [1, 2])
+        self.assertEqual(len(intro_continuations), 1)
+        self.assertEqual(parties_pages, [3, 4])
+        self.assertNotIn(5, intro_pages)
+        self.assertNotIn(5, parties_pages)
+
+        # Unmarked intra-PARTIES pages between expanded endpoints stay protected.
+        parties_hits = [
+            self._hit(
+                604,
+                1,
+                "complaint",
+                self.caption,
+                score=30.0,
+            ),
+            self._hit(
+                604,
+                2,
+                "complaint",
+                "PARTIES\n1. Harbor Mill Carrier Inc. is the Plaintiff.",
+                expanded=True,
+                score=29.0,
+            ),
+            self._hit(
+                604,
+                3,
+                "complaint",
+                "2. Northshore Logistics LP is the Defendant.",
+                score=28.0,
+            ),
+            self._hit(
+                604,
+                4,
+                "complaint",
+                "3. West Field LP is joined as a necessary party.",
+                expanded=True,
+                score=27.0,
+            ),
+        ]
+        marked = de._mark_controlling_party_role_group(parties_hits)
+        for page in (1, 2, 3, 4):
+            self.assertTrue(
+                next(h for h in marked if h["pdf_page"] == page).get(
+                    "controlling_party_role_pleading"
+                ),
+                msg=f"page {page} should remain protected within PARTIES",
+            )
+
+    def test_generic_personal_jurisdiction_excluded(self):
+        for unit in (
+            "9. This Court has personal jurisdiction over the Defendants.",
+            "9. This Court has personal jurisdiction over the Defendants "
+            "pursuant to CPLR 301.",
+            "9. This Court has jurisdiction over this action pursuant to CPLR 301.",
+        ):
+            self.assertTrue(mb._party_role_unit_is_generic_jurisdiction(unit))
+            self.assertFalse(mb._party_role_unit_in_evidence_scope(unit))
+
+    def test_bare_collective_role_rejected_as_identity_signal(self):
+        for unit in (
+            "5. The Defendants transacted business in the State of New York.",
+            "6. Venue is proper because the Defendants reside in Kings County.",
+            "The Petitioners conducted business in this state.",
+            "Respondents reside in Kings County.",
+            "6. Venue is proper.",
+        ):
+            self.assertFalse(
+                mb._party_role_unit_has_named_party_identity(unit),
+                msg=unit,
+            )
+            self.assertFalse(
+                mb._party_role_unit_in_evidence_scope(unit),
+                msg=unit,
+            )
+
+    def test_named_party_jurisdiction_business_allegations_retained(self):
+        units = (
+            "5. Defendant Northshore Logistics LP transacted business in the "
+            "State of New York and within this County.",
+            "5. That at all times mentioned herein, Northshore Logistics LP "
+            "transacted business in the State of New York.",
+            "6. Venue is proper because Defendant Northshore Logistics LP "
+            "resides in Kings County.",
+            "2. Alpha Carrier LP maintained a principal place of business "
+            "located at 10 Harbor Way, Buffalo, NY 14201.",
+        )
+        for unit in units:
+            self.assertTrue(
+                mb._party_role_unit_has_named_party_identity(unit),
+                msg=unit,
+            )
+            self.assertTrue(
+                mb._party_role_unit_in_evidence_scope(unit),
+                msg=unit,
+            )
+
+    def test_caption_parties_and_inventory_preserved(self):
+        page_text = (
+            self.caption
+            + "NATURE OF THE ACTION\n"
+            + "1. This is an action for breach of a freight contract.\n"
+            + "\n"
+            + "PARTIES\n"
+            + "2. Plaintiff Harbor Mill Carrier Inc. is a domestic corporation "
+            + "authorized to do business in this state.\n"
+            + "3. Defendant Northshore Logistics LP is a limited liability "
+            + "partnership.\n"
+            + "4. Venue is proper because Defendant Northshore Logistics LP "
+            + "resides in Kings County.\n"
+            + "5. This Court has personal jurisdiction over the Defendants.\n"
+        )
+        doc = _normalized(
+            _doc(
+                605,
+                "complaint",
+                [page_text],
+                filename="nyscef_doc_no_605_complaint.pdf",
+            )
+        )
+        entry = {
+            "page": doc["pages"][0],
+            "document": doc,
+            "nyscef_document_number": 605,
+            "filename": doc["filename"],
+            "document_type": "complaint",
+            "segment": None,
+        }
+        excerpt = mb._party_role_evidence_excerpt(entry, doc["pages"][0]["text"])
+        self.assertIn("Harbor Mill Carrier Inc.", excerpt)
+        self.assertIn("Northshore Logistics LP", excerpt)
+        self.assertIn("Plaintiff", excerpt)
+        self.assertIn("Defendant", excerpt)
+        self.assertIn("PARTIES", excerpt)
+        self.assertIn("domestic corporation", excerpt)
+        self.assertIn("Venue is proper", excerpt)
+        self.assertNotIn("personal jurisdiction over the Defendants", excerpt)
+
+        inventory = de.extract_party_role_expected_attributes(
+            {
+                "retrieval_hits": [
+                    {
+                        "result_id": "r-605-1",
+                        "page_id": doc["pages"][0]["page_id"],
+                        "nyscef_document_number": 605,
+                        "pdf_page": 1,
+                        "source_filename": doc["filename"],
+                        "document_type": "complaint",
+                        "excerpt": excerpt,
+                        "classifications": ["party_identity"],
+                        "assertion_kind": "party_allegation",
+                        "score": 10.0,
+                    }
+                ]
+            }
+        )
+        names = " ".join(
+            str(item.get("identity") or "") for item in inventory
+        ).lower()
+        self.assertIn("harbor mill carrier", names)
+        self.assertIn("northshore logistics", names)
+
+    def test_non_party_behavior_unchanged(self):
+        docs = [
+            _normalized(
+                _doc(
+                    606,
+                    "complaint",
+                    [
+                        self.caption
+                        + "INTRODUCTION\n"
+                        + "1. This is an action for breach.\n"
+                        + "PARTIES\n"
+                        + "2. Plaintiff Harbor Mill Carrier Inc. is a domestic "
+                        + "corporation.\n"
+                    ],
+                    filename="nyscef_doc_no_606_complaint.pdf",
+                )
+            ),
+            _normalized(
+                _doc(
+                    607,
+                    "motion",
+                    [
+                        "Notice of Motion for Summary Judgment returnable June 1, 2024. "
+                        "Harbor Mill Carrier Inc. are Plaintiffs. Northshore Logistics LP "
+                        "are Defendants. Movant seeks dismissal on the procedural calendar."
+                    ],
+                    filename="nyscef_doc_no_607_notice_of_motion.pdf",
+                )
+            ),
+        ]
+        motion_result = mb.retrieve_canonical_records(
+            docs, self.motion_query, top_k=5
+        )
+        motion_packet = de.build_evidence_packet(
+            self.motion_query, motion_result
+        )
+        self.assertNotIn("materiality_filter", motion_packet)
+        for hit in motion_packet["retrieval_hits"]:
+            self.assertNotIn("party_role_section_expanded", hit)
+
+        noise = {
+            "result_id": "m1",
+            "page_id": "nyscef-607-p1",
+            "nyscef_document_number": 607,
+            "pdf_page": 1,
+            "source_filename": "nyscef_doc_no_607_notice_of_motion.pdf",
+            "document_type": "motion",
+            "excerpt": "Notice of Motion for Summary Judgment.",
+            "page_text": docs[1]["pages"][0]["text"],
+            "classifications": [],
+            "assertion_kind": "unknown",
+        }
+        self.assertFalse(de.hit_is_material_for_party_role_question(noise))
+
+
 if __name__ == "__main__":
     unittest.main()

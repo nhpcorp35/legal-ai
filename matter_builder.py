@@ -1883,14 +1883,37 @@ _PARTY_ROLE_PARTY_TIED_JURISDICTION_VENUE_RE = re.compile(
 # Generic jurisdiction allegations with no party-specific forum tie.
 _PARTY_ROLE_GENERIC_JURISDICTION_RE = re.compile(
     r"(?i)\b(?:"
-    r"this\s+court\s+has\s+jurisdiction|"
-    r"this\s+court\s+possesses?\s+jurisdiction|"
+    r"this\s+court\s+has\s+(?:personal\s+)?jurisdiction|"
+    r"this\s+court\s+possesses?\s+(?:personal\s+)?jurisdiction|"
     r"jurisdiction\s+(?:is\s+)?(?:conferred|invoked|exists)|"
     r"jurisdiction\s+over\s+(?:the\s+)?(?:subject\s+matter|this\s+action)|"
     r"subject[\s-]matter\s+jurisdiction|"
-    r"personal\s+jurisdiction\s+(?:over\s+the\s+defendants?)?\s+"
-    r"(?:exists|is\s+proper|pursuant)"
-    r")\b"
+    r"personal\s+jurisdiction(?:\s+over\s+(?:the\s+)?"
+    r"(?:defendants?|plaintiffs?|petitioners?|respondents?))?|"
+    r"jurisdiction\s+over\s+(?:the\s+)?"
+    r"(?:defendants?|plaintiffs?|petitioners?|respondents?)\b"
+    r")"
+)
+
+# Collective procedural roles are not named-party identity for forum retention.
+_PARTY_ROLE_BARE_COLLECTIVE_ROLE_RE = re.compile(
+    r"(?i)\b(?:the\s+)?(?:plaintiffs?|defendants?|petitioners?|respondents?)\b"
+)
+
+# Legal-entity / proper-name cues that establish named-party identity.
+_PARTY_ROLE_NAMED_PARTY_ENTITY_RE = re.compile(
+    r"\b(?-i:[A-Z][A-Za-z0-9&.,'-]+(?:\s+[A-Z][A-Za-z0-9&.,'-]+){0,7})\s+"
+    r"(?i:LLC|L\.L\.C\.|Inc\.?|Incorporated|Corp\.?|Corporation|Ltd\.?|"
+    r"LP|L\.P\.|LLP|L\.L\.P\.|PC|P\.C\.|PLLC|P\.L\.L\.C\.|"
+    r"Company|Partnership|Associates|Trust|Group|Partners)\b"
+)
+
+_PARTY_ROLE_NAMED_AFTER_ROLE_RE = re.compile(
+    r"(?i)\b(?:plaintiffs?|defendants?|petitioners?|respondents?)\s+"
+    r"(?!herein\b|above[\s-]named\b|below\b|thereof\b|therein\b|"
+    r"respectively\b|the\b|a\b|an\b|this\b|that\b|said\b|each\b|"
+    r"all\b|both\b|named\b)"
+    r"((?-i:[A-Z][A-Za-z0-9&.,'-]*(?:\s+[A-Z][A-Za-z0-9&.,'-]*){0,5}))"
 )
 
 _PARTY_ROLE_PARTY_ANCHOR_RE = re.compile(
@@ -2101,8 +2124,52 @@ def _party_role_unit_has_identity_signal(unit):
     return False
 
 
+def _party_role_unit_has_named_party_identity(unit):
+    """
+    True when a unit identifies a concrete named party.
+
+    Bare collective roles (Plaintiffs/Defendants/Petitioners/Respondents) are
+    not sufficient; require an entity/proper-name signal.
+    """
+    text = unit or ""
+    if not text.strip():
+        return False
+    haystacks = [text]
+    healed = heal_ocr_intra_word_spaces(text)
+    if healed != text:
+        haystacks.append(healed)
+    for hay in haystacks:
+        if _PARTY_ROLE_NAMED_PARTY_ENTITY_RE.search(hay):
+            return True
+        for match in _PARTY_ROLE_NAMED_AFTER_ROLE_RE.finditer(hay):
+            name = (match.group(1) or "").strip()
+            if not name:
+                continue
+            # Reject residual role-only or courtish tokens after the role label.
+            first = name.split()[0].lower()
+            if first in {
+                "plaintiff",
+                "plaintiffs",
+                "defendant",
+                "defendants",
+                "petitioner",
+                "petitioners",
+                "respondent",
+                "respondents",
+                "court",
+                "county",
+                "state",
+                "city",
+                "forum",
+            }:
+                continue
+            if re.search(r"[A-Za-z]{2,}", name):
+                return True
+    return False
+
+
 def _party_role_unit_has_forum_business_signal(unit):
-    """True for party-anchored forum business / activity allegations."""
+    """True for named-party forum business / activity allegations."""
     text = unit or ""
     if not text.strip():
         return False
@@ -2113,14 +2180,12 @@ def _party_role_unit_has_forum_business_signal(unit):
         or _PARTY_ROLE_FORUM_BUSINESS_RE.search(healed)
     ):
         return False
-    return bool(
-        _PARTY_ROLE_PARTY_ANCHOR_RE.search(hay)
-        or _PARTY_ROLE_PARTY_ANCHOR_RE.search(healed)
-    )
+    # Bare collective roles are not enough to retain forum-business boilerplate.
+    return _party_role_unit_has_named_party_identity(text)
 
 
 def _party_role_unit_has_party_tied_jurisdiction_venue(unit):
-    """True for jurisdiction/venue facts materially tied to a pleaded party."""
+    """True for jurisdiction/venue facts materially tied to a named party."""
     text = unit or ""
     if not text.strip():
         return False
@@ -2129,25 +2194,23 @@ def _party_role_unit_has_party_tied_jurisdiction_venue(unit):
     if _PARTY_ROLE_GENERIC_JURISDICTION_RE.search(hay) or _PARTY_ROLE_GENERIC_JURISDICTION_RE.search(
         healed
     ):
-        # Generic court-power language survives only with a concrete party tie.
+        # Generic court-power language survives only with a concrete named-party tie.
         if not (
             _PARTY_ROLE_PARTY_TIED_JURISDICTION_VENUE_RE.search(hay)
             or _PARTY_ROLE_PARTY_TIED_JURISDICTION_VENUE_RE.search(healed)
         ):
             return False
+        return _party_role_unit_has_named_party_identity(text)
     if not (
         _PARTY_ROLE_PARTY_TIED_JURISDICTION_VENUE_RE.search(hay)
         or _PARTY_ROLE_PARTY_TIED_JURISDICTION_VENUE_RE.search(healed)
     ):
         return False
-    return bool(
-        _PARTY_ROLE_PARTY_ANCHOR_RE.search(hay)
-        or _PARTY_ROLE_PARTY_ANCHOR_RE.search(healed)
-    )
+    return _party_role_unit_has_named_party_identity(text)
 
 
 def _party_role_unit_is_generic_jurisdiction(unit):
-    """True when a unit is a generic jurisdiction allegation without party tie."""
+    """True when a unit is a generic jurisdiction allegation without named-party tie."""
     text = unit or ""
     if not text.strip():
         return False
@@ -2159,17 +2222,87 @@ def _party_role_unit_is_generic_jurisdiction(unit):
     return not _party_role_unit_has_party_tied_jurisdiction_venue(text)
 
 
+def _party_role_unit_is_collective_forum_boilerplate(unit):
+    """
+    True for collective-role forum business/venue boilerplate.
+
+    Excludes generic personal-jurisdiction-over-collective-role language and
+    bare Plaintiffs/Defendants/Petitioners/Respondents venue or business claims
+    that lack named-party identity. Does not treat entity/authorization /
+    residence identity paragraphs as forum boilerplate merely because they
+    also mention a principal place of business.
+    """
+    text = unit or ""
+    if not text.strip():
+        return False
+    if _party_role_unit_has_named_party_identity(text):
+        return False
+    hay = text
+    healed = heal_ocr_intra_word_spaces(text)
+    # Core identity / entity / authorization cues are not forum boilerplate.
+    if re.search(
+        r"(?i)\b(?:"
+        r"domestic\s+corporation|foreign\s+corporation|"
+        r"limited\s+liability\s+(?:company|corporation|partnership)|"
+        r"authorized\s+to\s+do\s+business|organized\s+(?:under|to)|"
+        r"was\s+and\s+still\s+is|duly\s+authorized\s+and\s+existing|"
+        r"is\s+an?\s+individual|are\s+individuals|"
+        r"notice\s+defendants?|named\s+insured|additional\s+insured|"
+        r"incorrectly\s+named|substituted\s+as|necessary\s+party|"
+        r"joined(?:\s+herein|\s+as)?|sued\s+herein"
+        r")\b",
+        hay,
+    ) or re.search(
+        r"(?i)\b(?:"
+        r"domestic\s+corporation|foreign\s+corporation|"
+        r"limited\s+liability\s+(?:company|corporation|partnership)|"
+        r"authorized\s+to\s+do\s+business|organized\s+(?:under|to)|"
+        r"was\s+and\s+still\s+is|duly\s+authorized\s+and\s+existing|"
+        r"is\s+an?\s+individual|are\s+individuals|"
+        r"notice\s+defendants?|named\s+insured|additional\s+insured|"
+        r"incorrectly\s+named|substituted\s+as|necessary\s+party|"
+        r"joined(?:\s+herein|\s+as)?|sued\s+herein"
+        r")\b",
+        healed,
+    ):
+        return False
+    forumish = (
+        _PARTY_ROLE_FORUM_BUSINESS_RE.search(hay)
+        or _PARTY_ROLE_FORUM_BUSINESS_RE.search(healed)
+        or _PARTY_ROLE_PARTY_TIED_JURISDICTION_VENUE_RE.search(hay)
+        or _PARTY_ROLE_PARTY_TIED_JURISDICTION_VENUE_RE.search(healed)
+        or _PARTY_ROLE_GENERIC_JURISDICTION_RE.search(hay)
+        or _PARTY_ROLE_GENERIC_JURISDICTION_RE.search(healed)
+        or re.search(r"(?i)\b(?:venue|jurisdiction|personal\s+jurisdiction)\b", hay)
+    )
+    if not forumish:
+        return False
+    # Require a collective-role cue or standalone venue/jurisdiction boilerplate.
+    return bool(
+        _PARTY_ROLE_BARE_COLLECTIVE_ROLE_RE.search(hay)
+        or _PARTY_ROLE_BARE_COLLECTIVE_ROLE_RE.search(healed)
+        or re.search(
+            r"(?i)\b(?:venue\s+is\s+proper|jurisdiction\s+(?:and\s+venue\s+)?"
+            r"(?:is|are)\s+proper|personal\s+jurisdiction)\b",
+            hay,
+        )
+    )
+
+
 def _party_role_unit_in_evidence_scope(unit, *, in_intro_section=False):
     """
     Decide whether a passage unit belongs in party-role evidence scope.
 
-    Keeps identity/role/entity/residence/authorization cues, party-specific forum
+    Keeps identity/role/entity/residence/authorization cues, named-party forum
     business and jurisdiction/venue facts, and concise introduction /
-    nature-of-action body text. Excludes generic untied jurisdiction boilerplate.
+    nature-of-action body text. Excludes generic untied jurisdiction and
+    collective-role forum/venue boilerplate.
     """
     if not (unit or "").strip():
         return False
     if _party_role_unit_is_generic_jurisdiction(unit):
+        return False
+    if _party_role_unit_is_collective_forum_boilerplate(unit):
         return False
     if _party_role_unit_has_identity_signal(unit):
         return True
