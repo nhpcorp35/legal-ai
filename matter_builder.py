@@ -1668,15 +1668,18 @@ PARTIES_SECTION_HEADING_RE = re.compile(
     r"(?:plaintiffs?|defendants?|petitioners?|respondents?|third\b)))"
 )
 
-_MAJOR_PLEADING_SECTION_NAMES = (
-    r"jurisdiction(?:\s+and\s+venue)?|"
-    r"venue|"
+# Concise opening sections retained for party-role evidence (not hard stops).
+_PARTY_ROLE_RETAINABLE_SECTION_NAMES = (
+    r"nature\s+of\s+(?:the\s+)?action|"
+    r"preliminary\s+statement|"
+    r"introduction"
+)
+
+# Detailed narrative / claim sections that end party-role evidence retention.
+_PARTY_ROLE_HARD_STOP_SECTION_NAMES = (
     r"facts?(?:\s+common\s+to\s+all\s+(?:counts|claims))?|"
     r"factual\s+background|"
     r"background|"
-    r"nature\s+of\s+(?:the\s+)?action|"
-    r"preliminary\s+statement|"
-    r"introduction|"
     r"general\s+allegations|"
     r"causes?\s+of\s+action|"
     r"(?:first|second|third|fourth|fifth)\s+cause\s+of\s+action|"
@@ -1688,17 +1691,73 @@ _MAJOR_PLEADING_SECTION_NAMES = (
     r"verification"
 )
 
+# Jurisdiction/venue headings: page-expansion stops, but passage extraction may
+# continue to keep party-tied forum allegations and drop generic ones.
+_PARTY_ROLE_JURISDICTION_VENUE_SECTION_NAMES = (
+    r"jurisdiction(?:\s+and\s+venue)?|"
+    r"venue"
+)
+
+_MAJOR_PLEADING_SECTION_NAMES = (
+    _PARTY_ROLE_JURISDICTION_VENUE_SECTION_NAMES
+    + r"|"
+    + _PARTY_ROLE_HARD_STOP_SECTION_NAMES
+    + r"|"
+    + _PARTY_ROLE_RETAINABLE_SECTION_NAMES
+)
+
+# Require a true capital after the heading so numbered allegations such as
+# "6. Venue is proper because Defendant..." are not treated as section heads.
+_SECTION_HEADING_TAIL = r"\s*:?(?=\s*(?:$|\d+\.|(?-i:[A-Z(\"'])))"
+
 # Major pleading sections that end contiguous PARTIES expansion.
 MAJOR_PLEADING_SECTION_HEADING_RE = re.compile(
     r"(?i)(?:^|[\n\r]|(?<=\.)\s)" + _SECTION_HEADING_PREFIX + r"(?:"
     + _MAJOR_PLEADING_SECTION_NAMES
-    + r")\s*:?(?=\s*(?:$|\d+\.|(?:[A-Z(\"'])))"
+    + r")"
+    + _SECTION_HEADING_TAIL
 )
 
 _MAJOR_SECTION_START_RE = re.compile(
     r"(?i)^\s*" + _SECTION_HEADING_PREFIX + r"(?:"
     + _MAJOR_PLEADING_SECTION_NAMES
-    + r")\s*:?(?=\s*(?:$|\d+\.|(?:[A-Z(\"'])))"
+    + r")"
+    + _SECTION_HEADING_TAIL
+)
+
+_PARTY_ROLE_RETAINABLE_SECTION_HEADING_RE = re.compile(
+    r"(?i)(?:^|[\n\r]|(?<=\.)\s)" + _SECTION_HEADING_PREFIX + r"(?:"
+    + _PARTY_ROLE_RETAINABLE_SECTION_NAMES
+    + r")"
+    + _SECTION_HEADING_TAIL
+)
+
+_PARTY_ROLE_RETAINABLE_SECTION_START_RE = re.compile(
+    r"(?i)^\s*" + _SECTION_HEADING_PREFIX + r"(?:"
+    + _PARTY_ROLE_RETAINABLE_SECTION_NAMES
+    + r")"
+    + _SECTION_HEADING_TAIL
+)
+
+_PARTY_ROLE_HARD_STOP_SECTION_HEADING_RE = re.compile(
+    r"(?i)(?:^|[\n\r]|(?<=\.)\s)" + _SECTION_HEADING_PREFIX + r"(?:"
+    + _PARTY_ROLE_HARD_STOP_SECTION_NAMES
+    + r")"
+    + _SECTION_HEADING_TAIL
+)
+
+_PARTY_ROLE_HARD_STOP_SECTION_START_RE = re.compile(
+    r"(?i)^\s*" + _SECTION_HEADING_PREFIX + r"(?:"
+    + _PARTY_ROLE_HARD_STOP_SECTION_NAMES
+    + r")"
+    + _SECTION_HEADING_TAIL
+)
+
+_PARTY_ROLE_JURISDICTION_VENUE_SECTION_START_RE = re.compile(
+    r"(?i)^\s*" + _SECTION_HEADING_PREFIX + r"(?:"
+    + _PARTY_ROLE_JURISDICTION_VENUE_SECTION_NAMES
+    + r")"
+    + _SECTION_HEADING_TAIL
 )
 
 _PARTIES_HEADING_START_RE = re.compile(
@@ -1757,8 +1816,63 @@ PARTY_ROLE_PASSAGE_RE = re.compile(
     r"(?:domestic|foreign)\s+(?:limited\s+liability\s+)?"
     r"(?:company|corporation|partnership)|"
     r"was\s+and\s+still\s+is\s+a\b|"
-    r"duly\s+authorized\s+and\s+existing"
+    r"duly\s+authorized\s+and\s+existing|"
+    r"transacted\s+business|conducted\s+business|"
+    r"engaged\s+in\s+(?:a\s+)?(?:business|commerce)|"
+    r"doing\s+business\s+(?:in|within)|"
+    r"venue\s+is\s+proper|jurisdiction\s+(?:and\s+venue\s+)?(?:is|are)\s+proper"
     r")"
+)
+
+# Forum business / activity cues tied to a pleaded party.
+_PARTY_ROLE_FORUM_BUSINESS_RE = re.compile(
+    r"(?i)\b(?:"
+    r"transacted\s+business|"
+    r"conducted\s+business|"
+    r"engaged\s+in\s+(?:a\s+)?(?:business|commerce)|"
+    r"doing\s+business\s+(?:in|within)|"
+    r"systematically\s+(?:and\s+continuously\s+)?(?:transacted|conducted)|"
+    r"business\s+(?:in|within)\s+(?:this|the)\s+"
+    r"(?:state|county|city|forum|commonwealth)|"
+    r"derives?\s+(?:substantial\s+)?(?:revenue|income)\s+from\b"
+    r")"
+)
+
+# Party-tied jurisdiction / venue facts (not generic court-power boilerplate).
+_PARTY_ROLE_PARTY_TIED_JURISDICTION_VENUE_RE = re.compile(
+    r"(?i)\b(?:"
+    r"venue\s+is\s+proper|"
+    r"jurisdiction\s+(?:and\s+venue\s+)?(?:is|are)\s+proper|"
+    r"(?:plaintiffs?|defendants?|petitioners?|respondents?)\s+"
+    r"(?:resides?|resided|maintains?|maintained|is\s+found|may\s+be\s+found)|"
+    r"resides?\s+in\s+(?:the\s+)?(?:county|state|city)|"
+    r"principal\s+place\s+of\s+business|"
+    r"transacted\s+business\s+in\s+(?:this|the)\s+(?:county|state|city)|"
+    r"events?\s+(?:giving\s+rise|complained\s+of)\s+"
+    r"(?:to\s+(?:the\s+)?(?:claim|action)\s+)?occurred\s+in"
+    r")\b"
+)
+
+# Generic jurisdiction allegations with no party-specific forum tie.
+_PARTY_ROLE_GENERIC_JURISDICTION_RE = re.compile(
+    r"(?i)\b(?:"
+    r"this\s+court\s+has\s+jurisdiction|"
+    r"this\s+court\s+possesses?\s+jurisdiction|"
+    r"jurisdiction\s+(?:is\s+)?(?:conferred|invoked|exists)|"
+    r"jurisdiction\s+over\s+(?:the\s+)?(?:subject\s+matter|this\s+action)|"
+    r"subject[\s-]matter\s+jurisdiction|"
+    r"personal\s+jurisdiction\s+(?:over\s+the\s+defendants?)?\s+"
+    r"(?:exists|is\s+proper|pursuant)"
+    r")\b"
+)
+
+_PARTY_ROLE_PARTY_ANCHOR_RE = re.compile(
+    r"(?i)\b(?:"
+    r"plaintiffs?|defendants?|petitioners?|respondents?|"
+    r"appellants?|appellees?|third[\s-]+party|"
+    r"herein|aforesaid|above[\s-]named"
+    r")\b|"
+    r"\b(?-i:[A-Z][A-Za-z0-9&.,'-]{1,60})\b"
 )
 
 # Words commonly fractured by OCR; used only for match-time healing.
@@ -1927,7 +2041,9 @@ def _party_role_unit_has_identity_signal(unit):
                 r"organized|corporation|partnership|company|individual|"
                 r"resident|residing|resides|residence|"
                 r"principal\s+place|place\s+of\s+business|"
-                r"notice\s+defendant|named\s+insured)\b",
+                r"notice\s+defendant|named\s+insured|"
+                r"transacted\s+business|conducted\s+business|"
+                r"venue\s+is\s+proper)\b",
                 text,
             )
         ):
@@ -1945,7 +2061,9 @@ def _party_role_unit_has_identity_signal(unit):
                     r"organized|corporation|partnership|company|individual|"
                     r"resident|residing|resides|residence|"
                     r"principal\s+place|place\s+of\s+business|"
-                    r"notice\s+defendant|named\s+insured)\b",
+                    r"notice\s+defendant|named\s+insured|"
+                    r"transacted\s+business|conducted\s+business|"
+                    r"venue\s+is\s+proper)\b",
                     healed,
                 )
             ):
@@ -1954,6 +2072,94 @@ def _party_role_unit_has_identity_signal(unit):
             if pattern.search(healed):
                 return True
     return False
+
+
+def _party_role_unit_has_forum_business_signal(unit):
+    """True for party-anchored forum business / activity allegations."""
+    text = unit or ""
+    if not text.strip():
+        return False
+    hay = text
+    healed = heal_ocr_intra_word_spaces(text)
+    if not (
+        _PARTY_ROLE_FORUM_BUSINESS_RE.search(hay)
+        or _PARTY_ROLE_FORUM_BUSINESS_RE.search(healed)
+    ):
+        return False
+    return bool(
+        _PARTY_ROLE_PARTY_ANCHOR_RE.search(hay)
+        or _PARTY_ROLE_PARTY_ANCHOR_RE.search(healed)
+    )
+
+
+def _party_role_unit_has_party_tied_jurisdiction_venue(unit):
+    """True for jurisdiction/venue facts materially tied to a pleaded party."""
+    text = unit or ""
+    if not text.strip():
+        return False
+    hay = text
+    healed = heal_ocr_intra_word_spaces(text)
+    if _PARTY_ROLE_GENERIC_JURISDICTION_RE.search(hay) or _PARTY_ROLE_GENERIC_JURISDICTION_RE.search(
+        healed
+    ):
+        # Generic court-power language survives only with a concrete party tie.
+        if not (
+            _PARTY_ROLE_PARTY_TIED_JURISDICTION_VENUE_RE.search(hay)
+            or _PARTY_ROLE_PARTY_TIED_JURISDICTION_VENUE_RE.search(healed)
+        ):
+            return False
+    if not (
+        _PARTY_ROLE_PARTY_TIED_JURISDICTION_VENUE_RE.search(hay)
+        or _PARTY_ROLE_PARTY_TIED_JURISDICTION_VENUE_RE.search(healed)
+    ):
+        return False
+    return bool(
+        _PARTY_ROLE_PARTY_ANCHOR_RE.search(hay)
+        or _PARTY_ROLE_PARTY_ANCHOR_RE.search(healed)
+    )
+
+
+def _party_role_unit_is_generic_jurisdiction(unit):
+    """True when a unit is a generic jurisdiction allegation without party tie."""
+    text = unit or ""
+    if not text.strip():
+        return False
+    if not (
+        _PARTY_ROLE_GENERIC_JURISDICTION_RE.search(text)
+        or _PARTY_ROLE_GENERIC_JURISDICTION_RE.search(heal_ocr_intra_word_spaces(text))
+    ):
+        return False
+    return not _party_role_unit_has_party_tied_jurisdiction_venue(text)
+
+
+def _party_role_unit_in_evidence_scope(unit, *, in_intro_section=False):
+    """
+    Decide whether a passage unit belongs in party-role evidence scope.
+
+    Keeps identity/role/entity/residence/authorization cues, party-specific forum
+    business and jurisdiction/venue facts, and concise introduction /
+    nature-of-action body text. Excludes generic untied jurisdiction boilerplate.
+    """
+    if not (unit or "").strip():
+        return False
+    if _party_role_unit_is_generic_jurisdiction(unit):
+        return False
+    if _party_role_unit_has_identity_signal(unit):
+        return True
+    if _party_role_unit_has_forum_business_signal(unit):
+        return True
+    if _party_role_unit_has_party_tied_jurisdiction_venue(unit):
+        return True
+    if in_intro_section:
+        # Concise opening-section body: keep short non-narrative units.
+        cleaned = normalize_retrieval_text(unit)
+        if not cleaned:
+            return False
+        if len(cleaned) > 700:
+            return False
+        return True
+    return False
+
 
 MOTION_HEADING_RE = re.compile(
     r"(?i)\b(?:notice\s+of\s+motion|motion\s+for\s+(?:an\s+)?"
@@ -3913,18 +4119,51 @@ def _split_passage_units(text):
 
 def _extract_party_role_passages(text):
     """
-    Keep all concise sentences/paragraphs that establish party identity/role.
+    Keep concise party-role evidence passages from an initiating pleading page.
 
-    Preserves identity, procedural role, entity type, residence / principal place
-    of business, and notice-defendant (or equivalent) allegations together.
-    OCR intra-word spacing does not prevent matching. Does not stop after the
-    first match; returns citation-grounded focused text.
+    Preserves caption-adjacent introduction / nature-of-action content, PARTIES
+    identity/role/entity/residence/authorization allegations, and party-tied
+    forum business / jurisdiction / venue facts. Stops at the transition into
+    detailed factual background or other claim narrative sections. Does not
+    ingest the complete factual narrative.
     """
     units = _split_passage_units(text)
     kept = []
+    in_intro_section = False
+
+    def _append_scoped(candidate, *, intro=False):
+        candidate = (candidate or "").strip()
+        if candidate and _party_role_unit_in_evidence_scope(
+            candidate, in_intro_section=intro
+        ):
+            kept.append(candidate)
+
     for unit in units:
         stripped = unit.strip()
+        if not stripped:
+            continue
+
+        # Mid-unit PARTIES heading: keep prior intro/body, then enter PARTIES.
+        parties_mid = re.search(
+            r"(?i)(?:^|[\n\r]|(?<=\.)\s)" + _SECTION_HEADING_PREFIX
+            + r"(?:the\s+)?parties\b",
+            stripped,
+        )
+        if parties_mid and parties_mid.start() > 0:
+            before = stripped[: parties_mid.start()].strip()
+            _append_scoped(before, intro=in_intro_section)
+            in_intro_section = False
+            kept.append("PARTIES")
+            remainder = stripped[parties_mid.end() :].strip()
+            remainder = re.sub(r"^[:.\-—–]\s*", "", remainder)
+            if remainder:
+                stripped = remainder
+                unit = remainder
+            else:
+                continue
+
         if _PARTIES_HEADING_START_RE.match(stripped):
+            in_intro_section = False
             # Preserve the section marker when it is its own unit or prefix.
             kept.append("PARTIES")
             # Continue into role content on the same unit after the heading.
@@ -3935,21 +4174,92 @@ def _extract_party_role_passages(text):
                 stripped = remainder
             else:
                 continue
-        # Stop at a major section heading even when it follows party text in-unit.
-        major_mid = MAJOR_PLEADING_SECTION_HEADING_RE.search(stripped)
+
+        # Hard-stop at detailed facts / causes / prayer even mid-unit.
+        hard_mid = _PARTY_ROLE_HARD_STOP_SECTION_HEADING_RE.search(stripped)
         stop_after = False
-        if major_mid and major_mid.start() > 0:
-            stripped = stripped[: major_mid.start()].strip()
+        if hard_mid and hard_mid.start() > 0:
+            stripped = stripped[: hard_mid.start()].strip()
             unit = stripped
             stop_after = True
             if not stripped:
                 break
-        elif _MAJOR_SECTION_START_RE.match(stripped) or MAJOR_PLEADING_SECTION_HEADING_RE.match(
+        elif _PARTY_ROLE_HARD_STOP_SECTION_START_RE.match(
             stripped
-        ):
+        ) or _PARTY_ROLE_HARD_STOP_SECTION_HEADING_RE.match(stripped):
             break
-        if _party_role_unit_has_identity_signal(unit):
-            kept.append(stripped)
+
+        # Retainable intro / nature-of-action headings: keep marker, continue.
+        if _PARTY_ROLE_RETAINABLE_SECTION_START_RE.match(
+            stripped
+        ) or _PARTY_ROLE_RETAINABLE_SECTION_HEADING_RE.match(stripped):
+            in_intro_section = True
+            heading_match = _PARTY_ROLE_RETAINABLE_SECTION_START_RE.match(
+                stripped
+            ) or _PARTY_ROLE_RETAINABLE_SECTION_HEADING_RE.match(stripped)
+            heading_text = heading_match.group(0).strip() if heading_match else stripped
+            heading_text = re.sub(r"^[\n\r.\s]+", "", heading_text).strip(" :.-—–")
+            if heading_text:
+                kept.append(heading_text)
+            remainder = stripped[heading_match.end() :].strip() if heading_match else ""
+            remainder = re.sub(r"^[:.\-—–]\s*", "", remainder)
+            if remainder:
+                unit = remainder
+                stripped = remainder
+            else:
+                continue
+        else:
+            retain_mid = _PARTY_ROLE_RETAINABLE_SECTION_HEADING_RE.search(stripped)
+            if retain_mid and retain_mid.start() > 0:
+                before = stripped[: retain_mid.start()].strip()
+                _append_scoped(before, intro=in_intro_section)
+                in_intro_section = True
+                heading_text = retain_mid.group(0).strip()
+                heading_text = re.sub(r"^[\n\r.\s]+", "", heading_text).strip(" :.-—–")
+                if heading_text:
+                    kept.append(heading_text)
+                remainder = stripped[retain_mid.end() :].strip()
+                remainder = re.sub(r"^[:.\-—–]\s*", "", remainder)
+                if remainder:
+                    unit = remainder
+                    stripped = remainder
+                else:
+                    continue
+
+        # Jurisdiction/venue section headings are not hard stops; skip the
+        # bare heading and evaluate following allegations individually.
+        juris_mid = re.search(
+            r"(?i)(?:^|[\n\r]|(?<=\.)\s)" + _SECTION_HEADING_PREFIX
+            + r"(?:"
+            + _PARTY_ROLE_JURISDICTION_VENUE_SECTION_NAMES
+            + r")"
+            + _SECTION_HEADING_TAIL,
+            stripped,
+        )
+        if juris_mid and juris_mid.start() > 0:
+            before = stripped[: juris_mid.start()].strip()
+            _append_scoped(before, intro=in_intro_section)
+            in_intro_section = False
+            remainder = stripped[juris_mid.end() :].strip()
+            remainder = re.sub(r"^[:.\-—–]\s*", "", remainder)
+            if remainder:
+                unit = remainder
+                stripped = remainder
+            else:
+                continue
+        elif _PARTY_ROLE_JURISDICTION_VENUE_SECTION_START_RE.match(stripped):
+            in_intro_section = False
+            remainder = _PARTY_ROLE_JURISDICTION_VENUE_SECTION_START_RE.sub(
+                "", stripped, count=1
+            ).strip()
+            remainder = re.sub(r"^[:.\-—–]\s*", "", remainder)
+            if remainder:
+                unit = remainder
+                stripped = remainder
+            else:
+                continue
+
+        _append_scoped(unit, intro=in_intro_section)
         if stop_after:
             break
     if not kept:
@@ -4247,9 +4557,21 @@ def _party_role_evidence_excerpt(entry, text, phrase=None, tokens=None, phrases=
         passages = _extract_party_role_passages(filtered)
         if passages:
             # Avoid duplicating caption text already captured.
-            if not parts or normalize_retrieval_text(passages) not in normalize_retrieval_text(
-                parts[0]
-            ):
+            if parts:
+                caption_norm = normalize_retrieval_text(parts[0])
+                passage_norm = normalize_retrieval_text(passages)
+                if passage_norm == caption_norm:
+                    passages = ""
+                elif caption_norm:
+                    # Drop passage lines that merely repeat the caption block.
+                    trimmed = []
+                    for line in passages.split("\n"):
+                        line_norm = normalize_retrieval_text(line)
+                        if not line_norm or line_norm == caption_norm:
+                            continue
+                        trimmed.append(line)
+                    passages = "\n".join(trimmed).strip()
+            if passages:
                 parts.append(passages)
 
     if parts:

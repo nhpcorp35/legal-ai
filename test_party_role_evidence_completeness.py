@@ -1846,7 +1846,204 @@ class PartyRoleEntityResidenceExtractionTests(unittest.TestCase):
         )
         excerpt = mb._extract_party_role_passages("PARTIES\n" + text)
         self.assertIn("11354", excerpt)
-        self.assertNotIn("transacted business in the State of New York", excerpt)
+        # Party-specific forum business allegations remain in scope.
+        self.assertIn("transacted business in the State of New York", excerpt)
+
+
+class PartyRoleEvidenceScopeCorrectionTests(unittest.TestCase):
+    """Generic party-role evidence-scope: intro retained, facts excluded."""
+
+    def setUp(self):
+        self.party_query = (
+            "Who are the parties and what are their roles in this action?"
+        )
+        self.motion_query = (
+            "What relief does the notice of motion for summary judgment seek?"
+        )
+        self.page_text = (
+            "SUPREME COURT OF THE STATE OF NEW YORK\n"
+            "COUNTY OF KINGS\n"
+            "Harbor Mill Carrier Inc.,\n"
+            "Plaintiff,\n"
+            "-against-\n"
+            "Northshore Logistics LP,\n"
+            "Defendant.\n"
+            "\n"
+            "NATURE OF THE ACTION\n"
+            "1. This is an action for breach of a freight contract arising from "
+            "failed delivery of commercial goods.\n"
+            "\n"
+            "PARTIES\n"
+            "2. Plaintiff Harbor Mill Carrier Inc. is a domestic corporation "
+            "authorized to do business in this state.\n"
+            "3. Harbor Mill Carrier Inc. maintained a principal place of business "
+            "in Kings County.\n"
+            "4. Defendant Northshore Logistics LP is a limited liability "
+            "partnership.\n"
+            "5. That at all times mentioned herein, Northshore Logistics LP "
+            "transacted business in the State of New York and within this County.\n"
+            "6. Venue is proper because Defendant Northshore Logistics LP resides "
+            "in Kings County.\n"
+            "\n"
+            "FACTUAL BACKGROUND\n"
+            "7. On March 1, 2024, Plaintiff tendered a shipment of widgets to "
+            "Defendant at the Brooklyn terminal with a detailed routing history.\n"
+            "8. Defendant diverted the cargo through multiple warehouses over "
+            "several weeks and failed to deliver the goods as scheduled.\n"
+            "\n"
+            "JURISDICTION\n"
+            "9. This Court has jurisdiction over this action pursuant to CPLR 301.\n"
+        )
+
+    def _entry(self, text, nyscef=560):
+        doc = _normalized(
+            _doc(
+                nyscef,
+                "complaint",
+                [text],
+                filename=f"nyscef_doc_no_{nyscef}_complaint.pdf",
+            )
+        )
+        entry = {
+            "page": doc["pages"][0],
+            "document": doc,
+            "nyscef_document_number": nyscef,
+            "filename": doc["filename"],
+            "document_type": "complaint",
+            "segment": None,
+        }
+        return entry, doc["pages"][0]["text"]
+
+    def test_intro_retained_for_party_role(self):
+        entry, page_text = self._entry(self.page_text)
+        excerpt = mb._party_role_evidence_excerpt(entry, page_text)
+        self.assertIn("NATURE OF THE ACTION", excerpt)
+        self.assertIn("breach of a freight contract", excerpt)
+
+    def test_detailed_facts_excluded(self):
+        entry, page_text = self._entry(self.page_text)
+        excerpt = mb._party_role_evidence_excerpt(entry, page_text)
+        self.assertNotIn("March 1, 2024", excerpt)
+        self.assertNotIn("diverted the cargo", excerpt)
+        self.assertNotIn("detailed routing history", excerpt)
+
+    def test_transition_heading_stops_retention(self):
+        excerpt = mb._extract_party_role_passages(self.page_text)
+        self.assertIn("Venue is proper", excerpt)
+        # Retention stops at the factual-background transition heading.
+        self.assertNotIn("FACTUAL BACKGROUND", excerpt)
+        self.assertTrue(
+            mb._PARTY_ROLE_HARD_STOP_SECTION_START_RE.match(
+                "FACTUAL BACKGROUND\n7. On March 1, 2024, an event occurred.\n"
+            )
+        )
+        self.assertTrue(
+            mb._page_starts_major_pleading_section(
+                "FACTUAL BACKGROUND\n7. On March 1, 2024, an event occurred.\n"
+            )
+        )
+
+    def test_party_specific_business_allegation_retained(self):
+        entry, page_text = self._entry(self.page_text)
+        excerpt = mb._party_role_evidence_excerpt(entry, page_text)
+        self.assertIn("transacted business in the State of New York", excerpt)
+        self.assertIn("Venue is proper", excerpt)
+
+    def test_generic_unrelated_jurisdiction_allegation_excluded(self):
+        entry, page_text = self._entry(self.page_text)
+        excerpt = mb._party_role_evidence_excerpt(entry, page_text)
+        self.assertNotIn("This Court has jurisdiction", excerpt)
+        self.assertNotIn("pursuant to CPLR 301", excerpt)
+
+    def test_caption_and_parties_preserved(self):
+        entry, page_text = self._entry(self.page_text)
+        excerpt = mb._party_role_evidence_excerpt(entry, page_text)
+        self.assertIn("Harbor Mill Carrier Inc.", excerpt)
+        self.assertIn("Northshore Logistics LP", excerpt)
+        self.assertIn("Plaintiff", excerpt)
+        self.assertIn("Defendant", excerpt)
+        self.assertIn("PARTIES", excerpt)
+        self.assertIn("domestic corporation", excerpt)
+        self.assertIn("principal place of business", excerpt)
+
+    def test_non_party_behavior_unchanged(self):
+        docs = [
+            _normalized(
+                _doc(
+                    561,
+                    "complaint",
+                    [self.page_text],
+                    filename="nyscef_doc_no_561_complaint.pdf",
+                )
+            ),
+            _normalized(
+                _doc(
+                    562,
+                    "motion",
+                    [
+                        "Notice of Motion for Summary Judgment returnable June 1, 2024. "
+                        "Harbor Mill Carrier Inc. are Plaintiffs. Northshore Logistics LP "
+                        "are Defendants. Movant seeks dismissal on the procedural calendar."
+                    ],
+                    filename="nyscef_doc_no_562_notice_of_motion.pdf",
+                )
+            ),
+        ]
+        motion_result = mb.retrieve_canonical_records(
+            docs, self.motion_query, top_k=5
+        )
+        motion_packet = de.build_evidence_packet(
+            self.motion_query, motion_result
+        )
+        self.assertNotIn("materiality_filter", motion_packet)
+        for hit in motion_packet["retrieval_hits"]:
+            self.assertNotIn("party_role_section_expanded", hit)
+
+        noise = {
+            "result_id": "m1",
+            "page_id": "nyscef-562-p1",
+            "nyscef_document_number": 562,
+            "pdf_page": 1,
+            "source_filename": "nyscef_doc_no_562_notice_of_motion.pdf",
+            "document_type": "motion",
+            "excerpt": "Notice of Motion for Summary Judgment.",
+            "page_text": docs[1]["pages"][0]["text"],
+            "classifications": [],
+            "assertion_kind": "unknown",
+        }
+        self.assertFalse(de.hit_is_material_for_party_role_question(noise))
+
+    def test_budget_not_materially_regressed(self):
+        # Scoped excerpts must remain within existing combined budget.
+        entry, page_text = self._entry(self.page_text)
+        excerpt = mb._party_role_evidence_excerpt(entry, page_text)
+        self.assertLessEqual(len(excerpt), mb.PARTY_ROLE_COMBINED_EXCERPT_MAX)
+        # Contiguous PARTIES expansion still stops before FACTS pages.
+        doc = _normalized(
+            _doc(
+                563,
+                "complaint",
+                [
+                    "SUPREME COURT\nHarbor Mill Carrier Inc. v. Northshore Logistics LP\n",
+                    "PARTIES\n"
+                    "1. Plaintiff Harbor Mill Carrier Inc. is a domestic corporation.\n",
+                    "2. Defendant Northshore Logistics LP is a limited liability "
+                    "partnership.\n",
+                    "FACTUAL BACKGROUND\n"
+                    "3. On March 1, 2024, cargo was diverted through warehouses.\n",
+                ],
+                filename="nyscef_doc_no_563_complaint.pdf",
+            )
+        )
+        section_ids = mb._collect_parties_section_page_ids(
+            mb._page_lookup_from_documents([doc])
+        )
+        pages = [
+            mb._page_lookup_from_documents([doc])[pid]["page"]["page_number"]
+            for pid in section_ids
+        ]
+        self.assertEqual(pages, [2, 3])
+        self.assertNotIn(4, pages)
 
 
 class CitationValidationImprovementTests(unittest.TestCase):
