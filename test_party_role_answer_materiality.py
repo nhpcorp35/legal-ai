@@ -981,6 +981,30 @@ class PartyRoleDraftingCompletenessTests(unittest.TestCase):
             )
         )
 
+    def test_ocr_fractured_needle_matches_clean_residence_haystack(self):
+        """Fractured expected residence/PPB fragments must match clean drafts."""
+        clean_draft = de.normalize_citation_text(
+            "Defendant maintains its principal place of business at "
+            "35-06 Union Street, Queens, New York."
+        )
+        self.assertTrue(de._party_role_attribute_present("35- 06", clean_draft))
+        self.assertTrue(de._party_role_attribute_present("U nion", clean_draft))
+        self.assertTrue(
+            de._party_role_attribute_present("35- 06 U nion", clean_draft)
+        )
+        self.assertTrue(
+            de._ocr_flexible_phrase_present(
+                "35- 06",
+                de._normalize_party_role_match_text(clean_draft),
+            )
+        )
+        self.assertTrue(
+            de._ocr_flexible_phrase_present(
+                "U nion",
+                de._normalize_party_role_match_text(clean_draft),
+            )
+        )
+
     def test_parenthetical_alias_no_trailing_text_capture(self):
         expected = self._extract(
             '1. Defendant Acme Shipping Corporation ("Acme") was and still is '

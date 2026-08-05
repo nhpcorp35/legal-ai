@@ -2239,7 +2239,11 @@ def _plausible_party_role_draft_name(name: Any) -> bool:
 
 
 def _ocr_flexible_phrase_present(phrase: str, haystack_norm: str) -> bool:
-    """OCR-tolerant substring check for multi-word attribute values."""
+    """OCR-tolerant substring check for multi-word attribute values.
+
+    Allows optional whitespace inside and between needle tokens so OCR-fractured
+    expected values (e.g. ``35- 06``, ``U nion``) match clean drafted text.
+    """
     words = [w for w in re.split(r"\s+", normalize_whitespace(phrase).lower()) if w]
     if not words:
         return False
@@ -2253,7 +2257,7 @@ def _ocr_flexible_phrase_present(phrase: str, haystack_norm: str) -> bool:
         word_patterns.append(r"\s*".join(letters))
     if not word_patterns:
         return False
-    pattern = re.compile(r"\s+".join(word_patterns), re.I)
+    pattern = re.compile(r"\s*".join(word_patterns), re.I)
     return bool(pattern.search(haystack_norm))
 
 
