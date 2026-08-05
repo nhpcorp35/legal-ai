@@ -1005,6 +1005,33 @@ class PartyRoleDraftingCompletenessTests(unittest.TestCase):
             )
         )
 
+    def test_ocr_fractured_full_ppb_address_with_commas(self):
+        """Full OCR-fractured PPB/address needles must tolerate comma separators."""
+        clean_draft = de.normalize_citation_text(
+            "Defendant maintains its principal place of business at "
+            "35-06 Union Street, Queens, New York."
+        )
+        hay = de._normalize_party_role_match_text(clean_draft)
+        fractured_full = "35- 06 U nion Street, Queens, New York"
+        fractured_no_comma_needle = "35- 06 U nion Street Queens New York"
+        self.assertTrue(de._ocr_flexible_phrase_present(fractured_full, hay))
+        self.assertTrue(
+            de._ocr_flexible_phrase_present(fractured_no_comma_needle, hay)
+        )
+        self.assertTrue(
+            de._party_role_attribute_present(fractured_full, clean_draft)
+        )
+        self.assertTrue(
+            de._party_role_attribute_present(fractured_no_comma_needle, clean_draft)
+        )
+        # Exact-match path still works for clean full addresses.
+        self.assertTrue(
+            de._party_role_attribute_present(
+                "35-06 Union Street, Queens, New York",
+                clean_draft,
+            )
+        )
+
     def test_parenthetical_alias_no_trailing_text_capture(self):
         expected = self._extract(
             '1. Defendant Acme Shipping Corporation ("Acme") was and still is '
