@@ -1487,17 +1487,29 @@ def _hit_serialized_char_count(hit: dict) -> int:
 
 
 def _hit_is_party_role_caption_or_section_page(hit: dict) -> bool:
-    """True for an operative pleading's caption or PARTIES-section pages."""
+    """True for an operative pleading's caption, PARTIES, or intro-section pages."""
     kind = _classify_hit_filing_kind(hit)
     if kind not in {"initiating", "amended_pleading", "answer"}:
         return False
     if hit.get("party_role_section_expanded"):
         return True
     text = _hit_materiality_text(hit)
+    # Contiguous PARTIES-section pages.
     if re.search(
-        r"(?i)(?:^|[\n\r])\s*(?:(?:section|article|part)\s+[ivxlcdm\d]+"
+        r"(?i)(?:^|[\n\r]|(?<=\.)\s|(?<=:)\s*)"
+        r"(?:(?:section|article|part)\s+[ivxlcdm\d]+"
         r"(?:\s*[.:=\-—–]\s*|\s+)|(?:[ivxlcdm]+|\d+)(?:\.\d+)*[.)]?\s+)?"
         r"(?:the\s+)?parties\b",
+        text,
+    ):
+        return True
+    # Concise initiating opening sections (intro / nature / preliminary).
+    if re.search(
+        r"(?i)(?:^|[\n\r]|(?<=\.)\s|(?<=:)\s*)"
+        r"(?:(?:section|article|part)\s+[ivxlcdm\d]+"
+        r"(?:\s*[.:=\-—–]\s*|\s+)|(?:[ivxlcdm]+|\d+)(?:\.\d+)*[.)]?\s+)?"
+        r"(?:nature\s+of\s+(?:the\s+)?action|preliminary\s+statement|introduction)"
+        r"\s*:?(?=\s*(?:$|\d+\.|(?-i:[A-Z(\"'])))",
         text,
     ):
         return True
@@ -1551,7 +1563,7 @@ def _controlling_party_role_source(hits: Sequence[dict]) -> Optional[str]:
 
 
 def _mark_controlling_party_role_group(hits: Sequence[dict]) -> List[dict]:
-    """Mark the controlling caption and complete detected PARTIES span."""
+    """Mark the controlling caption, intro, and complete detected PARTIES span."""
     marked = [dict(hit) for hit in (hits or [])]
     source_key = _controlling_party_role_source(marked)
     if source_key is None:
@@ -1564,9 +1576,17 @@ def _mark_controlling_party_role_group(hits: Sequence[dict]) -> List[dict]:
     for hit in source_hits:
         text = _hit_materiality_text(hit)
         if hit.get("party_role_section_expanded") or re.search(
-            r"(?i)(?:^|[\n\r])\s*(?:(?:section|article|part)\s+[ivxlcdm\d]+"
+            r"(?i)(?:^|[\n\r]|(?<=\.)\s|(?<=:)\s*)"
+            r"(?:(?:section|article|part)\s+[ivxlcdm\d]+"
             r"(?:\s*[.:=\-—–]\s*|\s+)|(?:[ivxlcdm]+|\d+)(?:\.\d+)*[.)]?\s+)?"
             r"(?:the\s+)?parties\b",
+            text,
+        ) or re.search(
+            r"(?i)(?:^|[\n\r]|(?<=\.)\s|(?<=:)\s*)"
+            r"(?:(?:section|article|part)\s+[ivxlcdm\d]+"
+            r"(?:\s*[.:=\-—–]\s*|\s+)|(?:[ivxlcdm]+|\d+)(?:\.\d+)*[.)]?\s+)?"
+            r"(?:nature\s+of\s+(?:the\s+)?action|preliminary\s+statement|introduction)"
+            r"\s*:?(?=\s*(?:$|\d+\.|(?-i:[A-Z(\"'])))",
             text,
         ):
             try:
@@ -1619,7 +1639,10 @@ def _compress_protected_party_role_hit(hit: dict) -> dict:
         r"individual|corporation|partnership|company|"
         r"domestic|foreign|authorized|organized|"
         r"notice\s+defendant|named\s+insured|"
-        r"was\s+and\s+still\s+is"
+        r"was\s+and\s+still\s+is|"
+        r"introduction|preliminary\s+statement|"
+        r"nature\s+of\s+(?:the\s+)?action|"
+        r"this\s+is\s+an\s+action|brings?\s+this\s+(?:action|proceeding)"
         r")\b"
     )
     for line in lines:
@@ -1660,7 +1683,7 @@ def apply_party_role_packet_budget(
 
     Deterministic selection:
     1. Deduplicate redundant pages/propositions (stable first-seen order).
-    2. Always retain controlling initiating/operative caption + PARTIES pages.
+    2. Always retain controlling initiating/operative caption, intro, and PARTIES pages.
     3. Then retain only page-text-demonstrated change/qualification/conflict evidence.
     4. Never truncate party names or role paragraphs — omit whole non-protected
        hits when the budget would otherwise be exceeded.

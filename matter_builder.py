@@ -1661,6 +1661,10 @@ _SECTION_HEADING_PREFIX = (
     r")?"
 )
 
+# Section-heading boundaries: start of string/unit, newline, sentence end, or a
+# colon-style lead-in such as "allege as follows: INTRODUCTION".
+_SECTION_HEADING_BOUNDARY = r"(?:^|[\n\r]|(?<=\.)\s|(?<=:)\s*)"
+
 # Contiguous PARTIES-section heading (works on newline or whitespace-collapsed text).
 PARTIES_SECTION_HEADING_RE = re.compile(
     r"(?i)(?:^|[\n\r])\s*" + _SECTION_HEADING_PREFIX + r"(?:the\s+)?parties(?:\s+to\s+(?:this\s+)?"
@@ -1712,7 +1716,7 @@ _SECTION_HEADING_TAIL = r"\s*:?(?=\s*(?:$|\d+\.|(?-i:[A-Z(\"'])))"
 
 # Major pleading sections that end contiguous PARTIES expansion.
 MAJOR_PLEADING_SECTION_HEADING_RE = re.compile(
-    r"(?i)(?:^|[\n\r]|(?<=\.)\s)" + _SECTION_HEADING_PREFIX + r"(?:"
+    r"(?i)" + _SECTION_HEADING_BOUNDARY + _SECTION_HEADING_PREFIX + r"(?:"
     + _MAJOR_PLEADING_SECTION_NAMES
     + r")"
     + _SECTION_HEADING_TAIL
@@ -1726,7 +1730,7 @@ _MAJOR_SECTION_START_RE = re.compile(
 )
 
 _PARTY_ROLE_RETAINABLE_SECTION_HEADING_RE = re.compile(
-    r"(?i)(?:^|[\n\r]|(?<=\.)\s)" + _SECTION_HEADING_PREFIX + r"(?:"
+    r"(?i)" + _SECTION_HEADING_BOUNDARY + _SECTION_HEADING_PREFIX + r"(?:"
     + _PARTY_ROLE_RETAINABLE_SECTION_NAMES
     + r")"
     + _SECTION_HEADING_TAIL
@@ -1740,7 +1744,7 @@ _PARTY_ROLE_RETAINABLE_SECTION_START_RE = re.compile(
 )
 
 _PARTY_ROLE_HARD_STOP_SECTION_HEADING_RE = re.compile(
-    r"(?i)(?:^|[\n\r]|(?<=\.)\s)" + _SECTION_HEADING_PREFIX + r"(?:"
+    r"(?i)" + _SECTION_HEADING_BOUNDARY + _SECTION_HEADING_PREFIX + r"(?:"
     + _PARTY_ROLE_HARD_STOP_SECTION_NAMES
     + r")"
     + _SECTION_HEADING_TAIL
@@ -1760,19 +1764,42 @@ _PARTY_ROLE_JURISDICTION_VENUE_SECTION_START_RE = re.compile(
     + _SECTION_HEADING_TAIL
 )
 
+# Ends concise intro / nature-of-action retention when walking across pages.
+_PARTY_ROLE_INTRO_END_SECTION_NAMES = (
+    r"(?:the\s+)?parties|"
+    + _PARTY_ROLE_HARD_STOP_SECTION_NAMES
+    + r"|"
+    + _PARTY_ROLE_JURISDICTION_VENUE_SECTION_NAMES
+)
+
+_PARTY_ROLE_INTRO_END_SECTION_HEADING_RE = re.compile(
+    r"(?i)" + _SECTION_HEADING_BOUNDARY + _SECTION_HEADING_PREFIX + r"(?:"
+    + _PARTY_ROLE_INTRO_END_SECTION_NAMES
+    + r")"
+    + _SECTION_HEADING_TAIL
+)
+
+_PARTY_ROLE_INTRO_END_SECTION_START_RE = re.compile(
+    r"(?i)^\s*" + _SECTION_HEADING_PREFIX + r"(?:"
+    + _PARTY_ROLE_INTRO_END_SECTION_NAMES
+    + r")"
+    + _SECTION_HEADING_TAIL
+)
+
 _PARTIES_HEADING_START_RE = re.compile(
     r"(?i)^\s*" + _SECTION_HEADING_PREFIX + r"(?:the\s+)?parties\b"
 )
 
 # Body markers that end a pleading caption block.
 PLEADING_CAPTION_END_RE = re.compile(
-    r"(?i)(?:^|[\n\r]|(?<=\.)\s)\s*" + _SECTION_HEADING_PREFIX + r"(?:"
+    r"(?i)" + _SECTION_HEADING_BOUNDARY + r"\s*" + _SECTION_HEADING_PREFIX + r"(?:"
     r"parties|"
     r"the\s+parties|"
     r"jurisdiction|"
     r"venue|"
     r"preliminary\s+statement|"
     r"nature\s+of\s+(?:the\s+)?action|"
+    r"introduction|"
     r"summons|"
     r"complaint|"
     r"verified\s+complaint|"
@@ -4017,6 +4044,16 @@ def _page_has_parties_section_heading(text):
     return bool(text and PARTIES_SECTION_HEADING_RE.search(text))
 
 
+def _page_has_retainable_intro_section_heading(text):
+    """True when a concise intro / nature / preliminary heading is present."""
+    if not text:
+        return False
+    return bool(
+        _PARTY_ROLE_RETAINABLE_SECTION_HEADING_RE.search(text)
+        or _PARTY_ROLE_RETAINABLE_SECTION_START_RE.match(clean_text(text))
+    )
+
+
 def _page_starts_major_pleading_section(text):
     """True when the page opens on a major non-PARTIES section heading."""
     cleaned = clean_text(text or "")
@@ -4026,6 +4063,27 @@ def _page_starts_major_pleading_section(text):
     if _PARTIES_HEADING_START_RE.match(cleaned):
         return False
     return bool(_MAJOR_SECTION_START_RE.match(cleaned))
+
+
+def _page_starts_intro_retention_end(text):
+    """True when a page opens on PARTIES / facts / jurisdiction (ends intro)."""
+    cleaned = clean_text(text or "")
+    if not cleaned:
+        return False
+    return bool(_PARTY_ROLE_INTRO_END_SECTION_START_RE.match(cleaned))
+
+
+def _page_has_intro_retention_boundary_after_heading(text):
+    """True when intro retention should stop after the current page's heading."""
+    if not text:
+        return False
+    retain = _PARTY_ROLE_RETAINABLE_SECTION_HEADING_RE.search(text)
+    if not retain:
+        retain = _PARTY_ROLE_RETAINABLE_SECTION_START_RE.match(clean_text(text))
+        start_at = retain.end() if retain else 0
+    else:
+        start_at = retain.end()
+    return bool(_PARTY_ROLE_INTRO_END_SECTION_HEADING_RE.search(text, start_at))
 
 
 def _page_has_major_section_after_parties(text):
@@ -4117,7 +4175,7 @@ def _split_passage_units(text):
     return units
 
 
-def _extract_party_role_passages(text):
+def _extract_party_role_passages(text, *, start_in_intro_section=False):
     """
     Keep concise party-role evidence passages from an initiating pleading page.
 
@@ -4126,10 +4184,13 @@ def _extract_party_role_passages(text):
     forum business / jurisdiction / venue facts. Stops at the transition into
     detailed factual background or other claim narrative sections. Does not
     ingest the complete factual narrative.
+
+    When start_in_intro_section is True, the page is treated as a continuation of
+    a concise opening section that began on a prior page (no repeated heading).
     """
     units = _split_passage_units(text)
     kept = []
-    in_intro_section = False
+    in_intro_section = bool(start_in_intro_section)
 
     def _append_scoped(candidate, *, intro=False):
         candidate = (candidate or "").strip()
@@ -4145,7 +4206,7 @@ def _extract_party_role_passages(text):
 
         # Mid-unit PARTIES heading: keep prior intro/body, then enter PARTIES.
         parties_mid = re.search(
-            r"(?i)(?:^|[\n\r]|(?<=\.)\s)" + _SECTION_HEADING_PREFIX
+            r"(?i)" + _SECTION_HEADING_BOUNDARY + _SECTION_HEADING_PREFIX
             + r"(?:the\s+)?parties\b",
             stripped,
         )
@@ -4229,7 +4290,7 @@ def _extract_party_role_passages(text):
         # Jurisdiction/venue section headings are not hard stops; skip the
         # bare heading and evaluate following allegations individually.
         juris_mid = re.search(
-            r"(?i)(?:^|[\n\r]|(?<=\.)\s)" + _SECTION_HEADING_PREFIX
+            r"(?i)" + _SECTION_HEADING_BOUNDARY + _SECTION_HEADING_PREFIX
             + r"(?:"
             + _PARTY_ROLE_JURISDICTION_VENUE_SECTION_NAMES
             + r")"
@@ -4530,12 +4591,17 @@ def _sanitize_party_role_case_map_linkage_label(label):
     return cleaned
 
 
-def _party_role_evidence_excerpt(entry, text, phrase=None, tokens=None, phrases=None):
+def _party_role_evidence_excerpt(
+    entry, text, phrase=None, tokens=None, phrases=None, *, intro_continuation=False
+):
     """
     Build focused party-role evidence from complete captions and role passages.
 
     Uses full-page content as the source of truth, then returns focused evidence
     rather than a short query-centered 240-character fragment.
+
+    intro_continuation marks a page that continues a concise opening section
+    begun on a prior page (heading already consumed).
     """
     kind = _pleading_kind_for_party_role(entry, text)
     page = entry.get("page") or {}
@@ -4554,7 +4620,9 @@ def _party_role_evidence_excerpt(entry, text, phrase=None, tokens=None, phrases=
             parts.append(caption)
 
     if _is_operative_pleading_kind(kind) or _page_has_role_bearing_language(text):
-        passages = _extract_party_role_passages(filtered)
+        passages = _extract_party_role_passages(
+            filtered, start_in_intro_section=bool(intro_continuation)
+        )
         if passages:
             # Avoid duplicating caption text already captured.
             if parts:
@@ -4673,6 +4741,92 @@ def _collect_parties_section_page_ids(page_lookup):
     return ordered
 
 
+def _collect_intro_section_page_ids(page_lookup):
+    """
+    Contiguous intro / nature / preliminary-statement page ids.
+
+    Walks forward from a retainable opening-section heading on an operative
+    pleading until PARTIES, factual background, or another ending boundary.
+    Returns (ordered_page_ids, continuation_page_ids) where continuation pages
+    lack their own retainable heading and must keep intro scope active.
+    """
+    by_doc = {}
+    for page_id, entry in (page_lookup or {}).items():
+        doc_no = entry.get("nyscef_document_number")
+        by_doc.setdefault(doc_no, []).append({**entry, "page_id": page_id})
+
+    section_page_ids = []
+    continuation_ids = set()
+    for _doc_no, entries in _iter_document_page_entries(by_doc):
+        texts = [
+            ((entry.get("page") or {}).get("text") or "") for entry in entries
+        ]
+        kinds = [
+            _pleading_kind_for_party_role(entry, texts[idx])
+            for idx, entry in enumerate(entries)
+        ]
+        idx = 0
+        while idx < len(entries):
+            text = texts[idx]
+            kind = kinds[idx]
+            if not (
+                _is_operative_pleading_kind(kind)
+                and not _is_affirmation_or_service_filing(entries[idx], text)
+                and _page_has_retainable_intro_section_heading(text)
+            ):
+                idx += 1
+                continue
+            span = [entries[idx]["page_id"]]
+            stop_after_current = _page_has_intro_retention_boundary_after_heading(text)
+            j = idx + 1
+            while (
+                not stop_after_current
+                and j < len(entries)
+                and len(span) < PARTY_ROLE_SECTION_EXPAND_MAX_PAGES
+            ):
+                nxt_text = texts[j]
+                nxt_kind = kinds[j]
+                if not _is_operative_pleading_kind(nxt_kind):
+                    break
+                if _is_affirmation_or_service_filing(entries[j], nxt_text):
+                    break
+                if _page_starts_intro_retention_end(nxt_text):
+                    break
+                if _page_has_retainable_intro_section_heading(nxt_text):
+                    # A fresh opening heading starts its own span.
+                    break
+                span.append(entries[j]["page_id"])
+                continuation_ids.add(entries[j]["page_id"])
+                if _page_has_intro_retention_boundary_after_heading(nxt_text):
+                    # Continuation page may itself contain the ending boundary.
+                    # Still include it so excerpt can keep pre-boundary intro text.
+                    break
+                # Stop when the page no longer looks like opening-section body.
+                cleaned = clean_text(nxt_text or "")
+                if not cleaned:
+                    break
+                if not (
+                    re.search(r"\b\d{1,4}\.\s+", cleaned)
+                    or _page_has_role_bearing_language(nxt_text)
+                    or PARTY_ROLE_PASSAGE_RE.search(nxt_text or "")
+                ):
+                    # Drop this empty/non-responsive page from the span.
+                    span.pop()
+                    continuation_ids.discard(entries[j]["page_id"])
+                    break
+                j += 1
+            section_page_ids.extend(span)
+            idx = max(j, idx + 1)
+    seen = set()
+    ordered = []
+    for page_id in section_page_ids:
+        if page_id in seen:
+            continue
+        seen.add(page_id)
+        ordered.append(page_id)
+    return ordered, continuation_ids
+
+
 def _build_party_role_section_candidate(
     entry,
     phrase,
@@ -4680,8 +4834,10 @@ def _build_party_role_section_candidate(
     hints,
     case_map_signals,
     phrases=None,
+    *,
+    intro_continuation=False,
 ):
-    """Score/build a candidate for a contiguous PARTIES-section page."""
+    """Score/build a candidate for a contiguous PARTIES/intro-section page."""
     candidate = _score_page_candidate(
         entry,
         phrase,
@@ -4708,6 +4864,18 @@ def _build_party_role_section_candidate(
             explanation = list(candidate.get("ranking_explanation") or [])
             explanation.append("contiguous PARTIES-section expansion")
             candidate["ranking_explanation"] = explanation
+    # Rebuild excerpt when this page continues an opening section without a heading.
+    if intro_continuation or not candidate.get("excerpt"):
+        text = (entry.get("page") or {}).get("text") or ""
+        candidate["excerpt"] = _party_role_evidence_excerpt(
+            entry,
+            text,
+            phrase=phrase,
+            tokens=tokens,
+            phrases=list((_phrase_lists(phrases))[2]),
+            intro_continuation=intro_continuation,
+        )
+        candidate.setdefault("page_text", text)
     candidate["party_role_section_expanded"] = True
     return candidate
 
@@ -4724,7 +4892,7 @@ def _ensure_party_role_section_pages(
     scored_by_page=None,
 ):
     """
-    Ensure contiguous PARTIES-section pages reach materiality/evidence packets.
+    Ensure contiguous PARTIES and intro-section pages reach evidence packets.
 
     Preserves ordinary diversification for pages already selected; injects any
     missing section pages that ranking/top-k would otherwise drop.
@@ -4732,7 +4900,15 @@ def _ensure_party_role_section_pages(
     if not (hints or {}).get("party_role_intent"):
         return ranked
 
-    section_ids = _collect_parties_section_page_ids(page_lookup)
+    parties_ids = _collect_parties_section_page_ids(page_lookup)
+    intro_ids, intro_continuations = _collect_intro_section_page_ids(page_lookup)
+    section_ids = []
+    seen = set()
+    for page_id in list(intro_ids) + list(parties_ids):
+        if page_id in seen:
+            continue
+        seen.add(page_id)
+        section_ids.append(page_id)
     if not section_ids:
         return ranked
 
@@ -4742,6 +4918,7 @@ def _ensure_party_role_section_pages(
     scored_by_page = scored_by_page or {}
     injected = list(ranked)
     for page_id in section_ids:
+        intro_continuation = page_id in intro_continuations
         if page_id in selected_ids:
             # A section page can have entered through ordinary scoring before
             # expansion.  Give it the same provenance marker as an injected
@@ -4750,6 +4927,19 @@ def _ensure_party_role_section_pages(
             for existing_hit in injected:
                 if existing_hit.get("page_id") == page_id:
                     existing_hit["party_role_section_expanded"] = True
+                    if intro_continuation:
+                        entry = page_lookup.get(page_id)
+                        if entry:
+                            text = (entry.get("page") or {}).get("text") or ""
+                            existing_hit["excerpt"] = _party_role_evidence_excerpt(
+                                entry,
+                                text,
+                                phrase=phrase,
+                                tokens=tokens,
+                                phrases=list((_phrase_lists(phrases))[2]),
+                                intro_continuation=True,
+                            )
+                            existing_hit.setdefault("page_text", text)
                     break
             continue
         entry = page_lookup.get(page_id)
@@ -4764,19 +4954,21 @@ def _ensure_party_role_section_pages(
                 hints,
                 case_map_signals,
                 phrases=phrases,
+                intro_continuation=intro_continuation,
             )
         else:
             existing = dict(existing)
             existing["party_role_section_expanded"] = True
-            if not existing.get("excerpt"):
+            text = (entry.get("page") or {}).get("text") or ""
+            if intro_continuation or not existing.get("excerpt"):
                 existing["excerpt"] = _party_role_evidence_excerpt(
                     entry,
-                    (entry.get("page") or {}).get("text") or "",
+                    text,
                     phrase=phrase,
                     tokens=tokens,
                     phrases=list((_phrase_lists(phrases))[2]),
+                    intro_continuation=intro_continuation,
                 )
-            text = (entry.get("page") or {}).get("text") or ""
             existing.setdefault("page_text", text)
         if not validate_canonical_result_citation(existing, page_lookup):
             continue
