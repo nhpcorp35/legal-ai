@@ -135,6 +135,12 @@ Supporting reliability tracks (schedule in parallel once telemetry exists): MCO-
 
 - If the same production symptom survives two verified fixes, perform a new diagnosis before any additional implementation.
 
+## 12. Architecture must be observed, not inferred
+
+- Architecture must be observed, not inferred.
+- Repository location, service roles, runtime ownership, workspace behavior, artifact paths, persistence, and deployment topology must be verified from authoritative sources (repository configuration, deployment metadata, or read-only inspection) before implementation or operational decisions.
+- If architecture is ambiguous or undocumented, require a read-only architecture discovery mission before proceeding.
+
 ## 13. HAL Direct Submission
 
 - HAL submits Mission Control missions directly.
@@ -174,6 +180,7 @@ the current work must pause and:
 
 | Date | Decision |
 |------|----------|
+| 2026-08-05 | Adopt Architecture Verification (Rule 12): architecture must be observed, not inferred; verify from authoritative sources before implementation or operational decisions; require read-only architecture discovery when ambiguous or undocumented. |
 | 2026-08-05 | Adopt HAL direct structured submission of Mission Control missions (Rule 13) to reduce copy/paste, schema errors, context bloat, and user eye strain. |
 | 2026-08-05 | Adopt the Mandatory Mission Operating Rules; record creation of the durable generation CLI, separation of diagnosis from implementation, the production-first verification philosophy, execution-budget lessons learned, and the goal of reducing unnecessary Mission Control runs while preserving engineering knowledge. |
 | 2026-08-03 | Finish Case-00 before any Mission Control optimization implementation. |

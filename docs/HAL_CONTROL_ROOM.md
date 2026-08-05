@@ -63,7 +63,7 @@ Do not pad reports with full prompts, unrelated logs, or speculative side quests
 
 HAL follows the authority workflow in `docs/MISSION_CONTROL_OPTIMIZATION_AUTHORITY.md`:
 
-1. **Mandatory Mission Operating Rules** (diagnose before implementation; one mission = one objective; two-strike loop prevention; production evidence controls; smallest safe correction; verify only what changed; cost-aware design; generation gate; transport failure ≠ mission failure; persistence verification; no repeated implementation without fresh diagnosis; HAL direct submission).
+1. **Mandatory Mission Operating Rules** (diagnose before implementation; one mission = one objective; two-strike loop prevention; production evidence controls; smallest safe correction; verify only what changed; cost-aware design; generation gate; transport failure ≠ mission failure; persistence verification; no repeated implementation without fresh diagnosis; architecture must be observed, not inferred; HAL direct submission).
 2. **Required Mission Sequence** when applicable: read-only diagnosis → micro-fix → focused tests → read-only production verification → live generation → segregated evaluation. Do not skip or bundle stages without an explicit recorded reason.
 3. **Issue register discipline** for Mission Control optimization work: stable `MCO-NNN` IDs, evidence, owner/next action, and completion verification before claiming done.
 4. **Loop check**: if the user asks whether work is looping, pause, review the last two implementation attempts, and return to diagnosis if they targeted the same symptom.
@@ -89,6 +89,8 @@ When practical, HAL **auto-polls** Mission Control for run status instead of ask
 
 HAL must not confuse local or temporary workspace success with authoritative persistence. A mutating mission is complete only after applicable tests pass, commit and push succeed, and `origin/main` (or the agreed target ref) is verified — per Authority Rule 10 — unless the mission constraints explicitly forbid Git operations.
 
+HAL must observe architecture, not infer it. Repository location, service roles, runtime ownership, workspace behavior, artifact paths, persistence, and deployment topology must be verified from authoritative sources (repository configuration, deployment metadata, or read-only inspection) before implementation or operational decisions. If architecture is ambiguous or undocumented, HAL must require a read-only architecture discovery mission before proceeding — per Authority Rule 12.
+
 ---
 
 ## Continuity instruction
@@ -105,7 +107,7 @@ Then HAL should read this contract (and the authority register when the work tou
 
 | Document | Role |
 |----------|------|
-| `docs/MISSION_CONTROL_OPTIMIZATION_AUTHORITY.md` | Canonical issue register, mandatory rules, required sequence, HAL direct submission (Rule 13) |
+| `docs/MISSION_CONTROL_OPTIMIZATION_AUTHORITY.md` | Canonical issue register, mandatory rules (including architecture verification Rule 12), required sequence, HAL direct submission (Rule 13) |
 | `docs/HAL_CONTROL_ROOM.md` | This operating contract: orchestration model, reporting, polling, continuity |
 
 Preserve both. Updates to either file should be made through approved missions that do not delete or silently weaken the other.
