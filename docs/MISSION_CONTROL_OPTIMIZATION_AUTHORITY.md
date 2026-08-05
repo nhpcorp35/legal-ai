@@ -80,10 +80,95 @@ Supporting reliability tracks (schedule in parallel once telemetry exists): MCO-
 
 ---
 
+# Mandatory Mission Operating Rules
+
+## 1. Diagnose before implementation
+
+- No implementation mission may be proposed until a read-only diagnosis has identified the verified root cause.
+- Symptoms alone are not sufficient grounds for code changes.
+
+## 2. One mission = one objective
+
+- Do not combine diagnosis, implementation, focused tests, production verification, generation, and evaluation unless an explicit exception is recorded.
+
+## 3. Two-strike loop-prevention rule
+
+- If two implementation attempts target the same apparent symptom without eliminating it, stop.
+- Return to read-only diagnosis before proposing another implementation.
+
+## 4. Production evidence controls
+
+- When synthetic tests pass but production verification fails, production evidence is authoritative.
+- Diagnose the gap before changing code.
+
+## 5. Smallest safe correction
+
+- Modify only the function or configuration proven responsible.
+
+## 6. Verify only what changed
+
+- Production verification should focus on the changed behavior and its direct invariants.
+
+## 7. Cost-aware mission design
+
+- Treat every Mission Control execution as consuming time and money.
+- Use the smallest repository surface, shortest prompt, narrowest tests, and least output necessary.
+
+## 8. Generation gate
+
+- Do not perform live generation until verified production blockers are cleared.
+
+## 9. Transport failure is not mission failure
+
+- A timeout, 504, or UI disconnect does not prove the underlying run failed.
+- Check run status before submitting another mission.
+
+## 10. Persistence verification
+
+- A mission is complete only after:
+  - tests pass (if applicable),
+  - commit created,
+  - push succeeds,
+  - origin/main verified.
+
+## 11. No repeated implementation without fresh diagnosis
+
+- If the same production symptom survives two verified fixes, perform a new diagnosis before any additional implementation.
+
+# Required Mission Sequence
+
+1. Read-only diagnosis
+2. Micro-fix
+3. Focused tests
+4. Read-only production verification
+5. Live generation
+6. Segregated evaluation
+
+Stages should not be skipped or bundled without an explicit recorded reason.
+
+# Verified Engineering Decisions
+
+Verified parser fixes, retrieval decisions, architecture decisions, and benchmark lessons should be recorded here once and treated as project knowledge rather than repeatedly rediscovered.
+
+# Loop Check Trigger
+
+If the user asks:
+
+> "Hal, are we looping?"
+
+the current work must pause and:
+
+- review the last two implementation attempts;
+- determine whether they addressed the same symptom;
+- return to diagnosis if appropriate before proposing another implementation.
+
+---
+
 ## Decision Log
 
 | Date | Decision |
 |------|----------|
+| 2026-08-05 | Adopt the Mandatory Mission Operating Rules; record creation of the durable generation CLI, separation of diagnosis from implementation, the production-first verification philosophy, execution-budget lessons learned, and the goal of reducing unnecessary Mission Control runs while preserving engineering knowledge. |
 | 2026-08-03 | Finish Case-00 before any Mission Control optimization implementation. |
 | 2026-08-03 | Create this authority file now as the single register for issues and optimizations. |
 | 2026-08-03 | Optimize Mission Control before starting Case-01 and Case-02. |
