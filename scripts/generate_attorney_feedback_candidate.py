@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import sys
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -28,6 +29,23 @@ import matter_builder as mb  # noqa: E402
 from engines import drafting_engine as de  # noqa: E402
 
 AUTHORIZATION_ACK = "I_AUTHORIZE_PRIVATE_EVIDENCE_TRANSMISSION_TO_MODEL_PROVIDER"
+
+# Trusted Railway deployment metadata (present when .git is stripped at runtime).
+RAILWAY_GIT_COMMIT_SHA = "RAILWAY_GIT_COMMIT_SHA"
+RAILWAY_GIT_REPO_OWNER = "RAILWAY_GIT_REPO_OWNER"
+RAILWAY_GIT_REPO_NAME = "RAILWAY_GIT_REPO_NAME"
+RAILWAY_GIT_BRANCH = "RAILWAY_GIT_BRANCH"
+RAILWAY_PROVENANCE_ENV_VARS = (
+    RAILWAY_GIT_COMMIT_SHA,
+    RAILWAY_GIT_REPO_OWNER,
+    RAILWAY_GIT_REPO_NAME,
+    RAILWAY_GIT_BRANCH,
+)
+
+# Expected repository identity for Railway provenance checks.
+EXPECTED_REPO_OWNER = "nhpcorp35"
+EXPECTED_REPO_NAME = "legal-ai"
+EXPECTED_REPO_BRANCH = "main"
 
 # Path substrings that must never be opened as generation inputs.
 _PROTECTED_PATH_MARKERS = (
@@ -71,23 +89,37 @@ def _sha256_bytes(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def _normalize_ref_names(ref_name: str) -> tuple[str, set[str]]:
+    """Return (path under .git/refs/, packed-refs name candidates)."""
+    cleaned = ref_name.strip()
+    if cleaned.startswith("refs/"):
+        under_refs = cleaned[len("refs/") :]
+        packed = {cleaned}
+    else:
+        under_refs = cleaned
+        packed = {cleaned, f"refs/{cleaned}"}
+    return under_refs, packed
+
+
 def _read_git_ref(repo_root: Path, ref_name: str) -> Optional[str]:
-    """Read a git ref from the filesystem (no git subprocess)."""
-    ref_path = repo_root / ".git" / ref_name
+    """Read a git ref from the filesystem (no git subprocess).
+
+    Loose refs live under ``.git/refs/...`` (never directly under ``.git/``).
+    Packed refs are matched by full ``refs/...`` name.
+    """
+    under_refs, packed_names = _normalize_ref_names(ref_name)
+    ref_path = repo_root / ".git" / "refs" / under_refs
     if ref_path.is_file():
         return ref_path.read_text(encoding="utf-8").strip()
     packed = repo_root / ".git" / "packed-refs"
     if not packed.is_file():
         return None
-    needle = f"refs/{ref_name}" if not ref_name.startswith("refs/") else ref_name
-    # Accept both "refs/heads/main" style and "heads/main" if passed oddly.
-    candidates = {ref_name, needle, f"refs/{ref_name}"}
     for line in packed.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line or line.startswith("#") or line.startswith("^"):
             continue
         parts = line.split()
-        if len(parts) >= 2 and parts[-1] in candidates:
+        if len(parts) >= 2 and parts[-1] in packed_names:
             return parts[0].strip()
     return None
 
@@ -99,32 +131,168 @@ def read_checked_out_commit(repo_root: Path) -> Optional[str]:
     head = head_path.read_text(encoding="utf-8").strip()
     if head.startswith("ref:"):
         ref = head.split(":", 1)[1].strip()
-        # ref is like refs/heads/main
-        rel = ref[len("refs/") :] if ref.startswith("refs/") else ref
-        return _read_git_ref(repo_root, rel) or _read_git_ref(repo_root, ref)
+        # Prefer the full refs/... path; also try without the refs/ prefix.
+        return _read_git_ref(repo_root, ref) or (
+            _read_git_ref(repo_root, ref[len("refs/") :])
+            if ref.startswith("refs/")
+            else None
+        )
     return head or None
 
 
 def read_origin_main_commit(repo_root: Path) -> Optional[str]:
-    return _read_git_ref(repo_root, "remotes/origin/main")
+    return _read_git_ref(repo_root, "refs/remotes/origin/main") or _read_git_ref(
+        repo_root, "remotes/origin/main"
+    )
+
+
+def git_metadata_available(repo_root: Path) -> bool:
+    """True when a usable ``.git`` directory is present."""
+    git_dir = repo_root / ".git"
+    return git_dir.is_dir() or git_dir.is_file()
+
+
+def read_railway_deployment_provenance() -> dict[str, Optional[str]]:
+    """Read trusted Railway git provenance env vars (may be incomplete)."""
+    return {
+        "commit": (os.environ.get(RAILWAY_GIT_COMMIT_SHA) or "").strip() or None,
+        "owner": (os.environ.get(RAILWAY_GIT_REPO_OWNER) or "").strip() or None,
+        "name": (os.environ.get(RAILWAY_GIT_REPO_NAME) or "").strip() or None,
+        "branch": (os.environ.get(RAILWAY_GIT_BRANCH) or "").strip() or None,
+    }
+
+
+def _normalize_branch_name(branch: str) -> str:
+    value = branch.strip()
+    if value.startswith("refs/heads/"):
+        return value[len("refs/heads/") :]
+    return value
+
+
+def assert_railway_provenance_matches(
+    required_commit: str,
+    *,
+    expected_owner: str = EXPECTED_REPO_OWNER,
+    expected_name: str = EXPECTED_REPO_NAME,
+    expected_branch: str = EXPECTED_REPO_BRANCH,
+) -> dict:
+    """Fail-closed validation of Railway deployment metadata."""
+    provenance = read_railway_deployment_provenance()
+    missing = [
+        name
+        for name, key in (
+            (RAILWAY_GIT_COMMIT_SHA, "commit"),
+            (RAILWAY_GIT_REPO_OWNER, "owner"),
+            (RAILWAY_GIT_REPO_NAME, "name"),
+            (RAILWAY_GIT_BRANCH, "branch"),
+        )
+        if not provenance.get(key)
+    ]
+    if missing:
+        raise GenerationError(
+            "Commit provenance missing: .git unavailable and Railway deployment "
+            f"metadata incomplete (missing {', '.join(missing)})",
+            required_commit=required_commit,
+            railway_provenance=provenance,
+            missing_env=missing,
+            provenance_source="railway_deployment_metadata",
+        )
+
+    commit = provenance["commit"]
+    owner = provenance["owner"]
+    name = provenance["name"]
+    branch = _normalize_branch_name(provenance["branch"] or "")
+
+    if commit != required_commit:
+        raise GenerationError(
+            "Railway deployment commit does not match required commit "
+            f"{required_commit}; RAILWAY_GIT_COMMIT_SHA={commit!r}",
+            checkout_commit=commit,
+            origin_main_commit=commit,
+            required_commit=required_commit,
+            railway_provenance=provenance,
+            provenance_source="railway_deployment_metadata",
+        )
+    if (owner or "").lower() != expected_owner.lower():
+        raise GenerationError(
+            "Railway deployment repository owner mismatch: "
+            f"expected {expected_owner!r}, got {owner!r}",
+            checkout_commit=commit,
+            required_commit=required_commit,
+            railway_provenance=provenance,
+            expected_owner=expected_owner,
+            provenance_source="railway_deployment_metadata",
+        )
+    if (name or "").lower() != expected_name.lower():
+        raise GenerationError(
+            "Railway deployment repository name mismatch: "
+            f"expected {expected_name!r}, got {name!r}",
+            checkout_commit=commit,
+            required_commit=required_commit,
+            railway_provenance=provenance,
+            expected_name=expected_name,
+            provenance_source="railway_deployment_metadata",
+        )
+    if branch != expected_branch:
+        raise GenerationError(
+            "Railway deployment branch mismatch: "
+            f"expected {expected_branch!r}, got {branch!r}",
+            checkout_commit=commit,
+            required_commit=required_commit,
+            railway_provenance=provenance,
+            expected_branch=expected_branch,
+            provenance_source="railway_deployment_metadata",
+        )
+
+    return {
+        "checkout_commit": commit,
+        "origin_main_commit": commit,
+        "required_commit": required_commit,
+        "provenance_source": "railway_deployment_metadata",
+        "railway_repo_owner": owner,
+        "railway_repo_name": name,
+        "railway_branch": branch,
+    }
 
 
 def assert_commits_match(repo_root: Path, required_commit: str) -> dict:
-    head = read_checked_out_commit(repo_root)
-    origin_main = read_origin_main_commit(repo_root)
-    if head != required_commit or origin_main != required_commit:
-        raise GenerationError(
-            "HEAD and origin/main are not exactly the required commit "
-            f"{required_commit}; HEAD={head!r} origin/main={origin_main!r}",
-            checkout_commit=head,
-            origin_main_commit=origin_main,
-            required_commit=required_commit,
-        )
-    return {
-        "checkout_commit": head,
-        "origin_main_commit": origin_main,
-        "required_commit": required_commit,
-    }
+    """Verify checkout matches ``required_commit``; fail closed.
+
+    Prefer normal ``.git`` metadata when present. When ``.git`` is absent
+    (typical Railway runtime image), validate trusted Railway deployment
+    metadata instead. Missing or mismatched provenance always raises.
+    """
+    if git_metadata_available(repo_root):
+        head = read_checked_out_commit(repo_root)
+        origin_main = read_origin_main_commit(repo_root)
+        if head != required_commit or origin_main != required_commit:
+            raise GenerationError(
+                "HEAD and origin/main are not exactly the required commit "
+                f"{required_commit}; HEAD={head!r} origin/main={origin_main!r}",
+                checkout_commit=head,
+                origin_main_commit=origin_main,
+                required_commit=required_commit,
+                provenance_source="git_metadata",
+            )
+        return {
+            "checkout_commit": head,
+            "origin_main_commit": origin_main,
+            "required_commit": required_commit,
+            "provenance_source": "git_metadata",
+        }
+
+    provenance = read_railway_deployment_provenance()
+    if any(provenance.values()):
+        return assert_railway_provenance_matches(required_commit)
+
+    raise GenerationError(
+        "Commit provenance missing: no .git metadata and no Railway deployment "
+        f"metadata ({', '.join(RAILWAY_PROVENANCE_ENV_VARS)})",
+        checkout_commit=None,
+        origin_main_commit=None,
+        required_commit=required_commit,
+        provenance_source=None,
+    )
 
 
 def _ensure_not_protected(path: Path, *, role: str) -> Path:
@@ -634,6 +802,7 @@ def run_generation(
             "checkout_commit": required_commit,
             "origin_main_commit": required_commit,
             "required_commit": required_commit,
+            "provenance_source": "skipped",
             "skipped": True,
         }
     else:

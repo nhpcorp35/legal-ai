@@ -20,8 +20,10 @@ Notes:
 
 ## Attorney-feedback evaluation
 
-See `ATTORNEY_FEEDBACK_EVAL.md` for the Case-00 evaluation command, inputs, and output paths.
+See `ATTORNEY_FEEDBACK_EVAL.md` for Case-00 evaluation, diagnostics, Railway
+commit verification, and the one-command generate+evaluate workflow.
 
 ```bash
-python run_case00_attorney_eval.py
+python -m case00_attorney_eval --help
+python scripts/run_case00_generate_and_evaluate.py --help
 ```

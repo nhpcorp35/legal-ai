@@ -3,6 +3,7 @@
 
 Usage:
   python run_case00_attorney_eval.py
+  python -m case00_attorney_eval
   python -m case00_attorney_eval.cli
 """
 

@@ -13,6 +13,7 @@ from case00_attorney_eval.adapter import (
     load_case00_benchmark,
 )
 from case00_attorney_eval import paths as pathmod
+from case00_attorney_eval.diagnostics import compare_candidate_to_reference
 from case00_attorney_eval.scoring import SCORING_DIMENSIONS, score_dimensions
 
 SCHEMA_VERSION = "case00_attorney_feedback_eval.v1"
@@ -236,6 +237,27 @@ def evaluate_question(
             "text": bundle.attorney_approved.body,
         }
 
+    reference_text = None
+    if ref_info.get("usable_reference"):
+        if (
+            ref_info.get("reference_text_source") == "attorney_approved"
+            and bundle.attorney_approved is not None
+        ):
+            reference_text = bundle.attorney_approved.body
+        elif bundle.provisional is not None and bundle.provisional.body:
+            reference_text = bundle.provisional.body
+
+    candidate_evidence = None
+    # Structured evidence is optional; only present when callers attach it later.
+    diagnostics = compare_candidate_to_reference(
+        candidate_text=evaluated_answer,
+        reference_text=reference_text,
+        reference_status=ref_info["status"],
+        reference_usable=bool(ref_info.get("usable_reference")),
+        label_record=bundle.label_record,
+        candidate_evidence=candidate_evidence,
+    )
+
     record = {
         "question_id": bundle.question_id,
         "question_text": bundle.question_text,
@@ -250,6 +272,7 @@ def evaluate_question(
         "original_packet_meta": bundle.original_packet_meta,
         "reference_answer_status": reference_payload,
         "feedback_and_labels": feedback,
+        "candidate_vs_reference_diagnostics": diagnostics,
         "scoring_dimensions_currently_evaluable": scoring["currently_evaluable"],
         "scoring": scoring["dimensions"],
         "missing_information_preventing_complete_scoring": missing_info,
@@ -275,6 +298,9 @@ def evaluate_question(
             ),
             "provisional_silently_promoted": False,
             "fabricated_scores": False,
+            "diagnostics_comparison_performed": bool(
+                diagnostics.get("comparison_performed")
+            ),
         },
     }
     return record
@@ -330,13 +356,17 @@ def evaluate_case00(
     *,
     candidate_answers: Optional[dict[str, str]] = None,
     answer_version: str = ANSWER_VERSION_ORIGINAL,
+    question_ids: Optional[list[str]] = None,
 ) -> dict[str, Any]:
     """Run the Case-00 attorney-feedback evaluation loop."""
     corpus = load_case00_benchmark(case00_root)
     candidate_answers = candidate_answers or {}
+    selected = set(question_ids) if question_ids else None
 
     # Only questions that have an original LegalAI answer (mission requirement).
     bundles = [b for b in corpus.questions if b.original_legalai_answer]
+    if selected is not None:
+        bundles = [b for b in bundles if b.question_id in selected]
     # Still include packets that list questions with empty answers? Mission:
     # "Loads every Case-00 question having an original LegalAI answer."
     # So filter to those with answers. Track skipped.
@@ -345,6 +375,8 @@ def evaluate_case00(
         for b in corpus.questions
         if not b.original_legalai_answer
     ]
+    if selected is not None:
+        skipped = [qid for qid in skipped if qid in selected]
 
     records: list[dict[str, Any]] = []
     for bundle in bundles:
@@ -401,6 +433,7 @@ def evaluate_case00(
             "no_fabricated_gold_answers": True,
             "original_answers_preserved_on_rerun": True,
             "llm_judge_disabled": True,
+            "deterministic_candidate_reference_diagnostics": True,
         },
         "summary": summary,
         "questions": records,
@@ -449,11 +482,15 @@ def format_human_summary(result: dict[str, Any]) -> str:
     for q in result.get("questions") or []:
         ref = (q.get("reference_answer_status") or {}).get("status")
         evaluable = q.get("scoring_dimensions_currently_evaluable") or []
+        diag = q.get("candidate_vs_reference_diagnostics") or {}
+        counts = diag.get("counts") or {}
         lines.append(
             f"  {q['question_id']}: version={q['answer_version_evaluated']}; "
             f"reference={ref}; "
             f"evaluable_dimensions={evaluable or 'none'}; "
-            f"review_needed={q['flags']['requires_attorney_review']}"
+            f"review_needed={q['flags']['requires_attorney_review']}; "
+            f"diag_missing_facts={counts.get('missing_material_facts', 'n/a')}; "
+            f"diag_party_mismatches={counts.get('party_role_mismatches', 'n/a')}"
         )
     return "\n".join(lines) + "\n"
 
@@ -461,16 +498,35 @@ def format_human_summary(result: dict[str, Any]) -> str:
 def write_evaluation_outputs(
     result: dict[str, Any],
     output_dir: Path | str | None = None,
+    *,
+    json_path: Path | str | None = None,
+    summary_path: Path | str | None = None,
 ) -> dict[str, Path]:
-    out = Path(output_dir) if output_dir else pathmod.default_output_dir(
-        result["source_paths"]["case00_root"]
-    )
-    out.mkdir(parents=True, exist_ok=True)
-    json_path = out / "case00_attorney_feedback_eval.json"
-    summary_path = out / "case00_attorney_feedback_eval_summary.txt"
-    json_path.write_text(
+    if json_path is not None or summary_path is not None:
+        json_out = Path(json_path) if json_path is not None else None
+        summary_out = Path(summary_path) if summary_path is not None else None
+        if json_out is None or summary_out is None:
+            out = Path(output_dir) if output_dir else pathmod.default_output_dir(
+                result["source_paths"]["case00_root"]
+            )
+            out.mkdir(parents=True, exist_ok=True)
+            if json_out is None:
+                json_out = out / "case00_attorney_feedback_eval.json"
+            if summary_out is None:
+                summary_out = out / "case00_attorney_feedback_eval_summary.txt"
+        json_out.parent.mkdir(parents=True, exist_ok=True)
+        summary_out.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        out = Path(output_dir) if output_dir else pathmod.default_output_dir(
+            result["source_paths"]["case00_root"]
+        )
+        out.mkdir(parents=True, exist_ok=True)
+        json_out = out / "case00_attorney_feedback_eval.json"
+        summary_out = out / "case00_attorney_feedback_eval_summary.txt"
+
+    json_out.write_text(
         json.dumps(result, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
-    summary_path.write_text(format_human_summary(result), encoding="utf-8")
-    return {"json": json_path, "summary": summary_path}
+    summary_out.write_text(format_human_summary(result), encoding="utf-8")
+    return {"json": json_out, "summary": summary_out}
