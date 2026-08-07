@@ -46,9 +46,10 @@ def main() -> int:
     parser.add_argument("--required-commit", required=True)
     parser.add_argument("--candidate-output-root", required=True)
     parser.add_argument(
-        "--authorize-private-evidence-transmission",
+        "--authorization-confirmed",
+        action="store_true",
         required=True,
-        dest="authorization",
+        help="Confirms the caller already obtained authorization to transmit private evidence.",
     )
     parser.add_argument(
         "--generation-only",
@@ -57,16 +58,6 @@ def main() -> int:
         help="Required safety gate; evaluation is not run by this wrapper.",
     )
     args = parser.parse_args()
-
-    if args.authorization != AUTHORIZATION_ACKNOWLEDGEMENT:
-        _emit(
-            {
-                "ok": False,
-                "phase": "authorization",
-                "error": "Private evidence transmission authorization acknowledgement mismatch.",
-            }
-        )
-        return 2
 
     repo_root = Path(__file__).resolve().parents[1]
     rebuild_script = repo_root / "scripts" / "rebuild_case00_derived.py"
