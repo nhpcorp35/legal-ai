@@ -1,0 +1,24 @@
+{
+  "artifact_type": "attorney_review_packet_02",
+  "corpus_id": "case-00-triborough",
+  "packet_id": "attorney-review-packet-02-live",
+  "generated_at": "2026-08-01T21:24:39.422163+00:00",
+  "legalai_commit": "4e4e8ffdce9377bf632e361d4e01d7ec19855d95",
+  "questions": [
+    {
+      "question_id": "Q1",
+      "text": "Who are the parties, and what role does each party allegedly have in the underlying insurance dispute?",
+      "proposed_answer": "The caption identifies Certain Interested Underwriters at Lloyd's London as plaintiff and Triborough Construction Services, Inc., DSSR Realty Corp., Ortov Lighting, Inc., and other listed defendants. However, the substantive roles of each party in the underlying insurance dispute remain unavailable or incomplete from the retrieved materials."
+    }
+  ],
+  "reconstruction": {
+    "method": "deterministic_from_attorney_benchmark_q1_artifacts",
+    "sources": [
+      "data/case-00-triborough/attorney-benchmark/q1/q1_gold_label.json",
+      "data/case-00-triborough/attorney-benchmark/provenance/q1_packet_provenance.json"
+    ],
+    "designated_historical_markdown": "/mnt/data/attorney_review_packet_02.md",
+    "designated_markdown_mounted": false,
+    "notes": "Q1 text and original proposed_answer recovered from attorney-benchmark artifacts. Historical multi-question packet body and optional answer_status/reasoner_status/confidence fields were not present in mounted repo/corpus artifacts; omitted rather than synthesized."
+  }
+}
