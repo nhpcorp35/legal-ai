@@ -793,6 +793,48 @@ def model_provider_available(model_call: Optional[ModelCall] = None) -> bool:
     return resolve_model_provider(model_call) is not None
 
 
+def describe_model_provider(model_call: Optional[ModelCall] = None) -> dict:
+    """Return explicit, non-secret provenance for the resolved model provider."""
+    if callable(model_call):
+        model_name = (
+            getattr(model_call, "model", None)
+            or getattr(model_call, "model_name", None)
+            or getattr(model_call, "__name__", None)
+        )
+        return {
+            "provider": "injected_model_call",
+            "model": str(model_name or "unknown"),
+            "model_provenance_reason": (
+                "Resolved from the injected callable's public attributes/name."
+                if model_name
+                else "Injected callable did not expose a model identifier."
+            ),
+        }
+
+    endpoint = (os.environ.get(LEGALAI_MODEL_ENDPOINT_ENV) or "").strip()
+    if endpoint:
+        return {
+            "provider": "configured_http_endpoint",
+            "model": "unknown",
+            "model_provenance_reason": (
+                "The configured HTTP endpoint does not expose a model identifier."
+            ),
+        }
+
+    if (os.environ.get(OPENAI_API_KEY_ENV) or "").strip():
+        return {
+            "provider": "openai_responses_api",
+            "model": _openai_model_name(),
+            "model_provenance_reason": "Resolved from the OpenAI model configuration.",
+        }
+
+    return {
+        "provider": "unavailable",
+        "model": "unavailable",
+        "model_provenance_reason": "No model provider was configured.",
+    }
+
+
 # ---------------------------------------------------------------------------
 # Text / evidence helpers
 # ---------------------------------------------------------------------------
@@ -4105,6 +4147,7 @@ def answer_attorney_record_question(
     retrieval = retrieval or {"query": question_text, "results": []}
 
     provider = resolve_model_provider(model_call)
+    provider_provenance = describe_model_provider(model_call)
     if provider is None:
         result = _empty_answer_shell(
             status=STATUS_NOT_READY,
@@ -4117,6 +4160,7 @@ def answer_attorney_record_question(
             ),
         )
         result["audit"]["provider_available"] = False
+        result["audit"].update(provider_provenance)
         return result
 
     evidence_packet = build_evidence_packet(
@@ -4145,6 +4189,7 @@ def answer_attorney_record_question(
             reason=f"Model provider call failed: {type(exc).__name__}: {exc}",
         )
         result["audit"]["provider_available"] = True
+        result["audit"].update(provider_provenance)
         result["audit"]["provider_error"] = str(exc)
         result["audit"]["party_role_provider_calls"] = 0
         return result
@@ -4158,6 +4203,7 @@ def answer_attorney_record_question(
             case_map=case_map,
         )
         validated_local["audit"]["provider_available"] = True
+        validated_local["audit"].update(provider_provenance)
         validated_local["evidence_packet_hit_count"] = evidence_packet[
             "retrieval_hit_count"
         ]
