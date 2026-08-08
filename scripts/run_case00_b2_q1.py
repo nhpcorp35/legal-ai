@@ -306,6 +306,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         required=True,
         help="Required safety gate; evaluation is not run by this wrapper.",
     )
+    parser.add_argument(
+        "--reuse-derived",
+        action="store_true",
+        help=(
+            "Validate and reuse pre-staged derived artifacts instead of "
+            "rebuilding the full source docket."
+        ),
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -325,16 +333,18 @@ def main(argv: Optional[list[str]] = None) -> int:
     rebuild_script = repo_root / "scripts" / "rebuild_case00_derived.py"
     generator_script = repo_root / "scripts" / "generate_attorney_feedback_candidate.py"
 
-    rebuild = _run(
-        [
-            sys.executable,
-            str(rebuild_script),
-            "--case-root",
-            args.case_root,
-            "--b2-prefix",
-        ],
-        repo_root,
-    )
+    rebuild_argv = [
+        sys.executable,
+        str(rebuild_script),
+        "--case-root",
+        args.case_root,
+    ]
+    if args.reuse_derived:
+        rebuild_argv.append("--validate-only")
+    else:
+        rebuild_argv.append("--b2-prefix")
+
+    rebuild = _run(rebuild_argv, repo_root)
     if rebuild.returncode != 0:
         _emit(
             {
