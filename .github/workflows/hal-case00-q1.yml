@@ -82,16 +82,25 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt boto3 openai
 
-      - name: Search approved Case-00 object metadata
+      - name: Download permitted Q1 question packet
         shell: bash
         run: |
           python - <<'PY'
-          import json
           import os
+          from pathlib import Path
           import boto3
 
-          prefix = "Benchmarks/Case-00-Triborough/"
-          needles = ("question", "packet", "review")
+          key = (
+              "Benchmarks/Case-00-Triborough/derived/"
+              "attorney-review-packet-02-live/attorney_review_packet_02.json"
+          )
+          destination = (
+              Path(os.environ["CASE_ROOT"])
+              / "derived"
+              / "attorney-review-packet-02-live"
+              / "attorney_review_packet_02.json"
+          )
+          destination.parent.mkdir(parents=True, exist_ok=True)
           client = boto3.client(
               "s3",
               endpoint_url=os.environ["B2_ENDPOINT"].rstrip("/"),
@@ -99,15 +108,7 @@ jobs:
               aws_access_key_id=os.environ["B2_KEY_ID"],
               aws_secret_access_key=os.environ["B2_APPLICATION_KEY"],
           )
-          matches = []
-          paginator = client.get_paginator("list_objects_v2")
-          for page in paginator.paginate(Bucket=os.environ["B2_BUCKET"], Prefix=prefix):
-              for item in page.get("Contents", []):
-                  key = item["Key"]
-                  if any(needle in key.lower() for needle in needles):
-                      matches.append({"key": key, "size": item["Size"]})
-          print(json.dumps({"matches": matches, "prefix": prefix}, sort_keys=True))
-          raise SystemExit("Metadata-only filtered search complete; generation intentionally blocked")
+          client.download_file(os.environ["B2_BUCKET"], key, str(destination))
           PY
 
       - name: Generate Q1 and publish four verified artifacts to B2
