@@ -54,6 +54,11 @@ Environment overrides:
 
 ## One-command generate + evaluate
 
+Local paths under `--output-dir` (including `/tmp/case00-runs` examples) are
+ephemeral scratch for this workflow. Prefer verified B2 candidate object keys
+from `scripts/run_case00_b2_q1.py` when a durable generation handoff is required
+before a later isolated evaluation.
+
 Local git checkout (commit gate uses `.git` HEAD + `origin/main`):
 
 ```bash
@@ -84,7 +89,10 @@ python scripts/run_case00_generate_and_evaluate.py \
     I_AUTHORIZE_PRIVATE_EVIDENCE_TRANSMISSION_TO_MODEL_PROVIDER
 ```
 
-Generation-only (existing CLI) still available:
+Generation-only (existing CLI) still available. `--candidate-output-root`
+(including any `/tmp/...` example path) is **ephemeral local scratch only** —
+Mission Control and executor cleanup may delete it. It is **not** a durable or
+production destination.
 
 ```bash
 python scripts/generate_attorney_feedback_candidate.py \
@@ -96,6 +104,42 @@ python scripts/generate_attorney_feedback_candidate.py \
     I_AUTHORIZE_PRIVATE_EVIDENCE_TRANSMISSION_TO_MODEL_PROVIDER \
   --generation-only
 ```
+
+### B2 rebuild + Q1 candidate with durable upload
+
+`scripts/run_case00_b2_q1.py` rebuilds Case-00 derived inputs from Backblaze B2,
+generates one Q1 candidate (generation-only; no gold/eval reads), then uploads
+the four finalized artifacts to B2 and verifies each with `head_object`.
+
+Canonical durable prefix (override with `--candidate-b2-prefix`):
+
+```text
+Benchmarks/Case-00-Triborough/derived/attorney-feedback-eval/candidate-answers/
+```
+
+Timestamped candidate directory basename is preserved beneath that prefix, e.g.
+`.../candidate-answers/q1-candidate-<timestamp>/Q1_candidate_answer.json`.
+
+```bash
+python scripts/run_case00_b2_q1.py \
+  --case-root /app/data/case-00-triborough \
+  --question-id Q1 \
+  --required-commit "$RAILWAY_GIT_COMMIT_SHA" \
+  --candidate-output-root /tmp/case00-runs \
+  --authorization-confirmed \
+  --generation-only
+```
+
+Requires `B2_KEY_ID`, `B2_APPLICATION_KEY`, `B2_BUCKET`, `B2_ENDPOINT`, and
+`B2_REGION` (never logged). Success JSON includes:
+
+- `ephemeral_local_directory` — local candidate folder (may be deleted)
+- `durable_artifacts` — `bucket`, canonical `prefix`, and verified `object_keys`
+
+Any upload or remote verification failure is fail-closed (`ok: false`). Local
+`/tmp` output alone never counts as durable success. Later isolated evaluation
+must consume the verified B2 object keys (or a fresh download from them), not
+assume scratch paths survived.
 
 Commit verification is fail-closed: normal checkouts must match HEAD and
 `origin/main`; Railway runtimes must match `RAILWAY_GIT_*` provenance (commit,
@@ -124,7 +168,8 @@ Default evaluator directory (outside git on the executor volume):
   case00_attorney_feedback_eval_summary.txt
 ```
 
-One-command workflow writes into the generation run directory:
+One-command workflow writes into the generation run directory (local paths under
+`--output-dir` / `/tmp/...` remain ephemeral):
 
 ```text
 <output-dir>/q1-candidate-<timestamp>/
@@ -134,6 +179,17 @@ One-command workflow writes into the generation run directory:
   model_input_audit.json
   case00_attorney_feedback_eval.json
   case00_attorney_feedback_eval_summary.txt
+```
+
+Durable B2 handoff for generation-only B2+Q1 runs (verified object keys):
+
+```text
+Benchmarks/Case-00-Triborough/derived/attorney-feedback-eval/candidate-answers/
+  q1-candidate-<timestamp>/
+    Q1_candidate_answer.json
+    Q1_candidate_answer.md
+    generation_manifest.json
+    model_input_audit.json
 ```
 
 - **JSON** — deterministic machine-readable per-question records + Case-00 summary counts + candidate-vs-reference diagnostics
@@ -156,5 +212,6 @@ python -m unittest \
   test_commit_verification.py \
   test_generate_attorney_feedback_candidate.py \
   test_case00_generate_and_evaluate.py \
+  test_run_case00_b2_q1.py \
   -v
 ```

@@ -57,9 +57,18 @@ Notes:
 ## Attorney-feedback evaluation
 
 See `ATTORNEY_FEEDBACK_EVAL.md` for Case-00 evaluation, diagnostics, Railway
-commit verification, and the one-command generate+evaluate workflow.
+commit verification, the one-command generate+evaluate workflow, and the B2
+rebuild + Q1 durable candidate upload path.
 
 ```bash
 python -m case00_attorney_eval --help
 python scripts/run_case00_generate_and_evaluate.py --help
+python scripts/run_case00_b2_q1.py --help
 ```
+
+`run_case00_b2_q1.py` treats `--candidate-output-root` (including `/tmp/...`) as
+**ephemeral** local scratch. Durable handoff for later isolated evaluation is
+the verified B2 object keys under:
+
+`Benchmarks/Case-00-Triborough/derived/attorney-feedback-eval/candidate-answers/`
+
