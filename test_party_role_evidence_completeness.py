@@ -2445,6 +2445,46 @@ class CitationValidationImprovementTests(unittest.TestCase):
             )
         )
 
+    def test_punctuation_and_whitespace_variance_tolerated(self):
+        page = (
+            "Defendant Beta Depot Inc. is a notice defendant, and maintained "
+            "a principal place of business located at 10 Harbor Way, Albany, NY."
+        )
+        self.assertTrue(
+            de.excerpt_occurs_on_page(
+                "Defendant Beta Depot Inc is a notice defendant",
+                page,
+            )
+        )
+        self.assertTrue(
+            de.excerpt_occurs_on_page(
+                "principal place of business located at 10 Harbor Way Albany NY",
+                page,
+            )
+        )
+
+    def test_short_ocr_prefix_fractures_tolerated(self):
+        page = "Collins Logistics LLC is a domestic corporation."
+        self.assertTrue(
+            de.excerpt_occurs_on_page(
+                "CO LLINS Logistics LLC is a domestic corporation",
+                page,
+            )
+        )
+
+    def test_intervening_pleading_paragraph_numbers_tolerated(self):
+        page = (
+            "1. Plaintiff Alpha Carrier LP is a domestic corporation.\n"
+            "2. Defendant Beta Depot Inc. is a notice defendant.\n"
+        )
+        self.assertTrue(
+            de.excerpt_occurs_on_page(
+                "Plaintiff Alpha Carrier LP is a domestic corporation "
+                "Defendant Beta Depot Inc. is a notice defendant",
+                page,
+            )
+        )
+
     def test_ellipsis_segments_validate_independently(self):
         page = (
             "Plaintiff Alpha Carrier LP is a domestic corporation. "
@@ -2478,6 +2518,13 @@ class CitationValidationImprovementTests(unittest.TestCase):
         self.assertFalse(
             de.excerpt_occurs_on_page(
                 "entirely absent quotation",
+                page,
+            )
+        )
+        self.assertFalse(
+            de.excerpt_occurs_on_page(
+                "Defendant Beta Depot Inc. is a notice defendant "
+                "and also a completely invented phantom carrier",
                 page,
             )
         )
@@ -2810,6 +2857,147 @@ class PartyRoleDraftingCompletenessTests(unittest.TestCase):
         self.assertTrue(result["audit"].get("party_role_repair_attempted"))
         self.assertEqual(result["audit"].get("party_role_provider_calls"), 2)
         self.assertTrue(result["audit"].get("missing_party_role_attributes"))
+        self.assertEqual(result["proposed_answer"], "")
+        self.assertEqual(result["propositions"], [])
+
+    def test_eighteen_proposed_six_retained_excerpt_mismatch_no_false_pass(self):
+        """
+        18 proposed / 6 retained / 12 excerpt_mismatch must not keep a
+        pre-filter completeness PASS or high confidence.
+        """
+        packet = de.build_evidence_packet(self.party_question, self.retrieval)
+        expected = de.extract_party_role_expected_attributes(packet)
+        self.assertTrue(expected)
+
+        # Pre-filter answer looks complete so a pre-filter checker would PASS.
+        bits = []
+        for party in expected:
+            bit = f"{party.get('procedural_role')} {party.get('identity')}"
+            if party.get("entity_type"):
+                bit += f" is a {party['entity_type']}"
+            if party.get("residence_or_ppb"):
+                bit += f"; {party['residence_or_ppb']}"
+            if party.get("pleaded_role_basis"):
+                bit += f" ({party['pleaded_role_basis']})"
+            bits.append(bit + ".")
+        complete_answer = " ".join(bits)
+        self.assertEqual(
+            de.find_missing_party_role_attributes(
+                {"proposed_answer": complete_answer, "propositions": []},
+                expected,
+            ),
+            [],
+        )
+
+        good_excerpts = [
+            "Plaintiff Cedar Ridge Logistics LLC is a domestic corporation",
+            "principal place of business located at 10 Harbor Way, Albany, NY 12207",
+            "Defendant Pine Harbor Depot Inc. is a notice defendant",
+            "Pine Harbor Depot Inc. is a limited liability company",
+            "Defendant Oakline Carrier LP is a resident of the State of New York",
+            "residing in Erie County",
+        ]
+        propositions = []
+        for index, excerpt in enumerate(good_excerpts):
+            propositions.append(
+                {
+                    "proposition_id": f"P{index + 1:02d}",
+                    "text": f"Retained party detail {index + 1}.",
+                    "classification": "party_allegation",
+                    "nyscef_document_number": 810,
+                    "page_id": self.hit["page_id"],
+                    "pdf_page": 1,
+                    "source_excerpt": excerpt,
+                    "confidence": 0.9,
+                    "rationale": "Supported excerpt.",
+                    "polarity": "supporting",
+                }
+            )
+        for index in range(12):
+            propositions.append(
+                {
+                    "proposition_id": f"P{index + 7:02d}",
+                    "text": f"Invented unsupported party claim {index + 1}.",
+                    "classification": "party_allegation",
+                    "nyscef_document_number": 810,
+                    "page_id": self.hit["page_id"],
+                    "pdf_page": 1,
+                    "source_excerpt": (
+                        f"Completely invented phantom party excerpt {index + 1}"
+                    ),
+                    "confidence": 0.9,
+                    "rationale": "Unsupported excerpt.",
+                    "polarity": "supporting",
+                }
+            )
+        self.assertEqual(len(propositions), 18)
+
+        bloated = {
+            "proposed_answer": complete_answer,
+            "propositions": propositions,
+            "supporting_evidence": [],
+            "contrary_evidence": [],
+            "unresolved_questions": [],
+            "documents_pages_reviewed": [],
+            "confidence": 0.95,
+            "attorney_review": {
+                "requires_attorney_review": True,
+                "review_notes": "Looks complete before citation filter.",
+                "legal_conclusions_labeled": True,
+                "coverage_conclusion": None,
+            },
+            "review_scope": {
+                "completeness": "complete",
+                "qualification": "Model claimed full party roster.",
+            },
+        }
+
+        filtered = de.validate_attorney_qa_response(
+            bloated,
+            question=self.party_question,
+            retrieval=self.retrieval,
+        )
+        self.assertEqual(len(filtered["propositions"]), 6)
+        self.assertEqual(len(filtered["audit"]["removed_propositions"]), 12)
+        self.assertEqual(
+            {
+                item["reason"]
+                for item in filtered["audit"]["rejection_reasons"]
+            },
+            {"excerpt_mismatch"},
+        )
+        self.assertEqual(
+            sum(
+                1
+                for item in filtered["audit"]["rejection_reasons"]
+                if item["reason"] == "excerpt_mismatch"
+            ),
+            12,
+        )
+
+        calls = []
+
+        def _model(_system, _user):
+            calls.append(_user)
+            return bloated
+
+        result = de.answer_attorney_record_question(
+            self.party_question,
+            self.retrieval,
+            model_call=_model,
+        )
+        # Citation filter drops 12 props; scrubbed retained texts are incomplete;
+        # bounded repair cannot recover → FAIL / NOT READY (no false PASS).
+        self.assertEqual(result["status"], de.STATUS_NOT_READY)
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(result["audit"].get("party_role_repair_attempted"))
+        self.assertTrue(result["audit"].get("party_role_completeness_failed"))
+        self.assertEqual(result["audit"].get("party_role_provider_calls"), 2)
+        self.assertNotEqual(result.get("confidence"), 0.95)
+        self.assertNotEqual(
+            (result.get("review_scope") or {}).get("completeness"),
+            "complete",
+        )
         self.assertEqual(result["proposed_answer"], "")
         self.assertEqual(result["propositions"], [])
 

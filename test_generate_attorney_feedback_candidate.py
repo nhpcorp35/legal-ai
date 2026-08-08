@@ -156,7 +156,11 @@ def _complete_payload_from_prompt(user_prompt: str) -> dict:
     expected = de.extract_party_role_expected_attributes(packet)
     bits = []
     for party in expected:
-        bit = f"{party.get('procedural_role')} {party.get('identity')}"
+        identity = party.get("identity")
+        if not identity:
+            continue
+        role = party.get("procedural_role")
+        bit = f"{role} {identity}".strip() if role else str(identity)
         if party.get("entity_type"):
             bit += f" is a {party['entity_type']}"
         if party.get("residence_or_ppb"):
