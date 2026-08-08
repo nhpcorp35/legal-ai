@@ -37,10 +37,14 @@ jobs:
       B2_REGION: ${{ secrets.B2_REGION }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       REQUIRED_COMMIT: ${{ inputs.legalai_ref }}
-      CASE_ROOT: ${{ runner.temp }}/case00
-      CANDIDATE_ROOT: ${{ runner.temp }}/case00-candidates
 
     steps:
+      - name: Initialize runner-local paths
+        shell: bash
+        run: |
+          echo "CASE_ROOT=$RUNNER_TEMP/case00" >> "$GITHUB_ENV"
+          echo "CANDIDATE_ROOT=$RUNNER_TEMP/case00-candidates" >> "$GITHUB_ENV"
+
       - name: Enforce bounded authorization and immutable SHA
         shell: bash
         run: |
