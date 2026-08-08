@@ -82,33 +82,40 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt boto3 openai
 
-      - name: Download permitted Q1 question packet
+      - name: Stage permitted Q1 question text
         shell: bash
         run: |
           python - <<'PY'
+          import json
           import os
           from pathlib import Path
-          import boto3
 
-          key = (
-              "Benchmarks/Case-00-Triborough/derived/"
+          source = Path(
+              "data/case-00-triborough/derived/"
               "attorney-review-packet-02-live/attorney_review_packet_02.json"
           )
+          packet = json.loads(source.read_text(encoding="utf-8"))
+          question = next(
+              (
+                  item
+                  for item in packet.get("questions", [])
+                  if item.get("question_id") == "Q1"
+              ),
+              None,
+          )
+          if not question or not isinstance(question.get("text"), str):
+              raise SystemExit("Q1 text missing from checked-in permitted packet")
           destination = (
               Path(os.environ["CASE_ROOT"])
               / "derived"
-              / "attorney-review-packet-02-live"
-              / "attorney_review_packet_02.json"
+              / "question-text"
+              / "questions.json"
           )
           destination.parent.mkdir(parents=True, exist_ok=True)
-          client = boto3.client(
-              "s3",
-              endpoint_url=os.environ["B2_ENDPOINT"].rstrip("/"),
-              region_name=os.environ["B2_REGION"],
-              aws_access_key_id=os.environ["B2_KEY_ID"],
-              aws_secret_access_key=os.environ["B2_APPLICATION_KEY"],
+          destination.write_text(
+              json.dumps({"Q1": question["text"].strip()}, sort_keys=True) + "\n",
+              encoding="utf-8",
           )
-          client.download_file(os.environ["B2_BUCKET"], key, str(destination))
           PY
 
       - name: Generate Q1 and publish four verified artifacts to B2
