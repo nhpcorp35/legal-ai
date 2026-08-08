@@ -577,7 +577,22 @@ def audit_serialized_model_input(
         "serialized_evidence_packet_sha256": _sha256_bytes(serialized.encode("utf-8")),
         "serialized_user_prompt_sha256": _sha256_bytes(user_prompt.encode("utf-8")),
         "expected_attribute_count": len(expected),
+        # Backward-compatible legacy field: this is the bounded packet count,
+        # not the number of hits returned by production retrieval.
         "retrieval_hit_count": evidence_packet.get("retrieval_hit_count"),
+        "upstream_retrieval_hit_count": len(retrieval.get("results") or []),
+        "serialized_evidence_page_count": len(hits),
+        "retrieval_count_semantics": {
+            "upstream_retrieval_hit_count": (
+                "Hits returned before evidence-packet materiality and budget filtering."
+            ),
+            "serialized_evidence_page_count": (
+                "Pages serialized into the model evidence packet."
+            ),
+            "retrieval_hit_count": (
+                "Deprecated alias for serialized_evidence_page_count."
+            ),
+        },
     }
     return {
         "evidence_packet": evidence_packet,
@@ -591,6 +606,15 @@ def audit_serialized_model_input(
 def candidate_content_sha256(candidate: dict) -> str:
     without = {k: v for k, v in candidate.items() if k != "candidate_sha256"}
     return _sha256_bytes(_canonical_json_bytes(without))
+
+
+def _format_proposed_answer_markdown(proposed: str) -> str:
+    """Turn the reasoner's compact bullet prose into scannable Markdown."""
+    parts = [part.strip() for part in proposed.split(" • ") if part.strip()]
+    if len(parts) <= 1:
+        return proposed.strip()
+    overview, *items = parts
+    return overview + "\n\n" + "\n".join(f"- {item}" for item in items)
 
 
 def write_candidate_artifacts(
@@ -608,8 +632,12 @@ def write_candidate_artifacts(
     out_dir.mkdir(parents=True, exist_ok=False)
     generated_at = _utc_now()
     proposed = reasoner_result.get("proposed_answer") or ""
-    model_name = (reasoner_result.get("audit") or {}).get("model") or "injected_or_resolved"
-    provider = (reasoner_result.get("audit") or {}).get("provider") or "model_call"
+    reasoner_audit = reasoner_result.get("audit") or {}
+    model_name = reasoner_audit.get("model") or "unknown"
+    provider = reasoner_audit.get("provider") or "unknown"
+    provenance_reason = reasoner_audit.get("model_provenance_reason") or (
+        "The reasoner did not expose model/provider provenance."
+    )
 
     json_name = f"{question_id}_candidate_answer.json"
     md_name = f"{question_id}_candidate_answer.md"
@@ -622,13 +650,20 @@ def write_candidate_artifacts(
         "artifact_type": "attorney_feedback_candidate_answer",
         "status": "candidate",
         "attorney_approved": False,
+        "approval_status": "pending_attorney_review",
         "finalized": True,
+        "generation_finalized": True,
+        "finalized_semantics": (
+            "Deprecated finalized=true means generation completed; it does not mean "
+            "attorney approval. Use generation_finalized and approval_status."
+        ),
         "generation_commit": required_commit,
         "generated_at": generated_at,
         "question_id": question_id,
         "question_text": question_text,
         "model": model_name,
         "provider": provider,
+        "model_provenance_reason": provenance_reason,
         "candidate_directory": str(out_dir.resolve()),
         "reasoner_status": reasoner_result.get("status"),
         "reasoner_result": reasoner_result,
@@ -671,12 +706,16 @@ def write_candidate_artifacts(
         f"# {question_id} Candidate Answer\n\n"
         f"status: `candidate`\n\n"
         f"attorney_approved: `false`\n\n"
+        f"approval_status: `pending_attorney_review`\n\n"
         f"generation_commit: `{required_commit}`\n\n"
-        f"finalized: `true`\n\n"
+        f"generation_finalized: `true`\n\n"
         f"generated_at: `{generated_at}`\n\n"
         f"candidate_sha256: `{candidate_hash}`\n\n"
         f"## Question\n\n{question_text}\n\n"
-        f"## Proposed answer\n\n{proposed}\n"
+        f"## Proposed answer\n\n{_format_proposed_answer_markdown(proposed)}\n\n"
+        f"## Review limitation\n\n"
+        f"This is a generation-finalized candidate, not an attorney-approved answer. "
+        f"Its conclusions remain limited to the retrieved evidence identified above.\n"
     )
 
     absolute_paths = {
@@ -690,7 +729,13 @@ def write_candidate_artifacts(
         "artifact_type": "attorney_feedback_candidate_generation_manifest",
         "status": "candidate",
         "attorney_approved": False,
+        "approval_status": "pending_attorney_review",
         "finalized": True,
+        "generation_finalized": True,
+        "finalized_semantics": (
+            "Deprecated finalized=true means generation completed; it does not mean "
+            "attorney approval."
+        ),
         "generation_commit": required_commit,
         "generated_at": generated_at,
         "checkout_commit": commit_info.get("checkout_commit"),

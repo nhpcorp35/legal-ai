@@ -416,6 +416,39 @@ class GenerateAttorneyFeedbackCandidateCLITests(unittest.TestCase):
             self.assertTrue(Path(path).is_file())
             self.assertTrue(Path(path).is_absolute())
 
+        candidate = json.loads(
+            Path(files["Q1_candidate_answer.json"]).read_text(encoding="utf-8")
+        )
+        manifest = json.loads(
+            Path(files["generation_manifest.json"]).read_text(encoding="utf-8")
+        )
+        audit = json.loads(
+            Path(files["model_input_audit.json"]).read_text(encoding="utf-8")
+        )
+        markdown = Path(files["Q1_candidate_answer.md"]).read_text(encoding="utf-8")
+
+        self.assertTrue(candidate["generation_finalized"])
+        self.assertFalse(candidate["attorney_approved"])
+        self.assertEqual(candidate["approval_status"], "pending_attorney_review")
+        self.assertNotEqual(candidate["model"], "injected_or_resolved")
+        self.assertEqual(candidate["provider"], "injected_model_call")
+        self.assertIn("model_provenance_reason", candidate)
+        formatted = CLI._format_proposed_answer_markdown(
+            "The pleaded roles are: • Plaintiff: insurer. • Defendant: insured."
+        )
+        self.assertIn("\n- Plaintiff: insurer.", formatted)
+        self.assertIn("\n- Defendant: insured.", formatted)
+        self.assertIn("## Review limitation", markdown)
+        self.assertEqual(
+            audit["retrieval_hit_count"], audit["serialized_evidence_page_count"]
+        )
+        self.assertGreaterEqual(
+            audit["upstream_retrieval_hit_count"],
+            audit["serialized_evidence_page_count"],
+        )
+        self.assertEqual(manifest["candidate_sha256"], candidate["candidate_sha256"])
+        self.assertEqual(audit["candidate_sha256"], candidate["candidate_sha256"])
+
     def test_no_live_model_in_tests(self):
         """Guards: tests inject model_call and never resolve a live provider."""
 
