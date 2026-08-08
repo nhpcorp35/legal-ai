@@ -15,6 +15,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sys
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -612,6 +613,12 @@ def _format_proposed_answer_markdown(proposed: str) -> str:
     """Turn the reasoner's compact bullet prose into scannable Markdown."""
     parts = [part.strip() for part in proposed.split(" • ") if part.strip()]
     if len(parts) <= 1:
+        parts = [
+            part.strip()
+            for part in re.split(r"(?<=[.!?])\s+(?=[A-Z])", proposed.strip())
+            if part.strip()
+        ]
+    if len(parts) <= 2:
         return proposed.strip()
     overview, *items = parts
     return overview + "\n\n" + "\n".join(f"- {item}" for item in items)

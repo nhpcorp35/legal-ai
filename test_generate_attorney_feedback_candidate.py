@@ -438,6 +438,13 @@ class GenerateAttorneyFeedbackCandidateCLITests(unittest.TestCase):
         )
         self.assertIn("\n- Plaintiff: insurer.", formatted)
         self.assertIn("\n- Defendant: insured.", formatted)
+        sentence_formatted = CLI._format_proposed_answer_markdown(
+            "The caption identifies the parties. Underwriters is the insurer. "
+            "Triborough is the insured. DSSR is a notice defendant."
+        )
+        self.assertIn("\n- Underwriters is the insurer.", sentence_formatted)
+        self.assertIn("\n- Triborough is the insured.", sentence_formatted)
+        self.assertIn("\n- DSSR is a notice defendant.", sentence_formatted)
         self.assertIn("## Review limitation", markdown)
         self.assertEqual(
             audit["retrieval_hit_count"], audit["serialized_evidence_page_count"]
