@@ -1,0 +1,75 @@
+name: HAL Bridge Proof
+run-name: hal-proof-${{ inputs.mission_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      mission_id:
+        description: Correlation ID supplied by HAL
+        required: true
+        type: string
+      legalai_ref:
+        description: LegalAI branch, tag, or SHA to verify
+        required: true
+        default: main
+        type: string
+      sleep_seconds:
+        description: Deliberate delay used to prove cancellation
+        required: true
+        default: "0"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out exact LegalAI ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.legalai_ref }}
+
+      - name: Validate delay
+        env:
+          SLEEP_SECONDS: ${{ inputs.sleep_seconds }}
+        run: |
+          case "$SLEEP_SECONDS" in
+            ''|*[!0-9]*) exit 2 ;;
+          esac
+          test "$SLEEP_SECONDS" -le 300
+
+      - name: Deliberate cancellable delay
+        if: ${{ inputs.sleep_seconds != '0' }}
+        env:
+          SLEEP_SECONDS: ${{ inputs.sleep_seconds }}
+        run: sleep "$SLEEP_SECONDS"
+
+      - name: Create harmless proof artifact
+        env:
+          MISSION_ID: ${{ inputs.mission_id }}
+        run: |
+          python - <<'PY'
+          import json, os, subprocess
+          from datetime import datetime, timezone
+          proof = {
+              "mission_id": os.environ["MISSION_ID"],
+              "sha": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+              "created_at": datetime.now(timezone.utc).isoformat(),
+          }
+          with open("proof.json", "w", encoding="utf-8") as stream:
+              json.dump(proof, stream, indent=2, sort_keys=True)
+              stream.write("\n")
+          print(json.dumps(proof, sort_keys=True))
+          PY
+
+      - name: Upload proof artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hal-proof-${{ inputs.mission_id }}
+          path: proof.json
+          if-no-files-found: error
+          retention-days: 1
+
