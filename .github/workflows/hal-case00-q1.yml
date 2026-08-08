@@ -119,12 +119,157 @@ jobs:
           )
           PY
 
+      - name: Compute Case-00 derived cache key
+        shell: bash
+        run: |
+          python - <<'PY'
+          import hashlib
+          import os
+          from pathlib import Path
+
+          paths = (
+              Path("data/case-00-triborough/nyscef_filing_inventory.json"),
+              Path("matter_builder.py"),
+              Path("scripts/rebuild_case00_derived.py"),
+          )
+          digest = hashlib.sha256()
+          for path in paths:
+              digest.update(path.as_posix().encode("utf-8"))
+              digest.update(b"\0")
+              digest.update(path.read_bytes())
+              digest.update(b"\0")
+          prefix = (
+              "Benchmarks/Case-00-Triborough/derived/runtime-cache/"
+              + digest.hexdigest()
+              + "/"
+          )
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env_file:
+              env_file.write(f"DERIVED_CACHE_PREFIX={prefix}\n")
+          PY
+
+      - name: Restore and validate Case-00 derived cache from B2
+        id: derived-cache
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import sys
+          from pathlib import Path
+
+          import boto3
+          from botocore.exceptions import ClientError
+
+          scripts_dir = Path("scripts").resolve()
+          sys.path.insert(0, str(scripts_dir))
+          import rebuild_case00_derived as rebuild_cli
+
+          root = Path(os.environ["CASE_ROOT"])
+          prefix = os.environ["DERIVED_CACHE_PREFIX"]
+          relative_paths = (
+              Path("derived/page-extraction/canonical_page_records.json"),
+              Path("derived/exhibit-segmentation/filing_exhibit_map.json"),
+              Path("derived/case-map/case_map.json"),
+          )
+          client = boto3.client(
+              "s3",
+              endpoint_url=os.environ["B2_ENDPOINT"].rstrip("/"),
+              region_name=os.environ["B2_REGION"],
+              aws_access_key_id=os.environ["B2_KEY_ID"],
+              aws_secret_access_key=os.environ["B2_APPLICATION_KEY"],
+          )
+          restored = []
+          cache_hit = True
+          for relative_path in relative_paths:
+              destination = root / relative_path
+              destination.parent.mkdir(parents=True, exist_ok=True)
+              try:
+                  client.download_file(
+                      os.environ["B2_BUCKET"],
+                      prefix + relative_path.as_posix(),
+                      str(destination),
+                  )
+                  restored.append(destination)
+              except ClientError as exc:
+                  code = str(exc.response.get("Error", {}).get("Code", ""))
+                  if code not in {"404", "NoSuchKey", "NotFound"}:
+                      raise
+                  cache_hit = False
+                  break
+
+          if cache_hit:
+              report = rebuild_cli.validate_generator_inputs(
+                  root,
+                  inventory_path=Path(
+                      "data/case-00-triborough/nyscef_filing_inventory.json"
+                  ),
+              )
+              cache_hit = bool(report.get("ok"))
+
+          if not cache_hit:
+              for path in restored:
+                  path.unlink(missing_ok=True)
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"cache_hit={str(cache_hit).lower()}\n")
+          print(json.dumps({"cache_hit": cache_hit}, sort_keys=True))
+          PY
+
+      - name: Rebuild Case-00 derived cache
+        if: ${{ steps.derived-cache.outputs.cache_hit != 'true' }}
+        shell: bash
+        run: |
+          python scripts/rebuild_case00_derived.py \
+            --case-root "$CASE_ROOT" \
+            --b2-prefix
+
+      - name: Publish and verify Case-00 derived cache in B2
+        if: ${{ steps.derived-cache.outputs.cache_hit != 'true' }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          import boto3
+
+          root = Path(os.environ["CASE_ROOT"])
+          prefix = os.environ["DERIVED_CACHE_PREFIX"]
+          relative_paths = (
+              Path("derived/page-extraction/canonical_page_records.json"),
+              Path("derived/exhibit-segmentation/filing_exhibit_map.json"),
+              Path("derived/case-map/case_map.json"),
+          )
+          client = boto3.client(
+              "s3",
+              endpoint_url=os.environ["B2_ENDPOINT"].rstrip("/"),
+              region_name=os.environ["B2_REGION"],
+              aws_access_key_id=os.environ["B2_KEY_ID"],
+              aws_secret_access_key=os.environ["B2_APPLICATION_KEY"],
+          )
+          objects = []
+          for relative_path in relative_paths:
+              source = root / relative_path
+              key = prefix + relative_path.as_posix()
+              size = source.stat().st_size
+              client.upload_file(str(source), os.environ["B2_BUCKET"], key)
+              head = client.head_object(
+                  Bucket=os.environ["B2_BUCKET"],
+                  Key=key,
+              )
+              if head.get("ContentLength") != size:
+                  raise SystemExit(f"Derived cache size mismatch: {relative_path}")
+              objects.append({"key": key, "size": size})
+          print(json.dumps({"verified": True, "objects": objects}, sort_keys=True))
+          PY
+
       - name: Generate Q1 and publish four verified artifacts to B2
         id: case00
         shell: bash
         run: |
           set +e
-          python scripts/run_case00_b2_q1.py             --case-root "$CASE_ROOT"             --question-id Q1             --required-commit "$REQUIRED_COMMIT"             --candidate-output-root "$CANDIDATE_ROOT"             --authorization-confirmed             --generation-only             | tee case00-q1-result.json
+          python scripts/run_case00_b2_q1.py             --case-root "$CASE_ROOT"             --question-id Q1             --required-commit "$REQUIRED_COMMIT"             --candidate-output-root "$CANDIDATE_ROOT"             --authorization-confirmed             --generation-only             --reuse-derived             | tee case00-q1-result.json
           status=${PIPESTATUS[0]}
           echo "exit_code=$status" >> "$GITHUB_OUTPUT"
           exit "$status"
