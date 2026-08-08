@@ -36,6 +36,7 @@ jobs:
       B2_ENDPOINT: ${{ secrets.B2_ENDPOINT }}
       B2_REGION: ${{ secrets.B2_REGION }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      LEGALAI_MODEL_TIMEOUT_SECONDS: "180"
       REQUIRED_COMMIT: ${{ inputs.legalai_ref }}
 
     steps:
