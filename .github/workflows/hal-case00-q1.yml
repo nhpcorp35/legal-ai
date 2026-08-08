@@ -1,0 +1,125 @@
+name: HAL Case-00 Q1
+run-name: hal-case00-q1-${{ inputs.mission_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      mission_id:
+        description: Correlation ID supplied by HAL
+        required: true
+        type: string
+      legalai_ref:
+        description: Exact LegalAI commit SHA to execute
+        required: true
+        type: string
+      authorization_confirmed:
+        description: Confirms authorization to transmit private evidence to the model provider
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hal-case00-q1-${{ inputs.mission_id }}
+  cancel-in-progress: false
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      B2_KEY_ID: ${{ secrets.B2_KEY_ID }}
+      B2_APPLICATION_KEY: ${{ secrets.B2_APPLICATION_KEY }}
+      B2_BUCKET: ${{ secrets.B2_BUCKET }}
+      B2_ENDPOINT: ${{ secrets.B2_ENDPOINT }}
+      B2_REGION: ${{ secrets.B2_REGION }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      REQUIRED_COMMIT: ${{ inputs.legalai_ref }}
+      CASE_ROOT: ${{ runner.temp }}/case00
+      CANDIDATE_ROOT: ${{ runner.temp }}/case00-candidates
+
+    steps:
+      - name: Enforce bounded authorization and immutable SHA
+        shell: bash
+        run: |
+          test "${{ inputs.authorization_confirmed }}" = "true"
+          case "$REQUIRED_COMMIT" in
+            [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]*)
+              test "${#REQUIRED_COMMIT}" -eq 40
+              ;;
+            *)
+              exit 2
+              ;;
+          esac
+
+      - name: Check out exact LegalAI commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.legalai_ref }}
+          fetch-depth: 0
+
+      - name: Verify exact checkout
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$REQUIRED_COMMIT"
+          git fetch --no-tags origin main
+          test "$(git rev-parse origin/main)" = "$REQUIRED_COMMIT"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install bounded runtime dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt boto3 openai
+
+      - name: Materialize permitted Q1 question text
+        shell: bash
+        run: |
+          mkdir -p "$CASE_ROOT/derived/question-text"
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          import boto3
+
+          endpoint = os.environ["B2_ENDPOINT"].rstrip("/")
+          client = boto3.client(
+              "s3",
+              endpoint_url=endpoint,
+              region_name=os.environ["B2_REGION"],
+              aws_access_key_id=os.environ["B2_KEY_ID"],
+              aws_secret_access_key=os.environ["B2_APPLICATION_KEY"],
+          )
+          destination = Path(os.environ["CASE_ROOT"]) / "derived/question-text/questions.json"
+          client.download_file(
+              os.environ["B2_BUCKET"],
+              "Benchmarks/Case-00-Triborough/derived/question-text/questions.json",
+              str(destination),
+          )
+          if not destination.is_file() or destination.stat().st_size == 0:
+              raise SystemExit("Q1 question-text bootstrap failed")
+          PY
+
+      - name: Generate Q1 and publish four verified artifacts to B2
+        id: case00
+        shell: bash
+        run: |
+          set +e
+          python scripts/run_case00_b2_q1.py             --case-root "$CASE_ROOT"             --question-id Q1             --required-commit "$REQUIRED_COMMIT"             --candidate-output-root "$CANDIDATE_ROOT"             --authorization-confirmed             --generation-only             | tee case00-q1-result.json
+          status=${PIPESTATUS[0]}
+          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
+          exit "$status"
+
+      - name: Upload machine-readable run result
+        if: ${{ always() && hashFiles('case00-q1-result.json') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: hal-case00-q1-${{ inputs.mission_id }}
+          path: case00-q1-result.json
+          if-no-files-found: error
+          retention-days: 7
