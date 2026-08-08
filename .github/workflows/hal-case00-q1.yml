@@ -82,31 +82,32 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt boto3 openai
 
-      - name: Materialize permitted Q1 question text
+      - name: List permitted question-text object metadata
         shell: bash
         run: |
-          mkdir -p "$CASE_ROOT/derived/question-text"
           python - <<'PY'
+          import json
           import os
-          from pathlib import Path
           import boto3
 
-          endpoint = os.environ["B2_ENDPOINT"].rstrip("/")
+          prefix = "Benchmarks/Case-00-Triborough/derived/question-text/"
           client = boto3.client(
               "s3",
-              endpoint_url=endpoint,
+              endpoint_url=os.environ["B2_ENDPOINT"].rstrip("/"),
               region_name=os.environ["B2_REGION"],
               aws_access_key_id=os.environ["B2_KEY_ID"],
               aws_secret_access_key=os.environ["B2_APPLICATION_KEY"],
           )
-          destination = Path(os.environ["CASE_ROOT"]) / "derived/question-text/questions.json"
-          client.download_file(
-              os.environ["B2_BUCKET"],
-              "Benchmarks/Case-00-Triborough/derived/question-text/questions.json",
-              str(destination),
+          response = client.list_objects_v2(
+              Bucket=os.environ["B2_BUCKET"],
+              Prefix=prefix,
           )
-          if not destination.is_file() or destination.stat().st_size == 0:
-              raise SystemExit("Q1 question-text bootstrap failed")
+          objects = [
+              {"key": item["Key"], "size": item["Size"]}
+              for item in response.get("Contents", [])
+          ]
+          print(json.dumps({"prefix": prefix, "objects": objects}, sort_keys=True))
+          raise SystemExit("Metadata-only diagnostic complete; generation intentionally blocked")
           PY
 
       - name: Generate Q1 and publish four verified artifacts to B2
