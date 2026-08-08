@@ -82,7 +82,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt boto3 openai
 
-      - name: List permitted question-text object metadata
+      - name: HEAD exact attorney-review packet key
         shell: bash
         run: |
           python - <<'PY'
@@ -90,7 +90,10 @@ jobs:
           import os
           import boto3
 
-          prefix = "Benchmarks/Case-00-Triborough/derived/question-text/"
+          key = (
+              "Benchmarks/Case-00-Triborough/derived/"
+              "attorney-review-packet-02-live/attorney_review_packet_02.json"
+          )
           client = boto3.client(
               "s3",
               endpoint_url=os.environ["B2_ENDPOINT"].rstrip("/"),
@@ -98,16 +101,9 @@ jobs:
               aws_access_key_id=os.environ["B2_KEY_ID"],
               aws_secret_access_key=os.environ["B2_APPLICATION_KEY"],
           )
-          response = client.list_objects_v2(
-              Bucket=os.environ["B2_BUCKET"],
-              Prefix=prefix,
-          )
-          objects = [
-              {"key": item["Key"], "size": item["Size"]}
-              for item in response.get("Contents", [])
-          ]
-          print(json.dumps({"prefix": prefix, "objects": objects}, sort_keys=True))
-          raise SystemExit("Metadata-only diagnostic complete; generation intentionally blocked")
+          head = client.head_object(Bucket=os.environ["B2_BUCKET"], Key=key)
+          print(json.dumps({"key": key, "size": head["ContentLength"]}, sort_keys=True))
+          raise SystemExit("Metadata-only HEAD diagnostic complete; generation intentionally blocked")
           PY
 
       - name: Generate Q1 and publish four verified artifacts to B2
