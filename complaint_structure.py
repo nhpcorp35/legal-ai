@@ -13,16 +13,16 @@ Ambiguous or absent complaint metadata fails closed with an explicit selection
 status and an empty documents list — never a merged multi-pleading roadmap.
 
 Phase 2 consumers build a compact, provenance-backed party-role roadmap from
-``complaint_structure_map.v1`` (overview, intervening factual/background, and
+``complaint_structure_map.v2`` (overview, intervening factual/background, and
 party-identification sections). Stale or absent schema fails closed at cache
 validation and degrades explicitly in evidence packets — never fabricated.
 
-Schema ``complaint_structure_map.v1``
+Schema ``complaint_structure_map.v2``
 ------------------------------------
 Top-level object::
 
     {
-      "schema_version": "complaint_structure_map.v1",
+      "schema_version": "complaint_structure_map.v2",
       "selection": {
         "status": "selected|ambiguous|unavailable",
         "reason": null | str,
@@ -71,7 +71,7 @@ from __future__ import annotations
 import re
 from typing import Any, Mapping, Optional, Sequence
 
-SCHEMA_VERSION = "complaint_structure_map.v1"
+SCHEMA_VERSION = "complaint_structure_map.v2"
 
 # Selection statuses for the controlling complaint document.
 SELECTION_STATUS_SELECTED = "selected"
@@ -107,6 +107,8 @@ _EXCLUDED_FILING_TYPE_TOKENS = frozenset(
 # Known pleading section families (generic). Matching is case/OCR-tolerant;
 # emitted markers remain exact observed surface forms.
 # More specific factual/overview labels precede generic ``facts`` / ``background``.
+# Bare ``facts`` requires the plural form so allegation lines like ``2. Fact.``
+# are not stolen as section headings.
 _KNOWN_SECTION_PATTERNS: tuple[tuple[str, str], ...] = (
     ("overview", r"overview"),
     ("introduction", r"introduction"),
@@ -117,9 +119,11 @@ _KNOWN_SECTION_PATTERNS: tuple[tuple[str, str], ...] = (
     ("statement_of_facts", r"statement\s+of\s+facts?"),
     ("relevant_facts", r"relevant\s+facts?"),
     ("factual_background", r"factual\s+background(?:\s+and\s+general\s+allegations)?"),
+    ("general_background", r"general\s+background"),
     ("factual_allegations", r"factual\s+allegations?"),
     ("general_allegations", r"general\s+allegations"),
-    ("facts", r"facts?(?:\s+common\s+to\s+all\s+(?:counts|claims))?"),
+    ("allegations", r"allegations?"),
+    ("facts", r"facts(?:\s+common\s+to\s+all\s+(?:counts|claims))?"),
     ("background", r"background"),
     ("jurisdiction_and_venue", r"jurisdiction\s+and\s+venue"),
     ("jurisdiction", r"jurisdiction"),
@@ -145,9 +149,11 @@ _FACTUAL_LAYOUT_MATCH_KEYS = frozenset(
         "relevant_facts",
         "facts",
         "factual_background",
+        "general_background",
         "factual_allegations",
         "background",
         "general_allegations",
+        "allegations",
     }
 )
 _PARTIES_MATCH_KEYS = frozenset({"parties"})
@@ -182,9 +188,12 @@ _KNOWN_SECTION_COLLAPSED_LABELS: tuple[tuple[str, str], ...] = tuple(
             "factual_background",
             "factual background and general allegations",
         ),
+        ("general_background", "general background"),
         ("factual_allegations", "factual allegations"),
         ("factual_allegations", "factual allegation"),
         ("general_allegations", "general allegations"),
+        ("allegations", "allegations"),
+        ("allegations", "allegation"),
         ("facts", "facts common to all counts"),
         ("facts", "facts common to all claims"),
         ("facts", "facts"),
@@ -205,22 +214,67 @@ PARTY_ROLE_ROADMAP_NOTE = (
     "substantive retrieval hits and must not invent paragraph ranges."
 )
 
+# Optional section/article/part or Roman-numeral prefix — not arabic pleading
+# paragraph markers like ``10. Overview ...`` / ``2. Fact.``. Those arabic
+# forms are handled by ``_NUMBERED_SECTION_HEADING_RE`` with distinctive labels.
 _SECTION_PREFIX = (
     r"(?:"
     r"(?:section|article|part)\s+[ivxlcdm\d]+(?:\s*[.:=\-—–]\s*|\s+)|"
-    r"(?:[ivxlcdm]+|\d+)(?:\.\d+)*[.)]?\s+"
+    r"(?:[ivxlcdm]+)[.)]?\s+"
     r")?"
+)
+
+# Arabic-numeral prefixed major section headings (``14. PARTIES``, ``17. FACTS``).
+# Uses distinctive labels only — excludes bare short tokens that commonly open
+# ordinary allegation sentences (``Fact``, ``Background``, ``Venue``).
+_NUMBERED_SECTION_PATTERNS: tuple[tuple[str, str], ...] = (
+    ("overview", r"overview"),
+    ("introduction", r"introduction"),
+    ("preliminary_statement", r"preliminary\s+statement"),
+    ("nature_of_the_action", r"nature\s+of\s+(?:the\s+)?action"),
+    ("parties", r"(?:the\s+)?parties(?:\s+to\s+(?:this\s+)?(?:action|proceeding|litigation))?"),
+    ("intervening_facts", r"intervening\s+facts?"),
+    ("statement_of_facts", r"statement\s+of\s+facts?"),
+    ("relevant_facts", r"relevant\s+facts?"),
+    ("factual_background", r"factual\s+background(?:\s+and\s+general\s+allegations)?"),
+    ("general_background", r"general\s+background"),
+    ("factual_allegations", r"factual\s+allegations?"),
+    ("general_allegations", r"general\s+allegations"),
+    ("allegations", r"allegations?"),
+    ("facts", r"facts(?:\s+common\s+to\s+all\s+(?:counts|claims))?"),
+    ("jurisdiction_and_venue", r"jurisdiction\s+and\s+venue"),
+    ("causes_of_action", r"causes?\s+of\s+action"),
+    ("wherefore", r"wherefore"),
+    ("prayer_for_relief", r"prayer\s+for\s+relief"),
 )
 
 # Optional trailing punctuation / colon noise after a clean heading label.
 _HEADING_TRAILING_PUNCT = r"[:.\-—–_•·]?"
+
+_KNOWN_BODY_ALTERNATION = r"|".join(
+    f"(?:{pat})" for _, pat in _KNOWN_SECTION_PATTERNS
+)
+_NUMBERED_BODY_ALTERNATION = r"|".join(
+    f"(?:{pat})" for _, pat in _NUMBERED_SECTION_PATTERNS
+)
 
 # Line-oriented heading candidate: optional prefix + known name + light punct.
 _HEADING_LINE_RE = re.compile(
     r"(?im)^\s*"
     + _SECTION_PREFIX
     + r"(?P<body>"
-    + r"|".join(f"(?:{pat})" for _, pat in _KNOWN_SECTION_PATTERNS)
+    + _KNOWN_BODY_ALTERNATION
+    + r")"
+    + r"\s*"
+    + _HEADING_TRAILING_PUNCT
+    + r"\s*$"
+)
+
+# ``14. PARTIES`` / ``17. FACTS`` — arabic prefix + distinctive section label.
+_NUMBERED_SECTION_HEADING_RE = re.compile(
+    r"(?im)^\s*(?P<num>\d{1,4})[.)]\s*"
+    + r"(?P<body>"
+    + _NUMBERED_BODY_ALTERNATION
     + r")"
     + r"\s*"
     + _HEADING_TRAILING_PUNCT
@@ -238,10 +292,21 @@ _HEADING_THEN_PARAGRAPH_RE = re.compile(
     r"(?im)^\s*"
     + _SECTION_PREFIX
     + r"(?:"
-    + r"|".join(f"(?:{pat})" for _, pat in _KNOWN_SECTION_PATTERNS)
+    + _KNOWN_BODY_ALTERNATION
     + r")\b\s*"
     + _HEADING_TRAILING_PUNCT
     + r"\s*(?P<marker>(?P<num>\d{1,4})[ \t]*[.)])[ \t]+\S"
+)
+
+# Numbered section heading with same-line first allegation
+# (``14. PARTIES 15. Plaintiff...`` is rare; ``PARTIES 1.`` is the common form).
+_NUMBERED_HEADING_THEN_PARAGRAPH_RE = re.compile(
+    r"(?im)^\s*(?P<num>\d{1,4})[.)]\s*"
+    + r"(?:"
+    + _NUMBERED_BODY_ALTERNATION
+    + r")\b\s*"
+    + _HEADING_TRAILING_PUNCT
+    + r"\s*(?P<marker>(?P<pnum>\d{1,4})[ \t]*[.)])[ \t]+\S"
 )
 
 # Repeated filing stamp / NYSCEF docket chrome (skipped for heading candidates).
@@ -747,6 +812,8 @@ def _extract_headings_from_page(
             continue
 
         match = _HEADING_LINE_RE.match(healed_line)
+        if not match:
+            match = _NUMBERED_SECTION_HEADING_RE.match(healed_line)
         if match:
             body = match.group("body")
             key = _match_key_for_heading_body(body)
@@ -817,7 +884,9 @@ def _extract_headings_from_page(
                     label_span=label_span,
                 )
                 ambiguity_note = "heading_token_with_trailing_prose"
-                if _HEADING_THEN_PARAGRAPH_RE.match(healed_line):
+                if _HEADING_THEN_PARAGRAPH_RE.match(
+                    healed_line
+                ) or _NUMBERED_HEADING_THEN_PARAGRAPH_RE.match(healed_line):
                     ambiguity_note = "heading_adjacent_to_paragraph_text"
                 headings.append(
                     {
@@ -887,7 +956,10 @@ def _extract_paragraphs_from_page(
             continue
         # Skip numbered section-heading lines (``14. PARTIES``) — those are
         # headings, not allegation paragraph markers.
-        if _HEADING_LINE_RE.match(_heal_ocr_letter_spacing(line)):
+        healed_line = _heal_ocr_letter_spacing(line)
+        if _HEADING_LINE_RE.match(healed_line) or _NUMBERED_SECTION_HEADING_RE.match(
+            healed_line
+        ):
             continue
         try:
             number = int(match.group("num"))
@@ -910,17 +982,29 @@ def _extract_paragraphs_from_page(
             continue
         healed = _heal_ocr_letter_spacing(line)
         adjacent = _HEADING_THEN_PARAGRAPH_RE.match(healed)
+        numbered_adjacent = None
         if not adjacent:
+            numbered_adjacent = _NUMBERED_HEADING_THEN_PARAGRAPH_RE.match(healed)
+        if not adjacent and not numbered_adjacent:
             continue
-        try:
-            number = int(adjacent.group("num"))
-        except (TypeError, ValueError):
-            continue
+        if numbered_adjacent is not None:
+            try:
+                number = int(numbered_adjacent.group("pnum"))
+            except (TypeError, ValueError):
+                continue
+            marker = numbered_adjacent.group("marker")
+        else:
+            assert adjacent is not None
+            try:
+                number = int(adjacent.group("num"))
+            except (TypeError, ValueError):
+                continue
+            marker = adjacent.group("marker")
         _append_paragraph_observation(
             found,
             seen_on_page,
             number=number,
-            marker=adjacent.group("marker"),
+            marker=marker,
             prov=prov,
             line_index=line_index,
         )
@@ -1237,11 +1321,10 @@ def select_party_role_complaint_roadmap_context(
         parties_idxs = [
             i for i, sec in enumerate(sections) if sec.get("kind") == "parties"
         ]
-        factual_idxs = [
-            i
-            for i, sec in enumerate(sections)
-            if sec.get("kind") == "factual_layout"
-        ]
+        # Intervening procedural layout is attached only between overview and
+        # parties when both exist; factual / overview / parties always attach.
+        lo = min(overview_idxs) if overview_idxs else None
+        hi = min(parties_idxs) if parties_idxs else None
         selected: list[dict[str, Any]] = []
         selected_indexes: set[int] = set()
 
@@ -1259,28 +1342,19 @@ def select_party_role_complaint_roadmap_context(
             selected.append(compact)
             selected_indexes.add(idx)
 
-        # (1) Overview / introduction section(s).
-        for idx in overview_idxs:
-            _take(idx)
-
-        # (2) Intervening factual/background/allegation (+ procedural) sections
-        # between overview and parties, in source order. Each keeps its own
-        # observed heading and range — never merge into an invented span.
-        if overview_idxs and parties_idxs:
-            lo = min(overview_idxs)
-            hi = min(parties_idxs)
-            for idx in range(lo + 1, hi):
-                kind = sections[idx].get("kind")
-                if kind in {"factual_layout", "procedural_layout"}:
-                    _take(idx)
-        # Include remaining factual_layout outside that span (e.g. FACTS after
-        # PARTIES) without inventing continuity across the gap.
-        for idx in factual_idxs:
-            _take(idx)
-
-        # (3) Party-identification section(s).
-        for idx in parties_idxs:
-            _take(idx)
+        # Walk in source order so disjoint roadmap sections keep pleading order.
+        for idx, sec in enumerate(sections):
+            kind = sec.get("kind")
+            if kind in {"overview", "factual_layout", "parties"}:
+                _take(idx)
+                continue
+            if (
+                kind == "procedural_layout"
+                and lo is not None
+                and hi is not None
+                and lo < idx < hi
+            ):
+                _take(idx)
 
         if not selected:
             continue
