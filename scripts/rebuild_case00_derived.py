@@ -14,6 +14,7 @@ Writes only:
   derived/page-extraction/canonical_page_records.json
   derived/exhibit-segmentation/filing_exhibit_map.json
   derived/case-map/case_map.json
+  derived/complaint-structure/complaint_structure_map.json
 
 Never overwrites source PDFs or attorney/gold/benchmark artifacts.
 """
@@ -33,6 +34,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+import complaint_structure as cs  # noqa: E402
 import matter_builder as mb  # noqa: E402
 
 # Default B2 object prefix for Case-00 source PDFs (path only — not case facts).
@@ -52,6 +54,9 @@ DERIVED_RELATIVE_PATHS = {
     "page_records": Path("derived/page-extraction/canonical_page_records.json"),
     "exhibit_map": Path("derived/exhibit-segmentation/filing_exhibit_map.json"),
     "case_map": Path("derived/case-map/case_map.json"),
+    "complaint_structure": Path(
+        "derived/complaint-structure/complaint_structure_map.json"
+    ),
 }
 
 # Artifacts the rebuild must never modify (gold / attorney / question packets).
@@ -344,10 +349,12 @@ def build_derived_payloads(documents: list[dict]) -> dict[str, Any]:
     page_records = build_canonical_page_records(documents)
     exhibit_map = build_filing_exhibit_map(documents)
     case_map = mb.build_case_map_from_documents(documents)
+    structure_map = cs.build_complaint_structure_map(page_records)
     return {
         "page_records": page_records,
         "exhibit_map": exhibit_map,
         "case_map": {"case_map": case_map},
+        "complaint_structure": structure_map,
     }
 
 
@@ -356,6 +363,7 @@ def write_derived_artifacts(case_root: Path, payloads: dict[str, Any]) -> dict[s
     atomic_write_json(paths["page_records"], payloads["page_records"])
     atomic_write_json(paths["exhibit_map"], payloads["exhibit_map"])
     atomic_write_json(paths["case_map"], payloads["case_map"])
+    atomic_write_json(paths["complaint_structure"], payloads["complaint_structure"])
     return paths
 
 
@@ -386,6 +394,7 @@ def validate_generator_inputs(
     page_wrap = None
     exhibit_map = None
     case_map_wrap = None
+    structure_map = None
 
     try:
         page_wrap = _load_json_file(paths["page_records"])
@@ -416,6 +425,16 @@ def validate_generator_inputs(
             )
             if not usable:
                 errors.append(f"{paths['case_map']} missing usable case_map object")
+    except RebuildError as exc:
+        errors.append(exc.message)
+
+    try:
+        structure_map = _load_json_file(paths["complaint_structure"])
+        if not cs.is_current_structure_schema(structure_map):
+            errors.append(
+                f"{paths['complaint_structure']} missing or stale "
+                f"complaint structure schema (require {cs.SCHEMA_VERSION})"
+            )
     except RebuildError as exc:
         errors.append(exc.message)
 
@@ -451,6 +470,12 @@ def validate_generator_inputs(
         "filing_count": len((exhibit_map or {}).get("filings") or [])
         if exhibit_map
         else 0,
+        "complaint_structure_schema": (
+            (structure_map or {}).get("schema_version")
+            if isinstance(structure_map, dict)
+            else None
+        ),
+        "required_complaint_structure_schema": cs.SCHEMA_VERSION,
     }
 
 
@@ -533,8 +558,9 @@ def rebuild_case00_derived(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Rebuild Case-00 derived page/exhibit/case-map JSON from source PDFs "
-            "via matter_builder canonical ingestion (no model calls)."
+            "Rebuild Case-00 derived page/exhibit/case-map/complaint-structure "
+            "JSON from source PDFs via matter_builder canonical ingestion "
+            "(no model calls)."
         )
     )
     parser.add_argument(

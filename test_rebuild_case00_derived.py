@@ -183,6 +183,13 @@ class RebuildCase00LocalSourceTests(unittest.TestCase):
                 paths["case_map"],
                 case_root.resolve() / "derived" / "case-map" / "case_map.json",
             )
+            self.assertEqual(
+                paths["complaint_structure"],
+                case_root.resolve()
+                / "derived"
+                / "complaint-structure"
+                / "complaint_structure_map.json",
+            )
             for path in paths.values():
                 self.assertTrue(path.is_file(), path)
 
@@ -198,6 +205,19 @@ class RebuildCase00LocalSourceTests(unittest.TestCase):
             case_map_wrap = json.loads(paths["case_map"].read_text(encoding="utf-8"))
             self.assertIn("case_map", case_map_wrap)
             self.assertIsInstance(case_map_wrap["case_map"], dict)
+
+            structure_map = json.loads(
+                paths["complaint_structure"].read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                structure_map["schema_version"],
+                CLI.cs.SCHEMA_VERSION,
+            )
+            self.assertEqual(len(structure_map["documents"]), 1)
+            self.assertEqual(
+                structure_map["documents"][0]["document_id"],
+                "nyscef-003",
+            )
 
             # Source PDF untouched (still the only file in source_dir).
             self.assertTrue(pdf_path.is_file())
@@ -387,6 +407,10 @@ class RebuildCase00ValidationTests(unittest.TestCase):
             CLI.atomic_write_json(paths["exhibit_map"], {"filings": []})
             CLI.atomic_write_json(
                 paths["case_map"], {"case_map": CLI.mb.empty_case_map()}
+            )
+            CLI.atomic_write_json(
+                paths["complaint_structure"],
+                CLI.cs.empty_complaint_structure_map(),
             )
             report_ok = CLI.validate_generator_inputs(
                 case_root, inventory_path=inv_path
