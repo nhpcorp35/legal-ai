@@ -3943,15 +3943,25 @@ def extract_party_role_expected_synthesis(
     # paragraphs or section organization were actually extracted. Never invent
     # ranges, and never require a roadmap when evidence has neither marker.
     if paragraph_nums or section_headings or section_ranges:
+        # Structure-backed multi-section roadmaps stay disjoint: never collapse
+        # canonical section_ranges into one continuous exact_paragraph_range.
         exact_range = None
-        if structure_backed and len(section_ranges) == 1:
-            only = section_ranges[0]
-            if only.get("start") is not None and only.get("end") is not None:
+        if structure_backed:
+            contiguous = [
+                r
+                for r in section_ranges
+                if isinstance(r, dict)
+                and r.get("start") is not None
+                and r.get("end") is not None
+            ]
+            if len(contiguous) == 1 and len(section_ranges) == 1:
+                only = contiguous[0]
                 exact_range = {
                     "start": int(only["start"]),
                     "end": int(only["end"]),
                 }
-        elif paragraph_nums and not structure_backed:
+            # else: zero or multiple section ranges → exact_range stays None
+        elif paragraph_nums:
             exact_range = {
                 "start": int(min(paragraph_nums)),
                 "end": int(max(paragraph_nums)),
@@ -4254,6 +4264,32 @@ def _draft_has_rescission_effect(draft_norm: str) -> bool:
     return bool(_PARTY_ROLE_RESCISSION_EFFECT_RE.search(draft_norm))
 
 
+def _citation_within_one_section_range(
+    start: int,
+    end: int,
+    *,
+    allowed_range_pairs: Sequence[Tuple[int, int]],
+    allowed_nums: set,
+) -> bool:
+    """
+    True when [start, end] equals or sits inside one canonical section range.
+
+    Rejects spans that collapse disjoint section_ranges or bridge gaps using the
+    union of observed paragraph numbers across sections.
+    """
+    if start > end:
+        return False
+    if (start, end) in allowed_range_pairs:
+        return True
+    for r_start, r_end in allowed_range_pairs:
+        if start < r_start or end > r_end:
+            continue
+        # Sub-range must be sequence-supported inside that single section.
+        if all(n in allowed_nums for n in range(start, end + 1)):
+            return True
+    return False
+
+
 def _draft_preserves_complaint_roadmap(
     draft_norm: str,
     *,
@@ -4268,16 +4304,20 @@ def _draft_preserves_complaint_roadmap(
     ranges = [r for r in (section_ranges or []) if isinstance(r, dict)]
 
     # Allowed exact contiguous ranges from structure metadata (when present).
-    allowed_range_pairs = set()
+    allowed_range_pairs: List[Tuple[int, int]] = []
+    seen_pairs = set()
     for item in ranges:
         try:
             start = item.get("start")
             end = item.get("end")
             if start is None or end is None:
                 continue
-            allowed_range_pairs.add((int(start), int(end)))
+            pair = (int(start), int(end))
         except (TypeError, ValueError):
             continue
+        if pair not in seen_pairs:
+            seen_pairs.add(pair)
+            allowed_range_pairs.append(pair)
 
     # Reject invented paragraph ranges not grounded in evidence numbers.
     for match in _PARTY_ROLE_PARAGRAPH_REF_RE.finditer(draft_norm):
@@ -4290,16 +4330,29 @@ def _draft_preserves_complaint_roadmap(
         if not allowed and not allowed_range_pairs:
             # Section-only evidence: any explicit paragraph citation is invented.
             return False
-        if allowed_range_pairs:
-            # Structure-backed: cited ranges must match an exact supported pair
-            # or both endpoints must be observed numbers within one pair span.
-            if (start, end) in allowed_range_pairs:
+        if structure_backed and (ranges or headings or allowed_range_pairs):
+            # Canonical structure contract: never treat the union of disjoint
+            # section markers as one continuous exact_paragraph_range.
+            if start == end:
+                if start not in allowed:
+                    return False
                 continue
-            if start in allowed and end in allowed:
-                # Permit sub-ranges only when every integer between is allowed
-                # (sequence-supported), never a heading-invented span.
-                if all(n in allowed for n in range(start, end + 1)):
-                    continue
+            if not _citation_within_one_section_range(
+                start,
+                end,
+                allowed_range_pairs=allowed_range_pairs,
+                allowed_nums=allowed,
+            ):
+                return False
+            continue
+        if allowed_range_pairs:
+            if _citation_within_one_section_range(
+                start,
+                end,
+                allowed_range_pairs=allowed_range_pairs,
+                allowed_nums=allowed,
+            ):
+                continue
             return False
         if start not in allowed or end not in allowed:
             return False
@@ -4441,14 +4494,42 @@ def _party_role_synthesis_missing_item(item: dict, category: str) -> dict:
             r for r in (item.get("section_ranges") or []) if isinstance(r, dict)
         ]
         structure_backed = bool(item.get("structure_backed"))
-        if (
+        if structure_backed:
+            # Preserve the extracted contract: multi-section roadmaps keep
+            # disjoint section_ranges and must not collapse to min/max.
+            contiguous = [
+                r
+                for r in section_ranges
+                if r.get("start") is not None and r.get("end") is not None
+            ]
+            if len(section_ranges) != 1 or len(contiguous) != 1:
+                exact_range = None
+            elif not isinstance(exact_range, dict):
+                only = contiguous[0]
+                exact_range = {
+                    "start": int(only["start"]),
+                    "end": int(only["end"]),
+                }
+        elif (
             not isinstance(exact_range, dict)
             and nums
-            and not structure_backed
         ):
             exact_range = {"start": int(min(nums)), "end": int(max(nums))}
         if not isinstance(exact_range, dict):
             exact_range = None
+        elif (
+            "start" not in exact_range
+            or "end" not in exact_range
+        ):
+            exact_range = None
+        else:
+            try:
+                exact_range = {
+                    "start": int(exact_range["start"]),
+                    "end": int(exact_range["end"]),
+                }
+            except (TypeError, ValueError):
+                exact_range = None
         missing["paragraph_numbers"] = nums
         missing["section_headings"] = headings
         missing["exact_paragraph_range"] = exact_range
