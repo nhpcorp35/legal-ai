@@ -354,9 +354,11 @@ PARTY_ROLE_DRAFTING_COMPLETENESS_INSTRUCTION = (
     "described' caveat must not erase that supported causal explanation.\n"
     "When paragraph ranges or section organization appear in the retrieved "
     "evidence or in attached complaint_structure_context metadata, preserve a "
-    "useful complaint structure/roadmap from those exact markers (overview/"
-    "introduction, intervening factual/background/allegation layout, and "
-    "party sections); never invent paragraph ranges absent from the packet.\n"
+    "useful complaint structure/roadmap that includes every attached canonical "
+    "section marker (overview/introduction, intervening factual/background/"
+    "allegation layout, procedural layout when attached, and party sections); "
+    "never omit an attached section and never invent paragraph ranges absent "
+    "from the packet.\n"
     "Prefer concise practical attorney work product, but required party "
     "attributes and the evidence-supported procedural connections above are "
     "not optional and cannot be omitted for brevity, concision, or "
@@ -4290,6 +4292,97 @@ def _citation_within_one_section_range(
     return False
 
 
+def _canonical_roadmap_section_items(
+    *,
+    section_headings: Sequence[str],
+    section_ranges: Optional[Sequence[dict]] = None,
+) -> List[dict]:
+    """Normalize canonical roadmap sections from structure-backed criteria."""
+    ranges = [r for r in (section_ranges or []) if isinstance(r, dict)]
+    if ranges:
+        return list(ranges)
+    return [
+        {"heading": normalize_whitespace(h).lower()}
+        for h in (section_headings or [])
+        if normalize_whitespace(h)
+    ]
+
+
+def _structure_roadmap_section_preserved(draft_norm: str, item: dict) -> bool:
+    """
+    True when one canonical structure section appears in final prose.
+
+    Contiguous sections require the section heading or the exact start–end
+    range citation. Partial single-paragraph citations inside a contiguous
+    range are incomplete and do not count. Noncontiguous / heading-only
+    sections may be preserved via heading or any observed paragraph number
+    from that section.
+    """
+    draft_lower = (draft_norm or "").lower()
+    heading = normalize_whitespace(item.get("heading") or "").lower()
+    if heading and heading in draft_lower:
+        return True
+    try:
+        start = item.get("start")
+        end = item.get("end")
+        if start is not None and end is not None:
+            start_i = int(start)
+            end_i = int(end)
+        else:
+            start_i = end_i = None
+    except (TypeError, ValueError):
+        start_i = end_i = None
+    if start_i is not None and end_i is not None:
+        for match in _PARTY_ROLE_PARAGRAPH_REF_RE.finditer(draft_norm or ""):
+            try:
+                a = int(match.group("a"))
+                b_raw = match.group("b")
+                b = int(b_raw) if b_raw else a
+            except (TypeError, ValueError):
+                continue
+            if a == start_i and b == end_i:
+                return True
+        # Contiguous authoritative range: do not accept an incomplete
+        # single-paragraph or partial-span fallback for this section.
+        return False
+
+    section_nums = set()
+    for raw in item.get("paragraph_numbers") or []:
+        try:
+            section_nums.add(int(raw))
+        except (TypeError, ValueError):
+            continue
+    if not section_nums:
+        return False
+    for match in _PARTY_ROLE_PARAGRAPH_REF_RE.finditer(draft_norm or ""):
+        try:
+            a = int(match.group("a"))
+            b_raw = match.group("b")
+            b = int(b_raw) if b_raw else a
+        except (TypeError, ValueError):
+            continue
+        if a in section_nums and b in section_nums:
+            return True
+    return False
+
+
+def _omitted_structure_roadmap_sections(
+    draft_norm: str,
+    *,
+    section_headings: Sequence[str],
+    section_ranges: Optional[Sequence[dict]] = None,
+) -> List[dict]:
+    """Return canonical structure sections absent from candidate final prose."""
+    omitted: List[dict] = []
+    for item in _canonical_roadmap_section_items(
+        section_headings=section_headings,
+        section_ranges=section_ranges,
+    ):
+        if not _structure_roadmap_section_preserved(draft_norm, item):
+            omitted.append(dict(item))
+    return omitted
+
+
 def _draft_preserves_complaint_roadmap(
     draft_norm: str,
     *,
@@ -4357,58 +4450,22 @@ def _draft_preserves_complaint_roadmap(
         if start not in allowed or end not in allowed:
             return False
 
-    if structure_backed and (headings or ranges):
-        # Require each structure section to be preserved via its heading or an
-        # exact supported range citation from that section.
-        for item in ranges or [{"heading": h} for h in headings]:
-            heading = normalize_whitespace(item.get("heading") or "").lower()
-            preserved = bool(heading and heading in draft_lower)
-            if not preserved:
-                try:
-                    start = item.get("start")
-                    end = item.get("end")
-                except Exception:  # noqa: BLE001
-                    start = end = None
-                if start is not None and end is not None:
-                    for match in _PARTY_ROLE_PARAGRAPH_REF_RE.finditer(draft_norm):
-                        try:
-                            a = int(match.group("a"))
-                            b_raw = match.group("b")
-                            b = int(b_raw) if b_raw else a
-                        except (TypeError, ValueError):
-                            continue
-                        if a == int(start) and b == int(end):
-                            preserved = True
-                            break
-                if not preserved:
-                    # Fall back: any observed paragraph number from this section.
-                    section_nums = set()
-                    for raw in item.get("paragraph_numbers") or []:
-                        try:
-                            section_nums.add(int(raw))
-                        except (TypeError, ValueError):
-                            continue
-                    if start is not None and end is not None:
-                        try:
-                            section_nums.update(range(int(start), int(end) + 1))
-                        except (TypeError, ValueError):
-                            pass
-                    if section_nums:
-                        for match in _PARTY_ROLE_PARAGRAPH_REF_RE.finditer(
-                            draft_norm
-                        ):
-                            try:
-                                a = int(match.group("a"))
-                                b_raw = match.group("b")
-                                b = int(b_raw) if b_raw else a
-                            except (TypeError, ValueError):
-                                continue
-                            if a in section_nums and b in section_nums:
-                                preserved = True
-                                break
-            if not preserved:
-                return False
-        return True
+    if structure_backed:
+        canonical = _canonical_roadmap_section_items(
+            section_headings=headings,
+            section_ranges=ranges,
+        )
+        if not canonical:
+            # Authoritative structure context attached but empty — never accept
+            # an incomplete excerpt-only / PARTIES-only fallback roadmap.
+            return False
+        # Every attached canonical section must appear; incomplete PARTIES-only
+        # or omitted-middle roadmaps fail completeness.
+        return not _omitted_structure_roadmap_sections(
+            draft_norm,
+            section_headings=headings,
+            section_ranges=ranges,
+        )
 
     if allowed:
         for match in _PARTY_ROLE_PARAGRAPH_REF_RE.finditer(draft_norm):
@@ -4535,17 +4592,26 @@ def _party_role_synthesis_missing_item(item: dict, category: str) -> dict:
         missing["exact_paragraph_range"] = exact_range
         missing["section_ranges"] = section_ranges
         missing["structure_backed"] = structure_backed
+        required_language = (
+            "Preserve only these exact paragraph numbers, section headings, "
+            "and section_ranges from the evidence packet / complaint_structure_"
+            "context; do not invent paragraph ranges."
+        )
+        if structure_backed:
+            required_language = (
+                "Preserve every canonical complaint_structure_context section "
+                "via its section heading or exact section_ranges entry listed "
+                "here; do not omit a middle section and do not substitute an "
+                "incomplete PARTIES-only or collapsed min/max fallback roadmap. "
+                "Never invent paragraph ranges."
+            )
         missing["evidence_facts"] = {
             "paragraph_numbers": nums,
             "section_headings": headings,
             "exact_paragraph_range": exact_range,
             "section_ranges": section_ranges,
             "structure_backed": structure_backed,
-            "required_language": (
-                "Preserve only these exact paragraph numbers, section headings, "
-                "and section_ranges from the evidence packet / complaint_structure_"
-                "context; do not invent paragraph ranges."
-            ),
+            "required_language": required_language,
         }
     return missing
 
@@ -4591,7 +4657,18 @@ def find_missing_party_role_synthesis(
         else:
             continue
         if not ok:
-            missing.append(_party_role_synthesis_missing_item(item, category))
+            gap = _party_role_synthesis_missing_item(item, category)
+            if category == "complaint_roadmap" and bool(item.get("structure_backed")):
+                omitted = _omitted_structure_roadmap_sections(
+                    draft_norm,
+                    section_headings=item.get("section_headings") or [],
+                    section_ranges=item.get("section_ranges") or [],
+                )
+                gap["missing_sections"] = omitted
+                facts = gap.get("evidence_facts")
+                if isinstance(facts, dict):
+                    facts["missing_sections"] = omitted
+            missing.append(gap)
     return missing
 
 
@@ -4696,9 +4773,12 @@ def build_party_role_repair_prompt(
         "without claiming those doctrines are conclusively established.\n"
         "When complaint_roadmap is missing: preserve only the exact paragraph "
         "numbers, section headings, or section_ranges listed in that item's "
-        "evidence_facts (including complaint_structure_context markers); "
-        "never invent paragraph ranges. If evidence_facts list no roadmap "
-        "markers, do not add a roadmap.\n"
+        "evidence_facts (including complaint_structure_context markers). When "
+        "structure_backed evidence_facts are present, every listed canonical "
+        "section must appear (use missing_sections when provided); do not emit "
+        "an incomplete PARTIES-only or collapsed fallback roadmap. Never invent "
+        "paragraph ranges. If evidence_facts list no roadmap markers, do not "
+        "add a roadmap.\n"
         f"Exact missing categories: {_stable_json(missing_categories)}.\n"
         "Return the required JSON object and nothing else.\n\n"
         f"Original question:\n{normalize_whitespace(question)}\n\n"
@@ -4757,8 +4837,11 @@ def build_party_role_synthesis_patch_prompt(
         category_instructions.append(
             "When complaint_roadmap is listed: preserve only the exact paragraph "
             "numbers, section headings, or section_ranges in that item's "
-            "evidence_facts; never invent paragraph ranges. If evidence_facts "
-            "list no roadmap markers, do not invent a roadmap paragraph."
+            "evidence_facts. When structure_backed is true, include every "
+            "canonical section (see missing_sections when present); do not emit "
+            "an incomplete PARTIES-only or collapsed min/max fallback. Never "
+            "invent paragraph ranges. If evidence_facts list no roadmap "
+            "markers, do not invent a roadmap paragraph."
         )
     instruction_block = ""
     if category_instructions:
