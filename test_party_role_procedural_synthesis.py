@@ -4,8 +4,10 @@ Covers evidence-supported procedural bearing, notice-defendant/no-wrongdoing
 reasoning, rescission effect, complaint roadmap preservation, targeted
 synthesis-patch repair (compliant, blocked, oscillation-preserving), response
 schema rejection (omit/duplicate/unknown/empty with audit reasons), merge
-preservation, semantic procedural-bearing acceptance/rejection, category
-lifecycle diagnostics, and refusal to require unsupported inferences. Uses only
+preservation, semantic procedural-bearing acceptance/rejection (including
+merits-determination rejection and partial doctrine omission), deterministic
+procedural_bearing fallback after repair omission, category lifecycle
+diagnostics, and refusal to require unsupported inferences. Uses only
 synthetic party names — no Case-00 identities, gold answers, attorney feedback,
 or benchmark prose.
 """
@@ -720,12 +722,293 @@ class PartyRoleProceduralBearingSemanticsTests(unittest.TestCase):
                 "Identity/role, entity form, and location relate to service, "
                 "jurisdiction, and venue."
             ),
+            # Partial doctrine omission: missing jurisdiction.
+            (
+                "Pleaded identity/role, entity form, and residence can bear on "
+                "service and venue."
+            ),
+            # Partial doctrine omission: missing service.
+            (
+                "Pleaded identity/role, entity form, and residence can bear on "
+                "jurisdiction as applicable and venue."
+            ),
         ]
         for text in samples:
             self.assertFalse(
                 de._draft_has_procedural_bearing(de.normalize_citation_text(text)),
                 msg=f"expected reject: {text}",
             )
+
+    def test_merits_determination_language_rejected(self):
+        samples = [
+            (
+                "Pleaded identity/role, entity form, and residence can bear on "
+                "service, jurisdiction as applicable, and venue as a merits "
+                "determination."
+            ),
+            (
+                "Identity/role, entity form, and location can bear on service, "
+                "jurisdiction as applicable, and venue and establish the merits."
+            ),
+            (
+                "Party identity and role, entity form, and residence can bear "
+                "on service, jurisdiction as applicable, and venue; this is a "
+                "merits conclusion."
+            ),
+        ]
+        for text in samples:
+            self.assertFalse(
+                de._draft_has_procedural_bearing(de.normalize_citation_text(text)),
+                msg=f"expected reject merits claim: {text}",
+            )
+
+    def test_deterministic_paragraph_is_stable_and_valid(self):
+        first = de.deterministic_party_role_procedural_bearing_paragraph()
+        second = de.deterministic_party_role_procedural_bearing_paragraph()
+        self.assertEqual(first, second)
+        self.assertTrue(
+            de._draft_has_procedural_bearing(de.normalize_citation_text(first))
+        )
+        # Must stay generic — no case-locked identities or question text.
+        lowered = first.lower()
+        self.assertNotIn("north quay", lowered)
+        self.assertNotIn("triborough", lowered)
+        self.assertIn("service", lowered)
+        self.assertIn("jurisdiction as applicable", lowered)
+        self.assertIn("venue", lowered)
+
+
+class PartyRoleDeterministicProceduralBearingFallbackTests(unittest.TestCase):
+    """Initial success, model repair, and deterministic PB fallback coverage."""
+
+    def test_initial_success_without_repair_when_bearing_present(self):
+        question = "Who are the parties and what are their roles in this action?"
+        retrieval = {
+            "query": question,
+            "results": [_hit(FULL_SYNTHETIC_COMPLAINT)],
+            "provisional_answer": "PROVISIONAL_SHOULD_NOT_APPEAR",
+            "gold_answer": "GOLD_SHOULD_NOT_APPEAR",
+            "attorney_feedback": "FEEDBACK_SHOULD_NOT_APPEAR",
+        }
+        calls = []
+
+        def _model(_system, user_prompt):
+            calls.append(user_prompt)
+            packet = de.build_evidence_packet(question, retrieval)
+            expected = de.extract_party_role_expected_attributes(packet)
+            synthesis = de.extract_party_role_expected_synthesis(packet, expected)
+            hit = packet["retrieval_hits"][0]
+            return _synthetic_payload(
+                _complete_synthesis_answer(expected, synthesis),
+                hit,
+            )
+
+        result = de.answer_attorney_record_question(
+            question,
+            retrieval,
+            model_call=_model,
+        )
+        self.assertEqual(result["status"], de.STATUS_READY)
+        self.assertEqual(len(calls), 1)
+        self.assertFalse(result["audit"].get("party_role_repair_attempted"))
+        self.assertFalse(
+            result["audit"].get("party_role_deterministic_procedural_bearing_fallback")
+        )
+        self.assertIn("can bear on service", result["proposed_answer"].lower())
+
+    def test_model_repair_success_without_deterministic_fallback(self):
+        question = "Who are the parties and what are their roles in this action?"
+        retrieval = {
+            "query": question,
+            "results": [_hit(FULL_SYNTHETIC_COMPLAINT)],
+            "provisional_answer": "PROVISIONAL_SHOULD_NOT_APPEAR",
+            "gold_answer": "GOLD_SHOULD_NOT_APPEAR",
+            "attorney_feedback": "FEEDBACK_SHOULD_NOT_APPEAR",
+        }
+        calls = []
+
+        def _model(_system, user_prompt):
+            calls.append(user_prompt)
+            packet = de.build_evidence_packet(question, retrieval)
+            expected = de.extract_party_role_expected_attributes(packet)
+            synthesis = de.extract_party_role_expected_synthesis(packet, expected)
+            hit = packet["retrieval_hits"][0]
+            if len(calls) == 1:
+                return _synthetic_payload(
+                    _notice_and_rescission_prefix(expected),
+                    hit,
+                )
+            return {
+                "synthesis_patch": _patch_paragraphs_for_categories(
+                    ["procedural_bearing", "complaint_roadmap"],
+                    synthesis,
+                )
+            }
+
+        result = de.answer_attorney_record_question(
+            question,
+            retrieval,
+            model_call=_model,
+        )
+        self.assertEqual(result["status"], de.STATUS_READY)
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(result["audit"].get("party_role_repair_attempted"))
+        self.assertFalse(
+            result["audit"].get("party_role_deterministic_procedural_bearing_fallback")
+        )
+        lowered = result["proposed_answer"].lower()
+        self.assertIn("can bear on service", lowered)
+        self.assertIn("does not itself allege wrongdoing", lowered)
+
+    def test_deterministic_fallback_after_repair_omission_of_procedural_bearing(self):
+        question = "Who are the parties and what are their roles in this action?"
+        retrieval = {
+            "query": question,
+            "results": [_hit(FULL_SYNTHETIC_COMPLAINT)],
+            "provisional_answer": "PROVISIONAL_SHOULD_NOT_APPEAR",
+            "gold_answer": "GOLD_SHOULD_NOT_APPEAR",
+            "attorney_feedback": "FEEDBACK_SHOULD_NOT_APPEAR",
+        }
+        calls = []
+
+        def _model(_system, user_prompt):
+            calls.append(user_prompt)
+            packet = de.build_evidence_packet(question, retrieval)
+            expected = de.extract_party_role_expected_attributes(packet)
+            synthesis = de.extract_party_role_expected_synthesis(packet, expected)
+            hit = packet["retrieval_hits"][0]
+            if len(calls) == 1:
+                # Satisfied: roster + notice + rescission + roadmap; missing PB.
+                prefix = _notice_and_rescission_prefix(expected)
+                roadmap = next(
+                    item
+                    for item in synthesis
+                    if item["category"] == "complaint_roadmap"
+                )
+                nums = list(roadmap.get("paragraph_numbers") or [])
+                prefix += (
+                    f" The complaint parties roadmap appears at paragraphs "
+                    f"{nums[0]} through {nums[-1]}."
+                )
+                return _synthetic_payload(prefix, hit)
+            # Repair omits procedural_bearing entirely.
+            return {"synthesis_patch": {}}
+
+        result = de.answer_attorney_record_question(
+            question,
+            retrieval,
+            model_call=_model,
+        )
+        self.assertEqual(result["status"], de.STATUS_READY)
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(result["audit"].get("party_role_repair_attempted"))
+        self.assertTrue(
+            result["audit"].get("party_role_deterministic_procedural_bearing_fallback")
+        )
+        lowered = result["proposed_answer"].lower()
+        self.assertIn("can bear on service", lowered)
+        self.assertIn("jurisdiction as applicable", lowered)
+        self.assertIn("venue", lowered)
+        # Preservation of already-satisfied categories.
+        self.assertIn("does not itself allege wrongdoing", lowered)
+        self.assertIn("negatively affect", lowered)
+        self.assertIn("paragraphs 1 through 4", lowered)
+        det = de.deterministic_party_role_procedural_bearing_paragraph().lower()
+        self.assertIn(det, lowered)
+
+    def test_deterministic_fallback_replaces_conclusory_bearing_preserves_others(self):
+        question = "Who are the parties and what are their roles in this action?"
+        retrieval = {
+            "query": question,
+            "results": [_hit(FULL_SYNTHETIC_COMPLAINT)],
+            "provisional_answer": "PROVISIONAL_SHOULD_NOT_APPEAR",
+            "gold_answer": "GOLD_SHOULD_NOT_APPEAR",
+            "attorney_feedback": "FEEDBACK_SHOULD_NOT_APPEAR",
+        }
+        calls = []
+
+        def _model(_system, user_prompt):
+            calls.append(user_prompt)
+            packet = de.build_evidence_packet(question, retrieval)
+            expected = de.extract_party_role_expected_attributes(packet)
+            synthesis = de.extract_party_role_expected_synthesis(packet, expected)
+            hit = packet["retrieval_hits"][0]
+            if len(calls) == 1:
+                return _synthetic_payload(
+                    _notice_and_rescission_prefix(expected),
+                    hit,
+                )
+            roadmap = _patch_paragraphs_for_categories(
+                ["complaint_roadmap"], synthesis
+            )
+            return {
+                "synthesis_patch": {
+                    "complaint_roadmap": roadmap["complaint_roadmap"],
+                    "procedural_bearing": (
+                        "Pleaded identity/role, entity form, and residence "
+                        "establish service, jurisdiction, and venue on the merits."
+                    ),
+                }
+            }
+
+        result = de.answer_attorney_record_question(
+            question,
+            retrieval,
+            model_call=_model,
+        )
+        self.assertEqual(result["status"], de.STATUS_READY)
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(
+            result["audit"].get("party_role_deterministic_procedural_bearing_fallback")
+        )
+        lowered = result["proposed_answer"].lower()
+        self.assertIn("can bear on service", lowered)
+        self.assertNotIn("establish service, jurisdiction, and venue", lowered)
+        self.assertIn("does not itself allege wrongdoing", lowered)
+        self.assertIn("paragraphs 1 through 4", lowered)
+
+    def test_equivalent_wording_accepted_without_fallback(self):
+        text = (
+            "Party identity and role, together with entity form and "
+            "residence, may bear on service, jurisdiction as applicable, "
+            "and venue; they are not conclusively established."
+        )
+        self.assertTrue(
+            de._draft_has_procedural_bearing(de.normalize_citation_text(text))
+        )
+
+    def test_resolve_patch_fills_only_missing_procedural_bearing(self):
+        packet = _packet(FULL_SYNTHETIC_COMPLAINT)
+        expected = de.extract_party_role_expected_attributes(packet)
+        synthesis = de.extract_party_role_expected_synthesis(packet, expected)
+        roster = _notice_and_rescission_prefix(expected)
+        roadmap = _patch_paragraphs_for_categories(["complaint_roadmap"], synthesis)
+        audit = {}
+        parsed = de.resolve_party_role_synthesis_patch(
+            {
+                "synthesis_patch": {
+                    "complaint_roadmap": roadmap["complaint_roadmap"],
+                    # procedural_bearing omitted
+                }
+            },
+            allowed_categories=["procedural_bearing", "complaint_roadmap"],
+            original_answer=roster,
+            expected_synthesis=synthesis,
+            audit_out=audit,
+        )
+        self.assertIsNotNone(parsed)
+        self.assertEqual(
+            set(parsed.keys()), {"procedural_bearing", "complaint_roadmap"}
+        )
+        self.assertEqual(
+            parsed["procedural_bearing"],
+            de.deterministic_party_role_procedural_bearing_paragraph(),
+        )
+        self.assertTrue(audit.get("party_role_deterministic_procedural_bearing_fallback"))
+        self.assertEqual(
+            parsed["complaint_roadmap"],
+            de.normalize_whitespace(roadmap["complaint_roadmap"]),
+        )
 
 
 class PartyRoleSynthesisPatchSchemaAndLifecycleTests(unittest.TestCase):

@@ -14,13 +14,15 @@ repair call receives those categories plus supporting evidence facts and must
 return a strict structured synthesis patch (each requested category exactly
 once); the original candidate answer is preserved and patch sections are merged
 deterministically with category-level lifecycle diagnostics (requested/parsed/
-merged/validated) that never include private evidence or model prose. Attribute
-gaps still
-use one bounded full-draft repair. Complaint roadmap is required only when
-exact paragraph numbers or section organization were extracted from evidence
-or from attached complaint_structure_context metadata (overview, intervening
-factual layout, and party sections). Structure context is supplemental and
-never invents ranges.
+merged/validated) that never include private evidence or model prose. When
+evidence supports procedural_bearing and the model omits it or supplies
+conclusory/invalid phrasing, a deterministic qualified paragraph is applied for
+that category only—preserving already-satisfied synthesis, citations, and
+provenance—without a second provider call. Attribute gaps still use one bounded
+full-draft repair. Complaint roadmap is required only when exact paragraph
+numbers or section organization were extracted from evidence or from attached
+complaint_structure_context metadata (overview, intervening factual layout, and
+party sections). Structure context is supplemental and never invents ranges.
 Gold answers and attorney feedback are never loaded into generation.
 
 Model calls go through the configured provider abstraction
@@ -3657,6 +3659,41 @@ _PARTY_ROLE_PROCEDURAL_DOCTRINE_ESTABLISHED_POS_RE = re.compile(
     r"(?:service|jurisdiction|venue|those\s*doctrines)"
     r")\b"
 )
+# Affirmative "this is a merits determination" cues. Negated hedges (e.g.
+# "not a merits conclusion") are stripped before this runs.
+_PARTY_ROLE_PROCEDURAL_MERITS_NEGATED_RE = re.compile(
+    r"(?i)\b(?:"
+    r"not\s+a\s+merits\s+(?:conclusion|determination)|"
+    r"not\s+(?:a\s+)?merits?\s+(?:conclusion|determination)|"
+    r"(?:do|does|did)\s+not\s+(?:themselves\s+)?"
+    r"(?:conclusively\s+)?(?:establish|determine|decide)\s+(?:the\s+)?merits?|"
+    r"merits?\s+(?:are|is)\s+not\s+(?:conclusively\s+)?"
+    r"(?:established|determined|decided)|"
+    r"without\s+(?:deciding|determining|reaching|claiming)\s+(?:the\s+)?merits?|"
+    r"those\s+doctrines\s+and\s+the\s+merits\s+are\s+not\s+"
+    r"(?:conclusively\s+)?established"
+    r")\b"
+)
+_PARTY_ROLE_PROCEDURAL_MERITS_DETERMINATION_RE = re.compile(
+    r"(?i)\b(?:"
+    r"merits?\s+(?:conclusion|determination|decision)|"
+    r"(?:establish|decide|determine)(?:s|ed|ing)?\s+(?:the\s+)?merits?|"
+    r"(?:on|as)\s+the\s+merits\b|"
+    r"merits?\s+(?:are|is)\s+(?:conclusively\s+)?"
+    r"(?:established|determined|decided)|"
+    r"procedural\s+relevance\s+(?:is|as)\s+a\s+merits\s+"
+    r"(?:conclusion|determination)"
+    r")\b"
+)
+# Deterministic fillable synthesis categories (generic; no case-specific prose).
+_PARTY_ROLE_DETERMINISTIC_SYNTHESIS_CATEGORIES = frozenset({"procedural_bearing"})
+_PARTY_ROLE_DETERMINISTIC_PROCEDURAL_BEARING_PARAGRAPH = (
+    "As procedural relevance only—not a merits conclusion—pleaded party "
+    "identity/role, entity form, and residence or principal place of business "
+    "can bear on service, jurisdiction as applicable, and venue; those "
+    "doctrines and the merits are not conclusively established by those "
+    "allegations."
+)
 _PARTY_ROLE_NO_WRONGDOING_RE = re.compile(
     r"(?i)\b(?:"
     r"does\s+not\s+itself\s+allege\s+wrongdoing|"
@@ -3958,6 +3995,15 @@ def _draft_claims_procedural_doctrines_established(draft_norm: str) -> bool:
     return bool(_PARTY_ROLE_PROCEDURAL_DOCTRINE_ESTABLISHED_POS_RE.search(cleaned))
 
 
+def _draft_claims_procedural_relevance_as_merits(draft_norm: str) -> bool:
+    """
+    True when the draft treats procedural relevance as a merits determination.
+    Negated hedges ("not a merits conclusion", etc.) are stripped first.
+    """
+    cleaned = _PARTY_ROLE_PROCEDURAL_MERITS_NEGATED_RE.sub(" ", draft_norm)
+    return bool(_PARTY_ROLE_PROCEDURAL_MERITS_DETERMINATION_RE.search(cleaned))
+
+
 def _draft_has_procedural_bearing(draft_norm: str) -> bool:
     """
     Semantic but deterministic procedural-bearing predicate.
@@ -3965,7 +4011,8 @@ def _draft_has_procedural_bearing(draft_norm: str) -> bool:
     Accepts grounded phrasings that state party identity/role plus entity
     form/location allegations may/can bear on (or upon) service, jurisdiction
     as applicable, and venue. Rejects conclusory claims that those doctrines
-    are established. Does not require one exact sentence or punctuation.
+    are established, and rejects language treating procedural relevance as a
+    merits determination. Does not require one exact sentence or punctuation.
     """
     lowered = draft_norm.lower()
     if not _PARTY_ROLE_PROCEDURAL_BEARING_HEDGE_RE.search(lowered):
@@ -3984,7 +4031,211 @@ def _draft_has_procedural_bearing(draft_norm: str) -> bool:
         return False
     if _draft_claims_procedural_doctrines_established(lowered):
         return False
+    if _draft_claims_procedural_relevance_as_merits(lowered):
+        return False
     return True
+
+
+def deterministic_party_role_procedural_bearing_paragraph() -> str:
+    """
+    Generic cautious procedural-bearing paragraph for deterministic repair.
+
+    Case-agnostic: no party names, question text, or benchmark ranges.
+    """
+    return _PARTY_ROLE_DETERMINISTIC_PROCEDURAL_BEARING_PARAGRAPH
+
+
+def _extract_synthesis_patch_mapping(raw: Any) -> Optional[dict]:
+    """Best-effort extraction of a synthesis_patch category map from model output."""
+    payload: Optional[dict] = None
+    if isinstance(raw, dict):
+        if "synthesis_patch" in raw:
+            payload = raw
+        elif raw and all(_is_party_role_synthesis_category(str(k)) for k in raw.keys()):
+            return dict(raw)
+        else:
+            payload = raw
+    elif isinstance(raw, str):
+        payload = _strict_json_object_from_text(raw)
+    if not isinstance(payload, dict):
+        return None
+    patch_obj = payload.get("synthesis_patch", payload)
+    if not isinstance(patch_obj, dict):
+        return None
+    if payload.get("synthesis_patch") is patch_obj:
+        return dict(patch_obj)
+    # Bare category map only when every key is a known synthesis category.
+    if patch_obj and all(
+        _is_party_role_synthesis_category(str(k)) for k in patch_obj.keys()
+    ):
+        return dict(patch_obj)
+    return None
+
+
+def _procedural_bearing_section_needs_deterministic_fill(
+    section: Any,
+    *,
+    expected_synthesis: Optional[Sequence[dict]] = None,
+) -> bool:
+    if not isinstance(section, str):
+        return True
+    text = normalize_whitespace(section)
+    if not text:
+        return True
+    criterion = _synthesis_criterion_for_category(
+        expected_synthesis or [], "procedural_bearing"
+    )
+    return not _synthesis_section_satisfies(text, "procedural_bearing", criterion)
+
+
+def resolve_party_role_synthesis_patch(
+    raw: Any,
+    *,
+    allowed_categories: Sequence[str],
+    original_answer: str = "",
+    expected_synthesis: Optional[Sequence[dict]] = None,
+    audit_out: Optional[dict] = None,
+) -> Optional[Dict[str, str]]:
+    """
+    Parse a model synthesis patch, with deterministic procedural_bearing fill.
+
+    Strict parse runs first. When ``procedural_bearing`` is among the allowed
+    missing categories and the model omits it or supplies invalid/conclusory
+    phrasing, that category alone is replaced with the deterministic qualified
+    paragraph and the patch is re-parsed. Other category failures stay
+    fail-closed. Does not invent roadmap ranges or rewrite satisfied text.
+    """
+    strict = parse_party_role_synthesis_patch(
+        raw,
+        allowed_categories=allowed_categories,
+        original_answer=original_answer,
+        expected_synthesis=expected_synthesis,
+        audit_out=audit_out,
+    )
+    if strict is not None:
+        if audit_out is not None:
+            audit_out["party_role_deterministic_procedural_bearing_fallback"] = False
+        return strict
+
+    allowed = [
+        normalize_whitespace(c)
+        for c in allowed_categories
+        if normalize_whitespace(c) and _is_party_role_synthesis_category(c)
+    ]
+    allowed_set = set(allowed)
+    if "procedural_bearing" not in allowed_set:
+        return None
+    if "procedural_bearing" not in _PARTY_ROLE_DETERMINISTIC_SYNTHESIS_CATEGORIES:
+        return None
+
+    extracted = _extract_synthesis_patch_mapping(raw)
+    candidate: Dict[str, Any] = dict(extracted) if isinstance(extracted, dict) else {}
+    # Drop unknown keys so a salvageable partial patch can still parse; unknown
+    # keys alone (with no allowed content) remain fail-closed via re-parse.
+    candidate = {
+        normalize_whitespace(str(key)): value
+        for key, value in candidate.items()
+        if normalize_whitespace(str(key)) in allowed_set
+    }
+    if _procedural_bearing_section_needs_deterministic_fill(
+        candidate.get("procedural_bearing"),
+        expected_synthesis=expected_synthesis,
+    ):
+        candidate["procedural_bearing"] = (
+            deterministic_party_role_procedural_bearing_paragraph()
+        )
+
+    # When the model returned nothing usable, still allow PB-only deterministic.
+    if not candidate and allowed_set != {"procedural_bearing"}:
+        return None
+    if not candidate:
+        candidate = {
+            "procedural_bearing": deterministic_party_role_procedural_bearing_paragraph()
+        }
+
+    retry_audit: Dict[str, Any] = {}
+    filled = parse_party_role_synthesis_patch(
+        {"synthesis_patch": candidate},
+        allowed_categories=allowed,
+        original_answer=original_answer,
+        expected_synthesis=expected_synthesis,
+        audit_out=retry_audit,
+    )
+    if filled is None:
+        if audit_out is not None:
+            # Preserve the stricter original failure reason when salvage fails.
+            audit_out.setdefault(
+                "party_role_synthesis_patch_audit_reason",
+                retry_audit.get("party_role_synthesis_patch_audit_reason"),
+            )
+            if "party_role_synthesis_category_lifecycle" in retry_audit:
+                audit_out["party_role_synthesis_category_lifecycle"] = retry_audit[
+                    "party_role_synthesis_category_lifecycle"
+                ]
+            audit_out["party_role_deterministic_procedural_bearing_fallback"] = False
+        return None
+
+    if audit_out is not None:
+        audit_out["party_role_synthesis_patch_audit_reason"] = None
+        audit_out["party_role_synthesis_category_lifecycle"] = retry_audit.get(
+            "party_role_synthesis_category_lifecycle"
+        )
+        audit_out["party_role_deterministic_procedural_bearing_fallback"] = True
+    return filled
+
+
+def apply_deterministic_party_role_procedural_bearing_fallback(
+    current_draft: Any,
+    *,
+    expected_synthesis: Optional[Sequence[dict]] = None,
+    audit_out: Optional[dict] = None,
+) -> Optional[dict]:
+    """
+    Merge the deterministic procedural_bearing paragraph into ``current_draft``.
+
+    Patches only that missing category; preserves roster, citations, and any
+    already-satisfied synthesis text. Returns None when merge is impossible.
+    """
+    sections = {
+        "procedural_bearing": deterministic_party_role_procedural_bearing_paragraph()
+    }
+    if audit_out is not None:
+        lifecycle = audit_out.get("party_role_synthesis_category_lifecycle")
+        if not isinstance(lifecycle, list):
+            audit_out["party_role_synthesis_category_lifecycle"] = (
+                _init_synthesis_category_lifecycle(["procedural_bearing"])
+            )
+        else:
+            existing = {
+                normalize_whitespace(row.get("category"))
+                for row in lifecycle
+                if isinstance(row, dict)
+            }
+            if "procedural_bearing" not in existing:
+                lifecycle.extend(
+                    _init_synthesis_category_lifecycle(["procedural_bearing"])
+                )
+        _lifecycle_set_state(
+            audit_out["party_role_synthesis_category_lifecycle"],
+            ["procedural_bearing"],
+            "requested",
+            True,
+        )
+        _lifecycle_set_state(
+            audit_out["party_role_synthesis_category_lifecycle"],
+            ["procedural_bearing"],
+            "parsed",
+            True,
+        )
+    merged = merge_party_role_synthesis_patch(
+        current_draft,
+        sections,
+        expected_synthesis=expected_synthesis,
+        audit_out=audit_out,
+    )
+    if merged is not None and audit_out is not None:
+        audit_out["party_role_deterministic_procedural_bearing_fallback"] = True
+    return merged
 
 
 def _draft_has_notice_defendant_explanation(
@@ -5537,10 +5788,14 @@ def answer_attorney_record_question(
     otherwise the result is FAIL / NOT READY. Synthesis-only gaps use a strict
     structured patch (missing categories + evidence facts only); the original
     candidate is preserved and patch sections are merged deterministically,
-    then the entire merged answer is revalidated. Attribute gaps still use one
-    full-draft repair. If the patch is invalid or a safe merge is impossible,
-    fail closed without rewriting. A complete party list alone cannot pass when
-    supported service/jurisdiction/venue bearing, notice-defendant explanation,
+    then the entire merged answer is revalidated. When evidence supports
+    procedural_bearing and the model omits it or supplies invalid phrasing, a
+    deterministic qualified paragraph fills that category only without a second
+    provider call, preserving already-satisfied synthesis and citations.
+    Attribute gaps still use one full-draft repair. If the patch is invalid or a
+    safe merge is impossible after that fallback, fail closed without rewriting.
+    A complete party list alone cannot pass when supported
+    service/jurisdiction/venue bearing, notice-defendant explanation,
     rescission effect, or an evidence-exact complaint roadmap connection is
     missing. Complaint roadmap is not required when evidence lacks exact
     paragraph numbers or section organization (including attached
@@ -5684,7 +5939,7 @@ def answer_attorney_record_question(
                 original_answer = normalize_whitespace(
                     validated.get("proposed_answer") or ""
                 )
-                patch_sections = parse_party_role_synthesis_patch(
+                patch_sections = resolve_party_role_synthesis_patch(
                     raw,
                     allowed_categories=allowed_categories,
                     original_answer=original_answer,
@@ -5692,39 +5947,133 @@ def answer_attorney_record_question(
                     audit_out=synthesis_audit,
                 )
                 if patch_sections is None:
-                    return _party_role_completeness_failure(
-                        question=question_text,
-                        retrieval=retrieval,
-                        missing_attributes=missing,
-                        synthesis_audit=synthesis_audit,
+                    # Last resort: only procedural_bearing remains fillable; other
+                    # missing synthesis categories still fail closed below.
+                    if "procedural_bearing" in allowed_categories:
+                        patch_sections = {
+                            "procedural_bearing": (
+                                deterministic_party_role_procedural_bearing_paragraph()
+                            )
+                        }
+                        # When other categories were also requested, a PB-only
+                        # patch cannot satisfy the exact key set — apply onto the
+                        # original draft instead and let revalidation decide.
+                        if set(allowed_categories) != {"procedural_bearing"}:
+                            merged_fallback = (
+                                apply_deterministic_party_role_procedural_bearing_fallback(
+                                    validated,
+                                    expected_synthesis=expected_synthesis,
+                                    audit_out=synthesis_audit,
+                                )
+                            )
+                            if merged_fallback is None:
+                                return _party_role_completeness_failure(
+                                    question=question_text,
+                                    retrieval=retrieval,
+                                    missing_attributes=missing,
+                                    synthesis_audit=synthesis_audit,
+                                )
+                            validated = _scrub_party_role_answer_after_citation_filter(
+                                _validate(merged_fallback)
+                            )
+                            validated.setdefault("audit", {})
+                            validated["audit"].update(
+                                {
+                                    k: synthesis_audit.get(k)
+                                    for k in (
+                                        "party_role_synthesis_patch_audit_reason",
+                                        "party_role_synthesis_category_lifecycle",
+                                        "party_role_deterministic_procedural_bearing_fallback",
+                                    )
+                                    if k in synthesis_audit
+                                }
+                            )
+                            patch_sections = None  # already merged
+                        else:
+                            synthesis_audit[
+                                "party_role_deterministic_procedural_bearing_fallback"
+                            ] = True
+                    else:
+                        return _party_role_completeness_failure(
+                            question=question_text,
+                            retrieval=retrieval,
+                            missing_attributes=missing,
+                            synthesis_audit=synthesis_audit,
+                        )
+                if patch_sections is not None:
+                    merged = merge_party_role_synthesis_patch(
+                        validated,
+                        patch_sections,
+                        expected_synthesis=expected_synthesis,
+                        audit_out=synthesis_audit,
                     )
-                merged = merge_party_role_synthesis_patch(
-                    validated,
-                    patch_sections,
-                    expected_synthesis=expected_synthesis,
-                    audit_out=synthesis_audit,
-                )
-                if merged is None:
-                    return _party_role_completeness_failure(
-                        question=question_text,
-                        retrieval=retrieval,
-                        missing_attributes=missing,
-                        synthesis_audit=synthesis_audit,
+                    if merged is None:
+                        return _party_role_completeness_failure(
+                            question=question_text,
+                            retrieval=retrieval,
+                            missing_attributes=missing,
+                            synthesis_audit=synthesis_audit,
+                        )
+                    validated = _scrub_party_role_answer_after_citation_filter(
+                        _validate(merged)
                     )
-                validated = _scrub_party_role_answer_after_citation_filter(
-                    _validate(merged)
-                )
-                # Attach patch diagnostics before final completeness revalidation.
-                validated.setdefault("audit", {})
-                validated["audit"]["party_role_synthesis_patch_audit_reason"] = (
-                    synthesis_audit.get("party_role_synthesis_patch_audit_reason")
-                )
-                validated["audit"]["party_role_synthesis_category_lifecycle"] = (
-                    synthesis_audit.get("party_role_synthesis_category_lifecycle")
-                )
+                    # Attach patch diagnostics before final completeness revalidation.
+                    validated.setdefault("audit", {})
+                    validated["audit"]["party_role_synthesis_patch_audit_reason"] = (
+                        synthesis_audit.get("party_role_synthesis_patch_audit_reason")
+                    )
+                    validated["audit"]["party_role_synthesis_category_lifecycle"] = (
+                        synthesis_audit.get("party_role_synthesis_category_lifecycle")
+                    )
+                    if (
+                        "party_role_deterministic_procedural_bearing_fallback"
+                        in synthesis_audit
+                    ):
+                        validated["audit"][
+                            "party_role_deterministic_procedural_bearing_fallback"
+                        ] = synthesis_audit[
+                            "party_role_deterministic_procedural_bearing_fallback"
+                        ]
             missing_after = find_missing_party_role_requirements(
                 validated, expected, expected_synthesis
             )
+            # Deterministic procedural_bearing fallback after repair / merge when
+            # that category alone (or among others) remains missing—patch only PB.
+            if missing_after:
+                _attr_remaining, syn_remaining = (
+                    partition_party_role_missing_requirements(missing_after)
+                )
+                del _attr_remaining
+                if any(
+                    normalize_whitespace(item.get("category")) == "procedural_bearing"
+                    for item in syn_remaining
+                    if isinstance(item, dict)
+                ):
+                    fallback_audit = dict(validated.get("audit") or {})
+                    merged_pb = apply_deterministic_party_role_procedural_bearing_fallback(
+                        validated,
+                        expected_synthesis=expected_synthesis,
+                        audit_out=fallback_audit,
+                    )
+                    if merged_pb is not None:
+                        validated = _scrub_party_role_answer_after_citation_filter(
+                            _validate(merged_pb)
+                        )
+                        validated.setdefault("audit", {})
+                        validated["audit"][
+                            "party_role_deterministic_procedural_bearing_fallback"
+                        ] = True
+                        if fallback_audit.get(
+                            "party_role_synthesis_category_lifecycle"
+                        ) is not None:
+                            validated["audit"][
+                                "party_role_synthesis_category_lifecycle"
+                            ] = fallback_audit[
+                                "party_role_synthesis_category_lifecycle"
+                            ]
+                        missing_after = find_missing_party_role_requirements(
+                            validated, expected, expected_synthesis
+                        )
             # Mark validated lifecycle from post-merge revalidation (category ids only).
             lifecycle = (validated.get("audit") or {}).get(
                 "party_role_synthesis_category_lifecycle"
@@ -5748,6 +6097,14 @@ def answer_attorney_record_question(
                         row["validated"] = True
                     elif cat in still_missing:
                         row["validated"] = False
+                    elif (
+                        cat == "procedural_bearing"
+                        and cat not in still_missing
+                        and (validated.get("audit") or {}).get(
+                            "party_role_deterministic_procedural_bearing_fallback"
+                        )
+                    ):
+                        row["validated"] = True
             if missing_after:
                 fail = _party_role_completeness_failure(
                     question=question_text,
