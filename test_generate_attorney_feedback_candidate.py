@@ -169,6 +169,38 @@ def _complete_payload_from_prompt(user_prompt: str) -> dict:
             bit += f" ({party['pleaded_role_basis']})"
         bits.append(bit + ".")
     answer = " ".join(bits) or "Parties are identified in the record."
+    synthesis = de.extract_party_role_expected_synthesis(packet, expected)
+    categories = {item.get("category") for item in synthesis}
+    if "complaint_roadmap" in categories:
+        nums = []
+        for item in synthesis:
+            if item.get("category") == "complaint_roadmap":
+                nums = list(item.get("paragraph_numbers") or [])
+                break
+        if nums:
+            answer += (
+                f" The complaint parties roadmap appears at paragraphs "
+                f"{nums[0]} through {nums[-1]}."
+            )
+        else:
+            answer += " The complaint parties roadmap appears in the PARTIES section."
+    if "procedural_bearing" in categories:
+        answer += (
+            " As procedural relevance only, those entity-form and residence "
+            "or principal-place allegations can bear on service, personal or "
+            "subject-matter jurisdiction as applicable, and venue; they do not "
+            "themselves establish those doctrines."
+        )
+    if "notice_defendant_explanation" in categories:
+        answer += (
+            " Notice-defendant joinder reflects the potential effect of "
+            "requested relief and does not itself allege wrongdoing."
+        )
+    if "rescission_effect" in categories:
+        answer += (
+            " The requested rescission or void ab initio treatment may "
+            "negatively affect those asserted rights, as alleged."
+        )
     return {
         "proposed_answer": answer,
         "propositions": [

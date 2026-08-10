@@ -2688,6 +2688,32 @@ class PartyRoleDraftingCompletenessTests(unittest.TestCase):
                 bit += f" ({party['pleaded_role_basis']})"
             bits.append(bit + ".")
         answer = " ".join(bits)
+        # Satisfy evidence-supported procedural synthesis so a party list alone
+        # is not treated as a false completeness PASS.
+        synthesis = de.extract_party_role_expected_synthesis(packet, expected)
+        categories = {item.get("category") for item in synthesis}
+        if "complaint_roadmap" in categories:
+            answer += (
+                " The complaint parties roadmap appears in the PARTIES section "
+                "at paragraphs 1 through 5."
+            )
+        if "procedural_bearing" in categories:
+            answer += (
+                " As procedural relevance only, those entity-form and "
+                "residence or principal-place allegations can bear on service, "
+                "personal or subject-matter jurisdiction as applicable, and "
+                "venue; they do not themselves establish those doctrines."
+            )
+        if "notice_defendant_explanation" in categories:
+            answer += (
+                " Notice-defendant joinder reflects the potential effect of "
+                "requested relief and does not itself allege wrongdoing."
+            )
+        if "rescission_effect" in categories:
+            answer += (
+                " The requested rescission or void ab initio treatment may "
+                "negatively affect those asserted rights, as alleged."
+            )
         return {
             "proposed_answer": answer,
             "propositions": [
@@ -2766,6 +2792,9 @@ class PartyRoleDraftingCompletenessTests(unittest.TestCase):
         self.assertIn("residence or principal place of business", lowered)
         self.assertIn("pleaded role basis", lowered)
         self.assertIn("notice-defendant", lowered)
+        self.assertIn("can bear on service", lowered)
+        self.assertIn("does not itself allege wrongdoing", lowered)
+        self.assertIn("never invent paragraph ranges", lowered)
         self.assertIn("not optional", lowered)
         self.assertIn("cannot be omitted for brevity", lowered)
 

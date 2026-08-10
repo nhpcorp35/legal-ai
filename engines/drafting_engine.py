@@ -5,6 +5,12 @@ Retrieval-grounded attorney Q&A reasoner.
 Consumes canonical retrieval hits (and optional case-map / exhibit context)
 and produces a structured, citation-bounded answer for attorney review.
 
+Party-and-role questions additionally enforce evidence-supported attribute
+completeness and procedural synthesis (service/jurisdiction/venue bearing,
+notice-defendant/no-wrongdoing explanation, rescission effect, and complaint
+roadmap preservation) via deterministic post-draft validation and one bounded
+repair. Gold answers and attorney feedback are never loaded into generation.
+
 Model calls go through the configured provider abstraction
 (``resolve_model_provider`` / injectable ``model_call``). Generation is
 opt-in; callers must request it explicitly.
@@ -319,9 +325,25 @@ PARTY_ROLE_DRAFTING_COMPLETENESS_INSTRUCTION = (
     "3. entity type / entity form\n"
     "4. residence or principal place of business\n"
     "5. pleaded role basis, including notice-defendant basis where applicable\n"
+    "When the record supplies party identity/role plus entity form and residence "
+    "or principal place of business, also explain—as procedural relevance only, "
+    "not a merits conclusion—that those allegations can bear on service, "
+    "personal or subject-matter jurisdiction as applicable, and venue. Do not "
+    "overstate which doctrine is actually established.\n"
+    "When parties are pleaded as notice defendants because rights may be "
+    "affected by requested declaratory relief, explain that joinder reflects "
+    "the potential effect of relief and does not itself allege wrongdoing. If "
+    "requested relief includes rescission or void-ab-initio treatment, connect "
+    "that relief to possible negative effects on those asserted rights, while "
+    "preserving allegation/candidate qualifiers. An 'interest not specifically "
+    "described' caveat must not erase that supported causal explanation.\n"
+    "When paragraph ranges or section organization appear in the retrieved "
+    "evidence, preserve a useful complaint structure/roadmap from those "
+    "markers; never invent paragraph ranges absent from the evidence.\n"
     "Prefer concise practical attorney work product, but required party "
-    "attributes are not optional and cannot be omitted for brevity, concision, "
-    "or materiality. Do not invent attributes absent from the evidence."
+    "attributes and the evidence-supported procedural connections above are "
+    "not optional and cannot be omitted for brevity, concision, or "
+    "materiality. Do not invent attributes absent from the evidence."
 )
 
 
@@ -3428,6 +3450,356 @@ def find_missing_party_role_attributes(
     return missing
 
 
+# ---------------------------------------------------------------------------
+# Party-role procedural synthesis (extract → validate → repair with attributes)
+# ---------------------------------------------------------------------------
+
+_PARTY_ROLE_RIGHTS_AFFECTED_RE = re.compile(
+    r"(?i)\b(?:"
+    r"rights?\s+may\s+be\s+affected|"
+    r"rights?\s+(?:that\s+)?(?:may|might|could)\s+be\s+affected|"
+    r"affected\s+by\s+(?:the\s+)?(?:requested\s+)?declaratory\s+relief|"
+    r"declaratory\s+relief|"
+    r"interest(?:s)?\s+(?:may|might|could)\s+be\s+affected"
+    r")\b"
+)
+_PARTY_ROLE_RESCISSION_RELIEF_RE = re.compile(
+    r"(?i)\b(?:"
+    r"rescission|"
+    r"rescind(?:ed|ing|s)?|"
+    r"void\s+ab\s+initio|"
+    r"void\s+ab\s+initio\s+treatment"
+    r")\b"
+)
+_PARTY_ROLE_SECTION_HEADING_RE = re.compile(
+    r"(?im)^\s*(?:"
+    r"parties|"
+    r"nature\s+of\s+(?:the\s+)?action|"
+    r"preliminary\s+statement|"
+    r"introduction|"
+    r"venue|"
+    r"jurisdiction|"
+    r"wherefore"
+    r")\s*:?\s*$"
+)
+_PARTY_ROLE_PARAGRAPH_NUM_RE = re.compile(
+    r"(?m)^\s*(?P<num>\d{1,3})\.\s+\S"
+)
+_PARTY_ROLE_PARAGRAPH_REF_RE = re.compile(
+    r"(?i)\b(?:paragraphs?|¶)\s*(?P<a>\d{1,3})"
+    r"(?:\s*(?:[-–—]|through|to)\s*(?P<b>\d{1,3}))?\b"
+)
+_PARTY_ROLE_PROCEDURAL_BEARING_HEDGE_RE = re.compile(
+    r"(?i)\b(?:"
+    r"can\s+bear\s+on|"
+    r"may\s+bear\s+on|"
+    r"bear(?:s|ing)?\s+on|"
+    r"procedural\s+relevance|"
+    r"relevant\s+to|"
+    r"may\s+(?:inform|support|affect)|"
+    r"can\s+(?:inform|support|affect)"
+    r")\b"
+)
+_PARTY_ROLE_NO_WRONGDOING_RE = re.compile(
+    r"(?i)\b(?:"
+    r"does\s+not\s+itself\s+allege\s+wrongdoing|"
+    r"do(?:es)?\s+not\s+(?:itself\s+)?allege\s+wrongdoing|"
+    r"not\s+itself\s+(?:an\s+)?allegation\s+of\s+wrongdoing|"
+    r"without\s+(?:alleging|an\s+allegation\s+of)\s+wrongdoing|"
+    r"no(?:t)?\s+allegation\s+of\s+wrongdoing|"
+    r"does\s+not\s+allege\s+wrongdoing"
+    r")\b"
+)
+_PARTY_ROLE_JOINDER_EFFECT_RE = re.compile(
+    r"(?i)\b(?:"
+    r"potential\s+effect\s+of\s+(?:the\s+)?(?:requested\s+)?relief|"
+    r"effect\s+of\s+(?:the\s+)?(?:requested\s+)?(?:declaratory\s+)?relief|"
+    r"rights?\s+may\s+be\s+affected|"
+    r"joined\s+(?:because|so\s+that|insofar)|"
+    r"joinder\s+reflects|"
+    r"named\s+(?:as\s+)?notice\s+defendants?\s+because"
+    r")\b"
+)
+_PARTY_ROLE_RESCISSION_EFFECT_RE = re.compile(
+    r"(?i)\b(?:"
+    r"negatively\s+affect|"
+    r"adverse(?:ly)?\s+affect|"
+    r"impair(?:s|ed|ing)?|"
+    r"affect(?:s|ed|ing)?\s+(?:those\s+)?(?:asserted\s+)?rights?|"
+    r"effect\s+on\s+(?:those\s+)?(?:asserted\s+)?rights?|"
+    r"possible\s+negative\s+effects?\s+on"
+    r")\b"
+)
+
+
+def _party_supports_procedural_bearing(party: dict) -> bool:
+    return bool(
+        normalize_whitespace(party.get("identity"))
+        and normalize_whitespace(party.get("procedural_role"))
+        and normalize_whitespace(party.get("entity_type"))
+        and normalize_whitespace(party.get("residence_or_ppb"))
+    )
+
+
+def _evidence_has_notice_defendant(
+    expected_parties: Sequence[dict], evidence_text: str
+) -> bool:
+    for party in expected_parties or []:
+        basis = normalize_whitespace(party.get("pleaded_role_basis")).lower()
+        if "notice defendant" in basis:
+            return True
+    return bool(re.search(r"(?i)\bnotice\s+defendants?\b", evidence_text or ""))
+
+
+def _collect_evidence_paragraph_numbers(evidence_text: str) -> List[int]:
+    nums = []
+    seen = set()
+    for match in _PARTY_ROLE_PARAGRAPH_NUM_RE.finditer(evidence_text or ""):
+        try:
+            num = int(match.group("num"))
+        except (TypeError, ValueError):
+            continue
+        if num in seen:
+            continue
+        seen.add(num)
+        nums.append(num)
+    return nums
+
+
+def _collect_evidence_section_headings(evidence_text: str) -> List[str]:
+    headings = []
+    seen = set()
+    for match in _PARTY_ROLE_SECTION_HEADING_RE.finditer(evidence_text or ""):
+        label = normalize_whitespace(match.group(0)).rstrip(":").lower()
+        if not label or label in seen:
+            continue
+        seen.add(label)
+        headings.append(label)
+    return headings
+
+
+def extract_party_role_expected_synthesis(
+    evidence_packet: dict,
+    expected_parties: Optional[Sequence[dict]] = None,
+) -> List[dict]:
+    """
+    Deterministically derive evidence-supported procedural-synthesis criteria.
+
+    A complete party roster alone is not enough when the packet also supports
+    procedural bearing, notice-defendant explanation, rescission effect, or a
+    complaint roadmap. Criteria are omitted when evidence does not support them
+    (never invented).
+    """
+    parties = list(
+        expected_parties
+        if expected_parties is not None
+        else extract_party_role_expected_attributes(evidence_packet)
+    )
+    evidence_text = _evidence_text_from_packet(evidence_packet)
+    criteria: List[dict] = []
+
+    bearing_parties = [
+        normalize_whitespace(p.get("identity"))
+        for p in parties
+        if _party_supports_procedural_bearing(p)
+    ]
+    bearing_parties = [name for name in bearing_parties if name]
+    if bearing_parties:
+        criteria.append(
+            {
+                "category": "procedural_bearing",
+                "value": (
+                    "Explain as procedural relevance (not a merits conclusion) "
+                    "that identity/role, entity form, and residence or principal "
+                    "place of business allegations can bear on service, "
+                    "personal/subject-matter jurisdiction as applicable, and "
+                    "venue; do not overstate which doctrine is established."
+                ),
+                "parties": bearing_parties,
+            }
+        )
+
+    has_notice = _evidence_has_notice_defendant(parties, evidence_text)
+    rights_language = bool(_PARTY_ROLE_RIGHTS_AFFECTED_RE.search(evidence_text))
+    if has_notice:
+        criteria.append(
+            {
+                "category": "notice_defendant_explanation",
+                "value": (
+                    "Explain that notice-defendant joinder reflects the "
+                    "potential effect of requested relief on asserted rights "
+                    "and does not itself allege wrongdoing."
+                    + (
+                        " Evidence supports rights-affected / declaratory-relief "
+                        "language; preserve that causal link."
+                        if rights_language
+                        else ""
+                    )
+                ),
+                "require_rights_link": rights_language,
+            }
+        )
+
+    if has_notice and _PARTY_ROLE_RESCISSION_RELIEF_RE.search(evidence_text):
+        criteria.append(
+            {
+                "category": "rescission_effect",
+                "value": (
+                    "Connect requested rescission or void-ab-initio treatment to "
+                    "possible negative effects on notice defendants' asserted "
+                    "rights, preserving allegation/candidate qualifiers."
+                ),
+            }
+        )
+
+    paragraph_nums = _collect_evidence_paragraph_numbers(evidence_text)
+    section_headings = _collect_evidence_section_headings(evidence_text)
+    if paragraph_nums or section_headings:
+        criteria.append(
+            {
+                "category": "complaint_roadmap",
+                "value": (
+                    "Preserve a useful complaint structure/roadmap using only "
+                    "paragraph numbers or section organization present in the "
+                    "evidence; never invent paragraph ranges."
+                ),
+                "paragraph_numbers": paragraph_nums,
+                "section_headings": section_headings,
+            }
+        )
+
+    return criteria
+
+
+def _draft_has_procedural_bearing(draft_norm: str) -> bool:
+    lowered = draft_norm.lower()
+    if not _PARTY_ROLE_PROCEDURAL_BEARING_HEDGE_RE.search(lowered):
+        return False
+    return (
+        bool(re.search(r"(?i)\bservice\b", lowered))
+        and bool(re.search(r"(?i)\bjurisdiction\b", lowered))
+        and bool(re.search(r"(?i)\bvenue\b", lowered))
+    )
+
+
+def _draft_has_notice_defendant_explanation(
+    draft_norm: str, *, require_rights_link: bool
+) -> bool:
+    if not _PARTY_ROLE_NO_WRONGDOING_RE.search(draft_norm):
+        return False
+    if require_rights_link and not _PARTY_ROLE_JOINDER_EFFECT_RE.search(draft_norm):
+        return False
+    return True
+
+
+def _draft_has_rescission_effect(draft_norm: str) -> bool:
+    if not _PARTY_ROLE_RESCISSION_RELIEF_RE.search(draft_norm):
+        return False
+    return bool(_PARTY_ROLE_RESCISSION_EFFECT_RE.search(draft_norm))
+
+
+def _draft_preserves_complaint_roadmap(
+    draft_norm: str,
+    *,
+    paragraph_numbers: Sequence[int],
+    section_headings: Sequence[str],
+) -> bool:
+    allowed = {int(n) for n in paragraph_numbers or []}
+    headings = [h.lower() for h in (section_headings or []) if h]
+    draft_lower = draft_norm.lower()
+
+    # Reject invented paragraph ranges not grounded in evidence numbers.
+    for match in _PARTY_ROLE_PARAGRAPH_REF_RE.finditer(draft_norm):
+        try:
+            start = int(match.group("a"))
+        except (TypeError, ValueError):
+            continue
+        end_raw = match.group("b")
+        end = int(end_raw) if end_raw else start
+        if not allowed:
+            # Section-only evidence: any explicit paragraph citation is invented.
+            return False
+        if start not in allowed or end not in allowed:
+            return False
+
+    if allowed:
+        for match in _PARTY_ROLE_PARAGRAPH_REF_RE.finditer(draft_norm):
+            try:
+                start = int(match.group("a"))
+                end_raw = match.group("b")
+                end = int(end_raw) if end_raw else start
+            except (TypeError, ValueError):
+                continue
+            if start in allowed and end in allowed:
+                return True
+
+    for heading in headings:
+        if heading and heading in draft_lower:
+            return True
+    return False
+
+
+def find_missing_party_role_synthesis(
+    raw_response: Any,
+    expected_synthesis: Sequence[dict],
+) -> List[dict]:
+    """
+    Return evidence-supported procedural-synthesis criteria absent from the draft.
+
+    Deterministic: a complete party list alone cannot satisfy these criteria.
+    """
+    draft_norm = normalize_citation_text(
+        _draft_text_for_party_role_completeness(raw_response)
+    )
+    missing: List[dict] = []
+    for item in expected_synthesis or []:
+        if not isinstance(item, dict):
+            continue
+        category = normalize_whitespace(item.get("category"))
+        if not category:
+            continue
+        ok = False
+        if category == "procedural_bearing":
+            ok = _draft_has_procedural_bearing(draft_norm)
+        elif category == "notice_defendant_explanation":
+            ok = _draft_has_notice_defendant_explanation(
+                draft_norm,
+                require_rights_link=bool(item.get("require_rights_link")),
+            )
+        elif category == "rescission_effect":
+            ok = _draft_has_rescission_effect(draft_norm)
+        elif category == "complaint_roadmap":
+            ok = _draft_preserves_complaint_roadmap(
+                draft_norm,
+                paragraph_numbers=item.get("paragraph_numbers") or [],
+                section_headings=item.get("section_headings") or [],
+            )
+        else:
+            continue
+        if not ok:
+            missing.append(
+                {
+                    "party": None,
+                    "category": category,
+                    "value": item.get("value") or category,
+                }
+            )
+    return missing
+
+
+def find_missing_party_role_requirements(
+    raw_response: Any,
+    expected_parties: Sequence[dict],
+    expected_synthesis: Optional[Sequence[dict]] = None,
+) -> List[dict]:
+    """Combine attribute and procedural-synthesis gaps for repair gating."""
+    missing = find_missing_party_role_attributes(raw_response, expected_parties)
+    missing.extend(
+        find_missing_party_role_synthesis(raw_response, expected_synthesis or [])
+    )
+    return missing
+
+
 def build_party_role_repair_prompt(
     *,
     question: str,
@@ -3437,15 +3809,18 @@ def build_party_role_repair_prompt(
 ) -> str:
     """
     Bounded repair prompt: original question, original evidence, current draft,
-    and the deterministic missing-attribute list only.
+    and the deterministic missing-attribute / synthesis list only.
     """
     draft_payload = _parse_model_payload(current_draft)
     return (
         "Repair the party-role draft for completeness.\n"
         "Preserve all correct content. Add only the missing required attributes "
-        "listed below that are supported by the evidence. Do not omit required "
-        "party attributes for brevity. Do not invent attributes absent from the "
-        "evidence.\n"
+        "and evidence-supported procedural connections listed below. Do not omit "
+        "required party attributes or supported procedural synthesis for "
+        "brevity. Do not invent attributes, doctrines, or paragraph ranges "
+        "absent from the evidence. An interest-not-specifically-described "
+        "caveat must not replace the supported notice-defendant causal "
+        "explanation.\n"
         "Return the required JSON object and nothing else.\n\n"
         f"Original question:\n{normalize_whitespace(question)}\n\n"
         f"Evidence packet:\n{_stable_json(evidence_packet)}\n\n"
@@ -3463,7 +3838,8 @@ def _party_role_completeness_failure(
 ) -> dict:
     reason = (
         "Party-role drafting completeness failed after one repair retry; "
-        "required evidence-supported party attributes remain missing."
+        "required evidence-supported party attributes or procedural "
+        "synthesis remain missing."
     )
     result = _empty_answer_shell(
         status=STATUS_NOT_READY,
@@ -4139,9 +4515,12 @@ def answer_attorney_record_question(
     Party-and-role questions receive a final completeness instruction. After
     citation filtering removes unsupported propositions, the answer is scrubbed
     to retained verified propositions and completeness is recomputed. When
-    evidence-supported attributes are omitted, exactly one bounded repair retry
-    is attempted; otherwise the result is FAIL / NOT READY. Pre-filter
-    completeness PASS or high confidence is never retained.
+    evidence-supported attributes or procedural-synthesis connections are
+    omitted, exactly one bounded repair retry is attempted; otherwise the
+    result is FAIL / NOT READY. A complete party list alone cannot pass when
+    supported service/jurisdiction/venue bearing, notice-defendant explanation,
+    rescission effect, or complaint roadmap connections are missing.
+    Pre-filter completeness PASS or high confidence is never retained.
     """
     question_text = normalize_whitespace(question)
     retrieval = retrieval or {"query": question_text, "results": []}
@@ -4213,8 +4592,13 @@ def answer_attorney_record_question(
     repair_attempted = False
     if party_role_intent:
         expected = extract_party_role_expected_attributes(evidence_packet)
+        expected_synthesis = extract_party_role_expected_synthesis(
+            evidence_packet, expected
+        )
         validated = _scrub_party_role_answer_after_citation_filter(validated)
-        missing = find_missing_party_role_attributes(validated, expected)
+        missing = find_missing_party_role_requirements(
+            validated, expected, expected_synthesis
+        )
         if missing:
             repair_attempted = True
             repair_prompt = build_party_role_repair_prompt(
@@ -4234,7 +4618,9 @@ def answer_attorney_record_question(
                     provider_error=f"{type(exc).__name__}: {exc}",
                 )
             validated = _scrub_party_role_answer_after_citation_filter(_validate(raw))
-            missing_after = find_missing_party_role_attributes(validated, expected)
+            missing_after = find_missing_party_role_requirements(
+                validated, expected, expected_synthesis
+            )
             if missing_after:
                 return _party_role_completeness_failure(
                     question=question_text,
@@ -4243,6 +4629,7 @@ def answer_attorney_record_question(
                 )
         validated["audit"]["party_role_provider_calls"] = provider_calls
         validated["audit"]["party_role_repair_attempted"] = repair_attempted
+        validated["audit"]["party_role_expected_synthesis"] = list(expected_synthesis)
     return validated
 
 
