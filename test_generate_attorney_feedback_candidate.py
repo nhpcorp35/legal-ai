@@ -186,8 +186,8 @@ def _complete_payload_from_prompt(user_prompt: str) -> dict:
             answer += " The complaint parties roadmap appears in the PARTIES section."
     if "procedural_bearing" in categories:
         answer += (
-            " As procedural relevance only, those entity-form and residence "
-            "or principal-place allegations can bear on service, personal or "
+            " As procedural relevance only, pleaded identity/role, entity-form and "
+            "residence or principal-place allegations can bear on service, personal or "
             "subject-matter jurisdiction as applicable, and venue; they do not "
             "themselves establish those doctrines."
         )

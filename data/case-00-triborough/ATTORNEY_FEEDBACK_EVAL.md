@@ -141,6 +141,12 @@ Any upload or remote verification failure is fail-closed (`ok: false`). Local
 must consume the verified B2 object keys (or a fresh download from them), not
 assume scratch paths survived.
 
+Party-role generation completeness may include category-level synthesis-patch
+lifecycle diagnostics (`requested` / `parsed` / `merged` / `validated`) and a
+specific patch audit reason when the exact-once schema fails closed. Those
+fields record category ids and booleans only — never private evidence text,
+model prose, names, addresses, or credentials.
+
 Commit verification is fail-closed: normal checkouts must match HEAD and
 `origin/main`; Railway runtimes must match `RAILWAY_GIT_*` provenance (commit,
 owner `nhpcorp35`, name `legal-ai`, branch `main`). No temporary branches,

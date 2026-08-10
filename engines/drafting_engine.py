@@ -11,8 +11,11 @@ notice-defendant/no-wrongdoing explanation, rescission effect, and complaint
 roadmap preservation) via deterministic post-draft validation and one bounded
 evidence-grounded repair. When only synthesis categories are missing, the
 repair call receives those categories plus supporting evidence facts and must
-return a strict structured synthesis patch; the original candidate answer is
-preserved and patch sections are merged deterministically. Attribute gaps still
+return a strict structured synthesis patch (each requested category exactly
+once); the original candidate answer is preserved and patch sections are merged
+deterministically with category-level lifecycle diagnostics (requested/parsed/
+merged/validated) that never include private evidence or model prose. Attribute
+gaps still
 use one bounded full-draft repair. Complaint roadmap is required only when
 exact paragraph numbers or section organization were extracted from evidence.
 Gold answers and attorney feedback are never loaded into generation.
@@ -3528,15 +3531,75 @@ _PARTY_ROLE_PARAGRAPH_REF_RE = re.compile(
     r"(?i)\b(?:paragraphs?|¶)\s*(?P<a>\d{1,3})"
     r"(?:\s*(?:[-–—]|through|to)\s*(?P<b>\d{1,3}))?\b"
 )
+# Semantic-but-deterministic procedural-bearing cues. Accept grounded hedges
+# (including "bear upon") without requiring one exact sentence; reject
+# conclusory "doctrines are established" claims via a separate predicate.
 _PARTY_ROLE_PROCEDURAL_BEARING_HEDGE_RE = re.compile(
     r"(?i)\b(?:"
-    r"can\s+bear\s+on|"
-    r"may\s+bear\s+on|"
-    r"bear(?:s|ing)?\s+on|"
+    r"(?:can|may|could)\s+bear\s+(?:on|upon)|"
+    r"bear(?:s|ing)?\s+(?:on|upon)|"
     r"procedural\s+relevance|"
+    r"(?:are|is)\s+relevant\s+to|"
     r"relevant\s+to|"
-    r"may\s+(?:inform|support|affect)|"
-    r"can\s+(?:inform|support|affect)"
+    r"(?:may|can|could)\s+(?:inform|support|affect)|"
+    r"(?:may|can|could)\s+go\s+to"
+    r")\b"
+)
+_PARTY_ROLE_PROCEDURAL_IDENTITY_ROLE_COMBO_RE = re.compile(
+    r"(?i)\b(?:"
+    r"identity\s*/\s*role|"
+    r"identit(?:y|ies)\s+and\s+(?:procedural\s+)?roles?|"
+    r"(?:procedural\s+)?roles?\s+and\s+identit(?:y|ies)"
+    r")\b"
+)
+_PARTY_ROLE_PROCEDURAL_IDENTITY_RE = re.compile(
+    r"(?i)\b(?:party\s+|pleaded\s+)?identit(?:y|ies)\b"
+)
+_PARTY_ROLE_PROCEDURAL_ROLE_RE = re.compile(
+    r"(?i)\b(?:procedural\s+)?roles?\b"
+)
+_PARTY_ROLE_PROCEDURAL_ENTITY_FORM_RE = re.compile(
+    r"(?i)\b(?:"
+    r"entity\s+form|"
+    r"entity-form|"
+    r"entity\s+type|"
+    r"corporate\s+form|"
+    r"form\s+of\s+(?:the\s+)?entity"
+    r")\b"
+)
+_PARTY_ROLE_PROCEDURAL_LOCATION_RE = re.compile(
+    r"(?i)\b(?:"
+    r"residence|"
+    r"principal\s+place\s+of\s+business|"
+    r"principal-place|"
+    r"place\s+of\s+business|"
+    r"\bppb\b|"
+    r"location|"
+    r"domicile"
+    r")\b"
+)
+_PARTY_ROLE_PROCEDURAL_DOCTRINE_NEGATED_ESTABLISH_RE = re.compile(
+    r"(?i)\b(?:"
+    r"(?:do|does|did)\s*not\s*(?:themselves\s*)?"
+    r"(?:conclusively\s*)?establish(?:es|ed|ing)?|"
+    r"(?:are|is|were|was)\s*not\s*(?:conclusively\s*)?established|"
+    r"without\s*(?:conclusively\s*)?establish(?:ing|ed|es)?|"
+    r"without\s*claiming\b[\s\S]{0,100}?established|"
+    r"(?:not|never)\s*claiming\b[\s\S]{0,100}?established|"
+    r"not\s*(?:conclusively\s*)?established|"
+    r"never\s*(?:conclusively\s*)?establish(?:es|ed|ing)?"
+    r")(?:\b|[\s\S]{0,80})"
+)
+_PARTY_ROLE_PROCEDURAL_DOCTRINE_ESTABLISHED_POS_RE = re.compile(
+    r"(?i)\b(?:"
+    r"(?:service|jurisdiction|venue|those\s*doctrines|the\s*doctrines|doctrines)\s+"
+    r"(?:is|are|was|were)\s*(?:conclusively\s*)?established|"
+    r"(?:conclusively\s*)?establish(?:es|ed)\s+"
+    r"(?:service|jurisdiction|venue|those\s*doctrines|the\s*doctrines)|"
+    r"(?:service|jurisdiction|venue)\s+(?:has|have)\s+been\s*"
+    r"(?:conclusively\s*)?established|"
+    r"themselves\s*establish\s+"
+    r"(?:service|jurisdiction|venue|those\s*doctrines)"
     r")\b"
 )
 _PARTY_ROLE_NO_WRONGDOING_RE = re.compile(
@@ -3720,15 +3783,52 @@ def extract_party_role_expected_synthesis(
     return criteria
 
 
+def _draft_has_procedural_identity_role_grounding(draft_norm: str) -> bool:
+    if _PARTY_ROLE_PROCEDURAL_IDENTITY_ROLE_COMBO_RE.search(draft_norm):
+        return True
+    return bool(
+        _PARTY_ROLE_PROCEDURAL_IDENTITY_RE.search(draft_norm)
+        and _PARTY_ROLE_PROCEDURAL_ROLE_RE.search(draft_norm)
+    )
+
+
+def _draft_claims_procedural_doctrines_established(draft_norm: str) -> bool:
+    """
+    True when the draft affirmatively claims service/jurisdiction/venue (or
+    those doctrines) are established. Negated hedges are stripped first so
+    "not conclusively established" / "do not themselves establish" pass.
+    """
+    cleaned = _PARTY_ROLE_PROCEDURAL_DOCTRINE_NEGATED_ESTABLISH_RE.sub(" ", draft_norm)
+    return bool(_PARTY_ROLE_PROCEDURAL_DOCTRINE_ESTABLISHED_POS_RE.search(cleaned))
+
+
 def _draft_has_procedural_bearing(draft_norm: str) -> bool:
+    """
+    Semantic but deterministic procedural-bearing predicate.
+
+    Accepts grounded phrasings that state party identity/role plus entity
+    form/location allegations may/can bear on (or upon) service, jurisdiction
+    as applicable, and venue. Rejects conclusory claims that those doctrines
+    are established. Does not require one exact sentence or punctuation.
+    """
     lowered = draft_norm.lower()
     if not _PARTY_ROLE_PROCEDURAL_BEARING_HEDGE_RE.search(lowered):
         return False
-    return (
-        bool(re.search(r"(?i)\bservice\b", lowered))
-        and bool(re.search(r"(?i)\bjurisdiction\b", lowered))
-        and bool(re.search(r"(?i)\bvenue\b", lowered))
-    )
+    if not _draft_has_procedural_identity_role_grounding(lowered):
+        return False
+    if not _PARTY_ROLE_PROCEDURAL_ENTITY_FORM_RE.search(lowered):
+        return False
+    if not _PARTY_ROLE_PROCEDURAL_LOCATION_RE.search(lowered):
+        return False
+    if not (
+        re.search(r"(?i)\bservice\b", lowered)
+        and re.search(r"(?i)\bjurisdiction\b", lowered)
+        and re.search(r"(?i)\bvenue\b", lowered)
+    ):
+        return False
+    if _draft_claims_procedural_doctrines_established(lowered):
+        return False
+    return True
 
 
 def _draft_has_notice_defendant_explanation(
@@ -4189,18 +4289,59 @@ def _synthesis_section_satisfies(
     return False
 
 
+def _init_synthesis_category_lifecycle(
+    requested_categories: Sequence[str],
+) -> List[Dict[str, Any]]:
+    """Safe category-level lifecycle rows (no evidence text or model prose)."""
+    ordered = sorted(
+        {
+            normalize_whitespace(c)
+            for c in requested_categories
+            if normalize_whitespace(c) and _is_party_role_synthesis_category(c)
+        }
+    )
+    return [
+        {
+            "category": category,
+            "requested": True,
+            "parsed": False,
+            "merged": False,
+            "validated": False,
+        }
+        for category in ordered
+    ]
+
+
+def _lifecycle_set_state(
+    lifecycle: Sequence[dict],
+    categories: Sequence[str],
+    state: str,
+    value: bool = True,
+) -> None:
+    wanted = {normalize_whitespace(c) for c in categories if normalize_whitespace(c)}
+    for row in lifecycle:
+        if not isinstance(row, dict):
+            continue
+        if normalize_whitespace(row.get("category")) in wanted:
+            row[state] = bool(value)
+
+
 def parse_party_role_synthesis_patch(
     raw: Any,
     *,
     allowed_categories: Sequence[str],
     original_answer: str = "",
     expected_synthesis: Optional[Sequence[dict]] = None,
+    audit_out: Optional[dict] = None,
 ) -> Optional[Dict[str, str]]:
     """
     Strictly parse a synthesis patch keyed by allowed missing categories.
 
-    Rejects unknown categories, commentary, duplicated roster text, full-answer
-    rewrites, and sections that fail their category evidence checks.
+    Requires every requested category exactly once. Rejects unknown categories,
+    duplicates, empty values, commentary, duplicated roster text, full-answer
+    rewrites, and sections that fail their category evidence checks. Failures
+    are fail-closed with a specific internal audit reason on ``audit_out`` when
+    provided. Lifecycle rows record only category ids and booleans.
     """
     allowed = [
         normalize_whitespace(c)
@@ -4208,7 +4349,15 @@ def parse_party_role_synthesis_patch(
         if normalize_whitespace(c) and _is_party_role_synthesis_category(c)
     ]
     allowed_set = set(allowed)
+    lifecycle = _init_synthesis_category_lifecycle(allowed)
+
+    def _fail(reason: str) -> None:
+        if audit_out is not None:
+            audit_out["party_role_synthesis_patch_audit_reason"] = reason
+            audit_out["party_role_synthesis_category_lifecycle"] = lifecycle
+
     if not allowed_set:
+        _fail("synthesis_patch_no_allowed_categories")
         return None
 
     payload: Optional[dict] = None
@@ -4226,26 +4375,47 @@ def parse_party_role_synthesis_patch(
     elif isinstance(raw, str):
         payload = _strict_json_object_from_text(raw)
     else:
+        _fail("synthesis_patch_invalid_payload_type")
         return None
     if not isinstance(payload, dict):
+        _fail("synthesis_patch_invalid_json_object")
         return None
 
     # Full-answer rewrite attempts are not patches.
     if "proposed_answer" in payload or "propositions" in payload:
+        _fail("synthesis_patch_full_answer_rewrite")
         return None
     if "synthesis_patch" not in payload:
+        _fail("synthesis_patch_missing_wrapper")
         return None
     # Reject unexpected top-level keys (commentary wrappers / mixed payloads).
     if set(payload.keys()) != {"synthesis_patch"}:
+        _fail("synthesis_patch_unexpected_top_level_keys")
         return None
 
     patch_obj = payload.get("synthesis_patch")
     if not isinstance(patch_obj, dict):
+        _fail("synthesis_patch_not_an_object")
         return None
     patch_keys = [
-        normalize_whitespace(str(k)) for k in patch_obj.keys() if normalize_whitespace(str(k))
+        normalize_whitespace(str(k))
+        for k in patch_obj.keys()
+        if normalize_whitespace(str(k))
     ]
-    if set(patch_keys) != allowed_set or len(patch_keys) != len(allowed_set):
+    if len(patch_keys) != len(set(patch_keys)):
+        _fail("synthesis_patch_duplicate_categories")
+        return None
+    present = set(patch_keys)
+    unknown = sorted(present - allowed_set)
+    if unknown:
+        _fail("synthesis_patch_unknown_categories:" + ",".join(unknown))
+        return None
+    omitted = sorted(allowed_set - present)
+    if omitted:
+        _fail("synthesis_patch_omitted_categories:" + ",".join(omitted))
+        return None
+    if present != allowed_set:
+        _fail("synthesis_patch_category_set_mismatch")
         return None
 
     normalized_patch: Dict[str, Any] = {
@@ -4255,18 +4425,27 @@ def parse_party_role_synthesis_patch(
     for category in allowed:
         value = normalized_patch.get(category)
         if not isinstance(value, str):
+            _fail(f"synthesis_patch_empty_category:{category}")
             return None
         text = normalize_whitespace(value)
         if not text:
+            _fail(f"synthesis_patch_empty_category:{category}")
             return None
         if _patch_section_duplicates_roster(text, original_answer):
+            _fail(f"synthesis_patch_roster_duplicate:{category}")
             return None
         criterion = _synthesis_criterion_for_category(
             expected_synthesis or [], category
         )
         if not _synthesis_section_satisfies(text, category, criterion):
+            _fail(f"synthesis_patch_section_fails_category_check:{category}")
             return None
         sections[category] = text
+        _lifecycle_set_state(lifecycle, [category], "parsed", True)
+
+    if audit_out is not None:
+        audit_out["party_role_synthesis_patch_audit_reason"] = None
+        audit_out["party_role_synthesis_category_lifecycle"] = lifecycle
     return sections
 
 
@@ -4275,15 +4454,22 @@ def merge_party_role_synthesis_patch(
     patch_sections: Dict[str, str],
     *,
     expected_synthesis: Optional[Sequence[dict]] = None,
+    audit_out: Optional[dict] = None,
 ) -> Optional[dict]:
     """
     Deterministically merge validated patch sections into the original answer.
 
-    Preserves the party roster and already-valid synthesis text. Returns None
-    when a safe merge is impossible.
+    Preserves each patch paragraph verbatim except safe whitespace
+    normalization and never drops a requested section. Preserves the party
+    roster and already-valid synthesis text. Returns None when a safe merge
+    is impossible.
     """
     del expected_synthesis  # Criteria already enforced during parse.
     if not isinstance(patch_sections, dict) or not patch_sections:
+        if audit_out is not None:
+            audit_out["party_role_synthesis_patch_audit_reason"] = (
+                "synthesis_patch_merge_empty_sections"
+            )
         return None
     base = _attorney_facing_party_role_draft(current_draft)
     if not base:
@@ -4295,26 +4481,84 @@ def merge_party_role_synthesis_patch(
                 if key in current_draft
             }
         else:
+            if audit_out is not None:
+                audit_out["party_role_synthesis_patch_audit_reason"] = (
+                    "synthesis_patch_merge_missing_draft"
+                )
             return None
     if "proposed_answer" not in base and not base.get("propositions"):
+        if audit_out is not None:
+            audit_out["party_role_synthesis_patch_audit_reason"] = (
+                "synthesis_patch_merge_missing_answer_fields"
+            )
         return None
 
     merged = deepcopy(base)
     old_answer = normalize_whitespace(merged.get("proposed_answer") or "")
     new_answer = old_answer
+    merged_categories: List[str] = []
     for category in _PARTY_ROLE_SYNTHESIS_MERGE_ORDER:
         section = patch_sections.get(category)
-        if not section:
+        if section is None:
             continue
+        if not isinstance(section, str):
+            if audit_out is not None:
+                audit_out["party_role_synthesis_patch_audit_reason"] = (
+                    f"synthesis_patch_merge_non_string:{category}"
+                )
+            return None
         sec = normalize_whitespace(section)
         if not sec:
+            if audit_out is not None:
+                audit_out["party_role_synthesis_patch_audit_reason"] = (
+                    f"synthesis_patch_merge_empty_category:{category}"
+                )
             return None
-        # Duplicate paragraph prevention across repeated categories / merges.
-        if sec.lower() in new_answer.lower():
+        # Already-present paragraph: keep once (still counts as merged).
+        if sec.lower() not in new_answer.lower():
+            new_answer = f"{new_answer} {sec}".strip() if new_answer else sec
+        # Verbatim preservation check after whitespace normalization.
+        if sec.lower() not in new_answer.lower():
+            if audit_out is not None:
+                audit_out["party_role_synthesis_patch_audit_reason"] = (
+                    f"synthesis_patch_merge_dropped_category:{category}"
+                )
+            return None
+        merged_categories.append(category)
+
+    # Any patch category outside the known merge order must still be preserved.
+    for category, section in patch_sections.items():
+        cat = normalize_whitespace(category)
+        if not cat or cat in merged_categories:
             continue
-        new_answer = f"{new_answer} {sec}".strip() if new_answer else sec
+        if not isinstance(section, str):
+            if audit_out is not None:
+                audit_out["party_role_synthesis_patch_audit_reason"] = (
+                    f"synthesis_patch_merge_non_string:{cat}"
+                )
+            return None
+        sec = normalize_whitespace(section)
+        if not sec:
+            if audit_out is not None:
+                audit_out["party_role_synthesis_patch_audit_reason"] = (
+                    f"synthesis_patch_merge_empty_category:{cat}"
+                )
+            return None
+        if sec.lower() not in new_answer.lower():
+            new_answer = f"{new_answer} {sec}".strip() if new_answer else sec
+        if sec.lower() not in new_answer.lower():
+            if audit_out is not None:
+                audit_out["party_role_synthesis_patch_audit_reason"] = (
+                    f"synthesis_patch_merge_dropped_category:{cat}"
+                )
+            return None
+        merged_categories.append(cat)
 
     if not new_answer:
+        if audit_out is not None:
+            audit_out["party_role_synthesis_patch_audit_reason"] = (
+                "synthesis_patch_merge_empty_answer"
+            )
         return None
     merged["proposed_answer"] = new_answer
 
@@ -4331,6 +4575,12 @@ def merge_party_role_synthesis_patch(
                 prop_copy["text"] = new_answer
             updated_props.append(prop_copy)
         merged["propositions"] = updated_props
+
+    if audit_out is not None:
+        lifecycle = audit_out.get("party_role_synthesis_category_lifecycle")
+        if isinstance(lifecycle, list):
+            _lifecycle_set_state(lifecycle, merged_categories, "merged", True)
+        audit_out["party_role_synthesis_category_lifecycle"] = lifecycle
     return merged
 
 
@@ -4340,6 +4590,7 @@ def _party_role_completeness_failure(
     retrieval: Optional[dict],
     missing_attributes: Sequence[dict],
     provider_error: Optional[str] = None,
+    synthesis_audit: Optional[dict] = None,
 ) -> dict:
     reason = (
         "Party-role drafting completeness failed after one repair retry; "
@@ -4360,6 +4611,13 @@ def _party_role_completeness_failure(
     result["audit"]["notes"].append(reason)
     if provider_error:
         result["audit"]["provider_error"] = provider_error
+    if isinstance(synthesis_audit, dict):
+        for key in (
+            "party_role_synthesis_patch_audit_reason",
+            "party_role_synthesis_category_lifecycle",
+        ):
+            if key in synthesis_audit:
+                result["audit"][key] = synthesis_audit[key]
     return result
 
 
@@ -5150,6 +5408,12 @@ def answer_attorney_record_question(
                     question=question_text,
                     missing_synthesis=synthesis_gaps,
                 )
+                synthesis_audit: Dict[str, Any] = {
+                    "party_role_synthesis_patch_audit_reason": None,
+                    "party_role_synthesis_category_lifecycle": _init_synthesis_category_lifecycle(
+                        allowed_categories
+                    ),
+                }
                 try:
                     raw = provider(active_system, repair_prompt)
                     provider_calls = 2
@@ -5159,6 +5423,7 @@ def answer_attorney_record_question(
                         retrieval=retrieval,
                         missing_attributes=missing,
                         provider_error=f"{type(exc).__name__}: {exc}",
+                        synthesis_audit=synthesis_audit,
                     )
                 original_answer = normalize_whitespace(
                     validated.get("proposed_answer") or ""
@@ -5168,36 +5433,73 @@ def answer_attorney_record_question(
                     allowed_categories=allowed_categories,
                     original_answer=original_answer,
                     expected_synthesis=expected_synthesis,
+                    audit_out=synthesis_audit,
                 )
                 if patch_sections is None:
                     return _party_role_completeness_failure(
                         question=question_text,
                         retrieval=retrieval,
                         missing_attributes=missing,
+                        synthesis_audit=synthesis_audit,
                     )
                 merged = merge_party_role_synthesis_patch(
                     validated,
                     patch_sections,
                     expected_synthesis=expected_synthesis,
+                    audit_out=synthesis_audit,
                 )
                 if merged is None:
                     return _party_role_completeness_failure(
                         question=question_text,
                         retrieval=retrieval,
                         missing_attributes=missing,
+                        synthesis_audit=synthesis_audit,
                     )
                 validated = _scrub_party_role_answer_after_citation_filter(
                     _validate(merged)
                 )
+                # Attach patch diagnostics before final completeness revalidation.
+                validated.setdefault("audit", {})
+                validated["audit"]["party_role_synthesis_patch_audit_reason"] = (
+                    synthesis_audit.get("party_role_synthesis_patch_audit_reason")
+                )
+                validated["audit"]["party_role_synthesis_category_lifecycle"] = (
+                    synthesis_audit.get("party_role_synthesis_category_lifecycle")
+                )
             missing_after = find_missing_party_role_requirements(
                 validated, expected, expected_synthesis
             )
+            # Mark validated lifecycle from post-merge revalidation (category ids only).
+            lifecycle = (validated.get("audit") or {}).get(
+                "party_role_synthesis_category_lifecycle"
+            )
+            if isinstance(lifecycle, list) and lifecycle:
+                still_missing = {
+                    normalize_whitespace(item.get("category"))
+                    for item in missing_after
+                    if isinstance(item, dict)
+                    and _is_party_role_synthesis_category(
+                        normalize_whitespace(item.get("category"))
+                    )
+                }
+                for row in lifecycle:
+                    if not isinstance(row, dict):
+                        continue
+                    cat = normalize_whitespace(row.get("category"))
+                    if not cat:
+                        continue
+                    if row.get("merged") and cat not in still_missing:
+                        row["validated"] = True
+                    elif cat in still_missing:
+                        row["validated"] = False
             if missing_after:
-                return _party_role_completeness_failure(
+                fail = _party_role_completeness_failure(
                     question=question_text,
                     retrieval=retrieval,
                     missing_attributes=missing_after,
+                    synthesis_audit=(validated.get("audit") or {}),
                 )
+                return fail
         validated["audit"]["party_role_provider_calls"] = provider_calls
         validated["audit"]["party_role_repair_attempted"] = repair_attempted
         validated["audit"]["party_role_expected_synthesis"] = list(expected_synthesis)

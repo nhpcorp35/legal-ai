@@ -704,7 +704,7 @@ def write_candidate_artifacts(
             "filing exhibit map",
             "case map",
             "NYSCEF filing inventory",
-            "production retrieval/evidence-packet/serialization/drafting/validation/bounded synthesis-patch repair",
+            "production retrieval/evidence-packet/serialization/drafting/validation/bounded synthesis-patch repair (exact-once categories; category lifecycle diagnostics only)",
         ],
     }
     candidate_hash = candidate_content_sha256(candidate)
@@ -920,6 +920,13 @@ def run_generation(
         "party_role_provider_calls": provider_calls,
         "party_role_completeness_failed": completeness_failed,
         "missing_party_role_attributes": audit.get("missing_party_role_attributes") or [],
+        "party_role_synthesis_patch_audit_reason": audit.get(
+            "party_role_synthesis_patch_audit_reason"
+        ),
+        "party_role_synthesis_category_lifecycle": audit.get(
+            "party_role_synthesis_category_lifecycle"
+        )
+        or [],
     }
 
     finalized = (

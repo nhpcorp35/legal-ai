@@ -3,9 +3,11 @@
 Covers evidence-supported procedural bearing, notice-defendant/no-wrongdoing
 reasoning, rescission effect, complaint roadmap preservation, targeted
 synthesis-patch repair (compliant, blocked, oscillation-preserving), response
-schema rejection, merge placement, and refusal to require unsupported
-inferences. Uses only synthetic party names — no Case-00 identities, gold
-answers, attorney feedback, or benchmark prose.
+schema rejection (omit/duplicate/unknown/empty with audit reasons), merge
+preservation, semantic procedural-bearing acceptance/rejection, category
+lifecycle diagnostics, and refusal to require unsupported inferences. Uses only
+synthetic party names — no Case-00 identities, gold answers, attorney feedback,
+or benchmark prose.
 """
 
 from __future__ import annotations
@@ -379,7 +381,8 @@ class PartyRoleProceduralSynthesisValidationTests(unittest.TestCase):
         synthesis = de.extract_party_role_expected_synthesis(packet, expected)
         draft = (
             _roster_only_answer(expected)
-            + " As procedural relevance only, these allegations can bear on "
+            + " As procedural relevance only, pleaded identity/role, entity form, "
+            "and residence or principal place of business can bear on "
             "service, personal or subject-matter jurisdiction as applicable, "
             "and venue."
             + " The complaint parties roadmap appears at paragraphs 1 through 1."
@@ -633,6 +636,292 @@ class PartyRoleSynthesisPatchUnitTests(unittest.TestCase):
         self.assertIn("can bear on service", answer.lower())
         self.assertIn("paragraphs", answer.lower())
         self.assertEqual(merged["propositions"][0]["text"], answer)
+
+
+class PartyRoleProceduralBearingSemanticsTests(unittest.TestCase):
+    """Deterministic semantic acceptance/rejection for procedural_bearing."""
+
+    def test_plausible_provider_phrasings_accepted(self):
+        samples = [
+            (
+                "Pleaded identity/role, entity form, and location allegations "
+                "can bear upon service, jurisdiction as applicable, and venue."
+            ),
+            (
+                "Party identity and role, together with entity form and "
+                "residence, may bear on service, jurisdiction as applicable, "
+                "and venue; they are not conclusively established."
+            ),
+            (
+                "As procedural relevance only, pleaded identity and procedural "
+                "role, entity type, and principal place of business are "
+                "relevant to service, jurisdiction as applicable, and venue."
+            ),
+            (
+                "Identity/role plus entity-form and residence allegations can "
+                "inform service, jurisdiction as applicable, and venue without "
+                "claiming those doctrines are established."
+            ),
+        ]
+        for text in samples:
+            self.assertTrue(
+                de._draft_has_procedural_bearing(de.normalize_citation_text(text)),
+                msg=f"expected accept: {text}",
+            )
+
+    def test_conclusory_doctrine_claims_rejected(self):
+        samples = [
+            (
+                "Pleaded identity/role, entity form, and residence can bear on "
+                "service, jurisdiction as applicable, and venue, and those "
+                "doctrines are established."
+            ),
+            (
+                "Identity/role, entity form, and location establish service, "
+                "jurisdiction, and venue."
+            ),
+            (
+                "Party identity and role, entity form, and residence "
+                "conclusively establish jurisdiction and venue as well as "
+                "service."
+            ),
+        ]
+        for text in samples:
+            self.assertFalse(
+                de._draft_has_procedural_bearing(de.normalize_citation_text(text)),
+                msg=f"expected reject: {text}",
+            )
+
+    def test_nonconclusive_hedging_accepted(self):
+        text = (
+            "Pleaded identity/role, entity form, and residence or principal "
+            "place of business can bear on service, jurisdiction as "
+            "applicable, and venue; they do not themselves establish those "
+            "doctrines."
+        )
+        self.assertTrue(
+            de._draft_has_procedural_bearing(de.normalize_citation_text(text))
+        )
+
+    def test_ungrounded_or_incomplete_bearing_rejected(self):
+        samples = [
+            # Missing identity/role grounding.
+            (
+                "Entity form and residence can bear on service, jurisdiction "
+                "as applicable, and venue."
+            ),
+            # Missing venue.
+            (
+                "Identity/role, entity form, and location can bear on service "
+                "and jurisdiction as applicable."
+            ),
+            # No hedge.
+            (
+                "Identity/role, entity form, and location relate to service, "
+                "jurisdiction, and venue."
+            ),
+        ]
+        for text in samples:
+            self.assertFalse(
+                de._draft_has_procedural_bearing(de.normalize_citation_text(text)),
+                msg=f"expected reject: {text}",
+            )
+
+
+class PartyRoleSynthesisPatchSchemaAndLifecycleTests(unittest.TestCase):
+    def test_omitted_category_fails_closed_with_audit_reason(self):
+        packet = _packet(FULL_SYNTHETIC_COMPLAINT)
+        synthesis = de.extract_party_role_expected_synthesis(packet)
+        allowed = ["procedural_bearing", "complaint_roadmap"]
+        sections = _patch_paragraphs_for_categories(["procedural_bearing"], synthesis)
+        audit = {}
+        parsed = de.parse_party_role_synthesis_patch(
+            {"synthesis_patch": sections},
+            allowed_categories=allowed,
+            original_answer="Roster only.",
+            expected_synthesis=synthesis,
+            audit_out=audit,
+        )
+        self.assertIsNone(parsed)
+        self.assertEqual(
+            audit.get("party_role_synthesis_patch_audit_reason"),
+            "synthesis_patch_omitted_categories:complaint_roadmap",
+        )
+        lifecycle = audit.get("party_role_synthesis_category_lifecycle") or []
+        self.assertEqual(
+            {row["category"] for row in lifecycle},
+            set(allowed),
+        )
+        self.assertTrue(all(row["requested"] and not row["parsed"] for row in lifecycle))
+
+    def test_unknown_and_duplicate_category_fail_closed_with_audit_reason(self):
+        packet = _packet(FULL_SYNTHETIC_COMPLAINT)
+        synthesis = de.extract_party_role_expected_synthesis(packet)
+        allowed = ["procedural_bearing"]
+        sections = _patch_paragraphs_for_categories(allowed, synthesis)
+        sections["not_a_real_category"] = "Invented category text."
+        audit_unknown = {}
+        self.assertIsNone(
+            de.parse_party_role_synthesis_patch(
+                {"synthesis_patch": sections},
+                allowed_categories=allowed,
+                original_answer="Roster only.",
+                expected_synthesis=synthesis,
+                audit_out=audit_unknown,
+            )
+        )
+        self.assertEqual(
+            audit_unknown.get("party_role_synthesis_patch_audit_reason"),
+            "synthesis_patch_unknown_categories:not_a_real_category",
+        )
+
+        # Duplicate after normalization of distinct raw keys.
+        bearing = sections["procedural_bearing"]
+        audit_dup = {}
+        self.assertIsNone(
+            de.parse_party_role_synthesis_patch(
+                {
+                    "synthesis_patch": {
+                        "procedural_bearing": bearing,
+                        "procedural_bearing ": bearing,
+                    }
+                },
+                allowed_categories=allowed,
+                original_answer="Roster only.",
+                expected_synthesis=synthesis,
+                audit_out=audit_dup,
+            )
+        )
+        self.assertEqual(
+            audit_dup.get("party_role_synthesis_patch_audit_reason"),
+            "synthesis_patch_duplicate_categories",
+        )
+
+    def test_empty_category_fails_closed_with_audit_reason(self):
+        packet = _packet(FULL_SYNTHETIC_COMPLAINT)
+        synthesis = de.extract_party_role_expected_synthesis(packet)
+        allowed = ["procedural_bearing"]
+        audit = {}
+        self.assertIsNone(
+            de.parse_party_role_synthesis_patch(
+                {"synthesis_patch": {"procedural_bearing": "   "}},
+                allowed_categories=allowed,
+                original_answer="Roster only.",
+                expected_synthesis=synthesis,
+                audit_out=audit,
+            )
+        )
+        self.assertEqual(
+            audit.get("party_role_synthesis_patch_audit_reason"),
+            "synthesis_patch_empty_category:procedural_bearing",
+        )
+
+    def test_merge_preserves_patch_text_verbatim_after_whitespace_normalization(self):
+        packet = _packet(FULL_SYNTHETIC_COMPLAINT)
+        expected = de.extract_party_role_expected_attributes(packet)
+        synthesis = de.extract_party_role_expected_synthesis(packet, expected)
+        roster = _roster_only_answer(expected)
+        raw_patch = (
+            "  As procedural relevance only,   pleaded identity/role, entity "
+            "form, and residence can bear upon service, jurisdiction as "
+            "applicable, and venue.  "
+        )
+        audit = {
+            "party_role_synthesis_category_lifecycle": de._init_synthesis_category_lifecycle(
+                ["procedural_bearing"]
+            )
+        }
+        sections = de.parse_party_role_synthesis_patch(
+            {"synthesis_patch": {"procedural_bearing": raw_patch}},
+            allowed_categories=["procedural_bearing"],
+            original_answer=roster,
+            expected_synthesis=synthesis,
+            audit_out=audit,
+        )
+        self.assertIsNotNone(sections)
+        expected_text = de.normalize_whitespace(raw_patch)
+        self.assertEqual(sections["procedural_bearing"], expected_text)
+        draft = {
+            "proposed_answer": roster,
+            "propositions": [{"proposition_id": "P1", "text": roster}],
+        }
+        merged = de.merge_party_role_synthesis_patch(
+            draft, sections, audit_out=audit
+        )
+        self.assertIsNotNone(merged)
+        self.assertIn(expected_text, merged["proposed_answer"])
+        self.assertTrue(
+            merged["proposed_answer"].startswith(roster)
+            or roster in merged["proposed_answer"]
+        )
+        lifecycle = audit["party_role_synthesis_category_lifecycle"]
+        bearing = next(row for row in lifecycle if row["category"] == "procedural_bearing")
+        self.assertTrue(bearing["requested"])
+        self.assertTrue(bearing["parsed"])
+        self.assertTrue(bearing["merged"])
+
+    def test_category_lifecycle_requested_parsed_merged_validated(self):
+        question = "Who are the parties and what are their roles in this action?"
+        retrieval = {
+            "query": question,
+            "results": [_hit(FULL_SYNTHETIC_COMPLAINT)],
+            "provisional_answer": "PROVISIONAL_SHOULD_NOT_APPEAR",
+            "gold_answer": "GOLD_SHOULD_NOT_APPEAR",
+            "attorney_feedback": "FEEDBACK_SHOULD_NOT_APPEAR",
+        }
+        calls = []
+
+        def _model(_system, user_prompt):
+            calls.append(user_prompt)
+            packet = de.build_evidence_packet(question, retrieval)
+            expected = de.extract_party_role_expected_attributes(packet)
+            synthesis = de.extract_party_role_expected_synthesis(packet, expected)
+            hit = packet["retrieval_hits"][0]
+            if len(calls) == 1:
+                return _synthetic_payload(
+                    _notice_and_rescission_prefix(expected),
+                    hit,
+                )
+            return {
+                "synthesis_patch": _patch_paragraphs_for_categories(
+                    ["procedural_bearing", "complaint_roadmap"],
+                    synthesis,
+                )
+            }
+
+        result = de.answer_attorney_record_question(
+            question,
+            retrieval,
+            model_call=_model,
+        )
+        self.assertEqual(result["status"], de.STATUS_READY)
+        lifecycle = result["audit"].get("party_role_synthesis_category_lifecycle") or []
+        by_cat = {row["category"]: row for row in lifecycle}
+        self.assertEqual(
+            set(by_cat),
+            {"procedural_bearing", "complaint_roadmap"},
+        )
+        for row in lifecycle:
+            self.assertTrue(row["requested"])
+            self.assertTrue(row["parsed"])
+            self.assertTrue(row["merged"])
+            self.assertTrue(row["validated"])
+            # Diagnostics must stay category-level only.
+            self.assertEqual(set(row.keys()), {
+                "category",
+                "requested",
+                "parsed",
+                "merged",
+                "validated",
+            })
+            self.assertIsInstance(row["category"], str)
+            for key in ("requested", "parsed", "merged", "validated"):
+                self.assertIsInstance(row[key], bool)
+        # No private evidence / model prose keys leaked into lifecycle blob.
+        blob = json.dumps(lifecycle).lower()
+        self.assertNotIn("north quay", blob)
+        self.assertNotIn("proposed_answer", blob)
+        self.assertNotIn("can bear on", blob)
 
 
 class PartyRoleProceduralSynthesisRepairPathTests(unittest.TestCase):
