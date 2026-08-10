@@ -555,13 +555,48 @@ class PartyRoleEvidenceCompletenessTests(unittest.TestCase):
                 if party.get("pleaded_role_basis"):
                     bit += f" ({party['pleaded_role_basis']})"
                 answer_bits.append(bit + ".")
+            answer = " ".join(answer_bits) or "Parties identified."
+            synthesis = de.extract_party_role_expected_synthesis(packet, expected)
+            categories = {item.get("category") for item in synthesis}
+            if "complaint_roadmap" in categories:
+                nums = []
+                for item in synthesis:
+                    if item.get("category") == "complaint_roadmap":
+                        nums = list(item.get("paragraph_numbers") or [])
+                        break
+                if nums:
+                    answer += (
+                        f" The complaint parties roadmap appears at paragraphs "
+                        f"{nums[0]} through {nums[-1]}."
+                    )
+                else:
+                    answer += (
+                        " The complaint parties roadmap appears in the PARTIES "
+                        "section."
+                    )
+            if "procedural_bearing" in categories:
+                answer += (
+                    " As procedural relevance only, pleaded identity/role, entity "
+                    "form, and residence or principal place of business can bear "
+                    "on service, jurisdiction as applicable, and venue."
+                )
+            if "notice_defendant_explanation" in categories:
+                answer += (
+                    " Notice-defendant joinder reflects the potential effect of "
+                    "requested relief and does not itself allege wrongdoing."
+                )
+            if "rescission_effect" in categories:
+                answer += (
+                    " The requested rescission or void ab initio treatment may "
+                    "negatively affect those asserted rights, as alleged."
+                )
             return {
-                "proposed_answer": " ".join(answer_bits) or "Parties identified.",
+                "proposed_answer": answer,
                 "propositions": [
                     {
                         "proposition_id": "P1",
-                        "text": answer_bits[0] if answer_bits else "Plaintiff identified.",
-                        "classification": "verified_record_fact",
+                        "text": answer,
+                        "classification": "party_allegation",
                         "nyscef_document_number": hit["nyscef_document_number"],
                         "page_id": hit["page_id"],
                         "pdf_page": hit["pdf_page"],
@@ -2562,8 +2597,16 @@ class CitationValidationImprovementTests(unittest.TestCase):
                 }
             ],
         }
+        notice_synthesis = (
+            " Notice-defendant joinder reflects the potential effect of "
+            "requested relief and does not itself allege wrongdoing."
+        )
         payload = {
-            "proposed_answer": "Alpha is plaintiff; Beta is notice defendant.",
+            "proposed_answer": (
+                "Alpha Carrier LP is plaintiff and a domestic corporation; "
+                "Beta Depot Inc. is a notice defendant."
+                + notice_synthesis
+            ),
             "propositions": [
                 {
                     "proposition_id": "P1",
@@ -2593,7 +2636,10 @@ class CitationValidationImprovementTests(unittest.TestCase):
                 },
                 {
                     "proposition_id": "P3",
-                    "text": "Beta Depot Inc. is a notice defendant.",
+                    "text": (
+                        "Beta Depot Inc. is a notice defendant."
+                        + notice_synthesis
+                    ),
                     "classification": "party_allegation",
                     "nyscef_document_number": 540,
                     "page_id": page["page_id"],
