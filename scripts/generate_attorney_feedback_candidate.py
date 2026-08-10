@@ -28,6 +28,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import matter_builder as mb  # noqa: E402
+import complaint_structure as cs  # noqa: E402
 from engines import drafting_engine as de  # noqa: E402
 
 AUTHORIZATION_ACK = "I_AUTHORIZE_PRIVATE_EVIDENCE_TRANSMISSION_TO_MODEL_PROVIDER"
@@ -332,6 +333,10 @@ def resolve_case_input_paths(case_root: Path) -> dict[str, Path]:
         / "exhibit-segmentation"
         / "filing_exhibit_map.json",
         "case_map": root / "derived" / "case-map" / "case_map.json",
+        "complaint_structure": root
+        / "derived"
+        / "complaint-structure"
+        / "complaint_structure_map.json",
         "question_packet": root
         / "derived"
         / "attorney-review-packet-02-live"
@@ -405,6 +410,20 @@ def load_permitted_case_inputs(
         else:
             raise GenerationError("case_map.json missing usable case_map object")
 
+    # Complaint structure map: degrade explicitly when absent/stale — never fabricate.
+    structure_path = paths["complaint_structure"]
+    complaint_structure_map = None
+    if structure_path.is_file():
+        try:
+            raw_structure = _load_json(structure_path, role="input")
+        except GenerationError:
+            raw_structure = None
+        complaint_structure_status = cs.structure_map_status(raw_structure)
+        if complaint_structure_status.get("ok"):
+            complaint_structure_map = raw_structure
+    else:
+        complaint_structure_status = cs.structure_map_status(None)
+
     inv_path = inventory_path
     if inv_path is None:
         resolved = mb.resolve_inventory_path(None)
@@ -424,6 +443,8 @@ def load_permitted_case_inputs(
         "page_records": page_wrap,
         "exhibit_map": exhibit_map,
         "case_map": case_map,
+        "complaint_structure_map": complaint_structure_map,
+        "complaint_structure_status": complaint_structure_status,
         "inventory": inventory,
         "inventory_path": str(inv_path),
         "input_paths": {k: str(v) for k, v in paths.items()},
@@ -546,6 +567,7 @@ def audit_serialized_model_input(
     retrieval: dict,
     *,
     case_map: Optional[dict] = None,
+    complaint_structure_map: Optional[dict] = None,
 ) -> dict:
     """Build/audit exact serialized evidence input via production helpers."""
     evidence_packet = de.build_evidence_packet(
@@ -554,6 +576,7 @@ def audit_serialized_model_input(
         case_map=case_map,
         exhibit_context=None,
         allowed_sources=[],
+        complaint_structure_map=complaint_structure_map,
     )
     party_role_intent = de.detect_party_role_question_intent(question_text)
     user_prompt = de.build_user_prompt(
@@ -584,6 +607,12 @@ def audit_serialized_model_input(
         "retrieval_hit_count": evidence_packet.get("retrieval_hit_count"),
         "upstream_retrieval_hit_count": len(retrieval.get("results") or []),
         "serialized_evidence_page_count": len(hits),
+        "complaint_structure_status": evidence_packet.get(
+            "complaint_structure_status"
+        ),
+        "complaint_structure_attached": bool(
+            evidence_packet.get("complaint_structure_context")
+        ),
         "retrieval_count_semantics": {
             "upstream_retrieval_hit_count": (
                 "Hits returned before evidence-packet materiality and budget filtering."
@@ -878,10 +907,23 @@ def run_generation(
         inputs["question_text"],
         top_k=top_k,
     )
+    # Attach structure map to retrieval for party-role evidence routing only when
+    # schema-current; never fabricate ranges from a stale/absent map.
+    structure_map = inputs.get("complaint_structure_map")
+    if isinstance(structure_map, dict) and cs.is_current_structure_schema(structure_map):
+        retrieval = dict(retrieval)
+        retrieval["complaint_structure_map"] = structure_map
+        if de.detect_party_role_question_intent(inputs["question_text"]):
+            roadmap = cs.select_party_role_complaint_roadmap_context(structure_map)
+            if roadmap:
+                retrieval["complaint_structure_context"] = roadmap
     inspection = audit_serialized_model_input(
         inputs["question_text"],
         retrieval,
         case_map=inputs["case_map"],
+        complaint_structure_map=structure_map
+        if isinstance(structure_map, dict)
+        else None,
     )
 
     docs_subset = _documents_for_hit_pages(
@@ -894,6 +936,9 @@ def run_generation(
         case_map=inputs["case_map"],
         exhibit_context=None,
         allowed_sources=[],
+        complaint_structure_map=structure_map
+        if isinstance(structure_map, dict)
+        else None,
         model_call=model_call,
     )
 

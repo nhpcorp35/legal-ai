@@ -17,7 +17,10 @@ deterministically with category-level lifecycle diagnostics (requested/parsed/
 merged/validated) that never include private evidence or model prose. Attribute
 gaps still
 use one bounded full-draft repair. Complaint roadmap is required only when
-exact paragraph numbers or section organization were extracted from evidence.
+exact paragraph numbers or section organization were extracted from evidence
+or from attached complaint_structure_context metadata (overview, intervening
+factual layout, and party sections). Structure context is supplemental and
+never invents ranges.
 Gold answers and attorney feedback are never loaded into generation.
 
 Model calls go through the configured provider abstraction
@@ -348,8 +351,10 @@ PARTY_ROLE_DRAFTING_COMPLETENESS_INSTRUCTION = (
     "preserving allegation/candidate qualifiers. An 'interest not specifically "
     "described' caveat must not erase that supported causal explanation.\n"
     "When paragraph ranges or section organization appear in the retrieved "
-    "evidence, preserve a useful complaint structure/roadmap from those "
-    "markers; never invent paragraph ranges absent from the evidence.\n"
+    "evidence or in attached complaint_structure_context metadata, preserve a "
+    "useful complaint structure/roadmap from those exact markers (overview/"
+    "introduction, intervening factual/background/allegation layout, and "
+    "party sections); never invent paragraph ranges absent from the packet.\n"
     "Prefer concise practical attorney work product, but required party "
     "attributes and the evidence-supported procedural connections above are "
     "not optional and cannot be omitted for brevity, concision, or "
@@ -2003,6 +2008,7 @@ def build_evidence_packet(
     case_map: Optional[dict] = None,
     exhibit_context: Optional[Any] = None,
     allowed_sources: Optional[Sequence[str]] = None,
+    complaint_structure_map: Optional[dict] = None,
 ) -> dict:
     results = list((retrieval or {}).get("results") or [])
     materiality_filter = None
@@ -2088,6 +2094,49 @@ def build_evidence_packet(
     }
     if materiality_filter is not None:
         packet["materiality_filter"] = materiality_filter
+
+    if party_role_intent:
+        import complaint_structure as cs  # noqa: WPS433
+
+        structure_payload = complaint_structure_map
+        if structure_payload is None:
+            structure_payload = (retrieval or {}).get("complaint_structure_map")
+        status = cs.structure_map_status(structure_payload)
+        structure_context = None
+        raw_context = (retrieval or {}).get("complaint_structure_context")
+        if isinstance(raw_context, dict) and raw_context.get("documents"):
+            # Trust only current-schema context; never silently reuse stale.
+            if raw_context.get("schema_version") == cs.SCHEMA_VERSION:
+                structure_context = raw_context
+            else:
+                status = {
+                    **status,
+                    "ok": False,
+                    "attached": False,
+                    "reason": "complaint_structure_context_stale_or_invalid_schema",
+                    "schema_version": raw_context.get("schema_version"),
+                }
+        elif status.get("ok"):
+            structure_context = cs.select_party_role_complaint_roadmap_context(
+                structure_payload
+            )
+        if structure_context:
+            packet["complaint_structure_context"] = structure_context
+            status = {
+                **status,
+                "ok": True,
+                "attached": True,
+                "reason": None,
+            }
+        elif status.get("ok"):
+            # Schema present but no party-role roadmap sections supported.
+            status = {
+                **status,
+                "attached": False,
+                "reason": "complaint_structure_map_has_no_party_role_roadmap_sections",
+            }
+        packet["complaint_structure_status"] = status
+
     return packet
 
 
@@ -3519,6 +3568,12 @@ _PARTY_ROLE_SECTION_HEADING_RE = re.compile(
     r"nature\s+of\s+(?:the\s+)?action|"
     r"preliminary\s+statement|"
     r"introduction|"
+    r"overview|"
+    r"intervening\s+facts?|"
+    r"factual\s+background|"
+    r"general\s+allegations|"
+    r"background|"
+    r"facts?|"
     r"venue|"
     r"jurisdiction|"
     r"wherefore"
@@ -3680,6 +3735,88 @@ def _collect_evidence_section_headings(evidence_text: str) -> List[str]:
     return headings
 
 
+def _roadmap_markers_from_structure_context(
+    structure_context: Optional[dict],
+) -> Tuple[List[int], List[str], List[dict], bool]:
+    """
+    Collect paragraph numbers, headings, and exact section ranges from attached
+    complaint_structure_context. Returns structure_backed=True when markers exist.
+    """
+    nums: List[int] = []
+    seen_nums = set()
+    headings: List[str] = []
+    seen_headings = set()
+    section_ranges: List[dict] = []
+    if not isinstance(structure_context, dict):
+        return nums, headings, section_ranges, False
+    for doc in structure_context.get("documents") or []:
+        if not isinstance(doc, dict):
+            continue
+        for section in doc.get("sections") or []:
+            if not isinstance(section, dict):
+                continue
+            heading = normalize_whitespace(
+                section.get("heading") or section.get("heading_normalized") or ""
+            ).lower()
+            if heading and heading not in seen_headings:
+                seen_headings.add(heading)
+                headings.append(heading)
+            section_nums: List[int] = []
+            for raw in section.get("paragraph_numbers") or []:
+                try:
+                    num = int(raw)
+                except (TypeError, ValueError):
+                    continue
+                section_nums.append(num)
+                if num not in seen_nums:
+                    seen_nums.add(num)
+                    nums.append(num)
+            exact = section.get("paragraph_range")
+            if isinstance(exact, dict) and exact.get("contiguous"):
+                try:
+                    start = int(exact["start"])
+                    end = int(exact["end"])
+                except (KeyError, TypeError, ValueError):
+                    start = end = None
+                if start is not None and end is not None:
+                    section_ranges.append(
+                        {
+                            "heading": heading,
+                            "kind": section.get("kind"),
+                            "start": start,
+                            "end": end,
+                            "paragraph_numbers": list(section_nums),
+                            "page_ids": list(section.get("page_ids") or []),
+                            "nyscef_document_number": (
+                                (section.get("provenance") or {}).get(
+                                    "nyscef_document_number"
+                                )
+                                or doc.get("nyscef_document_number")
+                            ),
+                        }
+                    )
+            elif section_nums or heading:
+                # Noncontiguous / heading-only: expose observed markers only.
+                section_ranges.append(
+                    {
+                        "heading": heading,
+                        "kind": section.get("kind"),
+                        "start": None,
+                        "end": None,
+                        "paragraph_numbers": list(section_nums),
+                        "page_ids": list(section.get("page_ids") or []),
+                        "nyscef_document_number": (
+                            (section.get("provenance") or {}).get(
+                                "nyscef_document_number"
+                            )
+                            or doc.get("nyscef_document_number")
+                        ),
+                    }
+                )
+    structure_backed = bool(nums or headings or section_ranges)
+    return nums, headings, section_ranges, structure_backed
+
+
 def extract_party_role_expected_synthesis(
     evidence_packet: dict,
     expected_parties: Optional[Sequence[dict]] = None,
@@ -3690,7 +3827,8 @@ def extract_party_role_expected_synthesis(
     A complete party roster alone is not enough when the packet also supports
     procedural bearing, notice-defendant explanation, rescission effect, or a
     complaint roadmap. Criteria are omitted when evidence does not support them
-    (never invented).
+    (never invented). When complaint_structure_context is attached, roadmap
+    criteria prefer that metadata over excerpt-only markers.
     """
     parties = list(
         expected_parties
@@ -3754,14 +3892,29 @@ def extract_party_role_expected_synthesis(
             }
         )
 
-    paragraph_nums = _collect_evidence_paragraph_numbers(evidence_text)
-    section_headings = _collect_evidence_section_headings(evidence_text)
+    structure_nums, structure_headings, section_ranges, structure_backed = (
+        _roadmap_markers_from_structure_context(
+            (evidence_packet or {}).get("complaint_structure_context")
+        )
+    )
+    paragraph_nums = list(structure_nums)
+    section_headings = list(structure_headings)
+    if not structure_backed:
+        paragraph_nums = _collect_evidence_paragraph_numbers(evidence_text)
+        section_headings = _collect_evidence_section_headings(evidence_text)
     # Exact roadmap only: require the criterion solely when numbered pleading
     # paragraphs or section organization were actually extracted. Never invent
     # ranges, and never require a roadmap when evidence has neither marker.
-    if paragraph_nums or section_headings:
+    if paragraph_nums or section_headings or section_ranges:
         exact_range = None
-        if paragraph_nums:
+        if structure_backed and len(section_ranges) == 1:
+            only = section_ranges[0]
+            if only.get("start") is not None and only.get("end") is not None:
+                exact_range = {
+                    "start": int(only["start"]),
+                    "end": int(only["end"]),
+                }
+        elif paragraph_nums and not structure_backed:
             exact_range = {
                 "start": int(min(paragraph_nums)),
                 "end": int(max(paragraph_nums)),
@@ -3772,11 +3925,14 @@ def extract_party_role_expected_synthesis(
                 "value": (
                     "Preserve a useful complaint structure/roadmap using only "
                     "paragraph numbers or section organization present in the "
-                    "evidence; never invent paragraph ranges."
+                    "evidence packet (including attached complaint_structure_"
+                    "context); never invent paragraph ranges."
                 ),
                 "paragraph_numbers": paragraph_nums,
                 "section_headings": section_headings,
                 "exact_paragraph_range": exact_range,
+                "section_ranges": section_ranges,
+                "structure_backed": bool(structure_backed),
             }
         )
 
@@ -3852,10 +4008,25 @@ def _draft_preserves_complaint_roadmap(
     *,
     paragraph_numbers: Sequence[int],
     section_headings: Sequence[str],
+    section_ranges: Optional[Sequence[dict]] = None,
+    structure_backed: bool = False,
 ) -> bool:
     allowed = {int(n) for n in paragraph_numbers or []}
     headings = [h.lower() for h in (section_headings or []) if h]
     draft_lower = draft_norm.lower()
+    ranges = [r for r in (section_ranges or []) if isinstance(r, dict)]
+
+    # Allowed exact contiguous ranges from structure metadata (when present).
+    allowed_range_pairs = set()
+    for item in ranges:
+        try:
+            start = item.get("start")
+            end = item.get("end")
+            if start is None or end is None:
+                continue
+            allowed_range_pairs.add((int(start), int(end)))
+        except (TypeError, ValueError):
+            continue
 
     # Reject invented paragraph ranges not grounded in evidence numbers.
     for match in _PARTY_ROLE_PARAGRAPH_REF_RE.finditer(draft_norm):
@@ -3865,11 +4036,75 @@ def _draft_preserves_complaint_roadmap(
             continue
         end_raw = match.group("b")
         end = int(end_raw) if end_raw else start
-        if not allowed:
+        if not allowed and not allowed_range_pairs:
             # Section-only evidence: any explicit paragraph citation is invented.
+            return False
+        if allowed_range_pairs:
+            # Structure-backed: cited ranges must match an exact supported pair
+            # or both endpoints must be observed numbers within one pair span.
+            if (start, end) in allowed_range_pairs:
+                continue
+            if start in allowed and end in allowed:
+                # Permit sub-ranges only when every integer between is allowed
+                # (sequence-supported), never a heading-invented span.
+                if all(n in allowed for n in range(start, end + 1)):
+                    continue
             return False
         if start not in allowed or end not in allowed:
             return False
+
+    if structure_backed and (headings or ranges):
+        # Require each structure section to be preserved via its heading or an
+        # exact supported range citation from that section.
+        for item in ranges or [{"heading": h} for h in headings]:
+            heading = normalize_whitespace(item.get("heading") or "").lower()
+            preserved = bool(heading and heading in draft_lower)
+            if not preserved:
+                try:
+                    start = item.get("start")
+                    end = item.get("end")
+                except Exception:  # noqa: BLE001
+                    start = end = None
+                if start is not None and end is not None:
+                    for match in _PARTY_ROLE_PARAGRAPH_REF_RE.finditer(draft_norm):
+                        try:
+                            a = int(match.group("a"))
+                            b_raw = match.group("b")
+                            b = int(b_raw) if b_raw else a
+                        except (TypeError, ValueError):
+                            continue
+                        if a == int(start) and b == int(end):
+                            preserved = True
+                            break
+                if not preserved:
+                    # Fall back: any observed paragraph number from this section.
+                    section_nums = set()
+                    for raw in item.get("paragraph_numbers") or []:
+                        try:
+                            section_nums.add(int(raw))
+                        except (TypeError, ValueError):
+                            continue
+                    if start is not None and end is not None:
+                        try:
+                            section_nums.update(range(int(start), int(end) + 1))
+                        except (TypeError, ValueError):
+                            pass
+                    if section_nums:
+                        for match in _PARTY_ROLE_PARAGRAPH_REF_RE.finditer(
+                            draft_norm
+                        ):
+                            try:
+                                a = int(match.group("a"))
+                                b_raw = match.group("b")
+                                b = int(b_raw) if b_raw else a
+                            except (TypeError, ValueError):
+                                continue
+                            if a in section_nums and b in section_nums:
+                                preserved = True
+                                break
+            if not preserved:
+                return False
+        return True
 
     if allowed:
         for match in _PARTY_ROLE_PARAGRAPH_REF_RE.finditer(draft_norm):
@@ -3951,20 +4186,33 @@ def _party_role_synthesis_missing_item(item: dict, category: str) -> dict:
             if normalize_whitespace(h)
         ]
         exact_range = item.get("exact_paragraph_range")
-        if not isinstance(exact_range, dict) and nums:
+        section_ranges = [
+            r for r in (item.get("section_ranges") or []) if isinstance(r, dict)
+        ]
+        structure_backed = bool(item.get("structure_backed"))
+        if (
+            not isinstance(exact_range, dict)
+            and nums
+            and not structure_backed
+        ):
             exact_range = {"start": int(min(nums)), "end": int(max(nums))}
         if not isinstance(exact_range, dict):
             exact_range = None
         missing["paragraph_numbers"] = nums
         missing["section_headings"] = headings
         missing["exact_paragraph_range"] = exact_range
+        missing["section_ranges"] = section_ranges
+        missing["structure_backed"] = structure_backed
         missing["evidence_facts"] = {
             "paragraph_numbers": nums,
             "section_headings": headings,
             "exact_paragraph_range": exact_range,
+            "section_ranges": section_ranges,
+            "structure_backed": structure_backed,
             "required_language": (
-                "Preserve only these exact paragraph numbers or section "
-                "headings from the evidence; do not invent paragraph ranges."
+                "Preserve only these exact paragraph numbers, section headings, "
+                "and section_ranges from the evidence packet / complaint_structure_"
+                "context; do not invent paragraph ranges."
             ),
         }
     return missing
@@ -4005,6 +4253,8 @@ def find_missing_party_role_synthesis(
                 draft_norm,
                 paragraph_numbers=item.get("paragraph_numbers") or [],
                 section_headings=item.get("section_headings") or [],
+                section_ranges=item.get("section_ranges") or [],
+                structure_backed=bool(item.get("structure_backed")),
             )
         else:
             continue
@@ -4113,7 +4363,8 @@ def build_party_role_repair_prompt(
         "business can bear on service, jurisdiction as applicable, and venue, "
         "without claiming those doctrines are conclusively established.\n"
         "When complaint_roadmap is missing: preserve only the exact paragraph "
-        "numbers or section headings listed in that item's evidence_facts; "
+        "numbers, section headings, or section_ranges listed in that item's "
+        "evidence_facts (including complaint_structure_context markers); "
         "never invent paragraph ranges. If evidence_facts list no roadmap "
         "markers, do not add a roadmap.\n"
         f"Exact missing categories: {_stable_json(missing_categories)}.\n"
@@ -4173,9 +4424,9 @@ def build_party_role_synthesis_patch_prompt(
     if "complaint_roadmap" in allowed:
         category_instructions.append(
             "When complaint_roadmap is listed: preserve only the exact paragraph "
-            "numbers or section headings in that item's evidence_facts; never "
-            "invent paragraph ranges. If evidence_facts list no roadmap markers, "
-            "do not invent a roadmap paragraph."
+            "numbers, section headings, or section_ranges in that item's "
+            "evidence_facts; never invent paragraph ranges. If evidence_facts "
+            "list no roadmap markers, do not invent a roadmap paragraph."
         )
     instruction_block = ""
     if category_instructions:
@@ -4285,6 +4536,8 @@ def _synthesis_section_satisfies(
             draft_norm,
             paragraph_numbers=(criterion or {}).get("paragraph_numbers") or [],
             section_headings=(criterion or {}).get("section_headings") or [],
+            section_ranges=(criterion or {}).get("section_ranges") or [],
+            structure_backed=bool((criterion or {}).get("structure_backed")),
         )
     return False
 
@@ -5266,6 +5519,7 @@ def answer_attorney_record_question(
     case_map: Optional[dict] = None,
     exhibit_context: Optional[Any] = None,
     allowed_sources: Optional[Sequence[str]] = None,
+    complaint_structure_map: Optional[dict] = None,
     model_call: Optional[ModelCall] = None,
     system_prompt: Optional[str] = None,
 ) -> dict:
@@ -5289,8 +5543,9 @@ def answer_attorney_record_question(
     supported service/jurisdiction/venue bearing, notice-defendant explanation,
     rescission effect, or an evidence-exact complaint roadmap connection is
     missing. Complaint roadmap is not required when evidence lacks exact
-    paragraph numbers or section organization. Pre-filter completeness PASS or
-    high confidence is never retained.
+    paragraph numbers or section organization (including attached
+    complaint_structure_context). Pre-filter completeness PASS or high
+    confidence is never retained.
     """
     question_text = normalize_whitespace(question)
     retrieval = retrieval or {"query": question_text, "results": []}
@@ -5318,6 +5573,7 @@ def answer_attorney_record_question(
         case_map=case_map,
         exhibit_context=exhibit_context,
         allowed_sources=allowed_sources,
+        complaint_structure_map=complaint_structure_map,
     )
     party_role_intent = detect_party_role_question_intent(question_text)
     user_prompt = build_user_prompt(
