@@ -186,10 +186,11 @@ jobs:
               destination = root / relative_path
               destination.parent.mkdir(parents=True, exist_ok=True)
               try:
-                  client.download_file(
+                  rebuild_cli.download_b2_file(
+                      client,
                       os.environ["B2_BUCKET"],
                       prefix + relative_path.as_posix(),
-                      str(destination),
+                      destination,
                   )
                   restored.append(destination)
               except ClientError as exc:
