@@ -106,6 +106,7 @@ _EXCLUDED_FILING_TYPE_TOKENS = frozenset(
 
 # Known pleading section families (generic). Matching is case/OCR-tolerant;
 # emitted markers remain exact observed surface forms.
+# More specific factual/overview labels precede generic ``facts`` / ``background``.
 _KNOWN_SECTION_PATTERNS: tuple[tuple[str, str], ...] = (
     ("overview", r"overview"),
     ("introduction", r"introduction"),
@@ -113,10 +114,13 @@ _KNOWN_SECTION_PATTERNS: tuple[tuple[str, str], ...] = (
     ("nature_of_the_action", r"nature\s+of\s+(?:the\s+)?action"),
     ("parties", r"(?:the\s+)?parties(?:\s+to\s+(?:this\s+)?(?:action|proceeding|litigation))?"),
     ("intervening_facts", r"intervening\s+facts?"),
-    ("facts", r"facts?(?:\s+common\s+to\s+all\s+(?:counts|claims))?"),
-    ("factual_background", r"factual\s+background"),
-    ("background", r"background"),
+    ("statement_of_facts", r"statement\s+of\s+facts?"),
+    ("relevant_facts", r"relevant\s+facts?"),
+    ("factual_background", r"factual\s+background(?:\s+and\s+general\s+allegations)?"),
+    ("factual_allegations", r"factual\s+allegations?"),
     ("general_allegations", r"general\s+allegations"),
+    ("facts", r"facts?(?:\s+common\s+to\s+all\s+(?:counts|claims))?"),
+    ("background", r"background"),
     ("jurisdiction_and_venue", r"jurisdiction\s+and\s+venue"),
     ("jurisdiction", r"jurisdiction"),
     ("venue", r"venue"),
@@ -137,8 +141,11 @@ _OVERVIEW_MATCH_KEYS = frozenset(
 _FACTUAL_LAYOUT_MATCH_KEYS = frozenset(
     {
         "intervening_facts",
+        "statement_of_facts",
+        "relevant_facts",
         "facts",
         "factual_background",
+        "factual_allegations",
         "background",
         "general_allegations",
     }
@@ -149,6 +156,47 @@ _PROCEDURAL_LAYOUT_MATCH_KEYS = frozenset(
 )
 _CLAIMS_MATCH_KEYS = frozenset(
     {"causes_of_action", "wherefore", "prayer_for_relief"}
+)
+
+# Collapsed alphabetic forms for OCR that destroyed word boundaries
+# (``FACTUALBACKGROUND`` after over-joining). Exact match only.
+_KNOWN_SECTION_COLLAPSED_LABELS: tuple[tuple[str, str], ...] = tuple(
+    (key, re.sub(r"[^a-z]+", "", label.lower()))
+    for key, label in (
+        ("overview", "overview"),
+        ("introduction", "introduction"),
+        ("preliminary_statement", "preliminary statement"),
+        ("nature_of_the_action", "nature of the action"),
+        ("nature_of_the_action", "nature of action"),
+        ("parties", "the parties"),
+        ("parties", "parties"),
+        ("parties", "parties to this action"),
+        ("intervening_facts", "intervening facts"),
+        ("intervening_facts", "intervening fact"),
+        ("statement_of_facts", "statement of facts"),
+        ("statement_of_facts", "statement of fact"),
+        ("relevant_facts", "relevant facts"),
+        ("relevant_facts", "relevant fact"),
+        ("factual_background", "factual background"),
+        (
+            "factual_background",
+            "factual background and general allegations",
+        ),
+        ("factual_allegations", "factual allegations"),
+        ("factual_allegations", "factual allegation"),
+        ("general_allegations", "general allegations"),
+        ("facts", "facts common to all counts"),
+        ("facts", "facts common to all claims"),
+        ("facts", "facts"),
+        ("background", "background"),
+        ("jurisdiction_and_venue", "jurisdiction and venue"),
+        ("jurisdiction", "jurisdiction"),
+        ("venue", "venue"),
+        ("causes_of_action", "causes of action"),
+        ("causes_of_action", "cause of action"),
+        ("wherefore", "wherefore"),
+        ("prayer_for_relief", "prayer for relief"),
+    )
 )
 
 PARTY_ROLE_ROADMAP_NOTE = (
@@ -164,20 +212,49 @@ _SECTION_PREFIX = (
     r")?"
 )
 
-# Line-oriented heading candidate: optional prefix + known name + optional colon.
+# Optional trailing punctuation / colon noise after a clean heading label.
+_HEADING_TRAILING_PUNCT = r"[:.\-—–_•·]?"
+
+# Line-oriented heading candidate: optional prefix + known name + light punct.
 _HEADING_LINE_RE = re.compile(
     r"(?im)^\s*"
     + _SECTION_PREFIX
     + r"(?P<body>"
     + r"|".join(f"(?:{pat})" for _, pat in _KNOWN_SECTION_PATTERNS)
     + r")"
-    + r"\s*:?\s*$"
+    + r"\s*"
+    + _HEADING_TRAILING_PUNCT
+    + r"\s*$"
 )
 
 # Paragraph markers at line starts. Tolerates light OCR spacing around the
 # delimiter (``1.``, ``1)``, ``1 .``) but requires a following non-space token.
 _PARAGRAPH_MARKER_RE = re.compile(
     r"(?m)^[ \t]*(?P<marker>(?P<num>\d{1,4})[ \t]*[.)])[ \t]+\S"
+)
+
+# Heading label + same-line allegation marker (``PARTIES 1. Plaintiff...``).
+_HEADING_THEN_PARAGRAPH_RE = re.compile(
+    r"(?im)^\s*"
+    + _SECTION_PREFIX
+    + r"(?:"
+    + r"|".join(f"(?:{pat})" for _, pat in _KNOWN_SECTION_PATTERNS)
+    + r")\b\s*"
+    + _HEADING_TRAILING_PUNCT
+    + r"\s*(?P<marker>(?P<num>\d{1,4})[ \t]*[.)])[ \t]+\S"
+)
+
+# Repeated filing stamp / NYSCEF docket chrome (skipped for heading candidates).
+_FILING_CHROME_LINE_RE = re.compile(
+    r"(?i)^\s*(?:"
+    r"filed:\s*.*|"
+    r"nyscef\s+doc(?:ument)?\.?\s*no\.?\s*:?\s*\d+.*|"
+    r"index\s+no\.?\s*:?\s*\S+.*|"
+    r"received\s+nyscef\s*:?\s*.*|"
+    r"doc(?:ument)?\s*#?\s*\d+\s*$|"
+    r"page\s+\d+\s*(?:of\s*\d+)?\s*$|"
+    r"\d+\s+of\s+\d+\s*$"
+    r")"
 )
 
 # OCR: spaced-out single letters inside a heading token (``P A R T I E S``).
@@ -537,10 +614,18 @@ def select_controlling_complaint(
 
 
 def _heal_ocr_letter_spacing(text: str) -> str:
-    """Join spaced-out letter runs for matching only; does not alter markers."""
+    """Join spaced-out letter runs for matching only; does not alter markers.
+
+    Wider gaps between OCR-spaced words are preserved as word boundaries
+    (``F A C T U A L   B A C K G R O U N D`` → ``FACTUAL BACKGROUND``).
+    """
 
     def _join(match: re.Match[str]) -> str:
-        return re.sub(r"\s+", "", match.group(0))
+        chunk = match.group(0)
+        # Two or more whitespace characters mark an OCR word boundary.
+        pieces = re.split(r"[ \t]{2,}", chunk)
+        healed = [re.sub(r"[ \t]+", "", piece) for piece in pieces if piece]
+        return " ".join(healed)
 
     return _OCR_LETTER_SPACED_RE.sub(_join, text or "")
 
@@ -548,7 +633,7 @@ def _heal_ocr_letter_spacing(text: str) -> str:
 def _normalize_heading_match_text(text: str) -> str:
     healed = _heal_ocr_letter_spacing(text)
     healed = re.sub(r"\s+", " ", healed).strip().lower()
-    healed = healed.rstrip(":").strip()
+    healed = healed.rstrip(" :.-—–_•·").strip()
     return healed
 
 
@@ -564,6 +649,12 @@ def _match_key_for_heading_body(body: str) -> Optional[str]:
         trimmed = normalized[4:]
         for key, pat in _KNOWN_SECTION_PATTERNS:
             if re.fullmatch(pat, trimmed, flags=re.IGNORECASE):
+                return key
+    # OCR may have destroyed word boundaries entirely.
+    collapsed = re.sub(r"[^a-z]+", "", normalized)
+    if collapsed:
+        for key, label in _KNOWN_SECTION_COLLAPSED_LABELS:
+            if collapsed == label:
                 return key
     return None
 
@@ -591,6 +682,31 @@ def _page_provenance(page: Mapping[str, Any]) -> dict[str, Any]:
         "page_id": str(page_id),
         "page_number": page_number,
     }
+
+
+def _is_filing_chrome_line(line: str) -> bool:
+    """True for repeated filing stamps / NYSCEF headers / page footers."""
+    collapsed = _collapse_ws(line)
+    if not collapsed:
+        return False
+    return bool(_FILING_CHROME_LINE_RE.match(collapsed))
+
+
+def _bounded_observed_heading_marker(
+    original_line: str,
+    *,
+    healed_match_end: int,
+    body: str,
+    label_span: str,
+) -> str:
+    """Preserve exact source marker text without absorbing trailing prose."""
+    bounded = _collapse_ws(original_line[:healed_match_end])
+    if not bounded:
+        bounded = _collapse_ws(label_span)
+    bounded = bounded.rstrip(" :.-—–_•·").strip()
+    if not bounded:
+        bounded = _collapse_ws(body)
+    return bounded
 
 
 def _extract_headings_from_page(
@@ -624,15 +740,21 @@ def _extract_headings_from_page(
     )
 
     for idx, healed_line in enumerate(healed_lines):
+        # Skip docket chrome so repeated headers/footers never become headings.
+        if _is_filing_chrome_line(original_lines[idx]) or _is_filing_chrome_line(
+            healed_line
+        ):
+            continue
+
         match = _HEADING_LINE_RE.match(healed_line)
         if match:
             body = match.group("body")
             key = _match_key_for_heading_body(body)
-            observed = _collapse_ws(original_lines[idx])
+            observed = _collapse_ws(original_lines[idx]).rstrip(" :.-—–_•·").strip()
             ocr_healed = _heal_ocr_letter_spacing(original_lines[idx])
             ambiguous = False
             ambiguity_note = None
-            if _collapse_ws(ocr_healed) != observed and key is not None:
+            if _collapse_ws(ocr_healed) != _collapse_ws(original_lines[idx]) and key is not None:
                 # OCR spacing differed; marker preserved, uncertainty recorded.
                 uncertainties.append(
                     {
@@ -674,31 +796,33 @@ def _extract_headings_from_page(
             continue
 
         # Ambiguous: line looks like a known heading family but has trailing
-        # prose (not a clean heading line).
+        # prose (not a clean heading line), including same-line paragraphs.
         stripped = healed_line.strip()
         if not stripped:
             continue
         body_guess = _ambiguous_heading_re.match(stripped)
         if body_guess:
-            rest = stripped[body_guess.end() :].strip().lstrip(":").strip()
+            rest = stripped[body_guess.end() :].strip()
+            rest = rest.lstrip(" :.-—–_•·").strip()
             if rest:
                 key = _match_key_for_heading_body(body_guess.group("body"))
                 # Bound the observed marker to the heading label only — never
                 # absorb trailing page prose or responsive allegation language.
                 original_line = original_lines[idx]
                 label_span = body_guess.group(0)
-                # Map healed span length back onto the original line prefix when
-                # possible; fall back to the matched heading body text.
-                bounded = _collapse_ws(original_line[: body_guess.end()])
-                if not bounded:
-                    bounded = _collapse_ws(label_span)
-                bounded = bounded.rstrip(":").strip()
-                if not bounded:
-                    bounded = _collapse_ws(body_guess.group("body"))
+                bounded = _bounded_observed_heading_marker(
+                    original_line,
+                    healed_match_end=body_guess.end(),
+                    body=body_guess.group("body"),
+                    label_span=label_span,
+                )
+                ambiguity_note = "heading_token_with_trailing_prose"
+                if _HEADING_THEN_PARAGRAPH_RE.match(healed_line):
+                    ambiguity_note = "heading_adjacent_to_paragraph_text"
                 headings.append(
                     {
                         "ambiguous": True,
-                        "ambiguity_note": "heading_token_with_trailing_prose",
+                        "ambiguity_note": ambiguity_note,
                         "match_key": key,
                         "observed_marker": bounded,
                         "page_id": prov["page_id"],
@@ -712,11 +836,35 @@ def _extract_headings_from_page(
                         "observed_marker": bounded,
                         "page_id": prov["page_id"],
                         "page_number": prov["page_number"],
-                        "detail": "heading_token_with_trailing_prose",
+                        "detail": ambiguity_note,
                     }
                 )
 
     return headings, uncertainties
+
+
+def _append_paragraph_observation(
+    found: list[dict[str, Any]],
+    seen_on_page: set[int],
+    *,
+    number: int,
+    marker: str,
+    prov: Mapping[str, Any],
+    line_index: int,
+) -> None:
+    if number in seen_on_page:
+        return
+    seen_on_page.add(number)
+    cleaned = re.sub(r"\s+", "", _collapse_ws(marker))
+    found.append(
+        {
+            "number": number,
+            "observed_marker": cleaned,
+            "page_id": prov["page_id"],
+            "page_number": prov["page_number"],
+            "line_index": line_index,
+        }
+    )
 
 
 def _extract_paragraphs_from_page(
@@ -735,6 +883,8 @@ def _extract_paragraphs_from_page(
         if line_end < 0:
             line_end = len(text)
         line = text[line_start:line_end]
+        if _is_filing_chrome_line(line):
+            continue
         # Skip numbered section-heading lines (``14. PARTIES``) — those are
         # headings, not allegation paragraph markers.
         if _HEADING_LINE_RE.match(_heal_ocr_letter_spacing(line)):
@@ -743,22 +893,36 @@ def _extract_paragraphs_from_page(
             number = int(match.group("num"))
         except (TypeError, ValueError):
             continue
-        if number in seen_on_page:
-            continue
-        seen_on_page.add(number)
-        marker = _collapse_ws(match.group("marker"))
-        # Normalize light OCR spacing inside the marker for the observed form
-        # while keeping the delimiter character (``1.`` / ``1)``).
-        marker = re.sub(r"\s+", "", marker)
         line_index = text.count("\n", 0, line_start)
-        found.append(
-            {
-                "number": number,
-                "observed_marker": marker,
-                "page_id": prov["page_id"],
-                "page_number": prov["page_number"],
-                "line_index": line_index,
-            }
+        _append_paragraph_observation(
+            found,
+            seen_on_page,
+            number=number,
+            marker=match.group("marker"),
+            prov=prov,
+            line_index=line_index,
+        )
+
+    # Same-line heading + allegation (``PARTIES 1. Plaintiff...``).
+    original_lines = text.splitlines()
+    for line_index, line in enumerate(original_lines):
+        if _is_filing_chrome_line(line):
+            continue
+        healed = _heal_ocr_letter_spacing(line)
+        adjacent = _HEADING_THEN_PARAGRAPH_RE.match(healed)
+        if not adjacent:
+            continue
+        try:
+            number = int(adjacent.group("num"))
+        except (TypeError, ValueError):
+            continue
+        _append_paragraph_observation(
+            found,
+            seen_on_page,
+            number=number,
+            marker=adjacent.group("marker"),
+            prov=prov,
+            line_index=line_index,
         )
     return found
 
@@ -1028,12 +1192,14 @@ def select_party_role_complaint_roadmap_context(
     """
     Build compact, source-cited complaint roadmap metadata for party-role packets.
 
-    Covers overview/introduction, intervening factual/background/allegation
-    sections, intervening procedural layout between overview and parties when
-    present, and party-identification sections. Supplemental only — never a
-    replacement for substantive retrieval hits. Returns None when schema is
-    stale/absent, controlling-complaint selection failed, or no relevant
-    structure is available.
+    Emits the three-part party-role roadmap when supported by observed structure:
+    (1) overview/introduction section(s); (2) intervening factual/background/
+    allegation section(s) grouped as ``factual_layout`` without inventing a
+    heading or continuous range; (3) party-identification section(s).
+    Intervening procedural layout between overview and parties is included when
+    present. Supplemental only — never a replacement for substantive retrieval
+    hits. Returns None when schema is stale/absent, controlling-complaint
+    selection failed, or no relevant structure is available.
     """
     documents_in: list[Mapping[str, Any]] = []
     if isinstance(structure_map, Mapping):
@@ -1071,6 +1237,11 @@ def select_party_role_complaint_roadmap_context(
         parties_idxs = [
             i for i, sec in enumerate(sections) if sec.get("kind") == "parties"
         ]
+        factual_idxs = [
+            i
+            for i, sec in enumerate(sections)
+            if sec.get("kind") == "factual_layout"
+        ]
         selected: list[dict[str, Any]] = []
         selected_indexes: set[int] = set()
 
@@ -1088,18 +1259,26 @@ def select_party_role_complaint_roadmap_context(
             selected.append(compact)
             selected_indexes.add(idx)
 
+        # (1) Overview / introduction section(s).
         for idx in overview_idxs:
             _take(idx)
-        for idx, sec in enumerate(sections):
-            if sec.get("kind") == "factual_layout":
-                _take(idx)
-        # Intervening procedural layout between overview and parties only.
+
+        # (2) Intervening factual/background/allegation (+ procedural) sections
+        # between overview and parties, in source order. Each keeps its own
+        # observed heading and range — never merge into an invented span.
         if overview_idxs and parties_idxs:
             lo = min(overview_idxs)
             hi = min(parties_idxs)
             for idx in range(lo + 1, hi):
-                if sections[idx].get("kind") == "procedural_layout":
+                kind = sections[idx].get("kind")
+                if kind in {"factual_layout", "procedural_layout"}:
                     _take(idx)
+        # Include remaining factual_layout outside that span (e.g. FACTS after
+        # PARTIES) without inventing continuity across the gap.
+        for idx in factual_idxs:
+            _take(idx)
+
+        # (3) Party-identification section(s).
         for idx in parties_idxs:
             _take(idx)
 

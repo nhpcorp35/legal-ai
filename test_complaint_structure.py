@@ -385,6 +385,192 @@ class ControllingComplaintSelectionTests(unittest.TestCase):
         self.assertEqual(payload["documents"][0]["document_id"], "nyscef-501")
 
 
+class RealisticMultiPageRoadmapTests(unittest.TestCase):
+    """Acceptance: noisy multi-page controlling complaint → three-part roadmap."""
+
+    def _noisy_controlling_complaint_pages(self, nyscef: int = 901) -> list[dict]:
+        return [
+            _page(
+                nyscef=nyscef,
+                page_number=1,
+                text=(
+                    "FILED: KINGS COUNTY CLERK 01/15/2024 10:00 AM\n"
+                    "NYSCEF DOC. NO. 1                    INDEX NO. 500001/2024\n"
+                    "RECEIVED NYSCEF: 01/15/2024\n"
+                    "SUPREME COURT OF THE STATE OF NEW YORK\n"
+                    "COUNTY OF KINGS\n"
+                    "                      Nature of the Action.\n"
+                    "1. This is an action for breach of a freight contract.\n"
+                    "2. Plaintiff seeks damages arising from failed deliveries.\n"
+                    "page 1 of 4\n"
+                ),
+                document_type="complaint",
+                source_filename=f"summons_complaint_{nyscef}.pdf",
+                document_title="Summons and Complaint",
+                document_classification="summons_and_complaint",
+            ),
+            _page(
+                nyscef=nyscef,
+                page_number=2,
+                text=(
+                    "FILED: KINGS COUNTY CLERK 01/15/2024 10:00 AM\n"
+                    "NYSCEF DOC. NO. 1                    INDEX NO. 500001/2024\n"
+                    "RECEIVED NYSCEF: 01/15/2024\n"
+                    "                   F A C T U A L   B A C K G R O U N D\n"
+                    "3. On a date certain the parties entered a carriage agreement.\n"
+                    "4. Delivery was not completed as scheduled.\n"
+                    "page 2 of 4\n"
+                ),
+                document_type="complaint",
+                source_filename=f"summons_complaint_{nyscef}.pdf",
+            ),
+            _page(
+                nyscef=nyscef,
+                page_number=3,
+                text=(
+                    "FILED: KINGS COUNTY CLERK 01/15/2024 10:00 AM\n"
+                    "NYSCEF DOC. NO. 1                    INDEX NO. 500001/2024\n"
+                    "RECEIVED NYSCEF: 01/15/2024\n"
+                    "STATEMENT OF FACTS\n"
+                    "5. Damages followed from the missed delivery window.\n"
+                    "6. A second missed window occurred thereafter.\n"
+                    # Gap: paragraph 7 is unobserved — must not be bridged.
+                    "8. Additional remediation costs were incurred.\n"
+                    "page 3 of 4\n"
+                ),
+                document_type="complaint",
+                source_filename=f"summons_complaint_{nyscef}.pdf",
+            ),
+            _page(
+                nyscef=nyscef,
+                page_number=4,
+                text=(
+                    "FILED: KINGS COUNTY CLERK 01/15/2024 10:00 AM\n"
+                    "NYSCEF DOC. NO. 1                    INDEX NO. 500001/2024\n"
+                    "RECEIVED NYSCEF: 01/15/2024\n"
+                    "                            THE PARTIES\n"
+                    "9. Plaintiff North Quay Logistics LLC is a domestic LLC.\n"
+                    "10. Defendant Pier Gate Depot Inc. is a domestic corporation.\n"
+                    "page 4 of 4\n"
+                ),
+                document_type="complaint",
+                source_filename=f"summons_complaint_{nyscef}.pdf",
+            ),
+        ]
+
+    def test_three_part_roadmap_from_noisy_multipage_complaint(self) -> None:
+        pages = self._noisy_controlling_complaint_pages(901)
+        answer = _page(
+            nyscef=918,
+            page_number=1,
+            text=(
+                "VERIFIED ANSWER\n"
+                "Nature of the Action.\n"
+                "1. Denies the allegations of complaint paragraph 1.\n"
+                "STATEMENT OF FACTS\n"
+                "5. Denies complaint paragraph 5.\n"
+                "THE PARTIES\n"
+                "9. Admits paragraph 9 only as to residence.\n"
+            ),
+            document_type="answer",
+            source_filename="verified_answer_918.pdf",
+        )
+        payload = cs.build_complaint_structure_map({"pages": pages + [answer]})
+        self.assertEqual(payload["selection"]["status"], cs.SELECTION_STATUS_SELECTED)
+        self.assertEqual(payload["selection"]["controlling_nyscef_document_number"], 901)
+        self.assertEqual(len(payload["documents"]), 1)
+
+        doc = payload["documents"][0]
+        keys = [h["match_key"] for h in doc["section_headings"] if h.get("match_key")]
+        self.assertIn("nature_of_the_action", keys)
+        self.assertIn("factual_background", keys)
+        self.assertIn("statement_of_facts", keys)
+        self.assertIn("parties", keys)
+        # Varied intervening headings both classified as factual layout.
+        factual_sections = [
+            sec for sec in doc["sections"] if sec.get("kind") == "factual_layout"
+        ]
+        self.assertGreaterEqual(len(factual_sections), 2)
+        factual_headings = {sec.get("heading", "").upper() for sec in factual_sections}
+        self.assertTrue(any("F A C T U A L" in h or "FACTUAL" in h for h in factual_headings))
+        self.assertTrue(any("STATEMENT OF FACTS" in h for h in factual_headings))
+
+        # Exact observed ranges survive; gap at 7 is not bridged.
+        by_key = {sec.get("match_key"): sec for sec in doc["sections"]}
+        self.assertEqual(
+            by_key["nature_of_the_action"].get("paragraph_range"),
+            {"start": 1, "end": 2, "contiguous": True},
+        )
+        self.assertEqual(
+            by_key["factual_background"].get("paragraph_range"),
+            {"start": 3, "end": 4, "contiguous": True},
+        )
+        statement = by_key["statement_of_facts"]
+        self.assertEqual(statement.get("paragraph_numbers"), [5, 6, 8])
+        self.assertIsNone(statement.get("paragraph_range"))
+        self.assertIn(
+            "noncontiguous_paragraph_numbers", statement.get("uncertainty") or []
+        )
+        self.assertNotIn(7, statement.get("paragraph_numbers") or [])
+        self.assertEqual(
+            by_key["parties"].get("paragraph_range"),
+            {"start": 9, "end": 10, "contiguous": True},
+        )
+        self.assertIn(7, doc.get("missing_paragraph_numbers") or [])
+
+        roadmap = cs.select_party_role_complaint_roadmap_context(payload)
+        self.assertIsNotNone(roadmap)
+        kinds = [sec["kind"] for sec in roadmap["documents"][0]["sections"]]
+        self.assertGreaterEqual(kinds.count("overview"), 1)
+        self.assertGreaterEqual(kinds.count("factual_layout"), 2)
+        self.assertGreaterEqual(kinds.count("parties"), 1)
+        # Answer quotations excluded from roadmap provenance.
+        page_ids = {
+            pid
+            for sec in roadmap["documents"][0]["sections"]
+            for pid in sec.get("page_ids") or []
+        }
+        self.assertTrue(all(pid.startswith("nyscef-901-") for pid in page_ids))
+        self.assertFalse(any(pid.startswith("nyscef-918-") for pid in page_ids))
+
+    def test_heading_variants_and_adjacent_paragraph_detection(self) -> None:
+        text = (
+            "RELEVANT FACTS\n"
+            "1. First relevant event occurred.\n"
+            "FACTUAL ALLEGATIONS\n"
+            "2. A second allegation follows.\n"
+            "PARTIES 3. Plaintiff Cedar Wharf Brokers LP is domestic.\n"
+        )
+        doc = cs.build_complaint_structure_map(
+            {"pages": [_page(nyscef=902, page_number=1, text=text)]}
+        )["documents"][0]
+        keys = [h["match_key"] for h in doc["section_headings"]]
+        self.assertEqual(
+            keys, ["relevant_facts", "factual_allegations", "parties"]
+        )
+        self.assertEqual([p["number"] for p in doc["paragraph_numbers"]], [1, 2, 3])
+        parties = next(sec for sec in doc["sections"] if sec["kind"] == "parties")
+        self.assertEqual(parties.get("paragraph_numbers"), [3])
+        self.assertEqual(
+            next(
+                h for h in doc["section_headings"] if h["match_key"] == "parties"
+            ).get("ambiguity_note"),
+            "heading_adjacent_to_paragraph_text",
+        )
+
+    def test_deterministic_output_stable_for_noisy_complaint(self) -> None:
+        pages = self._noisy_controlling_complaint_pages(903)
+        a = cs.build_complaint_structure_map({"pages": list(pages)})
+        b = cs.build_complaint_structure_map({"pages": list(reversed(pages))})
+        self.assertEqual(cs.serialize_structure_map(a), cs.serialize_structure_map(b))
+        roadmap_a = cs.select_party_role_complaint_roadmap_context(a)
+        roadmap_b = cs.select_party_role_complaint_roadmap_context(b)
+        self.assertEqual(
+            cs.serialize_structure_map(roadmap_a),
+            cs.serialize_structure_map(roadmap_b),
+        )
+
+
 class MultipleDocumentTests(unittest.TestCase):
     def test_structures_not_mixed_across_non_complaint_filings(self) -> None:
         pages = [

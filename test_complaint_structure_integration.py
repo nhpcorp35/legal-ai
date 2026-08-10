@@ -396,6 +396,166 @@ class PartyRoleRoadmapRoutingTests(unittest.TestCase):
         )
 
 
+class RealisticAttachmentAcceptanceTests(unittest.TestCase):
+    """Live-defect acceptance: attachable three-part roadmap despite OCR/chrome."""
+
+    def test_evidence_packet_attaches_three_part_roadmap(self) -> None:
+        nyscef = 880
+        pages = [
+            _page(
+                nyscef=nyscef,
+                page_number=1,
+                text=(
+                    "FILED: COUNTY CLERK 02/01/2024\n"
+                    "NYSCEF DOC. NO. 1\n"
+                    "RECEIVED NYSCEF: 02/01/2024\n"
+                    "NATURE OF THE ACTION\n"
+                    "1. This pleading summarizes a commercial dispute.\n"
+                    "2. The dispute concerns carriage services.\n"
+                ),
+            ),
+            _page(
+                nyscef=nyscef,
+                page_number=2,
+                text=(
+                    "FILED: COUNTY CLERK 02/01/2024\n"
+                    "NYSCEF DOC. NO. 1\n"
+                    "F A C T U A L   B A C K G R O U N D\n"
+                    "3. The parties entered an agreement.\n"
+                    "4. Performance failed on the contracted date.\n"
+                ),
+            ),
+            _page(
+                nyscef=nyscef,
+                page_number=3,
+                text=(
+                    "FILED: COUNTY CLERK 02/01/2024\n"
+                    "NYSCEF DOC. NO. 1\n"
+                    "RELEVANT FACTS\n"
+                    "5. Damages followed from nonperformance.\n"
+                    # Unobserved 6 — must remain a gap.
+                    "7. Remediation costs followed.\n"
+                ),
+            ),
+            _page(
+                nyscef=nyscef,
+                page_number=4,
+                text=(
+                    "FILED: COUNTY CLERK 02/01/2024\n"
+                    "NYSCEF DOC. NO. 1\n"
+                    "THE PARTIES\n"
+                    "8. Plaintiff North Quay Logistics LLC is a domestic LLC.\n"
+                    "9. Defendant Pier Gate Depot Inc. is a domestic corporation.\n"
+                ),
+            ),
+        ]
+        answer = _page(
+            nyscef=nyscef + 1,
+            page_number=1,
+            text=(
+                "ANSWER\n"
+                "NATURE OF THE ACTION\n"
+                "1. Denies paragraph 1 of the complaint.\n"
+                "RELEVANT FACTS\n"
+                "5. Denies paragraph 5.\n"
+                "THE PARTIES\n"
+                "8. Admits paragraph 8.\n"
+            ),
+            document_type="answer",
+        )
+        structure_map = cs.build_complaint_structure_map({"pages": pages + [answer]})
+        retrieval = {
+            "query": "Who are the parties and what are their roles?",
+            "results": [
+                {
+                    "result_id": "hit-parties",
+                    "page_id": f"nyscef-{nyscef:03d}-page-0004",
+                    "nyscef_document_number": nyscef,
+                    "pdf_page": 4,
+                    "source_filename": f"doc_{nyscef}.pdf",
+                    "document_type": "complaint",
+                    "excerpt": (
+                        "THE PARTIES\n"
+                        "8. Plaintiff North Quay Logistics LLC is a domestic LLC.\n"
+                        "9. Defendant Pier Gate Depot Inc. is a domestic corporation.\n"
+                    ),
+                    "classifications": ["party_allegation"],
+                    "score": 0.9,
+                }
+            ],
+        }
+        packet = de.build_evidence_packet(
+            "Who are the parties and what are their roles in this action?",
+            retrieval,
+            complaint_structure_map=structure_map,
+        )
+        status = packet.get("complaint_structure_status") or {}
+        self.assertTrue(status.get("ok"))
+        self.assertTrue(status.get("attached"))
+        self.assertIsNone(status.get("reason"))
+        context = packet.get("complaint_structure_context")
+        self.assertIsInstance(context, dict)
+        kinds = [
+            sec.get("kind")
+            for doc in context.get("documents") or []
+            for sec in doc.get("sections") or []
+        ]
+        self.assertEqual(kinds.count("overview"), 1)
+        self.assertGreaterEqual(kinds.count("factual_layout"), 2)
+        self.assertEqual(kinds.count("parties"), 1)
+        factual = [
+            sec
+            for doc in context["documents"]
+            for sec in doc["sections"]
+            if sec.get("kind") == "factual_layout"
+        ]
+        headings_upper = {str(sec.get("heading") or "").upper() for sec in factual}
+        self.assertTrue(
+            any("FACTUAL" in h or "F A C T U A L" in h for h in headings_upper)
+        )
+        self.assertTrue(any("RELEVANT FACTS" in h for h in headings_upper))
+        relevant = next(
+            sec for sec in factual if "RELEVANT" in str(sec.get("heading") or "").upper()
+        )
+        self.assertEqual(relevant.get("paragraph_numbers"), [5, 7])
+        self.assertIsNone(relevant.get("paragraph_range"))
+        self.assertEqual(context["documents"][0]["nyscef_document_number"], nyscef)
+        page_ids = {
+            pid
+            for sec in context["documents"][0]["sections"]
+            for pid in sec.get("page_ids") or []
+        }
+        self.assertFalse(any(str(pid).startswith(f"nyscef-{nyscef + 1:03d}-") for pid in page_ids))
+
+    def test_non_party_question_regression_unaffected(self) -> None:
+        structure_map = _multi_section_map(885)
+        packet = de.build_evidence_packet(
+            "What damages are alleged in the complaint?",
+            {
+                "query": "What damages are alleged in the complaint?",
+                "results": [
+                    {
+                        "result_id": "hit-damages",
+                        "page_id": "nyscef-885-page-0002",
+                        "nyscef_document_number": 885,
+                        "pdf_page": 2,
+                        "source_filename": "doc_885.pdf",
+                        "document_type": "complaint",
+                        "excerpt": (
+                            "4. Delivery was not completed as scheduled.\n"
+                            "5. Damages followed from the missed delivery window.\n"
+                        ),
+                        "classifications": ["factual_allegation"],
+                        "score": 0.8,
+                    }
+                ],
+            },
+            complaint_structure_map=structure_map,
+        )
+        self.assertNotIn("complaint_structure_context", packet)
+        self.assertNotIn("complaint_structure_status", packet)
+
+
 class SectionBindingExtractionTests(unittest.TestCase):
     def test_sections_bind_observed_paragraphs_without_invention(self) -> None:
         structure_map = _multi_section_map(870)
