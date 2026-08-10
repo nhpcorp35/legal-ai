@@ -197,6 +197,10 @@ class RebuildCase00LocalSourceTests(unittest.TestCase):
             self.assertEqual(len(page_wrap["pages"]), 2)
             self.assertEqual(page_wrap["pages"][0]["nyscef_document_number"], 3)
             self.assertEqual(page_wrap["pages"][0]["page_id"], "nyscef-003-page-0001")
+            self.assertEqual(page_wrap["pages"][0]["document_type"], "complaint")
+            self.assertTrue(page_wrap["pages"][0].get("document_title"))
+            self.assertTrue(page_wrap["pages"][0].get("document_classification"))
+            self.assertIn("complaint", page_wrap["pages"][0]["source_filename"])
 
             exhibit_map = json.loads(paths["exhibit_map"].read_text(encoding="utf-8"))
             self.assertEqual(len(exhibit_map["filings"]), 1)
@@ -212,6 +216,14 @@ class RebuildCase00LocalSourceTests(unittest.TestCase):
             self.assertEqual(
                 structure_map["schema_version"],
                 CLI.cs.SCHEMA_VERSION,
+            )
+            self.assertEqual(
+                structure_map["selection"]["status"],
+                CLI.cs.SELECTION_STATUS_SELECTED,
+            )
+            self.assertEqual(
+                structure_map["selection"]["controlling_nyscef_document_number"],
+                3,
             )
             self.assertEqual(len(structure_map["documents"]), 1)
             self.assertEqual(

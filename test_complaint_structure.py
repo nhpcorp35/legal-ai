@@ -33,7 +33,12 @@ def _page(
     nyscef: int,
     page_number: int,
     text: str,
+    document_type: str = "complaint",
+    source_filename: str | None = None,
+    document_title: str | None = None,
+    document_classification: str | None = None,
 ) -> dict:
+    filename = source_filename or f"doc_{nyscef}_{document_type or 'filing'}.pdf"
     return {
         "nyscef_document_number": nyscef,
         "page_number": page_number,
@@ -41,8 +46,11 @@ def _page(
         "text": text,
         "extraction_method": "native",
         "pdf_page_number": page_number,
-        "source_filename": f"doc_{nyscef}.pdf",
-        "source_path": f"/synthetic/doc_{nyscef}.pdf",
+        "source_filename": filename,
+        "source_path": f"/synthetic/{filename}",
+        "document_type": document_type,
+        "document_title": document_title or filename,
+        "document_classification": document_classification or document_type,
     }
 
 
@@ -171,53 +179,247 @@ class AmbiguityTests(unittest.TestCase):
             doc["section_headings"][0]["ambiguity_note"],
             "heading_token_with_trailing_prose",
         )
+        # Bounded heading label only — no absorbed trailing prose.
+        self.assertEqual(doc["section_headings"][0]["observed_marker"], "PARTIES")
+        self.assertNotIn("Plaintiff", doc["section_headings"][0]["observed_marker"])
         self.assertTrue(
             any(u["kind"] == "ambiguous_heading" for u in doc["uncertainties"])
         )
 
 
+class ControllingComplaintSelectionTests(unittest.TestCase):
+    def test_complaint_plus_answers_quoting_headings_uses_only_complaint(self) -> None:
+        complaint_text = (
+            "OVERVIEW\n"
+            "1. This action concerns a freight dispute.\n"
+            "PARTIES\n"
+            "2. Plaintiff River Bend Carrier LLC is a domestic company.\n"
+            "3. Defendant Harbor Pier Depot Inc. is a domestic corporation.\n"
+            "FACTS\n"
+            "4. The parties entered a carriage agreement.\n"
+        )
+        answer_a = (
+            "ANSWER\n"
+            "OVERVIEW\n"
+            "1. Denies the allegations of complaint paragraph 1.\n"
+            "PARTIES\n"
+            "2. Admits paragraph 2 only as to residence.\n"
+            "3. Denies knowledge of paragraph 3.\n"
+            "FACTS\n"
+            "4. Denies paragraph 4.\n"
+        )
+        answer_b = (
+            "VERIFIED ANSWER\n"
+            "PARTIES\n"
+            "10. Repeats and realleges responses to paragraphs 2 through 3.\n"
+            "FACTS\n"
+            "11. Denies each and every allegation in complaint paragraph 4.\n"
+        )
+        pages = [
+            _page(
+                nyscef=101,
+                page_number=1,
+                text=complaint_text,
+                document_type="complaint",
+                source_filename="synthetic_summons_complaint_101.pdf",
+            ),
+            _page(
+                nyscef=118,
+                page_number=1,
+                text=answer_a,
+                document_type="answer",
+                source_filename="synthetic_answer_118.pdf",
+            ),
+            _page(
+                nyscef=127,
+                page_number=1,
+                text=answer_b,
+                document_type="answer",
+                source_filename="synthetic_amended_answer_127.pdf",
+            ),
+        ]
+        payload = cs.build_complaint_structure_map({"pages": pages})
+        self.assertEqual(payload["selection"]["status"], cs.SELECTION_STATUS_SELECTED)
+        self.assertEqual(payload["selection"]["controlling_nyscef_document_number"], 101)
+        self.assertEqual(len(payload["documents"]), 1)
+        doc = payload["documents"][0]
+        self.assertEqual(doc["document_id"], "nyscef-101")
+        self.assertEqual(
+            [h["match_key"] for h in doc["section_headings"] if not h["ambiguous"]],
+            ["overview", "parties", "facts"],
+        )
+        self.assertEqual([p["number"] for p in doc["paragraph_numbers"]], [1, 2, 3, 4])
+        # Answer paragraph numbers / provenance must not appear.
+        self.assertTrue(
+            all(p["page_id"].startswith("nyscef-101-") for p in doc["paragraph_numbers"])
+        )
+        self.assertTrue(
+            all(h["page_id"].startswith("nyscef-101-") for h in doc["section_headings"])
+        )
+        roadmap = cs.select_party_role_complaint_roadmap_context(payload)
+        self.assertIsNotNone(roadmap)
+        self.assertEqual(len(roadmap["documents"]), 1)
+        self.assertEqual(roadmap["documents"][0]["nyscef_document_number"], 101)
+        kinds = [sec["kind"] for sec in roadmap["documents"][0]["sections"]]
+        self.assertEqual(kinds.count("overview"), 1)
+        self.assertEqual(kinds.count("parties"), 1)
+        self.assertEqual(kinds.count("factual_layout"), 1)
+
+    def test_ambiguous_multiple_complaints_fail_closed(self) -> None:
+        pages = [
+            _page(
+                nyscef=201,
+                page_number=1,
+                text="PARTIES\n1. Plaintiff Alpha LLC is domestic.\n",
+                document_type="complaint",
+                source_filename="complaint_201.pdf",
+            ),
+            _page(
+                nyscef=205,
+                page_number=1,
+                text="PARTIES\n1. Plaintiff Beta LLC is domestic.\n",
+                document_type="complaint",
+                source_filename="amended_complaint_205.pdf",
+            ),
+        ]
+        payload = cs.build_complaint_structure_map({"pages": pages})
+        self.assertEqual(payload["selection"]["status"], cs.SELECTION_STATUS_AMBIGUOUS)
+        self.assertEqual(payload["documents"], [])
+        self.assertEqual(
+            payload["selection"]["candidate_nyscef_document_numbers"],
+            [201, 205],
+        )
+        status = cs.structure_map_status(payload)
+        self.assertFalse(status["ok"])
+        self.assertEqual(status["reason"], "controlling_complaint_ambiguous")
+        self.assertIsNone(cs.select_party_role_complaint_roadmap_context(payload))
+
+    def test_absent_complaint_metadata_unavailable(self) -> None:
+        pages = [
+            _page(
+                nyscef=301,
+                page_number=1,
+                text="PARTIES\n1. Plaintiff Gamma LLC is domestic.\n",
+                document_type="",
+                source_filename="doc_301.pdf",
+                document_classification="",
+            )
+        ]
+        # Clear title/classification signals that would otherwise classify.
+        pages[0]["document_title"] = ""
+        pages[0]["document_classification"] = ""
+        payload = cs.build_complaint_structure_map({"pages": pages})
+        self.assertEqual(payload["selection"]["status"], cs.SELECTION_STATUS_UNAVAILABLE)
+        self.assertEqual(payload["selection"]["reason"], "complaint_metadata_absent")
+        self.assertEqual(payload["documents"], [])
+        status = cs.structure_map_status(payload)
+        self.assertFalse(status["ok"])
+        self.assertEqual(status["reason"], "complaint_metadata_absent")
+
+    def test_answer_only_corpus_unavailable(self) -> None:
+        pages = [
+            _page(
+                nyscef=401,
+                page_number=1,
+                text=(
+                    "PARTIES\n"
+                    "1. Denies complaint paragraph 1.\n"
+                    "FACTS\n"
+                    "2. Denies complaint paragraph 2.\n"
+                ),
+                document_type="answer",
+                source_filename="verified_answer_401.pdf",
+            ),
+            _page(
+                nyscef=402,
+                page_number=1,
+                text="PARTIES\n5. Affiant quotes complaint parties heading.\n",
+                document_type="affidavit",
+                source_filename="affidavit_402.pdf",
+            ),
+        ]
+        payload = cs.build_complaint_structure_map({"pages": pages})
+        self.assertEqual(payload["selection"]["status"], cs.SELECTION_STATUS_UNAVAILABLE)
+        self.assertEqual(payload["documents"], [])
+        self.assertIn("answer", payload["selection"]["reason"])
+        self.assertIsNone(cs.select_party_role_complaint_roadmap_context(payload))
+
+    def test_inventory_metadata_selects_controlling_complaint(self) -> None:
+        pages = [
+            {
+                "nyscef_document_number": 501,
+                "page_number": 1,
+                "page_id": "nyscef-501-page-0001",
+                "text": "PARTIES\n1. Plaintiff Delta Transit LP is domestic.\n",
+                "extraction_method": "native",
+                "source_filename": "501.pdf",
+            },
+            {
+                "nyscef_document_number": 502,
+                "page_number": 1,
+                "page_id": "nyscef-502-page-0001",
+                "text": "PARTIES\n1. Denies paragraph 1 of the complaint.\n",
+                "extraction_method": "native",
+                "source_filename": "502.pdf",
+            },
+        ]
+        inventory = {
+            "filings": [
+                {
+                    "nyscef_document_number": 501,
+                    "filename": "matter_summons_complaint_501.pdf",
+                    "document_type": "complaint",
+                },
+                {
+                    "nyscef_document_number": 502,
+                    "filename": "matter_answer_502.pdf",
+                    "document_type": "answer",
+                },
+            ]
+        }
+        payload = cs.build_complaint_structure_map(
+            {"pages": pages}, filing_inventory=inventory
+        )
+        self.assertEqual(payload["selection"]["status"], cs.SELECTION_STATUS_SELECTED)
+        self.assertEqual(payload["selection"]["controlling_nyscef_document_number"], 501)
+        self.assertEqual(payload["documents"][0]["document_id"], "nyscef-501")
+
+
 class MultipleDocumentTests(unittest.TestCase):
-    def test_structures_not_mixed_across_documents(self) -> None:
+    def test_structures_not_mixed_across_non_complaint_filings(self) -> None:
         pages = [
             _page(
                 nyscef=20,
                 page_number=1,
                 text="PARTIES\n1. Plaintiff Alpha LLC is domestic.\n2. Defendant Beta Inc. is domestic.\n",
+                document_type="complaint",
+                source_filename="complaint_20.pdf",
             ),
             _page(
                 nyscef=21,
                 page_number=1,
                 text=(
                     "OVERVIEW\n"
-                    "10. Overview paragraph for the second filing.\n"
+                    "10. Overview paragraph quoted in an answer.\n"
                     "INTERVENING FACTS\n"
-                    "11. Intervening paragraph for the second filing.\n"
+                    "11. Intervening paragraph quoted in an answer.\n"
                 ),
+                document_type="answer",
+                source_filename="answer_21.pdf",
             ),
         ]
         payload = cs.build_complaint_structure_map({"pages": pages})
         self.assertEqual([d["document_id"] for d in payload["documents"]], [
             "nyscef-020",
-            "nyscef-021",
         ])
         first = payload["documents"][0]
-        second = payload["documents"][1]
         self.assertEqual([p["number"] for p in first["paragraph_numbers"]], [1, 2])
-        self.assertEqual([p["number"] for p in second["paragraph_numbers"]], [10, 11])
         self.assertEqual(
             [h["match_key"] for h in first["section_headings"]],
             ["parties"],
         )
-        self.assertEqual(
-            [h["match_key"] for h in second["section_headings"]],
-            ["overview", "intervening_facts"],
-        )
-        # Provenance stays document-local.
         self.assertTrue(
             all(p["nyscef_document_number"] == 20 for p in first["source_pages"])
-        )
-        self.assertTrue(
-            all(p["nyscef_document_number"] == 21 for p in second["source_pages"])
         )
 
 
@@ -264,11 +466,15 @@ class DeterministicSerializationTests(unittest.TestCase):
                 nyscef=40,
                 page_number=1,
                 text="PARTIES\n1. One.\n3. Three.\n",
+                document_type="complaint",
+                source_filename="complaint_40.pdf",
             ),
             _page(
                 nyscef=41,
                 page_number=1,
-                text="OVERVIEW\n2. Two.\n",
+                text="OVERVIEW\n2. Two quoted in answer.\n",
+                document_type="answer",
+                source_filename="answer_41.pdf",
             ),
         ]
         # Reverse input order must not change output.
@@ -276,11 +482,33 @@ class DeterministicSerializationTests(unittest.TestCase):
         b = cs.build_complaint_structure_map({"pages": pages})
         self.assertEqual(cs.serialize_structure_map(a), cs.serialize_structure_map(b))
         self.assertEqual(a, b)
+        self.assertEqual(a["selection"]["controlling_nyscef_document_number"], 40)
+        self.assertEqual(len(a["documents"]), 1)
         # sort_keys deterministic JSON
         first = cs.serialize_structure_map(a)
         second = cs.serialize_structure_map(a)
         self.assertEqual(first, second)
         self.assertTrue(first.endswith("\n"))
+
+    def test_noisy_ocr_heading_deterministic_with_answers_present(self) -> None:
+        pages = [
+            _page(
+                nyscef=45,
+                page_number=1,
+                text="P A R T I E S\n1. Plaintiff Oak Pier Transit LLC is domestic.\n",
+                document_type="complaint",
+            ),
+            _page(
+                nyscef=46,
+                page_number=1,
+                text="PARTIES\n1. Answer denies paragraph 1.\n",
+                document_type="answer",
+            ),
+        ]
+        a = cs.build_complaint_structure_map({"pages": pages})
+        b = cs.build_complaint_structure_map({"pages": list(reversed(pages))})
+        self.assertEqual(cs.serialize_structure_map(a), cs.serialize_structure_map(b))
+        self.assertEqual(a["documents"][0]["section_headings"][0]["observed_marker"], "P A R T I E S")
 
 
 class StaleCacheRejectionTests(unittest.TestCase):
@@ -374,6 +602,8 @@ class RebuildIntegrationStructureTests(unittest.TestCase):
             {
                 "nyscef_document_number": 7,
                 "filename": "synthetic_complaint.pdf",
+                "title": "synthetic_complaint.pdf",
+                "type": "complaint",
                 "path": "/synthetic/synthetic_complaint.pdf",
                 "pages": [
                     {
@@ -391,11 +621,18 @@ class RebuildIntegrationStructureTests(unittest.TestCase):
         self.assertIn("complaint_structure", payloads)
         structure = payloads["complaint_structure"]
         self.assertEqual(structure["schema_version"], cs.SCHEMA_VERSION)
+        self.assertEqual(structure["selection"]["status"], cs.SELECTION_STATUS_SELECTED)
+        self.assertEqual(structure["selection"]["controlling_nyscef_document_number"], 7)
         self.assertEqual(structure["documents"][0]["document_id"], "nyscef-007")
         self.assertEqual(
             [p["number"] for p in structure["documents"][0]["paragraph_numbers"]],
             [1],
         )
+        page = payloads["page_records"]["pages"][0]
+        self.assertEqual(page["document_type"], "complaint")
+        self.assertEqual(page["source_filename"], "synthetic_complaint.pdf")
+        self.assertTrue(page.get("document_title"))
+        self.assertTrue(page.get("document_classification"))
 
 
 if __name__ == "__main__":

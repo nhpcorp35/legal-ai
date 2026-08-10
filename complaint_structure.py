@@ -4,6 +4,14 @@ Operates only on canonical page records. Emits a versioned structure map with
 per-document provenance, exact observed markers, and explicit uncertainty.
 Does not infer paragraph body text or fabricate unobserved paragraph numbers.
 
+Before extraction, selects a single controlling complaint from authoritative
+filing metadata and document provenance (document_type / title /
+classification / source_filename, optionally filing-inventory fields). Answers,
+amended answers, affidavits, motions, exhibits, and other response pleadings
+are excluded even when they quote complaint headings or paragraph numbers.
+Ambiguous or absent complaint metadata fails closed with an explicit selection
+status and an empty documents list — never a merged multi-pleading roadmap.
+
 Phase 2 consumers build a compact, provenance-backed party-role roadmap from
 ``complaint_structure_map.v1`` (overview, intervening factual/background, and
 party-identification sections). Stale or absent schema fails closed at cache
@@ -15,7 +23,14 @@ Top-level object::
 
     {
       "schema_version": "complaint_structure_map.v1",
-      "documents": [DocumentStructure, ...]  # sorted by nyscef_document_number
+      "selection": {
+        "status": "selected|ambiguous|unavailable",
+        "reason": null | str,
+        "controlling_nyscef_document_number": int | null,
+        "candidate_nyscef_document_numbers": [int, ...],
+        "excluded_nyscef_document_numbers": [int, ...]
+      },
+      "documents": [DocumentStructure, ...]  # controlling complaint only
     }
 
 ``DocumentStructure``::
@@ -57,6 +72,37 @@ import re
 from typing import Any, Mapping, Optional, Sequence
 
 SCHEMA_VERSION = "complaint_structure_map.v1"
+
+# Selection statuses for the controlling complaint document.
+SELECTION_STATUS_SELECTED = "selected"
+SELECTION_STATUS_AMBIGUOUS = "ambiguous"
+SELECTION_STATUS_UNAVAILABLE = "unavailable"
+
+# Non-complaint filings that may quote complaint headings/paragraph numbers.
+_EXCLUDED_FILING_TYPE_TOKENS = frozenset(
+    {
+        "answer",
+        "amended_answer",
+        "affidavit",
+        "affirmation",
+        "declaration",
+        "motion",
+        "exhibit",
+        "opposition",
+        "reply",
+        "memo",
+        "memorandum",
+        "order",
+        "decision",
+        "judgment",
+        "stipulation",
+        "rji",
+        "letter",
+        "notice",
+        "subpoena",
+        "transcript",
+    }
+)
 
 # Known pleading section families (generic). Matching is case/OCR-tolerant;
 # emitted markers remain exact observed surface forms.
@@ -153,6 +199,27 @@ def is_current_structure_schema(payload: Any) -> bool:
     )
 
 
+def _empty_selection(
+    *,
+    status: str,
+    reason: Optional[str] = None,
+    controlling: Optional[int] = None,
+    candidates: Optional[Sequence[int]] = None,
+    excluded: Optional[Sequence[int]] = None,
+) -> dict[str, Any]:
+    return {
+        "status": status,
+        "reason": reason,
+        "controlling_nyscef_document_number": controlling,
+        "candidate_nyscef_document_numbers": [
+            int(n) for n in (candidates or [])
+        ],
+        "excluded_nyscef_document_numbers": [
+            int(n) for n in (excluded or [])
+        ],
+    }
+
+
 def serialize_structure_map(payload: Mapping[str, Any]) -> str:
     """Deterministic JSON serialization for structure-map payloads."""
     import json
@@ -170,6 +237,303 @@ def serialize_structure_map(payload: Mapping[str, Any]) -> str:
 
 def _collapse_ws(text: str) -> str:
     return re.sub(r"[ \t]+", " ", text or "").strip()
+
+
+def _meta_token(value: Any) -> str:
+    if value is None:
+        return ""
+    return _collapse_ws(str(value)).lower()
+
+
+def _filing_metadata_from_pages(
+    pages: Sequence[Mapping[str, Any]],
+) -> dict[str, str]:
+    """Collect explicit filing metadata / provenance from a document's pages."""
+    meta = {
+        "document_type": "",
+        "document_title": "",
+        "document_classification": "",
+        "source_filename": "",
+    }
+    for page in pages:
+        if not isinstance(page, Mapping):
+            continue
+        for key, dest in (
+            ("document_type", "document_type"),
+            ("type", "document_type"),
+            ("category", "document_type"),
+            ("document_title", "document_title"),
+            ("title", "document_title"),
+            ("document_classification", "document_classification"),
+            ("classification", "document_classification"),
+            ("source_filename", "source_filename"),
+            ("filename", "source_filename"),
+        ):
+            if meta[dest]:
+                continue
+            raw = page.get(key)
+            if isinstance(raw, str) and raw.strip():
+                meta[dest] = raw.strip()
+    return meta
+
+
+def _filing_haystack(meta: Mapping[str, str]) -> str:
+    return " ".join(
+        _meta_token(meta.get(key))
+        for key in (
+            "document_type",
+            "document_title",
+            "document_classification",
+            "source_filename",
+        )
+        if meta.get(key)
+    )
+
+
+def _has_answer_filing_signal(hay: str) -> bool:
+    if not hay:
+        return False
+    if re.search(r"\bamended\s+answers?\b", hay):
+        return True
+    if re.search(r"\banswers?\s+to\s+(?:the\s+)?(?:complaint|petition)\b", hay):
+        return True
+    if re.search(r"\b(?:verified\s+)?answers?\b", hay):
+        return True
+    return False
+
+
+def _has_excluded_non_complaint_signal(hay: str) -> bool:
+    """True for answers, affidavits, motions, exhibits, and similar filings."""
+    if not hay:
+        return False
+    if _has_answer_filing_signal(hay):
+        return True
+    if re.search(
+        r"\b(?:affidavits?|affirmations?|declarations?)\b",
+        hay,
+    ):
+        return True
+    if re.search(r"\b(?:notice\s+of\s+)?motions?\b", hay):
+        return True
+    if re.search(r"\b(?:exhibits?|exh)\b", hay):
+        return True
+    if re.search(
+        r"\b(?:oppositions?|replies|reply|memorand(?:um|a)|memos?)\b",
+        hay,
+    ):
+        return True
+    if re.search(r"\b(?:orders?|decisions?|judgments?)\b", hay):
+        return True
+    if re.search(
+        r"\b(?:stipulations?|subpoenas?|transcripts?|letters?)\b",
+        hay,
+    ):
+        return True
+    if re.search(r"\brji\b|\brequest\s+for\s+judicial\s+intervention\b", hay):
+        return True
+    # Explicit typed exclusions from normalized document_type tokens.
+    tokens = set(re.findall(r"[a-z0-9_]+", hay))
+    if tokens.intersection(_EXCLUDED_FILING_TYPE_TOKENS):
+        # Avoid treating bare "notice" inside "summons and complaint" captions
+        # as exclusion when complaint signals dominate — handled by caller order.
+        if "notice" in tokens and not tokens.intersection(
+            _EXCLUDED_FILING_TYPE_TOKENS - {"notice"}
+        ):
+            if re.search(r"\bnotice\s+of\s+(?:motion|appearance|entry)\b", hay):
+                return True
+            return False
+        return True
+    return False
+
+
+def _has_complaint_filing_signal(hay: str, meta: Mapping[str, str]) -> bool:
+    """True when metadata/provenance identifies an initiating complaint filing."""
+    doc_type = _meta_token(meta.get("document_type"))
+    classification = _meta_token(meta.get("document_classification"))
+    if doc_type == "complaint" or classification == "complaint":
+        return True
+    if classification in {
+        "summons_and_complaint",
+        "summons___complaint",
+        "initiating_complaint",
+        "amended_complaint",
+    }:
+        return True
+    if not hay:
+        return False
+    if re.search(r"\bamended\s+complaints?\b", hay):
+        return True
+    if re.search(r"\bsummons(?:\s+and|&|\s*/\s*|\s+_+)?\s*complaints?\b", hay):
+        return True
+    if re.search(r"\bcomplaints?\b", hay):
+        return True
+    if re.search(r"\bpetitions?\b", hay) and "answer" not in hay:
+        return True
+    return False
+
+
+def classify_filing_role_for_structure(
+    meta: Mapping[str, Any] | None,
+) -> str:
+    """
+    Classify a filing as ``complaint``, ``excluded``, or ``unknown``.
+
+    Prefers explicit document_type / title / classification metadata and
+    source filename provenance. Answers and other response pleadings are
+    excluded even when they mention complaint paragraph numbers.
+    """
+    normalized = {
+        "document_type": _meta_token((meta or {}).get("document_type")),
+        "document_title": _meta_token((meta or {}).get("document_title")),
+        "document_classification": _meta_token(
+            (meta or {}).get("document_classification")
+        ),
+        "source_filename": _meta_token((meta or {}).get("source_filename")),
+    }
+    # Preserve originals for signal helpers that expect raw-ish strings.
+    raw_meta = {
+        "document_type": str((meta or {}).get("document_type") or ""),
+        "document_title": str((meta or {}).get("document_title") or ""),
+        "document_classification": str(
+            (meta or {}).get("document_classification") or ""
+        ),
+        "source_filename": str((meta or {}).get("source_filename") or ""),
+    }
+    hay = _filing_haystack(raw_meta)
+    if not hay.strip():
+        return "unknown"
+    # Exclusions win over generic "complaint" tokens ("answer to complaint").
+    if _has_answer_filing_signal(hay):
+        return "excluded"
+    if _has_excluded_non_complaint_signal(hay):
+        # Summons/complaint filings can include "notice" boilerplate in titles;
+        # only exclude when complaint signals are absent.
+        if _has_complaint_filing_signal(hay, raw_meta) and not re.search(
+            r"\b(?:answers?|affidavits?|affirmations?|motions?|exhibits?)\b",
+            hay,
+        ):
+            return "complaint"
+        return "excluded"
+    if _has_complaint_filing_signal(hay, raw_meta):
+        return "complaint"
+    if normalized["document_type"] in _EXCLUDED_FILING_TYPE_TOKENS:
+        return "excluded"
+    return "unknown"
+
+
+def select_controlling_complaint(
+    page_records: Mapping[str, Any] | Sequence[Mapping[str, Any]],
+    *,
+    filing_inventory: Mapping[str, Any] | Sequence[Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """
+    Select the controlling complaint using filing metadata / provenance.
+
+    Returns a selection object. Never merges multiple filings. When more than
+    one complaint candidate exists, status is ``ambiguous``. When none can be
+    identified, status is ``unavailable``.
+    """
+    pages = _iter_page_records(page_records)
+    by_doc: dict[int, list[dict[str, Any]]] = {}
+    for page in pages:
+        nyscef = page.get("nyscef_document_number")
+        if nyscef is None:
+            continue
+        by_doc.setdefault(int(nyscef), []).append(page)
+
+    inventory_meta_by_nyscef: dict[int, dict[str, str]] = {}
+    filings: Sequence[Any]
+    if isinstance(filing_inventory, Mapping):
+        filings = filing_inventory.get("filings") or []
+    elif isinstance(filing_inventory, Sequence) and not isinstance(
+        filing_inventory, (str, bytes)
+    ):
+        filings = filing_inventory
+    else:
+        filings = []
+    for filing in filings:
+        if not isinstance(filing, Mapping):
+            continue
+        try:
+            nyscef = int(filing.get("nyscef_document_number"))
+        except (TypeError, ValueError):
+            continue
+        inventory_meta_by_nyscef[nyscef] = {
+            "document_type": str(
+                filing.get("document_type")
+                or filing.get("type")
+                or filing.get("category")
+                or ""
+            ),
+            "document_title": str(
+                filing.get("document_title")
+                or filing.get("title")
+                or filing.get("filename")
+                or ""
+            ),
+            "document_classification": str(
+                filing.get("document_classification")
+                or filing.get("classification")
+                or ""
+            ),
+            "source_filename": str(filing.get("filename") or ""),
+        }
+
+    if not by_doc:
+        return _empty_selection(
+            status=SELECTION_STATUS_UNAVAILABLE,
+            reason="no_page_records",
+        )
+
+    candidates: list[int] = []
+    excluded: list[int] = []
+    unknown: list[int] = []
+    for nyscef in sorted(by_doc.keys()):
+        meta = _filing_metadata_from_pages(by_doc[nyscef])
+        inv = inventory_meta_by_nyscef.get(nyscef) or {}
+        for key, value in inv.items():
+            if value and not meta.get(key):
+                meta[key] = value
+        role = classify_filing_role_for_structure(meta)
+        if role == "complaint":
+            candidates.append(nyscef)
+        elif role == "excluded":
+            excluded.append(nyscef)
+        else:
+            unknown.append(nyscef)
+
+    if len(candidates) == 1:
+        return _empty_selection(
+            status=SELECTION_STATUS_SELECTED,
+            reason=None,
+            controlling=candidates[0],
+            candidates=candidates,
+            excluded=excluded,
+        )
+    if len(candidates) > 1:
+        return _empty_selection(
+            status=SELECTION_STATUS_AMBIGUOUS,
+            reason="multiple_complaint_candidates",
+            candidates=candidates,
+            excluded=excluded,
+        )
+    if excluded and not unknown:
+        return _empty_selection(
+            status=SELECTION_STATUS_UNAVAILABLE,
+            reason="complaint_metadata_absent_answer_or_motion_only_corpus",
+            excluded=excluded,
+        )
+    if unknown and not excluded:
+        return _empty_selection(
+            status=SELECTION_STATUS_UNAVAILABLE,
+            reason="complaint_metadata_absent",
+            excluded=excluded,
+        )
+    return _empty_selection(
+        status=SELECTION_STATUS_UNAVAILABLE,
+        reason="controlling_complaint_unavailable",
+        excluded=excluded,
+    )
 
 
 def _heal_ocr_letter_spacing(text: str) -> str:
@@ -319,13 +683,24 @@ def _extract_headings_from_page(
             rest = stripped[body_guess.end() :].strip().lstrip(":").strip()
             if rest:
                 key = _match_key_for_heading_body(body_guess.group("body"))
-                observed = _collapse_ws(original_lines[idx])
+                # Bound the observed marker to the heading label only — never
+                # absorb trailing page prose or responsive allegation language.
+                original_line = original_lines[idx]
+                label_span = body_guess.group(0)
+                # Map healed span length back onto the original line prefix when
+                # possible; fall back to the matched heading body text.
+                bounded = _collapse_ws(original_line[: body_guess.end()])
+                if not bounded:
+                    bounded = _collapse_ws(label_span)
+                bounded = bounded.rstrip(":").strip()
+                if not bounded:
+                    bounded = _collapse_ws(body_guess.group("body"))
                 headings.append(
                     {
                         "ambiguous": True,
                         "ambiguity_note": "heading_token_with_trailing_prose",
                         "match_key": key,
-                        "observed_marker": observed,
+                        "observed_marker": bounded,
                         "page_id": prov["page_id"],
                         "page_number": prov["page_number"],
                         "line_index": idx,
@@ -334,7 +709,7 @@ def _extract_headings_from_page(
                 uncertainties.append(
                     {
                         "kind": "ambiguous_heading",
-                        "observed_marker": observed,
+                        "observed_marker": bounded,
                         "page_id": prov["page_id"],
                         "page_number": prov["page_number"],
                         "detail": "heading_token_with_trailing_prose",
@@ -657,12 +1032,21 @@ def select_party_role_complaint_roadmap_context(
     sections, intervening procedural layout between overview and parties when
     present, and party-identification sections. Supplemental only — never a
     replacement for substantive retrieval hits. Returns None when schema is
-    stale/absent or no relevant structure is available.
+    stale/absent, controlling-complaint selection failed, or no relevant
+    structure is available.
     """
     documents_in: list[Mapping[str, Any]] = []
     if isinstance(structure_map, Mapping):
         if not is_current_structure_schema(structure_map):
             return None
+        selection = structure_map.get("selection")
+        if isinstance(selection, dict):
+            sel_status = selection.get("status")
+            if sel_status in {
+                SELECTION_STATUS_AMBIGUOUS,
+                SELECTION_STATUS_UNAVAILABLE,
+            }:
+                return None
         documents_in = [
             doc for doc in (structure_map.get("documents") or []) if isinstance(doc, dict)
         ]
@@ -778,12 +1162,35 @@ def structure_map_status(
             "schema_version": version if isinstance(version, str) else None,
             "required_schema_version": SCHEMA_VERSION,
         }
+    selection = payload.get("selection")
+    if isinstance(selection, dict):
+        sel_status = selection.get("status")
+        if sel_status == SELECTION_STATUS_AMBIGUOUS:
+            return {
+                "ok": False,
+                "attached": False,
+                "reason": "controlling_complaint_ambiguous",
+                "schema_version": SCHEMA_VERSION,
+                "required_schema_version": SCHEMA_VERSION,
+                "selection": selection,
+            }
+        if sel_status == SELECTION_STATUS_UNAVAILABLE:
+            return {
+                "ok": False,
+                "attached": False,
+                "reason": selection.get("reason")
+                or "controlling_complaint_unavailable",
+                "schema_version": SCHEMA_VERSION,
+                "required_schema_version": SCHEMA_VERSION,
+                "selection": selection,
+            }
     return {
         "ok": True,
         "attached": False,
         "reason": None,
         "schema_version": SCHEMA_VERSION,
         "required_schema_version": SCHEMA_VERSION,
+        "selection": selection if isinstance(selection, dict) else None,
     }
 
 
@@ -953,15 +1360,37 @@ def extract_document_structure(
 
 def build_complaint_structure_map(
     page_records: Mapping[str, Any] | Sequence[Mapping[str, Any]],
+    *,
+    filing_inventory: Mapping[str, Any] | Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Build a deterministic multi-document complaint structure map."""
+    """
+    Build a deterministic complaint structure map for the controlling complaint.
+
+    Uses authoritative filing metadata / document provenance to select a single
+    controlling complaint before extraction. Answers, affidavits, motions,
+    exhibits, and other response pleadings are never merged into the roadmap.
+    """
     pages = _iter_page_records(page_records)
+    selection = select_controlling_complaint(
+        pages, filing_inventory=filing_inventory
+    )
+    if selection.get("status") != SELECTION_STATUS_SELECTED:
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "documents": [],
+            "selection": selection,
+        }
+
+    controlling = int(selection["controlling_nyscef_document_number"])
     by_doc: dict[int, list[dict[str, Any]]] = {}
     for page in pages:
         nyscef = page.get("nyscef_document_number")
         if nyscef is None:
             continue
-        by_doc.setdefault(int(nyscef), []).append(page)
+        nyscef_int = int(nyscef)
+        if nyscef_int != controlling:
+            continue
+        by_doc.setdefault(nyscef_int, []).append(page)
 
     documents = [
         extract_document_structure(by_doc[nyscef])
@@ -970,9 +1399,17 @@ def build_complaint_structure_map(
     return {
         "schema_version": SCHEMA_VERSION,
         "documents": documents,
+        "selection": selection,
     }
 
 
 def empty_complaint_structure_map() -> dict[str, Any]:
     """Empty but schema-valid structure map (for validation fixtures)."""
-    return {"schema_version": SCHEMA_VERSION, "documents": []}
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "documents": [],
+        "selection": _empty_selection(
+            status=SELECTION_STATUS_UNAVAILABLE,
+            reason="no_documents",
+        ),
+    }

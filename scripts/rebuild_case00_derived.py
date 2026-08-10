@@ -276,6 +276,18 @@ def build_canonical_page_records(documents: list[dict]) -> dict[str, Any]:
         nyscef_int = int(nyscef)
         filename = document.get("filename") or document.get("title") or ""
         source_path = document.get("path") or ""
+        doc_type = (
+            document.get("type")
+            or document.get("category")
+            or document.get("document_type")
+            or ""
+        )
+        doc_title = document.get("title") or filename
+        doc_classification = (
+            document.get("document_classification")
+            or document.get("classification")
+            or doc_type
+        )
         for page in document.get("pages") or []:
             if not isinstance(page, dict):
                 continue
@@ -289,6 +301,10 @@ def build_canonical_page_records(documents: list[dict]) -> dict[str, Any]:
                 "pdf_page_number": int(page["page_number"]),
                 "source_filename": filename,
                 "source_path": source_path,
+                # Authoritative filing metadata for controlling-complaint selection.
+                "document_type": doc_type,
+                "document_title": doc_title,
+                "document_classification": doc_classification,
             }
             pages.append(record)
     pages.sort(key=_page_sort_key)
@@ -345,11 +361,18 @@ def ingest_source_directory(
     return normalized
 
 
-def build_derived_payloads(documents: list[dict]) -> dict[str, Any]:
+def build_derived_payloads(
+    documents: list[dict],
+    *,
+    filing_inventory: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     page_records = build_canonical_page_records(documents)
     exhibit_map = build_filing_exhibit_map(documents)
     case_map = mb.build_case_map_from_documents(documents)
-    structure_map = cs.build_complaint_structure_map(page_records)
+    structure_map = cs.build_complaint_structure_map(
+        page_records,
+        filing_inventory=filing_inventory,
+    )
     return {
         "page_records": page_records,
         "exhibit_map": exhibit_map,
@@ -526,7 +549,13 @@ def rebuild_case00_derived(
                 source=str(local_source),
             )
 
-        payloads = build_derived_payloads(documents)
+        inventory_payload = _load_json_file(inv_path)
+        payloads = build_derived_payloads(
+            documents,
+            filing_inventory=inventory_payload
+            if isinstance(inventory_payload, dict)
+            else None,
+        )
         written = write_derived_artifacts(root, payloads)
 
         result: dict[str, Any] = {

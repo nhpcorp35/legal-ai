@@ -15,7 +15,15 @@ import complaint_structure as cs
 import engines.drafting_engine as de
 
 
-def _page(*, nyscef: int, page_number: int, text: str) -> dict:
+def _page(
+    *,
+    nyscef: int,
+    page_number: int,
+    text: str,
+    document_type: str = "complaint",
+    source_filename: str | None = None,
+) -> dict:
+    filename = source_filename or f"doc_{nyscef}_{document_type}.pdf"
     return {
         "nyscef_document_number": nyscef,
         "page_number": page_number,
@@ -23,8 +31,11 @@ def _page(*, nyscef: int, page_number: int, text: str) -> dict:
         "text": text,
         "extraction_method": "native",
         "pdf_page_number": page_number,
-        "source_filename": f"doc_{nyscef}.pdf",
-        "source_path": f"/synthetic/doc_{nyscef}.pdf",
+        "source_filename": filename,
+        "source_path": f"/synthetic/{filename}",
+        "document_type": document_type,
+        "document_title": filename,
+        "document_classification": document_type,
     }
 
 
@@ -95,6 +106,9 @@ def _party_role_hits_from_parties_only(nyscef: int = 801) -> dict:
 class PartyRoleRoadmapRoutingTests(unittest.TestCase):
     def test_party_role_packet_includes_overview_facts_and_parties(self) -> None:
         structure_map = _multi_section_map(810)
+        self.assertEqual(
+            structure_map["selection"]["status"], cs.SELECTION_STATUS_SELECTED
+        )
         retrieval = _party_role_hits_from_parties_only(810)
         packet = de.build_evidence_packet(
             "Who are the parties and what are their roles in this action?",
@@ -130,6 +144,53 @@ class PartyRoleRoadmapRoutingTests(unittest.TestCase):
         factual = next(item for item in ranges if item.get("kind") == "factual_layout")
         self.assertEqual(factual.get("start"), 3)
         self.assertEqual(factual.get("end"), 5)
+
+    def test_answer_quotations_do_not_enter_evidence_roadmap(self) -> None:
+        complaint = _page(
+            nyscef=815,
+            page_number=1,
+            text=(
+                "OVERVIEW\n"
+                "1. This is an action for breach of a freight contract.\n"
+                "INTERVENING FACTS\n"
+                "2. Delivery failed on the contracted date.\n"
+                "PARTIES\n"
+                "3. Plaintiff North Quay Logistics LLC is a domestic LLC.\n"
+                "4. Defendant Pier Gate Depot Inc. is a domestic corporation.\n"
+            ),
+            document_type="complaint",
+        )
+        answer = _page(
+            nyscef=816,
+            page_number=1,
+            text=(
+                "OVERVIEW\n"
+                "1. Denies complaint paragraph 1.\n"
+                "INTERVENING FACTS\n"
+                "2. Denies complaint paragraph 2.\n"
+                "PARTIES\n"
+                "3. Admits paragraph 3.\n"
+                "4. Denies paragraph 4.\n"
+            ),
+            document_type="answer",
+        )
+        structure_map = cs.build_complaint_structure_map({"pages": [complaint, answer]})
+        packet = de.build_evidence_packet(
+            "Who are the parties and what are their roles?",
+            _party_role_hits_from_parties_only(815),
+            complaint_structure_map=structure_map,
+        )
+        context = packet.get("complaint_structure_context")
+        self.assertIsInstance(context, dict)
+        self.assertEqual(len(context["documents"]), 1)
+        self.assertEqual(context["documents"][0]["nyscef_document_number"], 815)
+        page_ids = {
+            pid
+            for sec in context["documents"][0]["sections"]
+            for pid in sec.get("page_ids") or []
+        }
+        self.assertTrue(all(pid.startswith("nyscef-815-") for pid in page_ids))
+        self.assertFalse(any(pid.startswith("nyscef-816-") for pid in page_ids))
 
     def test_unsupported_ranges_excluded_and_uncertainty_preserved(self) -> None:
         text = (
