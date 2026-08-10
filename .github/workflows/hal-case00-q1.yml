@@ -130,6 +130,7 @@ jobs:
           paths = (
               Path("data/case-00-triborough/nyscef_filing_inventory.json"),
               Path("matter_builder.py"),
+              Path("complaint_structure.py"),
               Path("scripts/rebuild_case00_derived.py"),
           )
           digest = hashlib.sha256()
@@ -170,6 +171,7 @@ jobs:
               Path("derived/page-extraction/canonical_page_records.json"),
               Path("derived/exhibit-segmentation/filing_exhibit_map.json"),
               Path("derived/case-map/case_map.json"),
+              Path("derived/complaint-structure/complaint_structure_map.json"),
           )
           client = boto3.client(
               "s3",
@@ -240,6 +242,7 @@ jobs:
               Path("derived/page-extraction/canonical_page_records.json"),
               Path("derived/exhibit-segmentation/filing_exhibit_map.json"),
               Path("derived/case-map/case_map.json"),
+              Path("derived/complaint-structure/complaint_structure_map.json"),
           )
           client = boto3.client(
               "s3",
