@@ -24,11 +24,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import random as random_module
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional, TypeVar
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -49,6 +51,14 @@ B2_ENV_NAMES = (
     "B2_ENDPOINT",
     "B2_REGION",
 )
+
+# Bounded retry policy for idempotent B2 HEAD/download reads (CI-suitable caps).
+B2_READ_RETRY_HTTP_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+DEFAULT_B2_READ_MAX_ATTEMPTS = 5
+DEFAULT_B2_READ_BASE_DELAY_SEC = 0.2
+DEFAULT_B2_READ_MAX_DELAY_SEC = 2.0
+
+_T = TypeVar("_T")
 
 DERIVED_RELATIVE_PATHS = {
     "page_records": Path("derived/page-extraction/canonical_page_records.json"),
@@ -133,6 +143,167 @@ def create_b2_client(config: B2Config):
         aws_secret_access_key=config.application_key,
         region_name=config.region,
     )
+
+
+def _client_error_http_status(exc: BaseException) -> Optional[int]:
+    """Extract an HTTP status code from a botocore ``ClientError``, if present."""
+    response = getattr(exc, "response", None)
+    if not isinstance(response, Mapping):
+        return None
+    meta = response.get("ResponseMetadata")
+    if isinstance(meta, Mapping):
+        status = meta.get("HTTPStatusCode")
+        if isinstance(status, int):
+            return status
+        if isinstance(status, str) and status.strip().isdigit():
+            return int(status.strip())
+    error = response.get("Error")
+    if isinstance(error, Mapping):
+        code = error.get("Code")
+        if isinstance(code, int):
+            return code
+        if isinstance(code, str) and code.strip().isdigit():
+            return int(code.strip())
+    return None
+
+
+def is_transient_b2_read_error(exc: BaseException) -> bool:
+    """Return True for retryable B2 read failures (429/5xx and read/connect timeouts)."""
+    try:
+        from botocore.exceptions import (
+            ClientError,
+            ConnectTimeoutError,
+            ReadTimeoutError,
+        )
+    except ImportError:  # pragma: no cover - boto3 is required for B2 paths
+        return False
+
+    if isinstance(exc, (ConnectTimeoutError, ReadTimeoutError)):
+        return True
+    if isinstance(exc, ClientError):
+        status = _client_error_http_status(exc)
+        return status in B2_READ_RETRY_HTTP_STATUS_CODES
+    return False
+
+
+def call_b2_with_read_retry(
+    operation: Callable[[], _T],
+    *,
+    max_attempts: int = DEFAULT_B2_READ_MAX_ATTEMPTS,
+    base_delay_sec: float = DEFAULT_B2_READ_BASE_DELAY_SEC,
+    max_delay_sec: float = DEFAULT_B2_READ_MAX_DELAY_SEC,
+    sleep: Callable[[float], None] = time.sleep,
+    rand: Callable[[], float] = random_module.random,
+) -> _T:
+    """Invoke an idempotent B2 read with bounded exponential backoff.
+
+    Retries only transient HTTP statuses (429/500/502/503/504) and botocore
+    connect/read timeout errors. Permanent failures (auth, missing object,
+    integrity, invalid request, etc.) are raised immediately.
+
+    ``sleep`` and ``rand`` are injectable so tests can avoid real wall-clock
+    delays and keep backoff deterministic.
+    """
+    if max_attempts < 1:
+        raise ValueError("max_attempts must be >= 1")
+    if base_delay_sec < 0 or max_delay_sec < 0:
+        raise ValueError("delay caps must be non-negative")
+
+    last_exc: Optional[BaseException] = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return operation()
+        except Exception as exc:  # noqa: BLE001 — classify then re-raise
+            last_exc = exc
+            if attempt >= max_attempts or not is_transient_b2_read_error(exc):
+                raise
+            # Exponential backoff with full jitter, capped for CI.
+            exp_delay = base_delay_sec * (2 ** (attempt - 1))
+            capped = min(exp_delay, max_delay_sec)
+            jittered = capped * float(rand())
+            sleep(min(jittered, max_delay_sec))
+    assert last_exc is not None  # pragma: no cover - loop always returns or raises
+    raise last_exc
+
+
+def head_b2_object(
+    client: Any,
+    bucket: str,
+    key: str,
+    *,
+    max_attempts: int = DEFAULT_B2_READ_MAX_ATTEMPTS,
+    base_delay_sec: float = DEFAULT_B2_READ_BASE_DELAY_SEC,
+    max_delay_sec: float = DEFAULT_B2_READ_MAX_DELAY_SEC,
+    sleep: Callable[[float], None] = time.sleep,
+    rand: Callable[[], float] = random_module.random,
+) -> Any:
+    """Idempotent ``head_object`` with bounded transient retry."""
+    return call_b2_with_read_retry(
+        lambda: client.head_object(Bucket=bucket, Key=key),
+        max_attempts=max_attempts,
+        base_delay_sec=base_delay_sec,
+        max_delay_sec=max_delay_sec,
+        sleep=sleep,
+        rand=rand,
+    )
+
+
+def download_b2_file(
+    client: Any,
+    bucket: str,
+    key: str,
+    destination: Path | str,
+    *,
+    max_attempts: int = DEFAULT_B2_READ_MAX_ATTEMPTS,
+    base_delay_sec: float = DEFAULT_B2_READ_BASE_DELAY_SEC,
+    max_delay_sec: float = DEFAULT_B2_READ_MAX_DELAY_SEC,
+    sleep: Callable[[float], None] = time.sleep,
+    rand: Callable[[], float] = random_module.random,
+) -> Path:
+    """Download a B2 object via a temp partial file and atomic ``os.replace``.
+
+    Failed or interrupted attempts never leave ``destination`` looking like a
+    valid cache object; partial files are removed on failure.
+    """
+    dest = Path(destination)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{dest.name}.",
+        suffix=".partial",
+        dir=str(dest.parent),
+    )
+    os.close(fd)
+    partial = Path(tmp_name)
+
+    def _download_once() -> None:
+        # Ensure each attempt starts from an empty partial path.
+        try:
+            partial.unlink(missing_ok=True)
+        except TypeError:  # pragma: no cover - Py<3.8 compatibility
+            if partial.exists():
+                partial.unlink()
+        client.download_file(bucket, key, str(partial))
+
+    try:
+        call_b2_with_read_retry(
+            _download_once,
+            max_attempts=max_attempts,
+            base_delay_sec=base_delay_sec,
+            max_delay_sec=max_delay_sec,
+            sleep=sleep,
+            rand=rand,
+        )
+        os.replace(str(partial), str(dest))
+    except Exception:
+        try:
+            partial.unlink(missing_ok=True)
+        except TypeError:  # pragma: no cover
+            if partial.exists():
+                partial.unlink()
+        except OSError:
+            pass
+        raise
+    return dest
 
 
 def resolve_derived_paths(case_root: Path) -> dict[str, Path]:
@@ -225,6 +396,11 @@ def materialize_b2_prefix(
     client: Optional[Any] = None,
     config: Optional[B2Config] = None,
     environ: Optional[Mapping[str, str]] = None,
+    max_attempts: int = DEFAULT_B2_READ_MAX_ATTEMPTS,
+    base_delay_sec: float = DEFAULT_B2_READ_BASE_DELAY_SEC,
+    max_delay_sec: float = DEFAULT_B2_READ_MAX_DELAY_SEC,
+    sleep: Callable[[float], None] = time.sleep,
+    rand: Callable[[], float] = random_module.random,
 ) -> Path:
     """Download objects under ``prefix`` into ``dest_dir`` (local PDF tree)."""
     cfg = config if config is not None else B2Config.from_env(environ)
@@ -255,7 +431,17 @@ def materialize_b2_prefix(
             continue
         local_path = dest / relative
         local_path.parent.mkdir(parents=True, exist_ok=True)
-        s3.download_file(cfg.bucket, key, str(local_path))
+        download_b2_file(
+            s3,
+            cfg.bucket,
+            key,
+            local_path,
+            max_attempts=max_attempts,
+            base_delay_sec=base_delay_sec,
+            max_delay_sec=max_delay_sec,
+            sleep=sleep,
+            rand=rand,
+        )
 
     return dest
 
