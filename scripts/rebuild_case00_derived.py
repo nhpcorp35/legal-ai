@@ -29,6 +29,8 @@ import sys
 import tempfile
 import time
 from dataclasses import dataclass
+from datetime import timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, TypeVar
 
@@ -53,9 +55,11 @@ B2_ENV_NAMES = (
 )
 
 # Bounded retry policy for idempotent B2 HEAD/download reads (CI-suitable caps).
+# Backblaze guidance: honor Retry-After on 429/503 (and other transient 5xx);
+# if absent, exponential backoff starting at 1 second.
 B2_READ_RETRY_HTTP_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 DEFAULT_B2_READ_MAX_ATTEMPTS = 5
-DEFAULT_B2_READ_BASE_DELAY_SEC = 0.2
+DEFAULT_B2_READ_BASE_DELAY_SEC = 1.0
 DEFAULT_B2_READ_MAX_DELAY_SEC = 2.0
 
 _T = TypeVar("_T")
@@ -167,6 +171,95 @@ def _client_error_http_status(exc: BaseException) -> Optional[int]:
     return None
 
 
+def _client_error_retry_after_raw(exc: BaseException) -> Optional[str]:
+    """Return the raw Retry-After header value from a botocore error, if any."""
+    response = getattr(exc, "response", None)
+    if not isinstance(response, Mapping):
+        return None
+    meta = response.get("ResponseMetadata")
+    if not isinstance(meta, Mapping):
+        return None
+    headers = meta.get("HTTPHeaders")
+    if not isinstance(headers, Mapping):
+        return None
+    for key, value in headers.items():
+        if str(key).lower() != "retry-after":
+            continue
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text if text else None
+    return None
+
+
+def parse_retry_after_delay_sec(
+    value: str,
+    *,
+    now: Callable[[], float] = time.time,
+) -> Optional[float]:
+    """Parse a Retry-After header into a delay in seconds.
+
+    Supports integer delta-seconds and HTTP-date (via stdlib
+    ``email.utils.parsedate_to_datetime``). ``now`` is injectable so HTTP-date
+    tests stay deterministic. Returns ``None`` when the value is malformed;
+    negative numeric results are returned as-is for the caller to reject.
+    """
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.isdigit() or (text.startswith("-") and text[1:].isdigit()):
+        return float(int(text))
+    try:
+        dt = parsedate_to_datetime(text)
+    except (TypeError, ValueError, IndexError, OverflowError):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return float(dt.timestamp()) - float(now())
+
+
+def _bounded_exponential_delay_sec(
+    *,
+    attempt: int,
+    base_delay_sec: float,
+    max_delay_sec: float,
+    rand: Callable[[], float],
+) -> float:
+    """Full-jitter exponential backoff, never negative, never above ``max_delay_sec``."""
+    exp_delay = base_delay_sec * (2 ** (attempt - 1))
+    capped = min(exp_delay, max_delay_sec)
+    jittered = capped * float(rand())
+    return max(0.0, min(jittered, max_delay_sec))
+
+
+def compute_b2_read_retry_delay_sec(
+    exc: BaseException,
+    *,
+    attempt: int,
+    base_delay_sec: float,
+    max_delay_sec: float,
+    rand: Callable[[], float],
+    now: Callable[[], float] = time.time,
+) -> float:
+    """Choose sleep duration for a classified transient B2 read failure.
+
+    Valid Retry-After (0 <= delay <= max_delay_sec) is honored without jitter.
+    Missing, malformed, negative, or over-cap Retry-After falls back to bounded
+    exponential backoff with full jitter. Never returns a negative duration.
+    """
+    raw = _client_error_retry_after_raw(exc)
+    if raw is not None:
+        parsed = parse_retry_after_delay_sec(raw, now=now)
+        if parsed is not None and 0.0 <= parsed <= max_delay_sec:
+            return float(parsed)
+    return _bounded_exponential_delay_sec(
+        attempt=attempt,
+        base_delay_sec=base_delay_sec,
+        max_delay_sec=max_delay_sec,
+        rand=rand,
+    )
+
+
 def is_transient_b2_read_error(exc: BaseException) -> bool:
     """Return True for retryable B2 read failures (429/5xx and read/connect timeouts)."""
     try:
@@ -194,6 +287,7 @@ def call_b2_with_read_retry(
     max_delay_sec: float = DEFAULT_B2_READ_MAX_DELAY_SEC,
     sleep: Callable[[float], None] = time.sleep,
     rand: Callable[[], float] = random_module.random,
+    now: Callable[[], float] = time.time,
 ) -> _T:
     """Invoke an idempotent B2 read with bounded exponential backoff.
 
@@ -201,8 +295,13 @@ def call_b2_with_read_retry(
     connect/read timeout errors. Permanent failures (auth, missing object,
     integrity, invalid request, etc.) are raised immediately.
 
-    ``sleep`` and ``rand`` are injectable so tests can avoid real wall-clock
-    delays and keep backoff deterministic.
+    When a transient HTTP error includes a valid Retry-After header (integer
+    delta-seconds or HTTP-date), that delay is honored up to ``max_delay_sec``
+    without jitter. Otherwise exponential backoff with full jitter is used.
+    Sleep durations are never negative or unbounded above ``max_delay_sec``.
+
+    ``sleep``, ``rand``, and ``now`` are injectable so tests can avoid real
+    wall-clock delays and keep backoff / HTTP-date parsing deterministic.
     """
     if max_attempts < 1:
         raise ValueError("max_attempts must be >= 1")
@@ -217,11 +316,16 @@ def call_b2_with_read_retry(
             last_exc = exc
             if attempt >= max_attempts or not is_transient_b2_read_error(exc):
                 raise
-            # Exponential backoff with full jitter, capped for CI.
-            exp_delay = base_delay_sec * (2 ** (attempt - 1))
-            capped = min(exp_delay, max_delay_sec)
-            jittered = capped * float(rand())
-            sleep(min(jittered, max_delay_sec))
+            delay = compute_b2_read_retry_delay_sec(
+                exc,
+                attempt=attempt,
+                base_delay_sec=base_delay_sec,
+                max_delay_sec=max_delay_sec,
+                rand=rand,
+                now=now,
+            )
+            # Hard safety: never sleep negative or above the configured cap.
+            sleep(max(0.0, min(float(delay), max_delay_sec)))
     assert last_exc is not None  # pragma: no cover - loop always returns or raises
     raise last_exc
 
@@ -236,6 +340,7 @@ def head_b2_object(
     max_delay_sec: float = DEFAULT_B2_READ_MAX_DELAY_SEC,
     sleep: Callable[[float], None] = time.sleep,
     rand: Callable[[], float] = random_module.random,
+    now: Callable[[], float] = time.time,
 ) -> Any:
     """Idempotent ``head_object`` with bounded transient retry."""
     return call_b2_with_read_retry(
@@ -245,6 +350,7 @@ def head_b2_object(
         max_delay_sec=max_delay_sec,
         sleep=sleep,
         rand=rand,
+        now=now,
     )
 
 
@@ -259,6 +365,7 @@ def download_b2_file(
     max_delay_sec: float = DEFAULT_B2_READ_MAX_DELAY_SEC,
     sleep: Callable[[float], None] = time.sleep,
     rand: Callable[[], float] = random_module.random,
+    now: Callable[[], float] = time.time,
 ) -> Path:
     """Download a B2 object via a temp partial file and atomic ``os.replace``.
 
@@ -292,6 +399,7 @@ def download_b2_file(
             max_delay_sec=max_delay_sec,
             sleep=sleep,
             rand=rand,
+            now=now,
         )
         os.replace(str(partial), str(dest))
     except Exception:
@@ -401,6 +509,7 @@ def materialize_b2_prefix(
     max_delay_sec: float = DEFAULT_B2_READ_MAX_DELAY_SEC,
     sleep: Callable[[float], None] = time.sleep,
     rand: Callable[[], float] = random_module.random,
+    now: Callable[[], float] = time.time,
 ) -> Path:
     """Download objects under ``prefix`` into ``dest_dir`` (local PDF tree)."""
     cfg = config if config is not None else B2Config.from_env(environ)
@@ -441,6 +550,7 @@ def materialize_b2_prefix(
             max_delay_sec=max_delay_sec,
             sleep=sleep,
             rand=rand,
+            now=now,
         )
 
     return dest

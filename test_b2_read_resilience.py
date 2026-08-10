@@ -6,6 +6,8 @@ import importlib.util
 import os
 import tempfile
 import unittest
+from datetime import datetime, timezone
+from email.utils import format_datetime
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -28,18 +30,34 @@ def _load_cli():
 CLI = _load_cli()
 
 
-def _client_error(http_status: int, code: str | None = None, operation: str = "HeadObject"):
+def _client_error(
+    http_status: int,
+    code: str | None = None,
+    operation: str = "HeadObject",
+    retry_after: str | None = None,
+):
     error_code = code if code is not None else str(http_status)
+    headers = {}
+    if retry_after is not None:
+        headers["retry-after"] = retry_after
     return ClientError(
         {
             "Error": {"Code": error_code, "Message": f"status {http_status}"},
-            "ResponseMetadata": {"HTTPStatusCode": http_status},
+            "ResponseMetadata": {
+                "HTTPStatusCode": http_status,
+                "HTTPHeaders": headers,
+            },
         },
         operation,
     )
 
 
 class B2ReadRetryHelperTests(unittest.TestCase):
+    def test_default_base_delay_matches_backblaze_guidance(self) -> None:
+        self.assertEqual(CLI.DEFAULT_B2_READ_BASE_DELAY_SEC, 1.0)
+        self.assertEqual(CLI.DEFAULT_B2_READ_MAX_DELAY_SEC, 2.0)
+        self.assertEqual(CLI.DEFAULT_B2_READ_MAX_ATTEMPTS, 5)
+
     def test_eventual_503_recovery(self) -> None:
         calls = {"n": 0}
         sleeps: list[float] = []
@@ -165,6 +183,243 @@ class B2ReadRetryHelperTests(unittest.TestCase):
         )
         self.assertEqual(result, 42)
         self.assertEqual(sleeps, [])
+
+
+class B2RetryAfterPolicyTests(unittest.TestCase):
+    def test_retry_after_present_honored_without_jitter(self) -> None:
+        calls = {"n": 0}
+        sleeps: list[float] = []
+
+        def operation():
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise _client_error(503, "503", retry_after="2")
+            return "ok"
+
+        result = CLI.call_b2_with_read_retry(
+            operation,
+            max_attempts=3,
+            base_delay_sec=1.0,
+            max_delay_sec=2.0,
+            sleep=sleeps.append,
+            # Full jitter would otherwise collapse the delay to 0.
+            rand=lambda: 0.0,
+        )
+        self.assertEqual(result, "ok")
+        self.assertEqual(calls["n"], 2)
+        self.assertEqual(sleeps, [2.0])
+
+    def test_retry_after_absent_uses_bounded_exponential_jitter(self) -> None:
+        calls = {"n": 0}
+        sleeps: list[float] = []
+
+        def operation():
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise _client_error(503, "503")
+            return "ok"
+
+        result = CLI.call_b2_with_read_retry(
+            operation,
+            max_attempts=3,
+            base_delay_sec=1.0,
+            max_delay_sec=2.0,
+            sleep=sleeps.append,
+            rand=lambda: 0.5,
+        )
+        self.assertEqual(result, "ok")
+        self.assertEqual(sleeps, [0.5])
+
+    def test_retry_after_zero_sleeps_zero(self) -> None:
+        calls = {"n": 0}
+        sleeps: list[float] = []
+
+        def operation():
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise _client_error(429, "SlowDown", retry_after="0")
+            return "ok"
+
+        result = CLI.call_b2_with_read_retry(
+            operation,
+            max_attempts=3,
+            base_delay_sec=1.0,
+            max_delay_sec=2.0,
+            sleep=sleeps.append,
+            rand=lambda: 1.0,
+        )
+        self.assertEqual(result, "ok")
+        self.assertEqual(sleeps, [0.0])
+
+    def test_retry_after_malformed_falls_back_to_exponential(self) -> None:
+        for bad in ("not-a-delay", "1.5", "", " "):
+            calls = {"n": 0}
+            sleeps: list[float] = []
+
+            def operation(bad=bad):
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    raise _client_error(503, "503", retry_after=bad)
+                return "ok"
+
+            result = CLI.call_b2_with_read_retry(
+                operation,
+                max_attempts=3,
+                base_delay_sec=1.0,
+                max_delay_sec=2.0,
+                sleep=sleeps.append,
+                rand=lambda: 1.0,
+            )
+            self.assertEqual(result, "ok", msg=bad)
+            self.assertEqual(sleeps, [1.0], msg=bad)
+
+    def test_retry_after_negative_falls_back_to_exponential(self) -> None:
+        calls = {"n": 0}
+        sleeps: list[float] = []
+
+        def operation():
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise _client_error(500, "500", retry_after="-3")
+            return "ok"
+
+        result = CLI.call_b2_with_read_retry(
+            operation,
+            max_attempts=3,
+            base_delay_sec=1.0,
+            max_delay_sec=2.0,
+            sleep=sleeps.append,
+            rand=lambda: 1.0,
+        )
+        self.assertEqual(result, "ok")
+        self.assertEqual(sleeps, [1.0])
+
+    def test_retry_after_over_cap_falls_back_to_bounded_exponential(self) -> None:
+        calls = {"n": 0}
+        sleeps: list[float] = []
+
+        def operation():
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise _client_error(503, "503", retry_after="30")
+            return "ok"
+
+        result = CLI.call_b2_with_read_retry(
+            operation,
+            max_attempts=3,
+            base_delay_sec=1.0,
+            max_delay_sec=2.0,
+            sleep=sleeps.append,
+            rand=lambda: 1.0,
+        )
+        self.assertEqual(result, "ok")
+        # Over-cap Retry-After must not sleep 30s; use capped exponential instead.
+        self.assertEqual(sleeps, [1.0])
+        self.assertTrue(all(s <= 2.0 for s in sleeps))
+
+    def test_retry_after_eventual_success_across_statuses(self) -> None:
+        statuses = [429, 500, 502, 503, 504]
+        calls = {"n": 0}
+        sleeps: list[float] = []
+
+        def operation():
+            calls["n"] += 1
+            if calls["n"] <= len(statuses):
+                raise _client_error(
+                    statuses[calls["n"] - 1],
+                    str(statuses[calls["n"] - 1]),
+                    retry_after="1",
+                )
+            return {"recovered": True}
+
+        result = CLI.call_b2_with_read_retry(
+            operation,
+            max_attempts=6,
+            base_delay_sec=1.0,
+            max_delay_sec=2.0,
+            sleep=sleeps.append,
+            rand=lambda: 0.0,
+        )
+        self.assertEqual(result, {"recovered": True})
+        self.assertEqual(calls["n"], 6)
+        self.assertEqual(sleeps, [1.0, 1.0, 1.0, 1.0, 1.0])
+
+    def test_retry_after_exhaustion_preserves_attempt_count(self) -> None:
+        calls = {"n": 0}
+        sleeps: list[float] = []
+
+        def operation():
+            calls["n"] += 1
+            raise _client_error(503, "503", retry_after="1")
+
+        with self.assertRaises(ClientError) as ctx:
+            CLI.call_b2_with_read_retry(
+                operation,
+                max_attempts=4,
+                base_delay_sec=1.0,
+                max_delay_sec=2.0,
+                sleep=sleeps.append,
+                rand=lambda: 0.0,
+            )
+        self.assertEqual(CLI._client_error_http_status(ctx.exception), 503)
+        self.assertEqual(calls["n"], 4)
+        self.assertEqual(sleeps, [1.0, 1.0, 1.0])
+
+    def test_retry_after_http_date_with_injectable_clock(self) -> None:
+        # HTTP-date support uses stdlib email.utils.parsedate_to_datetime.
+        fixed_now = datetime(2024, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        retry_at = datetime(2024, 1, 1, 0, 0, 2, tzinfo=timezone.utc)
+        header = format_datetime(retry_at, usegmt=True)
+        calls = {"n": 0}
+        sleeps: list[float] = []
+
+        def operation():
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise _client_error(503, "503", retry_after=header)
+            return "ok"
+
+        result = CLI.call_b2_with_read_retry(
+            operation,
+            max_attempts=3,
+            base_delay_sec=1.0,
+            max_delay_sec=2.0,
+            sleep=sleeps.append,
+            rand=lambda: 0.0,
+            now=lambda: fixed_now.timestamp(),
+        )
+        self.assertEqual(result, "ok")
+        self.assertEqual(sleeps, [2.0])
+
+    def test_retry_after_does_not_apply_to_401_403_404(self) -> None:
+        for status, code in (
+            (401, "Unauthorized"),
+            (403, "AccessDenied"),
+            (404, "NoSuchKey"),
+        ):
+            calls = {"n": 0}
+            sleeps: list[float] = []
+
+            def operation(status=status, code=code):
+                calls["n"] += 1
+                raise _client_error(status, code, retry_after="5")
+
+            with self.assertRaises(ClientError):
+                CLI.call_b2_with_read_retry(
+                    operation,
+                    max_attempts=5,
+                    sleep=sleeps.append,
+                    rand=lambda: 1.0,
+                )
+            self.assertEqual(calls["n"], 1, msg=status)
+            self.assertEqual(sleeps, [], msg=status)
+
+    def test_parse_retry_after_rejects_malformed_and_parses_delta(self) -> None:
+        self.assertEqual(CLI.parse_retry_after_delay_sec("7"), 7.0)
+        self.assertEqual(CLI.parse_retry_after_delay_sec("0"), 0.0)
+        self.assertEqual(CLI.parse_retry_after_delay_sec("-2"), -2.0)
+        self.assertIsNone(CLI.parse_retry_after_delay_sec("nope"))
+        self.assertIsNone(CLI.parse_retry_after_delay_sec("1.5"))
 
 
 class B2AtomicDownloadTests(unittest.TestCase):
