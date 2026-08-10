@@ -2,7 +2,8 @@
 """Durable attorney-feedback candidate generation CLI.
 
 Thin orchestration over existing production retrieval / evidence-packet /
-serialization / drafting / validation / bounded-repair / hashing helpers.
+serialization / drafting / validation / bounded synthesis-patch repair /
+hashing helpers.
 Does not call a live model unless the host process already has provider
 credentials and an injectable model_call is not supplied.
 Does not load gold, provisional, original answers, attorney feedback,
@@ -703,7 +704,7 @@ def write_candidate_artifacts(
             "filing exhibit map",
             "case map",
             "NYSCEF filing inventory",
-            "production retrieval/evidence-packet/serialization/drafting/validation/bounded-repair",
+            "production retrieval/evidence-packet/serialization/drafting/validation/bounded synthesis-patch repair",
         ],
     }
     candidate_hash = candidate_content_sha256(candidate)

@@ -1,10 +1,11 @@
 """Synthetic regressions for party-role procedural-synthesis validation.
 
 Covers evidence-supported procedural bearing, notice-defendant/no-wrongdoing
-reasoning, rescission effect, complaint roadmap preservation, evidence-grounded
-bounded repair (compliant and blocked), response parsing, and refusal to
-require unsupported inferences. Uses only synthetic party names — no Case-00
-identities, gold answers, attorney feedback, or benchmark prose.
+reasoning, rescission effect, complaint roadmap preservation, targeted
+synthesis-patch repair (compliant, blocked, oscillation-preserving), response
+schema rejection, merge placement, and refusal to require unsupported
+inferences. Uses only synthetic party names — no Case-00 identities, gold
+answers, attorney feedback, or benchmark prose.
 """
 
 from __future__ import annotations
@@ -138,6 +139,78 @@ def _complete_synthesis_answer(expected, synthesis) -> str:
     return answer
 
 
+def _patch_paragraphs_for_categories(categories, synthesis) -> dict:
+    """Build valid patch section text for the requested synthesis categories."""
+    wanted = set(categories)
+    patch = {}
+    if "complaint_roadmap" in wanted:
+        roadmap = next(
+            item for item in synthesis if item["category"] == "complaint_roadmap"
+        )
+        nums = list(roadmap.get("paragraph_numbers") or [])
+        headings = list(roadmap.get("section_headings") or [])
+        text = ""
+        if nums:
+            text = (
+                f"The complaint parties roadmap appears at paragraphs "
+                f"{nums[0]} through {nums[-1]}."
+            )
+        if headings:
+            text = (
+                f"{text} Section organization includes {headings[0]}."
+            ).strip()
+        patch["complaint_roadmap"] = text
+    if "procedural_bearing" in wanted:
+        patch["procedural_bearing"] = (
+            "As procedural relevance only, pleaded identity/role, entity form, "
+            "and residence or principal place of business can bear on service, "
+            "jurisdiction as applicable, and venue; they are not conclusively "
+            "established by those allegations."
+        )
+    if "notice_defendant_explanation" in wanted:
+        patch["notice_defendant_explanation"] = (
+            "Notice-defendant joinder reflects the potential effect of "
+            "requested declaratory relief and does not itself allege "
+            "wrongdoing."
+        )
+    if "rescission_effect" in wanted:
+        patch["rescission_effect"] = (
+            "The requested rescission or void ab initio treatment may "
+            "negatively affect those asserted rights, as alleged."
+        )
+    return patch
+
+
+def _notice_and_rescission_prefix(expected) -> str:
+    return (
+        _roster_only_answer(expected)
+        + " Notice-defendant joinder reflects the potential effect of "
+        "requested declaratory relief and does not itself allege "
+        "wrongdoing."
+        + " The requested rescission or void ab initio treatment may "
+        "negatively affect those asserted rights, as alleged."
+    )
+
+
+def _procedural_and_roadmap_prefix(expected, synthesis) -> str:
+    answer = _roster_only_answer(expected)
+    roadmap = next(
+        item for item in synthesis if item["category"] == "complaint_roadmap"
+    )
+    nums = list(roadmap.get("paragraph_numbers") or [])
+    answer += (
+        f" The complaint parties roadmap appears at paragraphs "
+        f"{nums[0]} through {nums[-1]}."
+    )
+    answer += (
+        " As procedural relevance only, pleaded identity/role, entity form, "
+        "and residence or principal place of business can bear on service, "
+        "jurisdiction as applicable, and venue; they are not conclusively "
+        "established by those allegations."
+    )
+    return answer
+
+
 FULL_SYNTHETIC_COMPLAINT = (
     "PARTIES\n"
     "1. Plaintiff North Quay Logistics LLC is a domestic limited liability "
@@ -153,6 +226,7 @@ FULL_SYNTHETIC_COMPLAINT = (
 )
 
 NO_ROADMAP_SYNTHETIC = (
+    "North Quay Logistics LLC against Pier Gate Depot Inc. "
     "Plaintiff North Quay Logistics LLC is a domestic limited liability "
     "company with its principal place of business in Albany County. "
     "Defendant Pier Gate Depot Inc. is a domestic corporation with its "
@@ -442,152 +516,127 @@ class PartyRoleProceduralSynthesisValidationTests(unittest.TestCase):
         )
 
 
-class PartyRoleProceduralSynthesisRepairPathTests(unittest.TestCase):
-    def test_roster_only_triggers_repair_then_passes_with_synthesis(self):
-        question = "Who are the parties and what are their roles in this action?"
-        retrieval = {
-            "query": question,
-            "results": [_hit(FULL_SYNTHETIC_COMPLAINT)],
-            "provisional_answer": "PROVISIONAL_SHOULD_NOT_APPEAR",
-            "gold_answer": "GOLD_SHOULD_NOT_APPEAR",
-            "attorney_feedback": "FEEDBACK_SHOULD_NOT_APPEAR",
-        }
-        calls = []
-
-        def _model(_system, user_prompt):
-            calls.append(user_prompt)
-            packet = de.build_evidence_packet(question, retrieval)
-            expected = de.extract_party_role_expected_attributes(packet)
-            synthesis = de.extract_party_role_expected_synthesis(packet, expected)
-            hit = packet["retrieval_hits"][0]
-            if len(calls) == 1:
-                answer = _roster_only_answer(expected)
-            else:
-                answer = _complete_synthesis_answer(expected, synthesis)
-            return _synthetic_payload(answer, hit)
-
-        result = de.answer_attorney_record_question(
-            question,
-            retrieval,
-            model_call=_model,
+class PartyRoleSynthesisPatchUnitTests(unittest.TestCase):
+    def test_strict_patch_schema_accepts_exact_allowed_categories(self):
+        packet = _packet(FULL_SYNTHETIC_COMPLAINT)
+        synthesis = de.extract_party_role_expected_synthesis(packet)
+        allowed = ["procedural_bearing", "complaint_roadmap"]
+        sections = _patch_paragraphs_for_categories(allowed, synthesis)
+        parsed = de.parse_party_role_synthesis_patch(
+            {"synthesis_patch": sections},
+            allowed_categories=allowed,
+            original_answer="Roster only.",
+            expected_synthesis=synthesis,
         )
-        self.assertEqual(result["status"], de.STATUS_READY)
-        self.assertEqual(len(calls), 2)
-        self.assertTrue(result["audit"].get("party_role_repair_attempted"))
-        repair = calls[1].lower()
-        self.assertIn("complete revised answer", repair)
-        self.assertIn("exact missing categories", repair)
-        self.assertIn("evidence_facts", repair)
-        self.assertIn("procedural_bearing", repair)
-        self.assertIn("notice_defendant_explanation", repair)
-        self.assertIn("rescission_effect", repair)
-        self.assertIn("complaint_roadmap", repair)
-        self.assertIn("paragraph_numbers", repair)
-        self.assertIn("can bear on service", repair)
-        self.assertIn("not return commentary", repair)
-        self.assertNotIn("provisional_should_not_appear", repair)
-        self.assertNotIn("gold_should_not_appear", repair)
-        self.assertNotIn("feedback_should_not_appear", repair)
-        self.assertNotIn("attorney_feedback", repair)
-        self.assertNotIn("party_role_completeness_failed", repair)
-        lowered = result["proposed_answer"].lower()
-        self.assertIn("can bear on service", lowered)
-        self.assertIn("does not itself allege wrongdoing", lowered)
-        self.assertIn("void ab initio", lowered)
-        self.assertIn("paragraphs 1 through 4", lowered)
+        self.assertEqual(set(parsed.keys()), set(allowed))
 
-    def test_noncompliant_repair_remains_blocked_without_second_retry(self):
-        question = "Who are the parties and what are their roles in this action?"
-        retrieval = {
-            "query": question,
-            "results": [_hit(FULL_SYNTHETIC_COMPLAINT)],
-            "provisional_answer": "PROVISIONAL_SHOULD_NOT_APPEAR",
-            "gold_answer": "GOLD_SHOULD_NOT_APPEAR",
-            "attorney_feedback": "FEEDBACK_SHOULD_NOT_APPEAR",
-        }
-        calls = []
+    def test_unknown_category_rejection(self):
+        packet = _packet(FULL_SYNTHETIC_COMPLAINT)
+        synthesis = de.extract_party_role_expected_synthesis(packet)
+        allowed = ["procedural_bearing"]
+        sections = _patch_paragraphs_for_categories(allowed, synthesis)
+        sections["not_a_real_category"] = "Invented category text."
+        parsed = de.parse_party_role_synthesis_patch(
+            {"synthesis_patch": sections},
+            allowed_categories=allowed,
+            original_answer="Roster only.",
+            expected_synthesis=synthesis,
+        )
+        self.assertIsNone(parsed)
 
-        def _model(_system, user_prompt):
-            calls.append(user_prompt)
-            packet = de.build_evidence_packet(question, retrieval)
-            expected = de.extract_party_role_expected_attributes(packet)
-            hit = packet["retrieval_hits"][0]
-            # Initial: roster + notice/rescission only. Repair: still omits
-            # procedural_bearing and complaint_roadmap (production failure shape).
-            answer = (
-                _roster_only_answer(expected)
-                + " Notice-defendant joinder reflects the potential effect of "
-                "requested declaratory relief and does not itself allege "
-                "wrongdoing."
-                + " The requested rescission or void ab initio treatment may "
-                "negatively affect those asserted rights, as alleged."
+    def test_commentary_and_full_answer_rewrite_rejected(self):
+        packet = _packet(FULL_SYNTHETIC_COMPLAINT)
+        synthesis = de.extract_party_role_expected_synthesis(packet)
+        allowed = ["procedural_bearing"]
+        sections = _patch_paragraphs_for_categories(allowed, synthesis)
+        wrapped = (
+            "Here is commentary that must be rejected.\n"
+            + json.dumps({"synthesis_patch": sections})
+        )
+        self.assertIsNone(
+            de.parse_party_role_synthesis_patch(
+                wrapped,
+                allowed_categories=allowed,
+                original_answer="Roster only.",
+                expected_synthesis=synthesis,
             )
-            return _synthetic_payload(answer, hit)
-
-        result = de.answer_attorney_record_question(
-            question,
-            retrieval,
-            model_call=_model,
         )
-        self.assertEqual(result["status"], de.STATUS_NOT_READY)
-        self.assertEqual(len(calls), 2)
-        self.assertTrue(result["audit"].get("party_role_completeness_failed"))
-        self.assertTrue(result["audit"].get("party_role_repair_attempted"))
-        self.assertEqual(result["audit"].get("party_role_provider_calls"), 2)
-        missing_categories = {
-            item["category"]
-            for item in result["audit"].get("missing_party_role_attributes") or []
-        }
-        self.assertIn("procedural_bearing", missing_categories)
-        self.assertIn("complaint_roadmap", missing_categories)
-        self.assertNotIn("notice_defendant_explanation", missing_categories)
-        self.assertNotIn("rescission_effect", missing_categories)
+        self.assertIsNone(
+            de.parse_party_role_synthesis_patch(
+                {
+                    "proposed_answer": "full rewrite",
+                    "propositions": [],
+                    "synthesis_patch": sections,
+                },
+                allowed_categories=allowed,
+                original_answer="Roster only.",
+                expected_synthesis=synthesis,
+            )
+        )
 
-    def test_repair_prompt_is_evidence_grounded_and_operational(self):
-        question = "Who are the parties and what are their roles in this action?"
+    def test_duplicate_roster_and_duplicate_paragraph_prevention(self):
         packet = _packet(FULL_SYNTHETIC_COMPLAINT)
         expected = de.extract_party_role_expected_attributes(packet)
         synthesis = de.extract_party_role_expected_synthesis(packet, expected)
-        roster = _roster_only_answer(expected) + (
-            " Notice-defendant joinder reflects the potential effect of "
+        roster = _roster_only_answer(expected)
+        allowed = ["procedural_bearing"]
+        self.assertIsNone(
+            de.parse_party_role_synthesis_patch(
+                {"synthesis_patch": {"procedural_bearing": roster}},
+                allowed_categories=allowed,
+                original_answer=roster,
+                expected_synthesis=synthesis,
+            )
+        )
+        sections = _patch_paragraphs_for_categories(allowed, synthesis)
+        draft = {
+            "proposed_answer": roster + " " + sections["procedural_bearing"],
+            "propositions": [
+                {
+                    "proposition_id": "P1",
+                    "text": roster + " " + sections["procedural_bearing"],
+                }
+            ],
+        }
+        merged = de.merge_party_role_synthesis_patch(draft, sections)
+        self.assertIsNotNone(merged)
+        # Already-present paragraph is not duplicated.
+        self.assertEqual(
+            merged["proposed_answer"].lower().count("can bear on service"),
+            1,
+        )
+
+    def test_merge_placement_preserves_roster_and_appends_synthesis(self):
+        packet = _packet(FULL_SYNTHETIC_COMPLAINT)
+        expected = de.extract_party_role_expected_attributes(packet)
+        synthesis = de.extract_party_role_expected_synthesis(packet, expected)
+        roster = _roster_only_answer(expected)
+        notice = (
+            "Notice-defendant joinder reflects the potential effect of "
             "requested declaratory relief and does not itself allege "
             "wrongdoing."
-            " The requested rescission or void ab initio treatment may "
-            "negatively affect those asserted rights, as alleged."
         )
-        missing = de.find_missing_party_role_requirements(
-            {"proposed_answer": roster, "propositions": []},
-            expected,
+        original = f"{roster} {notice}"
+        draft = {
+            "proposed_answer": original,
+            "propositions": [{"proposition_id": "P1", "text": original}],
+        }
+        sections = _patch_paragraphs_for_categories(
+            ["procedural_bearing", "complaint_roadmap"],
             synthesis,
         )
-        prompt = de.build_party_role_repair_prompt(
-            question=question,
-            evidence_packet=packet,
-            current_draft={
-                "proposed_answer": roster,
-                "propositions": [],
-                "audit": {
-                    "party_role_completeness_failed": True,
-                    "notes": ["internal-only"],
-                },
-                "status": "NOT READY",
-            },
-            missing_attributes=missing,
-        )
-        lowered = prompt.lower()
-        self.assertIn("exact missing categories", lowered)
-        self.assertIn("procedural_bearing", lowered)
-        self.assertIn("complaint_roadmap", lowered)
-        self.assertIn("evidence_facts", lowered)
-        self.assertIn("paragraph_numbers", lowered)
-        self.assertIn("complete revised answer", lowered)
-        self.assertIn("preserve all already-correct content", lowered)
-        self.assertNotIn("party_role_completeness_failed", lowered)
-        self.assertNotIn("internal-only", lowered)
-        # Supporting facts from the packet appear for operational repair.
-        self.assertRegex(prompt, r'"paragraph_numbers":\s*\[[^\]]*\d')
+        merged = de.merge_party_role_synthesis_patch(draft, sections)
+        self.assertIsNotNone(merged)
+        answer = merged["proposed_answer"]
+        self.assertTrue(answer.startswith(roster))
+        self.assertIn(notice, answer)
+        self.assertIn("can bear on service", answer.lower())
+        self.assertIn("paragraphs", answer.lower())
+        self.assertEqual(merged["propositions"][0]["text"], answer)
 
-    def test_commentary_wrapped_repair_response_is_parsed(self):
+
+class PartyRoleProceduralSynthesisRepairPathTests(unittest.TestCase):
+    def test_roster_only_triggers_patch_repair_then_passes_with_synthesis(self):
         question = "Who are the parties and what are their roles in this action?"
         retrieval = {
             "query": question,
@@ -606,14 +655,16 @@ class PartyRoleProceduralSynthesisRepairPathTests(unittest.TestCase):
             hit = packet["retrieval_hits"][0]
             if len(calls) == 1:
                 return _synthetic_payload(_roster_only_answer(expected), hit)
-            payload = _synthetic_payload(
-                _complete_synthesis_answer(expected, synthesis),
-                hit,
+            missing = de.find_missing_party_role_synthesis(
+                {"proposed_answer": _roster_only_answer(expected)},
+                synthesis,
             )
-            return (
-                "Here is a short commentary that must be ignored.\n"
-                + json.dumps(payload)
-            )
+            categories = [item["category"] for item in missing]
+            return {
+                "synthesis_patch": _patch_paragraphs_for_categories(
+                    categories, synthesis
+                )
+            }
 
         result = de.answer_attorney_record_question(
             question,
@@ -622,7 +673,307 @@ class PartyRoleProceduralSynthesisRepairPathTests(unittest.TestCase):
         )
         self.assertEqual(result["status"], de.STATUS_READY)
         self.assertEqual(len(calls), 2)
-        self.assertIn("can bear on service", result["proposed_answer"].lower())
+        self.assertTrue(result["audit"].get("party_role_repair_attempted"))
+        repair = calls[1].lower()
+        self.assertIn("synthesis patch", repair)
+        self.assertIn("exact allowed missing categories", repair)
+        self.assertIn("evidence_facts", repair)
+        self.assertIn("procedural_bearing", repair)
+        self.assertIn("notice_defendant_explanation", repair)
+        self.assertIn("rescission_effect", repair)
+        self.assertIn("complaint_roadmap", repair)
+        self.assertIn("paragraph_numbers", repair)
+        self.assertIn("can bear on service", repair)
+        self.assertNotIn("complete revised answer", repair)
+        self.assertNotIn("current draft", repair)
+        self.assertNotIn("provisional_should_not_appear", repair)
+        self.assertNotIn("gold_should_not_appear", repair)
+        self.assertNotIn("feedback_should_not_appear", repair)
+        self.assertNotIn("attorney_feedback", repair)
+        lowered = result["proposed_answer"].lower()
+        self.assertIn("can bear on service", lowered)
+        self.assertIn("does not itself allege wrongdoing", lowered)
+        self.assertIn("void ab initio", lowered)
+        self.assertIn("paragraphs 1 through 4", lowered)
+
+    def test_oscillation_patch_procedural_roadmap_preserves_notice(self):
+        """Live oscillation shape: procedural+roadmap repair must keep notice."""
+        question = "Who are the parties and what are their roles in this action?"
+        retrieval = {
+            "query": question,
+            "results": [_hit(FULL_SYNTHETIC_COMPLAINT)],
+            "provisional_answer": "PROVISIONAL_SHOULD_NOT_APPEAR",
+            "gold_answer": "GOLD_SHOULD_NOT_APPEAR",
+            "attorney_feedback": "FEEDBACK_SHOULD_NOT_APPEAR",
+        }
+        calls = []
+
+        def _model(_system, user_prompt):
+            calls.append(user_prompt)
+            packet = de.build_evidence_packet(question, retrieval)
+            expected = de.extract_party_role_expected_attributes(packet)
+            synthesis = de.extract_party_role_expected_synthesis(packet, expected)
+            hit = packet["retrieval_hits"][0]
+            if len(calls) == 1:
+                return _synthetic_payload(
+                    _notice_and_rescission_prefix(expected),
+                    hit,
+                )
+            # Provider returns only the missing categories — no notice rewrite.
+            return {
+                "synthesis_patch": _patch_paragraphs_for_categories(
+                    ["procedural_bearing", "complaint_roadmap"],
+                    synthesis,
+                )
+            }
+
+        result = de.answer_attorney_record_question(
+            question,
+            retrieval,
+            model_call=_model,
+        )
+        self.assertEqual(result["status"], de.STATUS_READY)
+        self.assertEqual(len(calls), 2)
+        lowered = result["proposed_answer"].lower()
+        self.assertIn("does not itself allege wrongdoing", lowered)
+        self.assertIn("negatively affect", lowered)
+        self.assertIn("can bear on service", lowered)
+        self.assertIn("paragraphs 1 through 4", lowered)
+        # Original notice text preserved (not dropped by rewrite).
+        self.assertIn(
+            "notice-defendant joinder reflects the potential effect",
+            lowered,
+        )
+
+    def test_oscillation_patch_notice_preserves_procedural_roadmap(self):
+        """Inverse oscillation: notice repair must keep procedural+roadmap."""
+        question = "Who are the parties and what are their roles in this action?"
+        retrieval = {
+            "query": question,
+            "results": [_hit(FULL_SYNTHETIC_COMPLAINT)],
+            "provisional_answer": "PROVISIONAL_SHOULD_NOT_APPEAR",
+            "gold_answer": "GOLD_SHOULD_NOT_APPEAR",
+            "attorney_feedback": "FEEDBACK_SHOULD_NOT_APPEAR",
+        }
+        calls = []
+
+        def _model(_system, user_prompt):
+            calls.append(user_prompt)
+            packet = de.build_evidence_packet(question, retrieval)
+            expected = de.extract_party_role_expected_attributes(packet)
+            synthesis = de.extract_party_role_expected_synthesis(packet, expected)
+            hit = packet["retrieval_hits"][0]
+            if len(calls) == 1:
+                prefix = _procedural_and_roadmap_prefix(expected, synthesis)
+                # Missing notice + rescission only.
+                return _synthetic_payload(prefix, hit)
+            return {
+                "synthesis_patch": _patch_paragraphs_for_categories(
+                    ["notice_defendant_explanation", "rescission_effect"],
+                    synthesis,
+                )
+            }
+
+        result = de.answer_attorney_record_question(
+            question,
+            retrieval,
+            model_call=_model,
+        )
+        self.assertEqual(result["status"], de.STATUS_READY)
+        self.assertEqual(len(calls), 2)
+        lowered = result["proposed_answer"].lower()
+        self.assertIn("can bear on service", lowered)
+        self.assertIn("paragraphs 1 through 4", lowered)
+        self.assertIn("does not itself allege wrongdoing", lowered)
+        self.assertIn("negatively affect", lowered)
+
+    def test_noncompliant_patch_remains_blocked_without_second_retry(self):
+        question = "Who are the parties and what are their roles in this action?"
+        retrieval = {
+            "query": question,
+            "results": [_hit(FULL_SYNTHETIC_COMPLAINT)],
+            "provisional_answer": "PROVISIONAL_SHOULD_NOT_APPEAR",
+            "gold_answer": "GOLD_SHOULD_NOT_APPEAR",
+            "attorney_feedback": "FEEDBACK_SHOULD_NOT_APPEAR",
+        }
+        calls = []
+
+        def _model(_system, user_prompt):
+            calls.append(user_prompt)
+            packet = de.build_evidence_packet(question, retrieval)
+            expected = de.extract_party_role_expected_attributes(packet)
+            hit = packet["retrieval_hits"][0]
+            if len(calls) == 1:
+                return _synthetic_payload(
+                    _notice_and_rescission_prefix(expected),
+                    hit,
+                )
+            # Incomplete patch: omits complaint_roadmap (failure shape).
+            return {
+                "synthesis_patch": {
+                    "procedural_bearing": (
+                        "As procedural relevance only, pleaded identity/role, "
+                        "entity form, and residence or principal place of "
+                        "business can bear on service, jurisdiction as "
+                        "applicable, and venue."
+                    )
+                }
+            }
+
+        result = de.answer_attorney_record_question(
+            question,
+            retrieval,
+            model_call=_model,
+        )
+        self.assertEqual(result["status"], de.STATUS_NOT_READY)
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(result["audit"].get("party_role_completeness_failed"))
+        self.assertTrue(result["audit"].get("party_role_repair_attempted"))
+        self.assertEqual(result["audit"].get("party_role_provider_calls"), 2)
+
+    def test_failed_patch_blocking_and_one_call_maximum(self):
+        question = "Who are the parties and what are their roles in this action?"
+        retrieval = {
+            "query": question,
+            "results": [_hit(FULL_SYNTHETIC_COMPLAINT)],
+            "provisional_answer": "PROVISIONAL_SHOULD_NOT_APPEAR",
+            "gold_answer": "GOLD_SHOULD_NOT_APPEAR",
+            "attorney_feedback": "FEEDBACK_SHOULD_NOT_APPEAR",
+        }
+        calls = []
+
+        def _model(_system, user_prompt):
+            calls.append(user_prompt)
+            packet = de.build_evidence_packet(question, retrieval)
+            expected = de.extract_party_role_expected_attributes(packet)
+            hit = packet["retrieval_hits"][0]
+            if len(calls) == 1:
+                return _synthetic_payload(_roster_only_answer(expected), hit)
+            # Full-answer rewrite attempt must be rejected (fail closed).
+            return _synthetic_payload(
+                _complete_synthesis_answer(
+                    expected,
+                    de.extract_party_role_expected_synthesis(packet, expected),
+                ),
+                hit,
+            )
+
+        result = de.answer_attorney_record_question(
+            question,
+            retrieval,
+            model_call=_model,
+        )
+        self.assertEqual(result["status"], de.STATUS_NOT_READY)
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(result["audit"].get("party_role_completeness_failed"))
+        self.assertEqual(result["audit"].get("party_role_provider_calls"), 2)
+
+    def test_patch_prompt_is_evidence_grounded_and_omits_draft_rewrite(self):
+        question = "Who are the parties and what are their roles in this action?"
+        packet = _packet(FULL_SYNTHETIC_COMPLAINT)
+        expected = de.extract_party_role_expected_attributes(packet)
+        synthesis = de.extract_party_role_expected_synthesis(packet, expected)
+        roster = _notice_and_rescission_prefix(expected)
+        missing = de.find_missing_party_role_requirements(
+            {"proposed_answer": roster, "propositions": []},
+            expected,
+            synthesis,
+        )
+        _attrs, synthesis_gaps = de.partition_party_role_missing_requirements(missing)
+        prompt = de.build_party_role_synthesis_patch_prompt(
+            question=question,
+            missing_synthesis=synthesis_gaps,
+        )
+        lowered = prompt.lower()
+        self.assertIn("exact allowed missing categories", lowered)
+        self.assertIn("procedural_bearing", lowered)
+        self.assertIn("complaint_roadmap", lowered)
+        self.assertIn("evidence_facts", lowered)
+        self.assertIn("paragraph_numbers", lowered)
+        self.assertIn("synthesis_patch", lowered)
+        self.assertNotIn("complete revised answer", lowered)
+        self.assertNotIn("current draft", lowered)
+        self.assertRegex(prompt, r'"paragraph_numbers":\s*\[[^\]]*\d')
+
+    def test_no_roadmap_behavior_excludes_roadmap_from_patch_prompt(self):
+        question = "Who are the parties and what are their roles in this action?"
+        retrieval = {
+            "query": question,
+            "results": [_hit(NO_ROADMAP_SYNTHETIC)],
+            "provisional_answer": "PROVISIONAL_SHOULD_NOT_APPEAR",
+            "gold_answer": "GOLD_SHOULD_NOT_APPEAR",
+            "attorney_feedback": "FEEDBACK_SHOULD_NOT_APPEAR",
+        }
+        calls = []
+
+        def _model(_system, user_prompt):
+            calls.append(user_prompt)
+            packet = de.build_evidence_packet(question, retrieval)
+            expected = de.extract_party_role_expected_attributes(packet)
+            synthesis = de.extract_party_role_expected_synthesis(packet, expected)
+            hit = packet["retrieval_hits"][0]
+            if len(calls) == 1:
+                return _synthetic_payload(_roster_only_answer(expected), hit)
+            missing = de.find_missing_party_role_synthesis(
+                {"proposed_answer": _roster_only_answer(expected)},
+                synthesis,
+            )
+            categories = [item["category"] for item in missing]
+            self.assertNotIn("complaint_roadmap", categories)
+            return {
+                "synthesis_patch": _patch_paragraphs_for_categories(
+                    categories, synthesis
+                )
+            }
+
+        result = de.answer_attorney_record_question(
+            question,
+            retrieval,
+            model_call=_model,
+        )
+        self.assertEqual(result["status"], de.STATUS_READY)
+        self.assertEqual(len(calls), 2)
+        repair = calls[1].lower()
+        self.assertNotIn("complaint_roadmap", repair)
+        self.assertIn("procedural_bearing", repair)
+        self.assertNotIn("paragraphs ", result["proposed_answer"].lower())
+
+    def test_full_revalidation_after_merge_fails_closed_if_still_incomplete(self):
+        question = "Who are the parties and what are their roles in this action?"
+        retrieval = {
+            "query": question,
+            "results": [_hit(FULL_SYNTHETIC_COMPLAINT)],
+            "provisional_answer": "PROVISIONAL_SHOULD_NOT_APPEAR",
+            "gold_answer": "GOLD_SHOULD_NOT_APPEAR",
+            "attorney_feedback": "FEEDBACK_SHOULD_NOT_APPEAR",
+        }
+        calls = []
+
+        def _model(_system, user_prompt):
+            calls.append(user_prompt)
+            packet = de.build_evidence_packet(question, retrieval)
+            expected = de.extract_party_role_expected_attributes(packet)
+            synthesis = de.extract_party_role_expected_synthesis(packet, expected)
+            hit = packet["retrieval_hits"][0]
+            if len(calls) == 1:
+                return _synthetic_payload(_roster_only_answer(expected), hit)
+            # Valid schema covering only a subset of required categories is
+            # rejected at parse (exact key set), failing closed.
+            return {
+                "synthesis_patch": _patch_paragraphs_for_categories(
+                    ["procedural_bearing"],
+                    synthesis,
+                )
+            }
+
+        result = de.answer_attorney_record_question(
+            question,
+            retrieval,
+            model_call=_model,
+        )
+        self.assertEqual(result["status"], de.STATUS_NOT_READY)
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(result["audit"].get("party_role_completeness_failed"))
 
     def test_contamination_refs_absent_from_prompts_when_synthesis_required(self):
         question = "Identify the parties and their procedural roles."

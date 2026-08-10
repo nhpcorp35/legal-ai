@@ -9,12 +9,13 @@ Party-and-role questions additionally enforce evidence-supported attribute
 completeness and procedural synthesis (service/jurisdiction/venue bearing,
 notice-defendant/no-wrongdoing explanation, rescission effect, and complaint
 roadmap preservation) via deterministic post-draft validation and one bounded
-evidence-grounded repair. The repair call receives exact missing categories plus
-only supporting facts already present in the evidence packet and must return a
-complete revised answer (not commentary or a patch). Complaint roadmap is
-required only when exact paragraph numbers or section organization were
-extracted from evidence. Gold answers and attorney feedback are never loaded
-into generation.
+evidence-grounded repair. When only synthesis categories are missing, the
+repair call receives those categories plus supporting evidence facts and must
+return a strict structured synthesis patch; the original candidate answer is
+preserved and patch sections are merged deterministically. Attribute gaps still
+use one bounded full-draft repair. Complaint roadmap is required only when
+exact paragraph numbers or section organization were extracted from evidence.
+Gold answers and attorney feedback are never loaded into generation.
 
 Model calls go through the configured provider abstraction
 (``resolve_model_provider`` / injectable ``model_call``). Generation is
@@ -3474,8 +3475,23 @@ def find_missing_party_role_attributes(
 
 
 # ---------------------------------------------------------------------------
-# Party-role procedural synthesis (extract → validate → repair with attributes)
+# Party-role procedural synthesis (extract → validate → targeted patch repair)
 # ---------------------------------------------------------------------------
+
+_PARTY_ROLE_SYNTHESIS_CATEGORIES = frozenset(
+    {
+        "procedural_bearing",
+        "notice_defendant_explanation",
+        "rescission_effect",
+        "complaint_roadmap",
+    }
+)
+_PARTY_ROLE_SYNTHESIS_MERGE_ORDER = (
+    "complaint_roadmap",
+    "procedural_bearing",
+    "notice_defendant_explanation",
+    "rescission_effect",
+)
 
 _PARTY_ROLE_RIGHTS_AFFECTED_RE = re.compile(
     r"(?i)\b(?:"
@@ -3931,6 +3947,29 @@ def _attorney_facing_party_role_draft(raw: Any) -> dict:
     return {key: payload[key] for key in _PARTY_ROLE_REPAIR_DRAFT_KEYS if key in payload}
 
 
+def _is_party_role_synthesis_category(category: str) -> bool:
+    return normalize_whitespace(category) in _PARTY_ROLE_SYNTHESIS_CATEGORIES
+
+
+def partition_party_role_missing_requirements(
+    missing: Sequence[dict],
+) -> Tuple[List[dict], List[dict]]:
+    """Split missing gaps into attribute gaps and synthesis gaps."""
+    attribute_gaps: List[dict] = []
+    synthesis_gaps: List[dict] = []
+    for item in missing or []:
+        if not isinstance(item, dict):
+            continue
+        category = normalize_whitespace(item.get("category"))
+        if not category:
+            continue
+        if _is_party_role_synthesis_category(category):
+            synthesis_gaps.append(item)
+        else:
+            attribute_gaps.append(item)
+    return attribute_gaps, synthesis_gaps
+
+
 def build_party_role_repair_prompt(
     *,
     question: str,
@@ -3939,12 +3978,10 @@ def build_party_role_repair_prompt(
     missing_attributes: Sequence[dict],
 ) -> str:
     """
-    Bounded evidence-grounded repair prompt (exactly one retry).
+    Bounded full-draft repair for missing party attributes (exactly one retry).
 
-    Passes the original question, original evidence packet, attorney-facing
-    current draft, and the deterministic missing-attribute / synthesis list
-    enriched with supporting evidence facts already present in the packet.
-    Requires a complete revised JSON answer — not commentary or a patch.
+    Used only when evidence-supported party attributes are absent. Synthesis-only
+    gaps use ``build_party_role_synthesis_patch_prompt`` instead.
     """
     draft_payload = _attorney_facing_party_role_draft(current_draft)
     missing_list = list(missing_attributes)
@@ -3986,6 +4023,315 @@ def build_party_role_repair_prompt(
         f"Current draft:\n{_stable_json(draft_payload)}\n\n"
         f"Missing required attributes:\n{_stable_json(missing_list)}\n"
     )
+
+
+def build_party_role_synthesis_patch_prompt(
+    *,
+    question: str,
+    missing_synthesis: Sequence[dict],
+) -> str:
+    """
+    Bounded synthesis-patch prompt (exactly one retry).
+
+    Sends only currently missing synthesis categories and their extracted
+    supporting evidence facts. Requires a strict structured patch — never a
+    full-answer rewrite, roster duplicate, or commentary.
+    """
+    missing_list = [item for item in missing_synthesis if isinstance(item, dict)]
+    allowed = sorted(
+        {
+            normalize_whitespace(item.get("category"))
+            for item in missing_list
+            if normalize_whitespace(item.get("category"))
+            and _is_party_role_synthesis_category(
+                normalize_whitespace(item.get("category"))
+            )
+        }
+    )
+    category_instructions: List[str] = []
+    if "procedural_bearing" in allowed:
+        category_instructions.append(
+            "When procedural_bearing is listed: state carefully that pleaded "
+            "identity/role, entity form, and residence or principal place of "
+            "business can bear on service, jurisdiction as applicable, and venue, "
+            "without claiming those doctrines are conclusively established."
+        )
+    if "notice_defendant_explanation" in allowed:
+        category_instructions.append(
+            "When notice_defendant_explanation is listed: explain "
+            "notice-defendant joinder reflects the potential effect of "
+            "requested relief on asserted rights and does not itself allege "
+            "wrongdoing."
+        )
+    if "rescission_effect" in allowed:
+        category_instructions.append(
+            "When rescission_effect is listed: connect requested rescission or "
+            "void-ab-initio treatment to possible negative effects on notice "
+            "defendants' asserted rights, preserving allegation/candidate "
+            "qualifiers."
+        )
+    if "complaint_roadmap" in allowed:
+        category_instructions.append(
+            "When complaint_roadmap is listed: preserve only the exact paragraph "
+            "numbers or section headings in that item's evidence_facts; never "
+            "invent paragraph ranges. If evidence_facts list no roadmap markers, "
+            "do not invent a roadmap paragraph."
+        )
+    instruction_block = ""
+    if category_instructions:
+        instruction_block = "\n".join(category_instructions) + "\n"
+    return (
+        "Return a structured party-role synthesis patch only.\n"
+        "Respond with a single JSON object of the form "
+        '{"synthesis_patch":{<category>: "<paragraph>", ...}} '
+        "and nothing else. Do not return commentary, analysis, a party roster, "
+        "proposed_answer, propositions, or a full revised answer.\n"
+        "Keys under synthesis_patch must be exactly the allowed missing "
+        "categories listed below — no unknown categories, no extra keys, and "
+        "no omitted keys. Each value must be one evidence-grounded paragraph "
+        "for that category alone, using only the attached evidence_facts.\n"
+        f"{instruction_block}"
+        f"Exact allowed missing categories: {_stable_json(allowed)}.\n"
+        "Return the synthesis_patch JSON object and nothing else.\n\n"
+        f"Original question:\n{normalize_whitespace(question)}\n\n"
+        f"Missing synthesis requirements:\n{_stable_json(missing_list)}\n"
+    )
+
+
+def _strict_json_object_from_text(text: str) -> Optional[dict]:
+    """
+    Parse a JSON object from text; reject commentary outside the object.
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        parsed = None
+    if isinstance(parsed, dict):
+        return parsed
+    decoder = json.JSONDecoder()
+    for match in re.finditer(r"\{", raw):
+        start = match.start()
+        try:
+            obj, end = decoder.raw_decode(raw[start:])
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        prefix = raw[:start].strip()
+        suffix = raw[start + end :].strip()
+        if prefix or suffix:
+            # Commentary or trailing material — reject.
+            return None
+        return obj
+    return None
+
+
+def _patch_section_duplicates_roster(section: str, original_answer: str) -> bool:
+    """True when a patch paragraph rewrites/duplicates the party roster."""
+    sec = normalize_whitespace(section)
+    orig = normalize_whitespace(original_answer)
+    if not sec:
+        return True
+    if orig and (
+        sec.lower() == orig.lower()
+        or (len(sec) > 80 and sec.lower() in orig.lower())
+        or (len(orig) > 80 and orig.lower() in sec.lower())
+    ):
+        return True
+    # Multiple pleaded party introductions indicate a roster dump.
+    role_hits = re.findall(
+        r"(?i)\b(?:plaintiff|defendant|petitioner|respondent)\b"
+        r"\s+[A-Z][A-Za-z0-9 .,&'\-]{2,80}",
+        sec,
+    )
+    if len(role_hits) >= 2:
+        return True
+    return False
+
+
+def _synthesis_criterion_for_category(
+    expected_synthesis: Sequence[dict], category: str
+) -> Optional[dict]:
+    for item in expected_synthesis or []:
+        if not isinstance(item, dict):
+            continue
+        if normalize_whitespace(item.get("category")) == category:
+            return item
+    return None
+
+
+def _synthesis_section_satisfies(
+    section: str,
+    category: str,
+    criterion: Optional[dict],
+) -> bool:
+    draft_norm = normalize_citation_text(section)
+    if category == "procedural_bearing":
+        return _draft_has_procedural_bearing(draft_norm)
+    if category == "notice_defendant_explanation":
+        return _draft_has_notice_defendant_explanation(
+            draft_norm,
+            require_rights_link=bool(
+                (criterion or {}).get("require_rights_link")
+            ),
+        )
+    if category == "rescission_effect":
+        return _draft_has_rescission_effect(draft_norm)
+    if category == "complaint_roadmap":
+        return _draft_preserves_complaint_roadmap(
+            draft_norm,
+            paragraph_numbers=(criterion or {}).get("paragraph_numbers") or [],
+            section_headings=(criterion or {}).get("section_headings") or [],
+        )
+    return False
+
+
+def parse_party_role_synthesis_patch(
+    raw: Any,
+    *,
+    allowed_categories: Sequence[str],
+    original_answer: str = "",
+    expected_synthesis: Optional[Sequence[dict]] = None,
+) -> Optional[Dict[str, str]]:
+    """
+    Strictly parse a synthesis patch keyed by allowed missing categories.
+
+    Rejects unknown categories, commentary, duplicated roster text, full-answer
+    rewrites, and sections that fail their category evidence checks.
+    """
+    allowed = [
+        normalize_whitespace(c)
+        for c in allowed_categories
+        if normalize_whitespace(c) and _is_party_role_synthesis_category(c)
+    ]
+    allowed_set = set(allowed)
+    if not allowed_set:
+        return None
+
+    payload: Optional[dict] = None
+    if isinstance(raw, dict):
+        # Accept either the wrapper object or a bare category map only when
+        # keys are exclusively synthesis categories (still validated below).
+        if "synthesis_patch" in raw or "proposed_answer" in raw or "propositions" in raw:
+            payload = raw
+        elif raw and all(
+            _is_party_role_synthesis_category(str(k)) for k in raw.keys()
+        ):
+            payload = {"synthesis_patch": raw}
+        else:
+            payload = raw
+    elif isinstance(raw, str):
+        payload = _strict_json_object_from_text(raw)
+    else:
+        return None
+    if not isinstance(payload, dict):
+        return None
+
+    # Full-answer rewrite attempts are not patches.
+    if "proposed_answer" in payload or "propositions" in payload:
+        return None
+    if "synthesis_patch" not in payload:
+        return None
+    # Reject unexpected top-level keys (commentary wrappers / mixed payloads).
+    if set(payload.keys()) != {"synthesis_patch"}:
+        return None
+
+    patch_obj = payload.get("synthesis_patch")
+    if not isinstance(patch_obj, dict):
+        return None
+    patch_keys = [
+        normalize_whitespace(str(k)) for k in patch_obj.keys() if normalize_whitespace(str(k))
+    ]
+    if set(patch_keys) != allowed_set or len(patch_keys) != len(allowed_set):
+        return None
+
+    normalized_patch: Dict[str, Any] = {
+        normalize_whitespace(str(key)): value for key, value in patch_obj.items()
+    }
+    sections: Dict[str, str] = {}
+    for category in allowed:
+        value = normalized_patch.get(category)
+        if not isinstance(value, str):
+            return None
+        text = normalize_whitespace(value)
+        if not text:
+            return None
+        if _patch_section_duplicates_roster(text, original_answer):
+            return None
+        criterion = _synthesis_criterion_for_category(
+            expected_synthesis or [], category
+        )
+        if not _synthesis_section_satisfies(text, category, criterion):
+            return None
+        sections[category] = text
+    return sections
+
+
+def merge_party_role_synthesis_patch(
+    current_draft: Any,
+    patch_sections: Dict[str, str],
+    *,
+    expected_synthesis: Optional[Sequence[dict]] = None,
+) -> Optional[dict]:
+    """
+    Deterministically merge validated patch sections into the original answer.
+
+    Preserves the party roster and already-valid synthesis text. Returns None
+    when a safe merge is impossible.
+    """
+    del expected_synthesis  # Criteria already enforced during parse.
+    if not isinstance(patch_sections, dict) or not patch_sections:
+        return None
+    base = _attorney_facing_party_role_draft(current_draft)
+    if not base:
+        # Fall back to a shallow dict copy when wrappers are absent.
+        if isinstance(current_draft, dict):
+            base = {
+                key: current_draft[key]
+                for key in _PARTY_ROLE_REPAIR_DRAFT_KEYS
+                if key in current_draft
+            }
+        else:
+            return None
+    if "proposed_answer" not in base and not base.get("propositions"):
+        return None
+
+    merged = deepcopy(base)
+    old_answer = normalize_whitespace(merged.get("proposed_answer") or "")
+    new_answer = old_answer
+    for category in _PARTY_ROLE_SYNTHESIS_MERGE_ORDER:
+        section = patch_sections.get(category)
+        if not section:
+            continue
+        sec = normalize_whitespace(section)
+        if not sec:
+            return None
+        # Duplicate paragraph prevention across repeated categories / merges.
+        if sec.lower() in new_answer.lower():
+            continue
+        new_answer = f"{new_answer} {sec}".strip() if new_answer else sec
+
+    if not new_answer:
+        return None
+    merged["proposed_answer"] = new_answer
+
+    props = merged.get("propositions")
+    if isinstance(props, list):
+        updated_props = []
+        for prop in props:
+            if not isinstance(prop, dict):
+                updated_props.append(prop)
+                continue
+            prop_copy = dict(prop)
+            text = normalize_whitespace(prop_copy.get("text") or "")
+            if text and text == old_answer:
+                prop_copy["text"] = new_answer
+            updated_props.append(prop_copy)
+        merged["propositions"] = updated_props
+    return merged
 
 
 def _party_role_completeness_failure(
@@ -4676,15 +5022,17 @@ def answer_attorney_record_question(
     to retained verified propositions and completeness is recomputed. When
     evidence-supported attributes or procedural-synthesis connections are
     omitted, exactly one bounded evidence-grounded repair retry is attempted;
-    otherwise the result is FAIL / NOT READY. The repair prompt passes exact
-    missing categories plus only supporting evidence facts already present in
-    the packet and requires a complete revised answer (not a patch). A complete
-    party list alone cannot pass when supported service/jurisdiction/venue
-    bearing, notice-defendant explanation, rescission effect, or an
-    evidence-exact complaint roadmap connection is missing. Complaint roadmap
-    is not required when evidence lacks exact paragraph numbers or section
-    organization. Pre-filter completeness PASS or high confidence is never
-    retained.
+    otherwise the result is FAIL / NOT READY. Synthesis-only gaps use a strict
+    structured patch (missing categories + evidence facts only); the original
+    candidate is preserved and patch sections are merged deterministically,
+    then the entire merged answer is revalidated. Attribute gaps still use one
+    full-draft repair. If the patch is invalid or a safe merge is impossible,
+    fail closed without rewriting. A complete party list alone cannot pass when
+    supported service/jurisdiction/venue bearing, notice-defendant explanation,
+    rescission effect, or an evidence-exact complaint roadmap connection is
+    missing. Complaint roadmap is not required when evidence lacks exact
+    paragraph numbers or section organization. Pre-filter completeness PASS or
+    high confidence is never retained.
     """
     question_text = normalize_whitespace(question)
     retrieval = retrieval or {"query": question_text, "results": []}
@@ -4765,23 +5113,82 @@ def answer_attorney_record_question(
         )
         if missing:
             repair_attempted = True
-            repair_prompt = build_party_role_repair_prompt(
-                question=question_text,
-                evidence_packet=evidence_packet,
-                current_draft=validated,
-                missing_attributes=missing,
+            attribute_gaps, synthesis_gaps = partition_party_role_missing_requirements(
+                missing
             )
-            try:
-                raw = provider(active_system, repair_prompt)
-                provider_calls = 2
-            except Exception as exc:  # noqa: BLE001
-                return _party_role_completeness_failure(
+            if attribute_gaps:
+                # Attribute gaps require a full-draft repair (one call max).
+                repair_prompt = build_party_role_repair_prompt(
                     question=question_text,
-                    retrieval=retrieval,
+                    evidence_packet=evidence_packet,
+                    current_draft=validated,
                     missing_attributes=missing,
-                    provider_error=f"{type(exc).__name__}: {exc}",
                 )
-            validated = _scrub_party_role_answer_after_citation_filter(_validate(raw))
+                try:
+                    raw = provider(active_system, repair_prompt)
+                    provider_calls = 2
+                except Exception as exc:  # noqa: BLE001
+                    return _party_role_completeness_failure(
+                        question=question_text,
+                        retrieval=retrieval,
+                        missing_attributes=missing,
+                        provider_error=f"{type(exc).__name__}: {exc}",
+                    )
+                validated = _scrub_party_role_answer_after_citation_filter(
+                    _validate(raw)
+                )
+            else:
+                # Synthesis-only: targeted patch; preserve original candidate.
+                allowed_categories = sorted(
+                    {
+                        normalize_whitespace(item.get("category"))
+                        for item in synthesis_gaps
+                        if normalize_whitespace(item.get("category"))
+                    }
+                )
+                repair_prompt = build_party_role_synthesis_patch_prompt(
+                    question=question_text,
+                    missing_synthesis=synthesis_gaps,
+                )
+                try:
+                    raw = provider(active_system, repair_prompt)
+                    provider_calls = 2
+                except Exception as exc:  # noqa: BLE001
+                    return _party_role_completeness_failure(
+                        question=question_text,
+                        retrieval=retrieval,
+                        missing_attributes=missing,
+                        provider_error=f"{type(exc).__name__}: {exc}",
+                    )
+                original_answer = normalize_whitespace(
+                    validated.get("proposed_answer") or ""
+                )
+                patch_sections = parse_party_role_synthesis_patch(
+                    raw,
+                    allowed_categories=allowed_categories,
+                    original_answer=original_answer,
+                    expected_synthesis=expected_synthesis,
+                )
+                if patch_sections is None:
+                    return _party_role_completeness_failure(
+                        question=question_text,
+                        retrieval=retrieval,
+                        missing_attributes=missing,
+                    )
+                merged = merge_party_role_synthesis_patch(
+                    validated,
+                    patch_sections,
+                    expected_synthesis=expected_synthesis,
+                )
+                if merged is None:
+                    return _party_role_completeness_failure(
+                        question=question_text,
+                        retrieval=retrieval,
+                        missing_attributes=missing,
+                    )
+                validated = _scrub_party_role_answer_after_citation_filter(
+                    _validate(merged)
+                )
             missing_after = find_missing_party_role_requirements(
                 validated, expected, expected_synthesis
             )
