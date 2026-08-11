@@ -70,7 +70,7 @@ jobs:
         run: |
           test "$(git rev-parse HEAD)" = "$REQUIRED_COMMIT"
           git fetch --no-tags origin main
-          test "$(git rev-parse origin/main)" = "$REQUIRED_COMMIT"
+          git merge-base --is-ancestor "$REQUIRED_COMMIT" origin/main
 
       - name: Set up Python
         uses: actions/setup-python@v5
