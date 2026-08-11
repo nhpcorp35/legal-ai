@@ -22,18 +22,32 @@ import sys
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Mapping, Optional
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+_SCRIPTS = Path(__file__).resolve().parent
+if str(_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS))
 
 import matter_builder as mb  # noqa: E402
 import complaint_structure as cs  # noqa: E402
 from engines import drafting_engine as de  # noqa: E402
 import acceptance_contract as ac  # noqa: E402
+import rebuild_case00_derived as rebuild_cli  # noqa: E402
 
 AUTHORIZATION_ACK = "I_AUTHORIZE_PRIVATE_EVIDENCE_TRANSMISSION_TO_MODEL_PROVIDER"
+
+# Production acceptance-contract object pin (env / secrets; never commit private keys).
+ACCEPTANCE_CONTRACT_OBJECT_KEY_ENV = "ACCEPTANCE_CONTRACT_OBJECT_KEY"
+ACCEPTANCE_CONTRACT_CONTENT_SHA256_ENV = "ACCEPTANCE_CONTRACT_CONTENT_SHA256"
+ACCEPTANCE_CONTRACT_BENCHMARK_ID_ENV = "ACCEPTANCE_CONTRACT_BENCHMARK_ID"
+ACCEPTANCE_CONTRACT_ENV_NAMES = (
+    ACCEPTANCE_CONTRACT_OBJECT_KEY_ENV,
+    ACCEPTANCE_CONTRACT_CONTENT_SHA256_ENV,
+    ACCEPTANCE_CONTRACT_BENCHMARK_ID_ENV,
+)
 
 # Trusted Railway deployment metadata (present when .git is stripped at runtime).
 RAILWAY_GIT_COMMIT_SHA = "RAILWAY_GIT_COMMIT_SHA"
@@ -899,14 +913,107 @@ def write_candidate_artifacts(
     }
 
 
+def _env_strip(environ: Mapping[str, str], name: str) -> str:
+    return str(environ.get(name, "") or "").strip()
+
+
+def materialize_acceptance_contract_b2_transport(
+    config: dict,
+    *,
+    environ: Optional[Mapping[str, str]] = None,
+) -> tuple[Optional[dict], Optional[str]]:
+    """Attach authenticated B2 client/bucket/retry when loading by object key.
+
+    Returns ``(config_or_None, error_code_or_None)``. Never copies credentials
+    into the returned config. Safe to call when a client is already present.
+    """
+    if config.get("raw_bytes") is not None or config.get("raw_json") is not None:
+        return config, None
+    if config.get("client") is not None and config.get("bucket"):
+        out = dict(config)
+        if out.get("call_with_retry") is None:
+            out["call_with_retry"] = rebuild_cli.call_b2_with_read_retry
+        return out, None
+
+    env = os.environ if environ is None else environ
+    try:
+        b2_config = rebuild_cli.B2Config.from_env(env)
+        client = rebuild_cli.create_b2_client(b2_config)
+    except rebuild_cli.RebuildError:
+        return None, "b2_read_error"
+    except Exception:  # noqa: BLE001 — fail closed; never surface secrets
+        return None, "b2_read_error"
+
+    out = dict(config)
+    out["client"] = client
+    out["bucket"] = b2_config.bucket
+    out["call_with_retry"] = rebuild_cli.call_b2_with_read_retry
+    return out, None
+
+
+def resolve_acceptance_contract_config(
+    *,
+    question_id: str,
+    object_key: Optional[str] = None,
+    benchmark_id: Optional[str] = None,
+    content_sha256: Optional[str] = None,
+    json_path: Optional[Path] = None,
+    environ: Optional[Mapping[str, str]] = None,
+    client: Any = None,
+    bucket: Optional[str] = None,
+    call_with_retry: Optional[Callable[..., Any]] = None,
+    raw_bytes: Optional[bytes] = None,
+) -> Optional[dict]:
+    """Build acceptance-contract load config from CLI args and/or env pins.
+
+    Returns ``None`` when no object key is configured (optional generator path).
+    When an object key is present, benchmark_id and question_id must be explicit
+    (no silent identity defaults). B2 loads also require content_sha256.
+    """
+    env = os.environ if environ is None else environ
+    key = (object_key or _env_strip(env, ACCEPTANCE_CONTRACT_OBJECT_KEY_ENV)).strip()
+    if not key:
+        return None
+
+    resolved_benchmark = (
+        benchmark_id or _env_strip(env, ACCEPTANCE_CONTRACT_BENCHMARK_ID_ENV)
+    ).strip()
+    resolved_sha = (
+        content_sha256 or _env_strip(env, ACCEPTANCE_CONTRACT_CONTENT_SHA256_ENV)
+    ).strip()
+    qid = str(question_id or "").strip()
+
+    config: dict[str, Any] = {
+        "object_key": key,
+        "benchmark_id": resolved_benchmark,
+        "question_id": qid,
+        "content_sha256": resolved_sha or None,
+    }
+    if raw_bytes is not None:
+        config["raw_bytes"] = raw_bytes
+    elif json_path is not None:
+        config["raw_bytes"] = Path(json_path).read_bytes()
+    elif client is not None and bucket:
+        config["client"] = client
+        config["bucket"] = str(bucket)
+        if call_with_retry is not None:
+            config["call_with_retry"] = call_with_retry
+    return config
+
+
 def load_configured_acceptance_contract(
     config: Optional[dict],
+    *,
+    environ: Optional[Mapping[str, str]] = None,
 ) -> tuple[str, Optional[ac.ContractEvaluationView], Optional[str], dict]:
     """Load an acceptance contract when configured.
 
     Returns ``(load_status, evaluation_view|None, error_code|None, safe_stub)``.
     Unconfigured workflows preserve prior behavior (``load_not_configured``).
     Configured runs must succeed or the caller fails closed.
+
+    CLI B2 mode supplies object metadata only; this materializes the shared
+    authenticated B2 client/configuration before reading the private object.
     """
     if not config:
         prov = ac.safe_provenance_record(load_status=ac.LOAD_NOT_CONFIGURED)
@@ -924,7 +1031,7 @@ def load_configured_acceptance_contract(
         return ac.LOAD_INVALID, None, ac.ERROR_SCHEMA_INVALID, prov
 
     identity = ac.ContractIdentity(benchmark_id=benchmark_id, question_id=qid)
-    expected_sha = config.get("content_sha256")
+    expected_sha = str(config.get("content_sha256") or "").strip() or None
     raw = config.get("raw_bytes")
     if raw is None and config.get("raw_json") is not None:
         raw = str(config["raw_json"]).encode("utf-8")
@@ -936,27 +1043,47 @@ def load_configured_acceptance_contract(
             expected_identity=identity,
             expected_content_sha256=expected_sha,
         )
-    elif config.get("client") is not None and config.get("bucket"):
+    else:
+        # Production / CLI B2 path: require an expected content pin, then wire
+        # the authenticated client from shared B2 configuration when needed.
+        if not expected_sha:
+            prov = ac.safe_provenance_record(
+                load_status=ac.LOAD_INVALID,
+                load_error_code=ac.ERROR_SCHEMA_INVALID,
+                object_key=object_key,
+            )
+            return ac.LOAD_INVALID, None, ac.ERROR_SCHEMA_INVALID, prov
+
+        transport, transport_error = materialize_acceptance_contract_b2_transport(
+            config, environ=environ
+        )
+        if transport is None:
+            prov = ac.safe_provenance_record(
+                load_status=ac.LOAD_UNAVAILABLE,
+                load_error_code=transport_error or "b2_read_error",
+                object_key=object_key,
+            )
+            return (
+                ac.LOAD_UNAVAILABLE,
+                None,
+                transport_error or "b2_read_error",
+                prov,
+            )
+
         result = ac.load_acceptance_contract_from_b2(
-            client=config["client"],
-            bucket=str(config["bucket"]),
+            client=transport["client"],
+            bucket=str(transport["bucket"]),
             object_key=object_key,
             expected_identity=identity,
             expected_content_sha256=expected_sha,
-            call_with_retry=config.get("call_with_retry"),
+            call_with_retry=transport.get("call_with_retry"),
         )
-    else:
-        prov = ac.safe_provenance_record(
-            load_status=ac.LOAD_UNAVAILABLE,
-            load_error_code=ac.ERROR_MISSING_OBJECT,
-            object_key=object_key,
-        )
-        return ac.LOAD_UNAVAILABLE, None, ac.ERROR_MISSING_OBJECT, prov
 
     if not result.ok or result.evaluation is None:
         status = (
             ac.LOAD_UNAVAILABLE
-            if result.error_code == ac.ERROR_MISSING_OBJECT
+            if result.error_code
+            in {ac.ERROR_MISSING_OBJECT, "b2_read_error"}
             else ac.LOAD_INVALID
         )
         prov = ac.safe_provenance_record(
@@ -1014,7 +1141,7 @@ def run_generation(
     else:
         commit_info = assert_commits_match(root, required_commit)
 
-    # Phase-2 acceptance contract: fail closed when configured but unavailable.
+    # Acceptance contract: fail closed before model generation when configured.
     load_status, contract_view, load_error, acceptance_provenance = (
         load_configured_acceptance_contract(acceptance_contract_config)
     )
@@ -1263,20 +1390,27 @@ def build_parser() -> argparse.ArgumentParser:
         "--acceptance-contract-object-key",
         default=None,
         help=(
-            "Optional private acceptance-contract B2 object key. When set with "
-            "benchmark/question identity, the run fails closed if the contract "
-            "cannot be loaded/validated."
+            "Private acceptance-contract B2 object key (or set "
+            f"{ACCEPTANCE_CONTRACT_OBJECT_KEY_ENV}). When set, the run fails "
+            "closed unless the contract loads and authenticates."
         ),
     )
     p.add_argument(
         "--acceptance-contract-benchmark-id",
         default=None,
-        help="Benchmark identity expected in the acceptance contract.",
+        help=(
+            "Explicit benchmark identity expected in the acceptance contract "
+            f"(or set {ACCEPTANCE_CONTRACT_BENCHMARK_ID_ENV}). Required when "
+            "an object key is configured."
+        ),
     )
     p.add_argument(
         "--acceptance-contract-content-sha256",
         default=None,
-        help="Optional expected content SHA-256 for the acceptance contract.",
+        help=(
+            "Expected content SHA-256 for the acceptance contract (or set "
+            f"{ACCEPTANCE_CONTRACT_CONTENT_SHA256_ENV}). Required for B2 loads."
+        ),
     )
     p.add_argument(
         "--acceptance-contract-json-path",
@@ -1293,19 +1427,13 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Optional[list[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    acceptance_config = None
-    if args.acceptance_contract_object_key:
-        acceptance_config = {
-            "object_key": args.acceptance_contract_object_key,
-            "benchmark_id": args.acceptance_contract_benchmark_id
-            or f"benchmark:{args.question_id}",
-            "question_id": args.question_id,
-            "content_sha256": args.acceptance_contract_content_sha256,
-        }
-        if args.acceptance_contract_json_path is not None:
-            acceptance_config["raw_bytes"] = Path(
-                args.acceptance_contract_json_path
-            ).read_bytes()
+    acceptance_config = resolve_acceptance_contract_config(
+        question_id=args.question_id,
+        object_key=args.acceptance_contract_object_key,
+        benchmark_id=args.acceptance_contract_benchmark_id,
+        content_sha256=args.acceptance_contract_content_sha256,
+        json_path=args.acceptance_contract_json_path,
+    )
     try:
         result = run_generation(
             case_root=args.case_root,

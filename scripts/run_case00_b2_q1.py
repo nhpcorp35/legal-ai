@@ -5,12 +5,18 @@ This wrapper runs rebuild + generation in the same checkout, then uploads the
 four finalized candidate artifacts to Backblaze B2. Local --candidate-output-root
 paths (including /tmp) are ephemeral only; durable handoff is verified B2 object
 keys under the canonical candidate prefix.
+
+Production Q1 requires an externally supplied acceptance-contract object key,
+expected content SHA-256, and benchmark identity (CLI flags or environment /
+secrets). The generator fails closed before model generation when the contract
+is absent, invalid, identity-mismatched, or hash-mismatched.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -41,9 +47,23 @@ CANDIDATE_ARTIFACT_NAMES = (
     "model_input_audit.json",
 )
 
+# Production acceptance-contract pins (prefer secrets / env; never commit values).
+ACCEPTANCE_CONTRACT_OBJECT_KEY_ENV = "ACCEPTANCE_CONTRACT_OBJECT_KEY"
+ACCEPTANCE_CONTRACT_CONTENT_SHA256_ENV = "ACCEPTANCE_CONTRACT_CONTENT_SHA256"
+ACCEPTANCE_CONTRACT_BENCHMARK_ID_ENV = "ACCEPTANCE_CONTRACT_BENCHMARK_ID"
+
 
 class DurableUploadError(Exception):
     """Fail-closed durable upload / verification error (never embeds secrets)."""
+
+    def __init__(self, message: str, **details: Any) -> None:
+        super().__init__(message)
+        self.message = message
+        self.details = details
+
+
+class AcceptanceContractConfigError(Exception):
+    """Fail-closed missing/invalid production acceptance-contract configuration."""
 
     def __init__(self, message: str, **details: Any) -> None:
         super().__init__(message)
@@ -64,6 +84,57 @@ def _run(argv: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
 
 def _emit(payload: dict) -> None:
     print(json.dumps(payload, sort_keys=True))
+
+
+def _env_strip(environ: Mapping[str, str], name: str) -> str:
+    return str(environ.get(name, "") or "").strip()
+
+
+def resolve_production_acceptance_contract(
+    *,
+    question_id: str,
+    object_key: Optional[str] = None,
+    content_sha256: Optional[str] = None,
+    benchmark_id: Optional[str] = None,
+    environ: Optional[Mapping[str, str]] = None,
+) -> dict[str, str]:
+    """Require external acceptance-contract object key, SHA-256, and identities.
+
+    Values may come from CLI flags or environment/secrets. Benchmark and
+    question identities are passed explicitly — never inferred from private
+    corpus contents. Does not read or return contract body bytes.
+    """
+    env = os.environ if environ is None else environ
+    qid = str(question_id or "").strip()
+    key = (object_key or _env_strip(env, ACCEPTANCE_CONTRACT_OBJECT_KEY_ENV)).strip()
+    sha = (
+        content_sha256 or _env_strip(env, ACCEPTANCE_CONTRACT_CONTENT_SHA256_ENV)
+    ).strip()
+    bench = (
+        benchmark_id or _env_strip(env, ACCEPTANCE_CONTRACT_BENCHMARK_ID_ENV)
+    ).strip()
+
+    missing: list[str] = []
+    if not key:
+        missing.append("object_key")
+    if not sha:
+        missing.append("content_sha256")
+    if not bench:
+        missing.append("benchmark_id")
+    if not qid:
+        missing.append("question_id")
+    if missing:
+        raise AcceptanceContractConfigError(
+            "production Q1 requires externally supplied acceptance-contract "
+            "object key, content SHA-256, benchmark id, and question id",
+            missing=missing,
+        )
+    return {
+        "object_key": key,
+        "content_sha256": sha,
+        "benchmark_id": bench,
+        "question_id": qid,
+    }
 
 
 def normalize_candidate_b2_prefix(prefix: str) -> str:
@@ -314,7 +385,49 @@ def main(argv: Optional[list[str]] = None) -> int:
             "rebuilding the full source docket."
         ),
     )
+    parser.add_argument(
+        "--acceptance-contract-object-key",
+        default=None,
+        help=(
+            "Required private acceptance-contract B2 object key "
+            f"(or set {ACCEPTANCE_CONTRACT_OBJECT_KEY_ENV})."
+        ),
+    )
+    parser.add_argument(
+        "--acceptance-contract-content-sha256",
+        default=None,
+        help=(
+            "Required expected acceptance-contract content SHA-256 "
+            f"(or set {ACCEPTANCE_CONTRACT_CONTENT_SHA256_ENV})."
+        ),
+    )
+    parser.add_argument(
+        "--acceptance-contract-benchmark-id",
+        default=None,
+        help=(
+            "Required explicit benchmark identity for the acceptance contract "
+            f"(or set {ACCEPTANCE_CONTRACT_BENCHMARK_ID_ENV})."
+        ),
+    )
     args = parser.parse_args(argv)
+
+    try:
+        acceptance = resolve_production_acceptance_contract(
+            question_id=args.question_id,
+            object_key=args.acceptance_contract_object_key,
+            content_sha256=args.acceptance_contract_content_sha256,
+            benchmark_id=args.acceptance_contract_benchmark_id,
+        )
+    except AcceptanceContractConfigError as exc:
+        _emit(
+            {
+                "ok": False,
+                "phase": "acceptance_contract",
+                "blocker": exc.message,
+                **exc.details,
+            }
+        )
+        return 1
 
     try:
         candidate_prefix = normalize_candidate_b2_prefix(args.candidate_b2_prefix)
@@ -364,7 +477,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             "--case-root",
             args.case_root,
             "--question-id",
-            args.question_id,
+            acceptance["question_id"],
             "--required-commit",
             args.required_commit,
             "--candidate-output-root",
@@ -374,6 +487,12 @@ def main(argv: Optional[list[str]] = None) -> int:
             "--generation-only",
             "--repo-root",
             str(repo_root),
+            "--acceptance-contract-object-key",
+            acceptance["object_key"],
+            "--acceptance-contract-content-sha256",
+            acceptance["content_sha256"],
+            "--acceptance-contract-benchmark-id",
+            acceptance["benchmark_id"],
         ],
         repo_root,
     )

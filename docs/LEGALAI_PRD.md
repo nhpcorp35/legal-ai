@@ -90,8 +90,9 @@ Statuses: **Planned** | **Active** | **Blocked** | **Verified**
 | M-04 | Q1 structure-map v2 | Generator/rebuild emit/consume `complaint_structure_map.v2` | Verified | `complaint_structure.py` (`SCHEMA_VERSION`); structure-map tests |
 | M-05 | Final-prose roadmap enforcement | Candidate final prose must cover canonical roadmap sections; gaps fail closed | Verified | `test_complaint_roadmap_final_prose_phase2.py`; drafting-engine coverage checks |
 | M-06 | Stale-context fallback fix | Stale/invalid structure-map schema triggers explicit fallback reason; no silent use of bad context | Verified | `test_complaint_structure_stale_context_fallback.py`; stale/invalid schema reasons |
-| M-07 | Live Q1 rerun @ pinned commit | Rerun live Q1 workflow at commit `1597db24ec7885b00235520f38d7767819264120`; produce and verify the four canonical B2 artifacts; then compare substance to the **privately held** attorney-approved benchmark (out of band) | **Active** | Pin: `1597db24ec7885b00235520f38d7767819264120`. Technical artifact verification pending live rerun. Substantive compare is private and **not** recorded here |
-| M-08 | Attorney / substantive approval gate | Human attorney acceptance of Q1 substance against approved benchmark | Planned | Blocked on M-07 technical + private substantive compare. **Technical success ≠ attorney/substantive approval** |
+| M-06b | Acceptance-contract enforcement (generic) | Versioned private acceptance-contract load/authenticate + final-answer validation + production B2 client wiring; Q1 workflow requires external object-key/SHA-256/benchmark pins and fails closed pre-generation on absent/invalid/identity/hash mismatch; audit/manifest expose safe provenance only | Verified (generic) | `acceptance_contract/`; generator + `run_case00_b2_q1.py` wiring; `test_acceptance_contract.py`; `test_acceptance_contract_production_wiring.py`. **Private Q1 contract object provisioning and live validation remain pending** (not claimed here) |
+| M-07 | Live Q1 rerun @ pinned commit | Rerun live Q1 workflow at commit `1597db24ec7885b00235520f38d7767819264120`; produce and verify the four canonical B2 artifacts; then compare substance to the **privately held** attorney-approved benchmark (out of band) | **Active** | Pin: `1597db24ec7885b00235520f38d7767819264120`. Technical artifact verification pending live rerun. Substantive compare is private and **not** recorded here. Blocked on private Q1 acceptance-contract provisioning for fail-closed production runs |
+| M-08 | Attorney / substantive approval gate | Human attorney acceptance of Q1 substance against approved benchmark | Planned | Blocked on M-07 technical + private substantive compare. **Technical success ≠ attorney/substantive approval**. Existing attorney approval remains limited to the single previously approved review packet; this milestone does **not** claim further attorney approval |
 
 ---
 
@@ -108,6 +109,7 @@ Passing generation, upload `head_object` checks, unit tests, or Mission Control 
 | Item | Type | Notes |
 |------|------|-------|
 | M-07 live Q1 rerun not yet verified at pin | Blocker | Must run at `1597db24ec7885b00235520f38d7767819264120` and verify four B2 artifacts |
+| Private Q1 acceptance-contract provisioning | Blocker | Generic enforcement/wiring is implemented (M-06b); private contract object + SHA-256 secret pins and live validation are still pending |
 | Private benchmark compare | Process | Held privately; do not paste benchmark text, party/attorney identifiers, or legal source contents into GitHub docs or commits |
 | Ephemeral scratch mistaken for durable handoff | Risk | `/tmp` and executor workspaces are non-canonical; only verified B2 keys count |
 | Mission Control cost/timeout loops | Risk | Tracked in `docs/MISSION_CONTROL_OPTIMIZATION_AUTHORITY.md`; optimization implementation gated on Case-00 attorney approval |
@@ -117,10 +119,11 @@ Passing generation, upload `head_object` checks, unit tests, or Mission Control 
 
 ## Next action
 
-1. Rerun the live Q1 workflow at commit `1597db24ec7885b00235520f38d7767819264120`.
-2. Verify the four canonical artifacts on B2 (`head_object` / durable key verification).
-3. Compare substance out of band to the privately held attorney-approved benchmark.
-4. Record technical evidence (safe commit + technical run IDs only) in this PRD; do **not** mark attorney approval from technical pass alone.
+1. Provision the private Q1 acceptance-contract object + SHA-256 / benchmark pins in secrets (out of band; do not commit values).
+2. Rerun the live Q1 workflow at commit `1597db24ec7885b00235520f38d7767819264120` (or a later main commit that includes M-06b wiring once chosen).
+3. Verify the four canonical artifacts on B2 (`head_object` / durable key verification).
+4. Compare substance out of band to the privately held attorney-approved benchmark.
+5. Record technical evidence (safe commit + technical run IDs only) in this PRD; do **not** mark attorney approval from technical pass alone.
 
 ---
 
@@ -133,6 +136,7 @@ Passing generation, upload `head_object` checks, unit tests, or Mission Control 
 | 2026-08-11 | Privacy: B2 canonical for private corpus/feedback; GitHub code-only; working continuity non-canonical. |
 | 2026-08-11 | Active milestone M-07: live Q1 at `1597db24ec7885b00235520f38d7767819264120` → four artifacts → private substantive compare. |
 | 2026-08-11 | Explicit rule: technical success ≠ attorney/substantive approval. |
+| 2026-08-11 | M-06b: generic acceptance-contract enforcement + production B2/Q1 wiring verified in code/tests; private Q1 contract provisioning and live validation remain pending. No additional attorney approval claimed beyond the existing single approved packet. |
 
 ---
 

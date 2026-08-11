@@ -49,6 +49,21 @@ def _b2_env() -> dict[str, str]:
     }
 
 
+def _acceptance_env() -> dict[str, str]:
+    """Synthetic production pins — not real Case-00 contract keys/hashes."""
+    return {
+        CLI.ACCEPTANCE_CONTRACT_OBJECT_KEY_ENV: (
+            "Contracts/synthetic/alpha/Q-SYNTH-01.acceptance_contract.json"
+        ),
+        CLI.ACCEPTANCE_CONTRACT_CONTENT_SHA256_ENV: "a" * 64,
+        CLI.ACCEPTANCE_CONTRACT_BENCHMARK_ID_ENV: "synth-benchmark-alpha",
+    }
+
+
+def _wrapper_env() -> dict[str, str]:
+    return {**_b2_env(), **_acceptance_env()}
+
+
 def _seed_candidate_dir(path: Path) -> dict[str, int]:
     path.mkdir(parents=True, exist_ok=True)
     sizes: dict[str, int] = {}
@@ -257,7 +272,7 @@ class DurableUploadUnitTests(unittest.TestCase):
                 stdout=json.dumps(generation_payload, indent=2) + "\n",
                 stderr="",
             )
-            with patch.dict(os.environ, _b2_env(), clear=False):
+            with patch.dict(os.environ, _wrapper_env(), clear=False):
                 with patch.object(CLI, "_run", side_effect=[rebuild_ok, generation_ok]):
                     with patch.object(
                         CLI.rebuild_cli,
@@ -312,9 +327,16 @@ class DurableUploadUnitTests(unittest.TestCase):
 
             client.upload_file.return_value = None
             client.head_object.side_effect = fake_head
+            run_calls: list[list[str]] = []
 
-            with patch.dict(os.environ, _b2_env(), clear=False):
-                with patch.object(CLI, "_run", side_effect=[rebuild_ok, generation_ok]):
+            def capture_run(argv, cwd):
+                run_calls.append(list(argv))
+                if len(run_calls) == 1:
+                    return rebuild_ok
+                return generation_ok
+
+            with patch.dict(os.environ, _wrapper_env(), clear=False):
+                with patch.object(CLI, "_run", side_effect=capture_run):
                     with patch.object(
                         CLI.rebuild_cli,
                         "create_b2_client",
@@ -337,6 +359,19 @@ class DurableUploadUnitTests(unittest.TestCase):
                                 ]
                             )
             self.assertEqual(code, 0)
+            self.assertEqual(len(run_calls), 2)
+            gen_argv = run_calls[1]
+            self.assertIn("--acceptance-contract-object-key", gen_argv)
+            self.assertIn(
+                "Contracts/synthetic/alpha/Q-SYNTH-01.acceptance_contract.json",
+                gen_argv,
+            )
+            self.assertIn("--acceptance-contract-content-sha256", gen_argv)
+            self.assertIn("a" * 64, gen_argv)
+            self.assertIn("--acceptance-contract-benchmark-id", gen_argv)
+            self.assertIn("synth-benchmark-alpha", gen_argv)
+            self.assertIn("--question-id", gen_argv)
+            self.assertIn("Q1", gen_argv)
             payload = json.loads(captured.getvalue())
             self.assertTrue(payload["ok"])
             self.assertEqual(
