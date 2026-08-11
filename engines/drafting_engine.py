@@ -2113,13 +2113,24 @@ def build_evidence_packet(
             if raw_context.get("schema_version") == cs.SCHEMA_VERSION:
                 structure_context = raw_context
             else:
-                status = {
-                    **status,
-                    "ok": False,
-                    "attached": False,
-                    "reason": "complaint_structure_context_stale_or_invalid_schema",
-                    "schema_version": raw_context.get("schema_version"),
-                }
+                # Ignore stale/invalid pre-attached context and select a fresh
+                # party-role roadmap from the current validated map when ok.
+                if status.get("ok"):
+                    structure_context = (
+                        cs.select_party_role_complaint_roadmap_context(
+                            structure_payload
+                        )
+                    )
+                if not structure_context:
+                    status = {
+                        **status,
+                        "ok": False,
+                        "attached": False,
+                        "reason": (
+                            "complaint_structure_context_stale_or_invalid_schema"
+                        ),
+                        "schema_version": raw_context.get("schema_version"),
+                    }
         elif status.get("ok"):
             structure_context = cs.select_party_role_complaint_roadmap_context(
                 structure_payload
