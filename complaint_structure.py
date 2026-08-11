@@ -1386,6 +1386,161 @@ def select_party_role_complaint_roadmap_context(
     }
 
 
+def merge_contract_structure_requirements(
+    structure_context: Mapping[str, Any] | None,
+    structure_requirements: Mapping[str, Any] | None,
+) -> Optional[dict[str, Any]]:
+    """Merge runtime contract-required ranges/categories into roadmap context.
+
+    Ensures every supplied ``required_ranges`` entry (including ``factual_layout``)
+    is retained on the context. Never invents Case-00-specific ranges; only
+    carries through values supplied at runtime. Returns None when both inputs
+    are empty/absent.
+    """
+    base: dict[str, Any]
+    if isinstance(structure_context, Mapping):
+        base = {
+            "note": structure_context.get("note") or PARTY_ROLE_ROADMAP_NOTE,
+            "schema_version": structure_context.get("schema_version") or SCHEMA_VERSION,
+            "documents": [
+                dict(doc)
+                for doc in (structure_context.get("documents") or [])
+                if isinstance(doc, dict)
+            ],
+        }
+    else:
+        base = {
+            "note": PARTY_ROLE_ROADMAP_NOTE,
+            "schema_version": SCHEMA_VERSION,
+            "documents": [],
+        }
+
+    req = structure_requirements if isinstance(structure_requirements, Mapping) else {}
+    required_kinds = [
+        str(k) for k in (req.get("required_kinds") or []) if str(k).strip()
+    ]
+    required_categories = [
+        str(c) for c in (req.get("required_categories") or []) if str(c).strip()
+    ]
+    required_ranges = [
+        dict(r) for r in (req.get("required_ranges") or []) if isinstance(r, dict)
+    ]
+
+    # Preserve contract-required metadata without discarding existing sections.
+    base["contract_required_kinds"] = list(required_kinds)
+    base["contract_required_categories"] = list(required_categories)
+
+    if not required_ranges and not required_kinds and not required_categories:
+        if not base["documents"]:
+            return None
+        return base
+
+    # Ensure each required range appears as a section marker; never drop
+    # factual_layout (or any other kind) supplied by the contract.
+    if base["documents"]:
+        doc0 = dict(base["documents"][0])
+        sections = [
+            dict(s) for s in (doc0.get("sections") or []) if isinstance(s, dict)
+        ]
+    else:
+        doc0 = {
+            "document_id": "contract-structure-requirements",
+            "nyscef_document_number": None,
+            "schema_version": SCHEMA_VERSION,
+            "sections": [],
+            "missing_paragraph_numbers": [],
+            "noncontiguous_sequences": [],
+            "uncertainties": [],
+        }
+        sections = []
+
+    def _range_key(kind: str, start: Any, end: Any) -> tuple:
+        return (str(kind), start, end)
+
+    existing_keys = set()
+    for sec in sections:
+        pr = sec.get("paragraph_range")
+        if isinstance(pr, dict) and pr.get("start") is not None and pr.get("end") is not None:
+            existing_keys.add(_range_key(sec.get("kind"), pr.get("start"), pr.get("end")))
+        elif sec.get("kind"):
+            # Heading-only / noncontiguous markers still count by kind+nums.
+            nums = tuple(sec.get("paragraph_numbers") or [])
+            existing_keys.add((str(sec.get("kind")), nums))
+
+    for raw in required_ranges:
+        kind = str(raw.get("kind") or "").strip()
+        if not kind:
+            continue
+        try:
+            start = int(raw["start"])
+            end = int(raw["end"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        key = _range_key(kind, start, end)
+        if key in existing_keys:
+            continue
+        section = {
+            "heading": str(raw.get("heading") or kind.replace("_", " ").title()),
+            "heading_normalized": kind.replace("_", " "),
+            "match_key": kind,
+            "kind": kind,
+            "page_ids": list(raw.get("page_ids") or []),
+            "page_numbers": list(raw.get("page_numbers") or []),
+            "paragraph_numbers": list(range(start, end + 1)),
+            "paragraph_range": {
+                "start": start,
+                "end": end,
+                "contiguous": True,
+            },
+            "uncertainty": [],
+            "provenance": {
+                "page_ids": list(raw.get("page_ids") or []),
+                "heading_marker": kind,
+                "document_id": doc0.get("document_id"),
+                "nyscef_document_number": doc0.get("nyscef_document_number"),
+                "source": "acceptance_contract_structure_requirements",
+            },
+            "contract_category": str(raw.get("category") or ""),
+        }
+        sections.append(section)
+        existing_keys.add(key)
+
+    # Also ensure required_kinds without explicit ranges still have a marker
+    # so downstream consumers do not silently drop the kind.
+    present_kinds = {str(s.get("kind") or "") for s in sections}
+    for kind in required_kinds:
+        if kind in present_kinds:
+            continue
+        sections.append(
+            {
+                "heading": kind.replace("_", " ").title(),
+                "heading_normalized": kind.replace("_", " "),
+                "match_key": kind,
+                "kind": kind,
+                "page_ids": [],
+                "page_numbers": [],
+                "paragraph_numbers": [],
+                "paragraph_range": None,
+                "uncertainty": ["range_supplied_as_kind_only"],
+                "provenance": {
+                    "page_ids": [],
+                    "heading_marker": kind,
+                    "document_id": doc0.get("document_id"),
+                    "nyscef_document_number": doc0.get("nyscef_document_number"),
+                    "source": "acceptance_contract_structure_requirements",
+                },
+            }
+        )
+        present_kinds.add(kind)
+
+    doc0["sections"] = sections
+    if base["documents"]:
+        base["documents"][0] = doc0
+    else:
+        base["documents"] = [doc0]
+    return base
+
+
 def structure_map_status(
     payload: Any,
 ) -> dict[str, Any]:

@@ -103,6 +103,70 @@ def acceptance_contract_json_schema() -> dict[str, Any]:
                     "max_duplicate_phrase_ratio": {"type": "number", "minimum": 0},
                 },
             },
+            # Optional evaluation payload (phase 2). Values are never logged —
+            # only ids/counts/result codes appear in audit/manifest provenance.
+            "criteria": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["id"],
+                    "properties": {
+                        "id": {"type": "string", "minLength": 1},
+                        "presence_phrases": {
+                            "type": "array",
+                            "items": {"type": "string", "minLength": 1},
+                        },
+                        "evidence_phrases": {
+                            "type": "array",
+                            "items": {"type": "string", "minLength": 1},
+                        },
+                        "semantic_required_phrases": {
+                            "type": "array",
+                            "items": {"type": "string", "minLength": 1},
+                        },
+                        "semantic_forbidden_phrases": {
+                            "type": "array",
+                            "items": {"type": "string", "minLength": 1},
+                        },
+                        "fallback_text": {"type": "string"},
+                        "category": {"type": "string"},
+                    },
+                },
+            },
+            "structure_requirements": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": [
+                    "required_kinds",
+                    "required_ranges",
+                    "required_categories",
+                ],
+                "properties": {
+                    "required_kinds": {
+                        "type": "array",
+                        "items": {"type": "string", "minLength": 1},
+                    },
+                    "required_ranges": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "required": ["kind", "start", "end"],
+                            "properties": {
+                                "kind": {"type": "string", "minLength": 1},
+                                "start": {"type": "integer"},
+                                "end": {"type": "integer"},
+                                "category": {"type": "string"},
+                            },
+                        },
+                    },
+                    "required_categories": {
+                        "type": "array",
+                        "items": {"type": "string", "minLength": 1},
+                    },
+                },
+            },
             "object_key": {"type": "string", "minLength": 1},
             "content_sha256": {
                 "type": "string",

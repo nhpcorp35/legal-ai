@@ -99,7 +99,11 @@ class SafeContractMetadata:
 
 @dataclass(frozen=True)
 class AcceptanceContractLoadResult:
-    """Loader outcome: success metadata or fail-closed diagnostics only."""
+    """Loader outcome: success metadata or fail-closed diagnostics only.
+
+    On success, ``evaluation`` holds an in-memory evaluation view for phase-2
+    validation. Repr never embeds contract body or criterion prose.
+    """
 
     ok: bool
     object_key: str
@@ -107,6 +111,7 @@ class AcceptanceContractLoadResult:
     diagnostics: tuple[str, ...] = ()
     metadata: Optional[SafeContractMetadata] = None
     computed_content_sha256: Optional[str] = None
+    evaluation: Any = None  # Optional[ContractEvaluationView]; typed loosely to avoid cycle
 
     def __repr__(self) -> str:
         return (
@@ -116,7 +121,8 @@ class AcceptanceContractLoadResult:
             f"error_code={self.error_code!r}, "
             f"diagnostics={list(self.diagnostics)!r}, "
             f"metadata={self.metadata!r}, "
-            f"computed_content_sha256={self.computed_content_sha256!r})"
+            f"computed_content_sha256={self.computed_content_sha256!r}, "
+            f"evaluation={self.evaluation!r})"
         )
 
 
@@ -198,6 +204,7 @@ def _fail(
         diagnostics=tuple(diagnostics),
         metadata=None,
         computed_content_sha256=computed_content_sha256,
+        evaluation=None,
     )
 
 
@@ -297,13 +304,19 @@ def validate_and_authenticate_contract(
             computed_content_sha256=computed,
         )
 
+    metadata = _extract_safe_metadata(document)
+    # Deferred import keeps schema/loader free of validate-module cycles at import.
+    from acceptance_contract.validate import build_evaluation_view_from_document
+
+    evaluation = build_evaluation_view_from_document(document, metadata=metadata)
     return AcceptanceContractLoadResult(
         ok=True,
         object_key=object_key,
         error_code=None,
         diagnostics=(),
-        metadata=_extract_safe_metadata(document),
+        metadata=metadata,
         computed_content_sha256=computed,
+        evaluation=evaluation,
     )
 
 
@@ -455,11 +468,40 @@ def build_synthetic_contract(
     object_key: str,
     required_criterion_ids: list[str],
     schema_version: str = SCHEMA_VERSION,
+    criteria: Optional[list[dict[str, Any]]] = None,
+    structure_requirements: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
     """Build a wholly generic contract dict with a correct content_sha256.
 
     Intended for tests only — uses synthetic IDs, never private benchmark text.
+    When ``criteria`` is omitted, builds minimal evaluation specs from each
+    required id (presence phrase = id token) so phase-2 validators can run.
     """
+    if criteria is None:
+        built_criteria: list[dict[str, Any]] = []
+        for cid in required_criterion_ids:
+            token = cid.replace("-", " ")
+            built_criteria.append(
+                {
+                    "id": cid,
+                    "presence_phrases": [token],
+                    "evidence_phrases": [f"evidence:{cid}"],
+                    "semantic_required_phrases": [f"preserve:{cid}"],
+                    "semantic_forbidden_phrases": [f"negate:{cid}"],
+                    "fallback_text": (
+                        f"Synthetic fallback for {cid} covering {token} "
+                        f"with evidence:{cid} and preserve:{cid}."
+                    ),
+                    "category": "",
+                }
+            )
+        criteria = built_criteria
+    if structure_requirements is None:
+        structure_requirements = {
+            "required_kinds": [],
+            "required_ranges": [],
+            "required_categories": [],
+        }
     document: dict[str, Any] = {
         "schema_version": schema_version,
         "contract_id": contract_id,
@@ -484,6 +526,8 @@ def build_synthetic_contract(
             "forbid_overlapping_evidence_spans": False,
             "max_duplicate_phrase_ratio": 0.25,
         },
+        "criteria": list(criteria),
+        "structure_requirements": dict(structure_requirements),
         "object_key": object_key,
     }
     document["content_sha256"] = compute_content_sha256(document)

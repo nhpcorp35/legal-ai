@@ -286,5 +286,224 @@ class LoaderB2Tests(unittest.TestCase):
         self.assertEqual(err.details, {})
 
 
+def _load_view(doc: dict[str, Any] | None = None) -> ac.ContractEvaluationView:
+    document = doc or _valid_contract()
+    raw = json.dumps(document, sort_keys=True).encode("utf-8")
+    result = ac.load_acceptance_contract_from_bytes(
+        raw,
+        object_key=_object_key(),
+        expected_identity=_identity(),
+        expected_content_sha256=document["content_sha256"],
+    )
+    assert result.ok and result.evaluation is not None
+    return result.evaluation
+
+
+def _answer_covering(view: ac.ContractEvaluationView, *, omit: str | None = None) -> str:
+    parts: list[str] = []
+    for spec in view.criteria:
+        if omit and spec.id == omit:
+            continue
+        chunk = " ".join(
+            list(spec.presence_phrases)
+            + list(spec.evidence_phrases)
+            + list(spec.semantic_required_phrases)
+        )
+        parts.append(chunk + ".")
+    return " ".join(parts)
+
+
+class Phase2ValidationTests(unittest.TestCase):
+    def test_complete_pass(self) -> None:
+        view = _load_view()
+        answer = _answer_covering(view)
+        result = ac.validate_final_answer_against_contract(answer, view)
+        self.assertTrue(result.ok)
+        self.assertEqual(
+            {c.result_code for c in result.criterion_results}, {ac.CRIT_PASS}
+        )
+        for c in result.criterion_results:
+            self.assertEqual(c.presence, ac.PRESENCE_PRESENT)
+            self.assertEqual(c.evidence, ac.EVIDENCE_SUPPORTED)
+            self.assertEqual(c.semantic, ac.SEMANTIC_PRESERVED)
+        self.assertIn(result.duplication_result, {ac.DUP_OK, ac.DUP_REPAIRED})
+
+    def test_missing_criterion_fail(self) -> None:
+        view = _load_view()
+        omit = view.required_criterion_ids[0]
+        # Answer covers others but omits one; disable fallback so absence sticks.
+        answer = _answer_covering(view, omit=omit)
+        result = ac.validate_final_answer_against_contract(
+            answer, view, apply_fallback=False
+        )
+        self.assertFalse(result.ok)
+        by_id = {c.criterion_id: c for c in result.criterion_results}
+        self.assertEqual(by_id[omit].result_code, ac.CRIT_FAIL_MISSING)
+        self.assertEqual(by_id[omit].presence, ac.PRESENCE_ABSENT)
+
+    def test_unsupported_criterion_fail(self) -> None:
+        view = _load_view()
+        # Presence + semantic tokens only — omit evidence phrases.
+        parts: list[str] = []
+        for spec in view.criteria:
+            parts.append(
+                " ".join(
+                    list(spec.presence_phrases) + list(spec.semantic_required_phrases)
+                )
+                + "."
+            )
+        result = ac.validate_final_answer_against_contract(
+            " ".join(parts), view, apply_fallback=False
+        )
+        self.assertFalse(result.ok)
+        self.assertTrue(
+            all(c.result_code == ac.CRIT_FAIL_UNSUPPORTED for c in result.criterion_results)
+        )
+        self.assertTrue(
+            all(c.evidence == ac.EVIDENCE_UNSUPPORTED for c in result.criterion_results)
+        )
+
+
+class Phase2FallbackAndDuplicationTests(unittest.TestCase):
+    def test_equivalent_fallback_not_duplicated(self) -> None:
+        view = _load_view()
+        spec = view.criteria[0]
+        # Seed answer with equivalent fallback prose already present.
+        seeded = spec.fallback_text.strip()
+        out, actions = ac.apply_idempotent_contract_fallback(
+            seeded, view, missing_ids=[spec.id]
+        )
+        self.assertEqual(actions[spec.id], ac.FALLBACK_SKIPPED_EQUIVALENT)
+        self.assertEqual(out.count(spec.fallback_text.strip()), 1)
+
+    def test_missing_fallback_inserted_exactly_once(self) -> None:
+        view = _load_view()
+        spec = view.criteria[0]
+        out, actions = ac.apply_idempotent_contract_fallback(
+            "Unrelated preamble.", view, missing_ids=[spec.id]
+        )
+        self.assertEqual(actions[spec.id], ac.FALLBACK_INSERTED)
+        self.assertEqual(out.count(spec.fallback_text.strip()), 1)
+        # Idempotent second application.
+        out2, actions2 = ac.apply_idempotent_contract_fallback(
+            out, view, missing_ids=[spec.id]
+        )
+        self.assertEqual(actions2[spec.id], ac.FALLBACK_SKIPPED_EQUIVALENT)
+        self.assertEqual(out2.count(spec.fallback_text.strip()), 1)
+
+    def test_remaining_duplication_repairs_or_fails(self) -> None:
+        view = _load_view()
+        # Near-identical sentences should repair by dropping duplicates.
+        prose = (
+            "Alpha synthetic clause about venue bearing on service. "
+            "Alpha synthetic clause about venue bearing on service. "
+            "Distinct closing remark for the record."
+        )
+        repaired, status, diags = ac.apply_duplication_gate(
+            prose, view.duplication_rules, repair=True
+        )
+        self.assertIn(status, {ac.DUP_REPAIRED, ac.DUP_FAIL})
+        if status == ac.DUP_REPAIRED:
+            self.assertLess(
+                repaired.lower().count("alpha synthetic clause"),
+                prose.lower().count("alpha synthetic clause"),
+            )
+        else:
+            self.assertTrue(diags)
+
+        # Irreducible duplication with repair disabled fails closed.
+        _, status2, diags2 = ac.apply_duplication_gate(
+            prose, view.duplication_rules, repair=False
+        )
+        self.assertEqual(status2, ac.DUP_FAIL)
+        self.assertTrue(diags2)
+
+
+class Phase2StructureAndProvenanceTests(unittest.TestCase):
+    def test_structure_range_retained(self) -> None:
+        import complaint_structure as cs
+
+        doc = _valid_contract()
+        doc["structure_requirements"] = {
+            "required_kinds": ["factual_layout", "overview"],
+            "required_ranges": [
+                {"kind": "factual_layout", "start": 40, "end": 55, "category": "roadmap"},
+                {"kind": "overview", "start": 1, "end": 3},
+            ],
+            "required_categories": ["complaint_roadmap"],
+        }
+        doc["content_sha256"] = ac.compute_content_sha256(doc)
+        view = _load_view(doc)
+        # Existing context without the factual_layout range.
+        base = {
+            "note": "synthetic",
+            "schema_version": cs.SCHEMA_VERSION,
+            "documents": [
+                {
+                    "document_id": "synth-doc",
+                    "sections": [
+                        {
+                            "heading": "Overview",
+                            "kind": "overview",
+                            "paragraph_numbers": [1, 2, 3],
+                            "paragraph_range": {
+                                "start": 1,
+                                "end": 3,
+                                "contiguous": True,
+                            },
+                            "page_ids": [],
+                            "page_numbers": [],
+                            "uncertainty": [],
+                            "provenance": {},
+                        }
+                    ],
+                }
+            ],
+        }
+        merged = cs.merge_contract_structure_requirements(
+            base, view.structure_requirements.as_safe_dict()
+        )
+        assert merged is not None
+        sections = merged["documents"][0]["sections"]
+        kinds = [s.get("kind") for s in sections]
+        self.assertIn("factual_layout", kinds)
+        factual = next(s for s in sections if s.get("kind") == "factual_layout")
+        self.assertEqual(factual["paragraph_range"]["start"], 40)
+        self.assertEqual(factual["paragraph_range"]["end"], 55)
+        self.assertIn("complaint_roadmap", merged["contract_required_categories"])
+
+    def test_audit_manifest_provenance(self) -> None:
+        view = _load_view()
+        answer = _answer_covering(view)
+        validation = ac.validate_final_answer_against_contract(answer, view)
+        prov = ac.safe_provenance_record(
+            load_status=ac.LOAD_OK, view=view, validation=validation
+        )
+        block = prov["acceptance_contract"]
+        self.assertEqual(block["contract_id"], "contract-synth-alpha-q01")
+        self.assertEqual(block["version"], "1.0.0")
+        self.assertEqual(block["object_key"], _object_key())
+        self.assertEqual(block["content_sha256"], view.content_sha256)
+        self.assertEqual(block["load_status"], ac.LOAD_OK)
+        self.assertTrue(block["validation_ok"])
+        self.assertEqual(len(block["criterion_results"]), 3)
+        self.assertIn(block["duplication_result"], {ac.DUP_OK, ac.DUP_REPAIRED})
+        # Never embed private criterion prose / fallback text.
+        blob = json.dumps(prov)
+        for spec in view.criteria:
+            if spec.fallback_text:
+                self.assertNotIn(spec.fallback_text, blob)
+            for phrase in spec.presence_phrases:
+                self.assertNotIn(phrase, blob)
+
+    def test_loader_evaluation_repr_excludes_prose(self) -> None:
+        view = _load_view()
+        rendered = repr(view)
+        for spec in view.criteria:
+            self.assertNotIn(spec.fallback_text, rendered)
+            for phrase in spec.presence_phrases:
+                self.assertNotIn(phrase, rendered)
+
+
 if __name__ == "__main__":
     unittest.main()

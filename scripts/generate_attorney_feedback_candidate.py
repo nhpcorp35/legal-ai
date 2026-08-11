@@ -31,6 +31,7 @@ if str(REPO_ROOT) not in sys.path:
 import matter_builder as mb  # noqa: E402
 import complaint_structure as cs  # noqa: E402
 from engines import drafting_engine as de  # noqa: E402
+import acceptance_contract as ac  # noqa: E402
 
 AUTHORIZATION_ACK = "I_AUTHORIZE_PRIVATE_EVIDENCE_TRANSMISSION_TO_MODEL_PROVIDER"
 
@@ -706,6 +707,7 @@ def write_candidate_artifacts(
     model_input_audit: dict,
     commit_info: dict,
     completeness: dict,
+    acceptance_provenance: Optional[dict] = None,
 ) -> dict[str, Path]:
     """Write the four candidate artifacts and verify absolute-path hashes."""
     out_dir.mkdir(parents=True, exist_ok=False)
@@ -848,6 +850,10 @@ def write_candidate_artifacts(
             "completeness_validation": completeness,
         }
     )
+    if acceptance_provenance:
+        # Safe provenance only (ids, hashes, result codes — never contract body).
+        audit_out.update(acceptance_provenance)
+        manifest.update(acceptance_provenance)
 
     json_path = out_dir / json_name
     md_path = out_dir / md_name
@@ -893,6 +899,81 @@ def write_candidate_artifacts(
     }
 
 
+def load_configured_acceptance_contract(
+    config: Optional[dict],
+) -> tuple[str, Optional[ac.ContractEvaluationView], Optional[str], dict]:
+    """Load an acceptance contract when configured.
+
+    Returns ``(load_status, evaluation_view|None, error_code|None, safe_stub)``.
+    Unconfigured workflows preserve prior behavior (``load_not_configured``).
+    Configured runs must succeed or the caller fails closed.
+    """
+    if not config:
+        prov = ac.safe_provenance_record(load_status=ac.LOAD_NOT_CONFIGURED)
+        return ac.LOAD_NOT_CONFIGURED, None, None, prov
+
+    object_key = str(config.get("object_key") or "").strip()
+    benchmark_id = str(config.get("benchmark_id") or "").strip()
+    qid = str(config.get("question_id") or "").strip()
+    if not object_key or not benchmark_id or not qid:
+        prov = ac.safe_provenance_record(
+            load_status=ac.LOAD_INVALID,
+            load_error_code=ac.ERROR_SCHEMA_INVALID,
+            object_key=object_key,
+        )
+        return ac.LOAD_INVALID, None, ac.ERROR_SCHEMA_INVALID, prov
+
+    identity = ac.ContractIdentity(benchmark_id=benchmark_id, question_id=qid)
+    expected_sha = config.get("content_sha256")
+    raw = config.get("raw_bytes")
+    if raw is None and config.get("raw_json") is not None:
+        raw = str(config["raw_json"]).encode("utf-8")
+
+    if raw is not None:
+        result = ac.load_acceptance_contract_from_bytes(
+            raw if isinstance(raw, (bytes, bytearray)) else str(raw).encode("utf-8"),
+            object_key=object_key,
+            expected_identity=identity,
+            expected_content_sha256=expected_sha,
+        )
+    elif config.get("client") is not None and config.get("bucket"):
+        result = ac.load_acceptance_contract_from_b2(
+            client=config["client"],
+            bucket=str(config["bucket"]),
+            object_key=object_key,
+            expected_identity=identity,
+            expected_content_sha256=expected_sha,
+            call_with_retry=config.get("call_with_retry"),
+        )
+    else:
+        prov = ac.safe_provenance_record(
+            load_status=ac.LOAD_UNAVAILABLE,
+            load_error_code=ac.ERROR_MISSING_OBJECT,
+            object_key=object_key,
+        )
+        return ac.LOAD_UNAVAILABLE, None, ac.ERROR_MISSING_OBJECT, prov
+
+    if not result.ok or result.evaluation is None:
+        status = (
+            ac.LOAD_UNAVAILABLE
+            if result.error_code == ac.ERROR_MISSING_OBJECT
+            else ac.LOAD_INVALID
+        )
+        prov = ac.safe_provenance_record(
+            load_status=status,
+            load_error_code=result.error_code,
+            object_key=object_key,
+            content_sha256=result.computed_content_sha256 or "",
+        )
+        return status, None, result.error_code, prov
+
+    prov = ac.safe_provenance_record(
+        load_status=ac.LOAD_OK,
+        view=result.evaluation,
+    )
+    return ac.LOAD_OK, result.evaluation, None, prov
+
+
 def run_generation(
     *,
     case_root: Path,
@@ -906,6 +987,7 @@ def run_generation(
     model_call: Optional[ModelCall] = None,
     skip_commit_check: bool = False,
     top_k: int = 30,
+    acceptance_contract_config: Optional[dict] = None,
 ) -> dict:
     """Run generation-only candidate creation. Returns machine-readable result."""
     if authorization_acknowledgement != AUTHORIZATION_ACK:
@@ -931,6 +1013,18 @@ def run_generation(
         }
     else:
         commit_info = assert_commits_match(root, required_commit)
+
+    # Phase-2 acceptance contract: fail closed when configured but unavailable.
+    load_status, contract_view, load_error, acceptance_provenance = (
+        load_configured_acceptance_contract(acceptance_contract_config)
+    )
+    if acceptance_contract_config and load_status != ac.LOAD_OK:
+        raise GenerationError(
+            "Acceptance contract unavailable or invalid for configured benchmark run",
+            acceptance_contract_load_status=load_status,
+            acceptance_contract_error_code=load_error,
+            acceptance_contract=acceptance_provenance.get("acceptance_contract"),
+        )
 
     inputs = load_permitted_case_inputs(
         Path(case_root),
@@ -959,6 +1053,17 @@ def run_generation(
             roadmap = cs.select_party_role_complaint_roadmap_context(structure_map)
             if roadmap:
                 retrieval["complaint_structure_context"] = roadmap
+
+    # Carry contract-required ranges/categories without discarding factual_layout.
+    if contract_view is not None:
+        merged = cs.merge_contract_structure_requirements(
+            retrieval.get("complaint_structure_context"),
+            contract_view.structure_requirements.as_safe_dict(),
+        )
+        if merged is not None:
+            retrieval = dict(retrieval)
+            retrieval["complaint_structure_context"] = merged
+
     inspection = audit_serialized_model_input(
         inputs["question_text"],
         retrieval,
@@ -1038,6 +1143,32 @@ def run_generation(
             provider_calls=provider_calls,
         )
 
+    # Final acceptance-contract validation after synthesis / repair / fallback.
+    if contract_view is not None:
+        proposed = str(reasoner_result.get("proposed_answer") or "")
+        validation = ac.validate_final_answer_against_contract(
+            proposed,
+            contract_view,
+            apply_fallback=True,
+            apply_duplication_repair=True,
+        )
+        acceptance_provenance = ac.safe_provenance_record(
+            load_status=load_status,
+            view=contract_view,
+            validation=validation,
+        )
+        if not validation.ok:
+            raise GenerationError(
+                "Acceptance-contract validation failed; candidate not finalized",
+                acceptance_contract=acceptance_provenance.get("acceptance_contract"),
+                finalized=False,
+            )
+        reasoner_result = dict(reasoner_result)
+        reasoner_result["proposed_answer"] = validation.final_answer
+        reasoner_audit = dict(reasoner_result.get("audit") or {})
+        reasoner_audit["acceptance_contract_validation_ok"] = True
+        reasoner_result["audit"] = reasoner_audit
+
     out_root = Path(candidate_output_root)
     out_root.mkdir(parents=True, exist_ok=True)
     stamp = _utc_stamp()
@@ -1054,6 +1185,7 @@ def run_generation(
         model_input_audit=inspection["audit"],
         commit_info=commit_info,
         completeness=completeness,
+        acceptance_provenance=acceptance_provenance,
     )
 
     return {
@@ -1067,6 +1199,7 @@ def run_generation(
         "reasoner_status": reasoner_result.get("status"),
         "commit": commit_info,
         "model_input_audit": inspection["audit"],
+        "acceptance_contract": acceptance_provenance.get("acceptance_contract"),
     }
 
 
@@ -1126,12 +1259,53 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional explicit NYSCEF inventory path.",
     )
+    p.add_argument(
+        "--acceptance-contract-object-key",
+        default=None,
+        help=(
+            "Optional private acceptance-contract B2 object key. When set with "
+            "benchmark/question identity, the run fails closed if the contract "
+            "cannot be loaded/validated."
+        ),
+    )
+    p.add_argument(
+        "--acceptance-contract-benchmark-id",
+        default=None,
+        help="Benchmark identity expected in the acceptance contract.",
+    )
+    p.add_argument(
+        "--acceptance-contract-content-sha256",
+        default=None,
+        help="Optional expected content SHA-256 for the acceptance contract.",
+    )
+    p.add_argument(
+        "--acceptance-contract-json-path",
+        type=Path,
+        default=None,
+        help=(
+            "Optional local JSON path for acceptance-contract bytes (tests / "
+            "offline). Never commit private benchmark contracts."
+        ),
+    )
     return p
 
 
 def main(argv: Optional[list[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    acceptance_config = None
+    if args.acceptance_contract_object_key:
+        acceptance_config = {
+            "object_key": args.acceptance_contract_object_key,
+            "benchmark_id": args.acceptance_contract_benchmark_id
+            or f"benchmark:{args.question_id}",
+            "question_id": args.question_id,
+            "content_sha256": args.acceptance_contract_content_sha256,
+        }
+        if args.acceptance_contract_json_path is not None:
+            acceptance_config["raw_bytes"] = Path(
+                args.acceptance_contract_json_path
+            ).read_bytes()
     try:
         result = run_generation(
             case_root=args.case_root,
@@ -1142,6 +1316,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             generation_only=bool(args.generation_only),
             repo_root=args.repo_root,
             inventory_path=args.inventory_path,
+            acceptance_contract_config=acceptance_config,
         )
     except GenerationError as exc:
         payload = {
