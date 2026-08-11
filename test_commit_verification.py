@@ -49,14 +49,15 @@ class CommitVerificationTests(unittest.TestCase):
                 os.environ[key] = value
         self._tmpdir.cleanup()
 
-    def _write_loose_checkout(self, commit: str) -> None:
+    def _write_loose_checkout(self, commit: str, *, origin_main: str | None = None) -> None:
         git = self.root / ".git"
         (git / "refs" / "heads").mkdir(parents=True)
         (git / "refs" / "remotes" / "origin").mkdir(parents=True)
         (git / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
         (git / "refs" / "heads" / "main").write_text(commit + "\n", encoding="utf-8")
         (git / "refs" / "remotes" / "origin" / "main").write_text(
-            commit + "\n", encoding="utf-8"
+            (origin_main if origin_main is not None else commit) + "\n",
+            encoding="utf-8",
         )
 
     def _write_packed_checkout(self, commit: str) -> None:
@@ -132,6 +133,37 @@ class CommitVerificationTests(unittest.TestCase):
         with self.assertRaises(CLI.GenerationError) as ctx:
             CLI.assert_commits_match(self.root, SHA)
         self.assertIn("not exactly the required commit", ctx.exception.blocker)
+
+    def test_historical_pinned_commit_when_ancestor_of_origin_main(self):
+        """Pinned HEAD may lag origin/main when required SHA is an ancestor."""
+        self._write_loose_checkout(SHA, origin_main=OTHER)
+        with mock.patch.object(
+            CLI, "is_commit_ancestor_of_origin_main", return_value=True
+        ) as ancestor_check:
+            info = CLI.assert_commits_match(self.root, SHA)
+        ancestor_check.assert_called_once_with(self.root, SHA, OTHER)
+        self.assertEqual(info["checkout_commit"], SHA)
+        self.assertEqual(info["origin_main_commit"], OTHER)
+        self.assertEqual(info["provenance_source"], "git_metadata")
+
+    def test_exact_checkout_mismatch_fail_closed(self):
+        """HEAD must still equal REQUIRED_COMMIT even if origin/main matches."""
+        self._write_loose_checkout(OTHER, origin_main=SHA)
+        with self.assertRaises(CLI.GenerationError) as ctx:
+            CLI.assert_commits_match(self.root, SHA)
+        self.assertIn("HEAD is not exactly the required commit", ctx.exception.blocker)
+        self.assertEqual(ctx.exception.details.get("checkout_commit"), OTHER)
+
+    def test_non_ancestor_rejection_fail_closed(self):
+        """Reject when REQUIRED_COMMIT is not contained in origin/main history."""
+        self._write_loose_checkout(SHA, origin_main=OTHER)
+        with mock.patch.object(
+            CLI, "is_commit_ancestor_of_origin_main", return_value=False
+        ):
+            with self.assertRaises(CLI.GenerationError) as ctx:
+                CLI.assert_commits_match(self.root, SHA)
+        self.assertIn("not an ancestor of origin/main", ctx.exception.blocker)
+        self.assertEqual(ctx.exception.details.get("origin_main_commit"), OTHER)
 
     def test_partial_railway_metadata_fail_closed(self):
         os.environ[CLI.RAILWAY_GIT_COMMIT_SHA] = SHA

@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -149,6 +150,38 @@ def read_origin_main_commit(repo_root: Path) -> Optional[str]:
     )
 
 
+def is_commit_ancestor_of_origin_main(
+    repo_root: Path, required_commit: str, origin_main: Optional[str]
+) -> bool:
+    """True when ``required_commit`` is an ancestor of ``origin/main`` (inclusive).
+
+    Equality is treated as ancestry without spawning git. Otherwise uses
+    ``git merge-base --is-ancestor`` and fails closed on any error.
+    """
+    if not required_commit or not origin_main:
+        return False
+    if required_commit == origin_main:
+        return True
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo_root),
+                "merge-base",
+                "--is-ancestor",
+                required_commit,
+                "origin/main",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return False
+    return result.returncode == 0
+
+
 def git_metadata_available(repo_root: Path) -> bool:
     """True when a usable ``.git`` directory is present."""
     git_dir = repo_root / ".git"
@@ -268,9 +301,18 @@ def assert_commits_match(repo_root: Path, required_commit: str) -> dict:
     if git_metadata_available(repo_root):
         head = read_checked_out_commit(repo_root)
         origin_main = read_origin_main_commit(repo_root)
-        if head != required_commit or origin_main != required_commit:
+        if head != required_commit:
             raise GenerationError(
-                "HEAD and origin/main are not exactly the required commit "
+                "HEAD is not exactly the required commit "
+                f"{required_commit}; HEAD={head!r} origin/main={origin_main!r}",
+                checkout_commit=head,
+                origin_main_commit=origin_main,
+                required_commit=required_commit,
+                provenance_source="git_metadata",
+            )
+        if not is_commit_ancestor_of_origin_main(repo_root, required_commit, origin_main):
+            raise GenerationError(
+                "required commit is not an ancestor of origin/main "
                 f"{required_commit}; HEAD={head!r} origin/main={origin_main!r}",
                 checkout_commit=head,
                 origin_main_commit=origin_main,
