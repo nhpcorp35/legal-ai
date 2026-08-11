@@ -1581,5 +1581,380 @@ class PartyRoleProceduralSynthesisRepairPathTests(unittest.TestCase):
         self.assertFalse(result["audit"].get("party_role_repair_attempted"))
 
 
+class PartyRoleQ1SynthesisValidationFixTests(unittest.TestCase):
+    """Six focused regressions for the Q1 synthesis/validation fix."""
+
+    def test_mixed_gaps_lifecycle_includes_notice_after_attribute_repair(self):
+        question = "Identify the parties and their procedural roles."
+        retrieval = {
+            "query": question,
+            "results": [_hit(FULL_SYNTHETIC_COMPLAINT)],
+        }
+        calls = []
+
+        def _model(_system, user_prompt):
+            calls.append(user_prompt)
+            packet = de.build_evidence_packet(question, retrieval)
+            expected = de.extract_party_role_expected_attributes(packet)
+            hit = packet["retrieval_hits"][0]
+            if len(calls) == 1:
+                # Incomplete attributes (omit residence/PPB) + no synthesis.
+                bits = []
+                for party in expected:
+                    bit = f"{party.get('procedural_role')} {party.get('identity')}"
+                    if party.get("entity_type"):
+                        bit += f" is a {party['entity_type']}"
+                    bits.append(bit + ".")
+                return _synthetic_payload(" ".join(bits), hit)
+            # Attribute repair fills roster only; synthesis still missing.
+            return _synthetic_payload(_roster_only_answer(expected), hit)
+
+        result = de.answer_attorney_record_question(
+            question, retrieval, model_call=_model
+        )
+        self.assertEqual(len(calls), 2)
+        lifecycle = result["audit"].get("party_role_synthesis_category_lifecycle") or []
+        cats = {row["category"] for row in lifecycle}
+        self.assertIn("notice_defendant_explanation", cats)
+        self.assertIn("procedural_bearing", cats)
+        notice_row = next(
+            row
+            for row in lifecycle
+            if row["category"] == "notice_defendant_explanation"
+        )
+        self.assertTrue(notice_row.get("requested"))
+
+    def test_deterministic_notice_fallback_after_attribute_repair(self):
+        question = "Identify the parties and their procedural roles."
+        # Roadmap+rescission already present after attribute repair; only PB+notice
+        # need deterministic recovery.
+        excerpt = (
+            "PARTIES\n"
+            "1. Plaintiff North Quay Logistics LLC is a domestic limited "
+            "liability company with its principal place of business in Albany "
+            "County.\n"
+            "2. Defendant Pier Gate Depot Inc. is a domestic corporation with "
+            "its principal place of business in Kings County.\n"
+            "3. Defendant Harbor Mill Carrier LP is a notice defendant because "
+            "its rights may be affected by the requested declaratory relief.\n"
+            "4. Defendant Harbor Mill Carrier LP is a limited partnership "
+            "residing in Erie County.\n"
+            "WHEREFORE Plaintiff seeks a declaration that the policy is void ab "
+            "initio and for rescission of the same.\n"
+        )
+        retrieval = {"query": question, "results": [_hit(excerpt)]}
+        calls = []
+
+        def _model(_system, user_prompt):
+            calls.append(user_prompt)
+            packet = de.build_evidence_packet(question, retrieval)
+            expected = de.extract_party_role_expected_attributes(packet)
+            synthesis = de.extract_party_role_expected_synthesis(packet, expected)
+            hit = packet["retrieval_hits"][0]
+            if len(calls) == 1:
+                bits = []
+                for party in expected:
+                    bit = f"{party.get('procedural_role')} {party.get('identity')}"
+                    if party.get("entity_type"):
+                        bit += f" is a {party['entity_type']}"
+                    bits.append(bit + ".")
+                return _synthetic_payload(" ".join(bits), hit)
+            # Complete attributes + roadmap + rescission; omit PB + notice.
+            answer = _roster_only_answer(expected)
+            roadmap = next(
+                item
+                for item in synthesis
+                if item["category"] == "complaint_roadmap"
+            )
+            nums = list(roadmap.get("paragraph_numbers") or [])
+            answer += (
+                f" The complaint parties roadmap appears at paragraphs "
+                f"{nums[0]} through {nums[-1]}."
+            )
+            answer += (
+                " The requested rescission or void ab initio treatment may "
+                "negatively affect those asserted rights, as alleged."
+            )
+            return _synthetic_payload(answer, hit)
+
+        result = de.answer_attorney_record_question(
+            question, retrieval, model_call=_model
+        )
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(result["status"], de.STATUS_READY)
+        self.assertTrue(
+            result["audit"].get(
+                "party_role_deterministic_notice_defendant_explanation_fallback"
+            )
+        )
+        self.assertTrue(
+            result["audit"].get("party_role_deterministic_procedural_bearing_fallback")
+        )
+        lowered = (result.get("proposed_answer") or "").lower()
+        self.assertIn("does not itself allege wrongdoing", lowered)
+        self.assertIn("bear on service", lowered)
+
+    def test_procedural_bearing_section_survives_unrelated_full_draft_pollution(self):
+        question = "Identify the parties and their procedural roles."
+        retrieval = {"query": question, "results": [_hit(FULL_SYNTHETIC_COMPLAINT)]}
+        packet = de.build_evidence_packet(question, retrieval)
+        expected = de.extract_party_role_expected_attributes(packet)
+        synthesis = de.extract_party_role_expected_synthesis(packet, expected)
+        hit = packet["retrieval_hits"][0]
+        good = _complete_synthesis_answer(expected, synthesis)
+        polluted = (
+            good
+            + " Separately, jurisdiction is established over every claim and "
+            "this is a merits conclusion."
+        )
+        # Section acceptance for the bearing paragraph alone still holds.
+        bearing = (
+            "As procedural relevance only, pleaded identity/role, entity form, "
+            "and residence or principal place of business can bear on service, "
+            "jurisdiction as applicable, and venue; they are not conclusively "
+            "established by those allegations."
+        )
+        self.assertTrue(
+            de._synthesis_section_satisfies(bearing, "procedural_bearing", None)
+        )
+        # Full-draft pollution must not mark procedural_bearing missing.
+        missing = de.find_missing_party_role_synthesis(
+            _synthetic_payload(polluted, hit), synthesis
+        )
+        missing_cats = {item["category"] for item in missing}
+        self.assertNotIn("procedural_bearing", missing_cats)
+        # Still reject merits conclusions / unsupported jurisdiction assertions
+        # when they are the only bearing-like content (no valid section).
+        bad_only = (
+            _roster_only_answer(expected)
+            + " Jurisdiction is established and this is a merits conclusion."
+        )
+        missing_bad = de.find_missing_party_role_synthesis(
+            _synthetic_payload(bad_only, hit), synthesis
+        )
+        self.assertIn(
+            "procedural_bearing", {item["category"] for item in missing_bad}
+        )
+        # Conclusory language inside the bearing section itself still fails.
+        conclusory_section = (
+            "Pleaded identity/role, entity form, and residence can bear on "
+            "service, jurisdiction as applicable, and venue, and those "
+            "doctrines are established."
+        )
+        self.assertFalse(
+            de._synthesis_section_satisfies(
+                conclusory_section, "procedural_bearing", None
+            )
+        )
+
+    def test_citation_scrub_preserves_both_synthesis_sections(self):
+        question = "Identify the parties and their procedural roles."
+        retrieval = {"query": question, "results": [_hit(FULL_SYNTHETIC_COMPLAINT)]}
+        packet = de.build_evidence_packet(question, retrieval)
+        expected = de.extract_party_role_expected_attributes(packet)
+        synthesis = de.extract_party_role_expected_synthesis(packet, expected)
+        hit = packet["retrieval_hits"][0]
+        roster = _roster_only_answer(expected)
+        sections = _patch_paragraphs_for_categories(
+            ["procedural_bearing", "notice_defendant_explanation"],
+            synthesis,
+        )
+        draft = _synthetic_payload(roster, hit)
+        audit = {
+            "party_role_synthesis_category_lifecycle": de._init_synthesis_category_lifecycle(
+                ["procedural_bearing", "notice_defendant_explanation"]
+            )
+        }
+        merged = de.merge_party_role_synthesis_patch(
+            draft,
+            sections,
+            expected_synthesis=synthesis,
+            audit_out=audit,
+        )
+        self.assertIsNotNone(merged)
+        units = (merged.get("audit") or {}).get(
+            de._PARTY_ROLE_RETAINED_SYNTHESIS_UNITS_KEY
+        )
+        self.assertEqual(
+            {u["category"] for u in units},
+            {"procedural_bearing", "notice_defendant_explanation"},
+        )
+        # Simulate citation scrub rebuilding answer from roster-only props.
+        scrub_input = dict(merged)
+        scrub_input["propositions"] = [
+            {
+                "proposition_id": "P1",
+                "text": roster,
+                "classification": "party_allegation",
+                "nyscef_document_number": hit["nyscef_document_number"],
+                "page_id": hit["page_id"],
+                "pdf_page": hit["pdf_page"],
+                "source_excerpt": "Plaintiff North Quay Logistics LLC",
+                "confidence": 0.9,
+                "rationale": "roster",
+                "polarity": "supporting",
+            }
+        ]
+        scrub_input["audit"] = {
+            "removed_propositions": [
+                {"proposition_id": "P_bad", "removal_reason": "invented_content"}
+            ],
+            "notes": [],
+            de._PARTY_ROLE_RETAINED_SYNTHESIS_UNITS_KEY: units,
+        }
+        scrubbed = de._scrub_party_role_answer_after_citation_filter(scrub_input)
+        answer = (scrubbed.get("proposed_answer") or "").lower()
+        self.assertIn("bear on service", answer)
+        self.assertIn("does not itself allege wrongdoing", answer)
+
+    def test_failure_retains_fallback_flags_and_notice_lifecycle(self):
+        question = "Identify the parties and their procedural roles."
+        retrieval = {
+            "query": question,
+            "results": [_hit(FULL_SYNTHETIC_COMPLAINT)],
+        }
+        calls = []
+
+        def _model(_system, user_prompt):
+            calls.append(user_prompt)
+            packet = de.build_evidence_packet(question, retrieval)
+            expected = de.extract_party_role_expected_attributes(packet)
+            hit = packet["retrieval_hits"][0]
+            if len(calls) == 1:
+                return _synthetic_payload(_roster_only_answer(expected), hit)
+            # Synthesis patch omits non-fillable categories → fail closed after
+            # deterministic PB+notice salvage.
+            return {"synthesis_patch": {}}
+
+        result = de.answer_attorney_record_question(
+            question, retrieval, model_call=_model
+        )
+        self.assertEqual(result["status"], de.STATUS_NOT_READY)
+        self.assertTrue(result["audit"].get("party_role_completeness_failed"))
+        self.assertTrue(
+            result["audit"].get("party_role_deterministic_procedural_bearing_fallback")
+        )
+        self.assertTrue(
+            result["audit"].get(
+                "party_role_deterministic_notice_defendant_explanation_fallback"
+            )
+        )
+        lifecycle = result["audit"].get("party_role_synthesis_category_lifecycle") or []
+        by_cat = {row["category"]: row for row in lifecycle}
+        self.assertIn("notice_defendant_explanation", by_cat)
+        self.assertTrue(by_cat["notice_defendant_explanation"].get("requested"))
+        # Missing either non-fillable category still fails closed.
+        missing_cats = {
+            item.get("category")
+            for item in result["audit"].get("missing_party_role_attributes") or []
+        }
+        self.assertTrue(
+            {"rescission_effect", "complaint_roadmap"} & missing_cats
+        )
+
+    def test_golden_replay_observed_mixed_gap_run_shape(self):
+        """Replay the observed Q1 shape: mixed gaps → attribute repair →
+        deterministic PB+notice recovery → durable synthesis; still reject
+        merits conclusions and missing either required category.
+        """
+        question = "Identify the parties and their procedural roles."
+        retrieval = {
+            "query": question,
+            "results": [_hit(FULL_SYNTHETIC_COMPLAINT)],
+            "provisional_answer": "PROVISIONAL_SHOULD_NOT_APPEAR",
+            "gold_answer": "GOLD_SHOULD_NOT_APPEAR",
+            "attorney_feedback": "FEEDBACK_SHOULD_NOT_APPEAR",
+        }
+        calls = []
+
+        def _model(_system, user_prompt):
+            calls.append(user_prompt)
+            lowered = user_prompt.lower()
+            self.assertNotIn("gold_should_not_appear", lowered)
+            self.assertNotIn("feedback_should_not_appear", lowered)
+            packet = de.build_evidence_packet(question, retrieval)
+            expected = de.extract_party_role_expected_attributes(packet)
+            synthesis = de.extract_party_role_expected_synthesis(packet, expected)
+            hit = packet["retrieval_hits"][0]
+            if len(calls) == 1:
+                # Observed shape: attribute holes + no synthesis.
+                bits = []
+                for party in expected:
+                    bit = f"{party.get('procedural_role')} {party.get('identity')}"
+                    if party.get("entity_type"):
+                        bit += f" is a {party['entity_type']}"
+                    bits.append(bit + ".")
+                return _synthetic_payload(" ".join(bits), hit)
+            # Attribute repair returns complete roster + roadmap + rescission,
+            # still omitting PB + notice (fillable deterministic recovery).
+            answer = _roster_only_answer(expected)
+            roadmap = next(
+                item
+                for item in synthesis
+                if item["category"] == "complaint_roadmap"
+            )
+            nums = list(roadmap.get("paragraph_numbers") or [])
+            headings = list(roadmap.get("section_headings") or [])
+            answer += (
+                f" The complaint parties roadmap appears at paragraphs "
+                f"{nums[0]} through {nums[-1]}."
+            )
+            if headings:
+                answer += f" Section organization includes {headings[0]}."
+            answer += (
+                " The requested rescission or void ab initio treatment may "
+                "negatively affect those asserted rights, as alleged."
+            )
+            return _synthetic_payload(answer, hit)
+
+        result = de.answer_attorney_record_question(
+            question, retrieval, model_call=_model
+        )
+        self.assertEqual(len(calls), 2, "one-repair limit must hold")
+        self.assertEqual(result["status"], de.STATUS_READY)
+        audit = result["audit"]
+        self.assertTrue(audit.get("party_role_repair_attempted"))
+        self.assertTrue(
+            audit.get("party_role_deterministic_procedural_bearing_fallback")
+        )
+        self.assertTrue(
+            audit.get(
+                "party_role_deterministic_notice_defendant_explanation_fallback"
+            )
+        )
+        lifecycle = audit.get("party_role_synthesis_category_lifecycle") or []
+        cats = {row["category"] for row in lifecycle}
+        self.assertIn("notice_defendant_explanation", cats)
+        self.assertIn("procedural_bearing", cats)
+        answer = (result.get("proposed_answer") or "").lower()
+        self.assertIn("bear on service", answer)
+        self.assertIn("does not itself allege wrongdoing", answer)
+        self.assertNotIn("merits conclusion that doctrines are established", answer)
+        # Missing either fillable category still fails closed when recovery is
+        # blocked: strip notice from a ready draft and re-check.
+        synthesis = de.extract_party_role_expected_synthesis(
+            de.build_evidence_packet(question, retrieval)
+        )
+        notice_criterion = next(
+            item
+            for item in synthesis
+            if item["category"] == "notice_defendant_explanation"
+        )
+        no_notice = answer.replace(
+            "notice-defendant joinder reflects the potential effect of the "
+            "requested relief on asserted rights and does not itself allege "
+            "wrongdoing.",
+            "",
+        )
+        self.assertFalse(
+            de._draft_has_notice_defendant_explanation(
+                de.normalize_citation_text(no_notice),
+                require_rights_link=bool(
+                    notice_criterion.get("require_rights_link")
+                ),
+            )
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
