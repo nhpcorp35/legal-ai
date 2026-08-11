@@ -1,0 +1,149 @@
+# LegalAI PRD (Living)
+
+**Status:** Active  
+**Last updated:** 2026-08-11  
+**Authority:** Canonical product requirements and milestone register for LegalAI.  
+**Related (unchanged scopes):** `docs/HAL_CONTROL_ROOM.md` (orchestration contract); `docs/MISSION_CONTROL_OPTIMIZATION_AUTHORITY.md` (Mission Control cost/reliability register).
+
+---
+
+## Product objective
+
+LegalAI augments **litigation cognition and attorney reasoning** — issue framing, posture, credibility, contradiction, strategy, and evidence-grounded analysis — not generic legal search or drafting-as-a-service.
+
+---
+
+## Governing principles
+
+| Principle | Requirement |
+|-----------|-------------|
+| Probabilistic / systemic law | Model law as contested, posture-dependent systems; avoid false certainty |
+| Contradiction & credibility | Surface conflicts and credibility pressure as first-class signals |
+| Procedural posture | Anchor analysis to court, stage, and procedural constraints |
+| Factual pivots | Identify facts that change outcomes, leverage, or burden |
+| Strategy / attack surface | Expose offensive, defensive, discovery, and settlement pressure points |
+| Evidence-grounded outputs | Claims must cite recoverable evidence; no unsupported invention |
+
+---
+
+## Scope
+
+**In scope**
+
+- Case-00 attorney-feedback generation/eval loop (code + durable B2 handoff)
+- Complaint structure mapping, roadmap attachment, final-prose enforcement
+- Thin Unified Gateway for dispatch / status / artifact / storage operations
+- Privacy-preserving ops: private corpus and feedback stay off GitHub
+
+**Non-goals**
+
+- Generic legal research chatbot or cite-dump search product
+- Unbounded multi-matter drafting without evidence grounding
+- Treating provisional gold or technical pass as attorney approval
+- Collapsing Bridge, Storage, Mission Control, or artifact services into one deployable
+- Committing private corpus, benchmarks, credentials, or attorney feedback to GitHub
+
+---
+
+## Architecture boundaries
+
+| Surface | Boundary |
+|---------|----------|
+| Unified Gateway | **One thin interface** for dispatch, status, artifact, and storage operations |
+| Bridge | Separately deployed; independently healthy and testable |
+| Storage | Separately deployed; independently healthy and testable |
+| Mission Control | Separately deployed execution engine; independently healthy and testable |
+| Artifact services | Separately deployed; independently healthy and testable |
+
+Do not infer topology. Observe authoritative config/deployment metadata (see Mission Control Architecture Verification rule).
+
+---
+
+## Privacy / storage boundaries
+
+| Store | Role |
+|-------|------|
+| **B2** | Canonical for private corpus and attorney feedback |
+| **GitHub** | Code-only (no private matter content) |
+| **Working continuity** (local/`/tmp`/executor scratch) | Non-canonical; ephemeral; never proof of durable success |
+
+Four Q1 durable candidate artifacts (B2 object keys, verified):
+
+1. `Q1_candidate_answer.json`
+2. `Q1_candidate_answer.md`
+3. `generation_manifest.json`
+4. `model_input_audit.json`
+
+Workflow entrypoints (code-only): `scripts/run_case00_b2_q1.py`, `scripts/generate_attorney_feedback_candidate.py`, `scripts/run_case00_generate_and_evaluate.py`.
+
+---
+
+## Milestone table
+
+Statuses: **Planned** | **Active** | **Blocked** | **Verified**
+
+| ID | Milestone | Acceptance criteria | Status | Verified evidence |
+|----|-----------|---------------------|--------|-------------------|
+| M-01 | Unified Gateway ops path | Dispatch, status, artifact, and storage operations succeed through the thin gateway without coupling service internals | Verified | Gateway path proven in production-style ops (dispatch/status/artifact/storage); services remain separately deployable |
+| M-02 | Exact review-packet preservation | Review-packet bytes/structure preserved across rebuild/handoff; no silent rewrite of attorney-review inputs | Verified | Preservation checks in rebuild/eval paths; packet treated as immutable input |
+| M-03 | B2 bounded retry | Transient B2 reads use bounded retry/backoff; fail-closed on exhaustion; no secret leakage | Verified | `test_b2_read_resilience.py` + B2 helpers in rebuild/upload CLIs |
+| M-04 | Q1 structure-map v2 | Generator/rebuild emit/consume `complaint_structure_map.v2` | Verified | `complaint_structure.py` (`SCHEMA_VERSION`); structure-map tests |
+| M-05 | Final-prose roadmap enforcement | Candidate final prose must cover canonical roadmap sections; gaps fail closed | Verified | `test_complaint_roadmap_final_prose_phase2.py`; drafting-engine coverage checks |
+| M-06 | Stale-context fallback fix | Stale/invalid structure-map schema triggers explicit fallback reason; no silent use of bad context | Verified | `test_complaint_structure_stale_context_fallback.py`; stale/invalid schema reasons |
+| M-07 | Live Q1 rerun @ pinned commit | Rerun live Q1 workflow at commit `1597db24ec7885b00235520f38d7767819264120`; produce and verify the four canonical B2 artifacts; then compare substance to the **privately held** attorney-approved benchmark (out of band) | **Active** | Pin: `1597db24ec7885b00235520f38d7767819264120`. Technical artifact verification pending live rerun. Substantive compare is private and **not** recorded here |
+| M-08 | Attorney / substantive approval gate | Human attorney acceptance of Q1 substance against approved benchmark | Planned | Blocked on M-07 technical + private substantive compare. **Technical success ≠ attorney/substantive approval** |
+
+---
+
+## Approval rule (explicit)
+
+**Technical success is not attorney or substantive approval.**
+
+Passing generation, upload `head_object` checks, unit tests, or Mission Control green status only proves engineering criteria. Substantive acceptance requires separate attorney review against the privately held benchmark and must not be claimed from this PRD’s technical milestones alone.
+
+---
+
+## Known risks and current blockers
+
+| Item | Type | Notes |
+|------|------|-------|
+| M-07 live Q1 rerun not yet verified at pin | Blocker | Must run at `1597db24ec7885b00235520f38d7767819264120` and verify four B2 artifacts |
+| Private benchmark compare | Process | Held privately; do not paste benchmark text, party/attorney identifiers, or legal source contents into GitHub docs or commits |
+| Ephemeral scratch mistaken for durable handoff | Risk | `/tmp` and executor workspaces are non-canonical; only verified B2 keys count |
+| Mission Control cost/timeout loops | Risk | Tracked in `docs/MISSION_CONTROL_OPTIMIZATION_AUTHORITY.md`; optimization implementation gated on Case-00 attorney approval |
+| Contaminating eval with gold during generation | Risk | Generation-only path must not read gold/eval answers |
+
+---
+
+## Next action
+
+1. Rerun the live Q1 workflow at commit `1597db24ec7885b00235520f38d7767819264120`.
+2. Verify the four canonical artifacts on B2 (`head_object` / durable key verification).
+3. Compare substance out of band to the privately held attorney-approved benchmark.
+4. Record technical evidence (safe commit + technical run IDs only) in this PRD; do **not** mark attorney approval from technical pass alone.
+
+---
+
+## Decision log
+
+| Date | Decision |
+|------|----------|
+| 2026-08-11 | Establish `docs/LEGALAI_PRD.md` as the living product + milestone authority (code-only; no private artifact contents). |
+| 2026-08-11 | Architecture: one thin Unified Gateway; Bridge, Storage, Mission Control, and artifact services stay separately deployed and independently testable. |
+| 2026-08-11 | Privacy: B2 canonical for private corpus/feedback; GitHub code-only; working continuity non-canonical. |
+| 2026-08-11 | Active milestone M-07: live Q1 at `1597db24ec7885b00235520f38d7767819264120` → four artifacts → private substantive compare. |
+| 2026-08-11 | Explicit rule: technical success ≠ attorney/substantive approval. |
+
+---
+
+## Milestone update protocol
+
+Update this PRD **only** when one of the following is true:
+
+1. A milestone is **verified** with recorded evidence (safe commit IDs and technical run IDs only), or
+2. A **material blocker / root-cause** changes, or
+3. An **architecture or privacy-boundary** decision changes.
+
+**Code missions that affect a milestone must either update this PRD or explicitly state why no PRD update is required.**
+
+Do not update for speculative status, chat memory, or unverified local success. Cite only GitHub-safe commit IDs and technical run IDs — never private benchmark text, party names, attorney names/emails, legal source contents, addresses, credentials, or private artifact contents.
