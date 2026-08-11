@@ -1,5 +1,5 @@
 name: HAL Case-00 Q1
-run-name: hal-case00-q1-${{ inputs.mission_id }}
+run-name: hal-case00-${{ inputs.question_id }}-${{ inputs.mission_id }}
 
 on:
   workflow_dispatch:
@@ -17,12 +17,20 @@ on:
         required: true
         default: false
         type: boolean
+      benchmark_id:
+        description: Benchmark identity supplied by the Bridge (must be Case-00-Triborough)
+        required: true
+        type: string
+      question_id:
+        description: Question identity supplied by the Bridge (must match Q[1-9][0-9]*)
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: hal-case00-q1-${{ inputs.mission_id }}
+  group: hal-case00-${{ inputs.question_id }}-${{ inputs.mission_id }}
   cancel-in-progress: false
 
 jobs:
@@ -38,6 +46,8 @@ jobs:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       LEGALAI_MODEL_TIMEOUT_SECONDS: "180"
       REQUIRED_COMMIT: ${{ inputs.legalai_ref }}
+      BENCHMARK_ID: ${{ inputs.benchmark_id }}
+      QUESTION_ID: ${{ inputs.question_id }}
 
     steps:
       - name: Initialize runner-local paths
@@ -45,11 +55,16 @@ jobs:
         run: |
           echo "CASE_ROOT=$RUNNER_TEMP/case00" >> "$GITHUB_ENV"
           echo "CANDIDATE_ROOT=$RUNNER_TEMP/case00-candidates" >> "$GITHUB_ENV"
+          qid_lower="$(printf '%s' "$QUESTION_ID" | tr '[:upper:]' '[:lower:]')"
+          echo "QUESTION_ID_LOWER=$qid_lower" >> "$GITHUB_ENV"
+          echo "RESULT_JSON=case00-${qid_lower}-result.json" >> "$GITHUB_ENV"
 
-      - name: Enforce bounded authorization and immutable SHA
+      - name: Enforce bounded authorization, benchmark, question, and immutable SHA
         shell: bash
         run: |
           test "${{ inputs.authorization_confirmed }}" = "true"
+          test "$BENCHMARK_ID" = "Case-00-Triborough"
+          [[ "$QUESTION_ID" =~ ^Q[1-9][0-9]*$ ]] || exit 2
           case "$REQUIRED_COMMIT" in
             [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]*)
               test "${#REQUIRED_COMMIT}" -eq 40
@@ -83,7 +98,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt boto3 openai
 
-      - name: Stage permitted Q1 question text
+      - name: Stage permitted question text
         shell: bash
         run: |
           python - <<'PY'
@@ -91,6 +106,7 @@ jobs:
           import os
           from pathlib import Path
 
+          question_id = os.environ["QUESTION_ID"]
           source = Path(
               "data/case-00-triborough/derived/"
               "attorney-review-packet-02-live/attorney_review_packet_02.json"
@@ -100,12 +116,14 @@ jobs:
               (
                   item
                   for item in packet.get("questions", [])
-                  if item.get("question_id") == "Q1"
+                  if item.get("question_id") == question_id
               ),
               None,
           )
           if not question or not isinstance(question.get("text"), str):
-              raise SystemExit("Q1 text missing from checked-in permitted packet")
+              raise SystemExit(
+                  f"{question_id} text missing from checked-in permitted packet"
+              )
           destination = (
               Path(os.environ["CASE_ROOT"])
               / "derived"
@@ -114,7 +132,7 @@ jobs:
           )
           destination.parent.mkdir(parents=True, exist_ok=True)
           destination.write_text(
-              json.dumps({"Q1": question["text"].strip()}, sort_keys=True) + "\n",
+              json.dumps({question_id: question["text"].strip()}, sort_keys=True) + "\n",
               encoding="utf-8",
           )
           PY
@@ -268,21 +286,29 @@ jobs:
           print(json.dumps({"verified": True, "objects": objects}, sort_keys=True))
           PY
 
-      - name: Generate Q1 and publish four verified artifacts to B2
+      - name: Generate requested question and publish four verified artifacts to B2
         id: case00
         shell: bash
         run: |
           set +e
-          python scripts/run_case00_b2_q1.py             --case-root "$CASE_ROOT"             --question-id Q1             --required-commit "$REQUIRED_COMMIT"             --candidate-output-root "$CANDIDATE_ROOT"             --authorization-confirmed             --generation-only             --reuse-derived             | tee case00-q1-result.json
+          python scripts/run_case00_b2_q1.py \
+            --case-root "$CASE_ROOT" \
+            --question-id "$QUESTION_ID" \
+            --required-commit "$REQUIRED_COMMIT" \
+            --candidate-output-root "$CANDIDATE_ROOT" \
+            --authorization-confirmed \
+            --generation-only \
+            --reuse-derived \
+            | tee "$RESULT_JSON"
           status=${PIPESTATUS[0]}
           echo "exit_code=$status" >> "$GITHUB_OUTPUT"
           exit "$status"
 
       - name: Upload machine-readable run result
-        if: ${{ always() && hashFiles('case00-q1-result.json') != '' }}
+        if: ${{ always() && env.RESULT_JSON != '' && hashFiles(env.RESULT_JSON) != '' }}
         uses: actions/upload-artifact@v4
         with:
-          name: hal-case00-q1-${{ inputs.mission_id }}
-          path: case00-q1-result.json
+          name: hal-case00-${{ env.QUESTION_ID_LOWER }}-${{ inputs.mission_id }}
+          path: ${{ env.RESULT_JSON }}
           if-no-files-found: error
           retention-days: 7

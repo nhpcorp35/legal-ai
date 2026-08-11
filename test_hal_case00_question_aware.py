@@ -1,0 +1,605 @@
+"""Question-aware HAL Case-00 workflow and durable upload regression tests."""
+
+from __future__ import annotations
+
+import importlib.util
+import io
+import json
+import os
+import re
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import yaml
+
+
+REPO_ROOT = Path(__file__).resolve().parent
+WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "hal-case00-q1.yml"
+SCRIPT_PATH = REPO_ROOT / "scripts" / "run_case00_b2_q1.py"
+QUESTION_ID_RE = re.compile(r"^Q[1-9][0-9]*$")
+REQUIRED_BENCHMARK = "Case-00-Triborough"
+CANONICAL_PREFIX = (
+    "Benchmarks/Case-00-Triborough/derived/attorney-feedback-eval/candidate-answers/"
+)
+
+
+def _load_cli():
+    spec = importlib.util.spec_from_file_location("run_case00_b2_q1_qaware", SCRIPT_PATH)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    if str(REPO_ROOT) not in os.sys.path:
+        os.sys.path.insert(0, str(REPO_ROOT))
+    os.sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+CLI = _load_cli()
+
+
+def _load_workflow() -> dict:
+    # PyYAML 1.1 coerces the bare key ``on:`` to boolean True.
+    doc = yaml.safe_load(WORKFLOW_PATH.read_text(encoding="utf-8"))
+    if isinstance(doc, dict) and True in doc and "on" not in doc:
+        doc["on"] = doc.pop(True)
+    return doc
+
+
+def _workflow_text() -> str:
+    return WORKFLOW_PATH.read_text(encoding="utf-8")
+
+
+def _b2_env() -> dict[str, str]:
+    return {
+        "B2_KEY_ID": "key-id-secret-value",
+        "B2_APPLICATION_KEY": "app-key-secret-value",
+        "B2_BUCKET": "legalai-corpus",
+        "B2_ENDPOINT": "https://s3.us-east-005.backblazeb2.com",
+        "B2_REGION": "us-east-005",
+    }
+
+
+def _acceptance_env() -> dict[str, str]:
+    return {
+        CLI.ACCEPTANCE_CONTRACT_OBJECT_KEY_ENV: (
+            "Contracts/synthetic/alpha/Q-SYNTH-01.acceptance_contract.json"
+        ),
+        CLI.ACCEPTANCE_CONTRACT_CONTENT_SHA256_ENV: "a" * 64,
+        CLI.ACCEPTANCE_CONTRACT_BENCHMARK_ID_ENV: "synth-benchmark-alpha",
+    }
+
+
+def _wrapper_env() -> dict[str, str]:
+    return {**_b2_env(), **_acceptance_env()}
+
+
+def _seed_candidate_dir(path: Path, question_id: str = "Q1") -> dict[str, int]:
+    path.mkdir(parents=True, exist_ok=True)
+    sizes: dict[str, int] = {}
+    for index, name in enumerate(CLI.candidate_artifact_names(question_id)):
+        body = f"artifact-{name}-{index}\n".encode("utf-8")
+        (path / name).write_bytes(body)
+        sizes[name] = len(body)
+    return sizes
+
+
+class WorkflowSurfaceTests(unittest.TestCase):
+    def test_workflow_filename_preserved(self) -> None:
+        self.assertTrue(WORKFLOW_PATH.is_file())
+        self.assertEqual(WORKFLOW_PATH.name, "hal-case00-q1.yml")
+
+    def test_required_bridge_inputs_present(self) -> None:
+        inputs = _load_workflow()["on"]["workflow_dispatch"]["inputs"]
+        for name in (
+            "mission_id",
+            "legalai_ref",
+            "authorization_confirmed",
+            "benchmark_id",
+            "question_id",
+        ):
+            with self.subTest(name=name):
+                self.assertIn(name, inputs)
+                self.assertTrue(inputs[name].get("required"))
+
+    def test_authorization_confirmed_remains_boolean_fail_closed_default(self) -> None:
+        auth = _load_workflow()["on"]["workflow_dispatch"]["inputs"][
+            "authorization_confirmed"
+        ]
+        self.assertEqual(auth["type"], "boolean")
+        self.assertIs(auth["default"], False)
+
+    def test_benchmark_and_question_are_required_strings(self) -> None:
+        inputs = _load_workflow()["on"]["workflow_dispatch"]["inputs"]
+        self.assertEqual(inputs["benchmark_id"]["type"], "string")
+        self.assertEqual(inputs["question_id"]["type"], "string")
+        self.assertTrue(inputs["benchmark_id"]["required"])
+        self.assertTrue(inputs["question_id"]["required"])
+
+    def test_permissions_remain_contents_read(self) -> None:
+        self.assertEqual(_load_workflow()["permissions"], {"contents": "read"})
+
+    def test_job_env_exports_benchmark_and_question(self) -> None:
+        env = _load_workflow()["jobs"]["generate"]["env"]
+        self.assertEqual(env["BENCHMARK_ID"], "${{ inputs.benchmark_id }}")
+        self.assertEqual(env["QUESTION_ID"], "${{ inputs.question_id }}")
+        self.assertEqual(env["REQUIRED_COMMIT"], "${{ inputs.legalai_ref }}")
+
+    def test_concurrency_and_run_name_are_question_aware(self) -> None:
+        doc = _load_workflow()
+        self.assertIn("${{ inputs.question_id }}", doc["run-name"])
+        self.assertIn(
+            "${{ inputs.question_id }}",
+            doc["concurrency"]["group"],
+        )
+
+    def test_gate_requires_exact_benchmark_id(self) -> None:
+        text = _workflow_text()
+        self.assertIn('test "$BENCHMARK_ID" = "Case-00-Triborough"', text)
+
+    def test_gate_requires_question_id_regex(self) -> None:
+        text = _workflow_text()
+        self.assertIn('[[ "$QUESTION_ID" =~ ^Q[1-9][0-9]*$ ]]', text)
+
+    def test_gate_preserves_authorization_confirmed(self) -> None:
+        text = _workflow_text()
+        self.assertIn(
+            'test "${{ inputs.authorization_confirmed }}" = "true"',
+            text,
+        )
+
+    def test_gate_preserves_lowercase_40_char_sha_check(self) -> None:
+        text = _workflow_text()
+        self.assertIn("[0-9a-f][0-9a-f][0-9a-f][0-9a-f]", text)
+        self.assertIn('test "${#REQUIRED_COMMIT}" -eq 40', text)
+
+    def test_stage_step_uses_requested_question_id(self) -> None:
+        text = _workflow_text()
+        self.assertIn('question_id = os.environ["QUESTION_ID"]', text)
+        self.assertIn(
+            'if item.get("question_id") == question_id',
+            text,
+        )
+        self.assertIn(
+            'f"{question_id} text missing from checked-in permitted packet"',
+            text,
+        )
+        self.assertNotIn('== "Q1"', text.split("Stage permitted question text", 1)[1].split(
+            "Compute Case-00 derived cache key", 1
+        )[0])
+
+    def test_generator_invoked_with_requested_question_id(self) -> None:
+        text = _workflow_text()
+        self.assertIn('--question-id "$QUESTION_ID"', text)
+        self.assertIn("scripts/run_case00_b2_q1.py", text)
+        self.assertIn("--authorization-confirmed", text)
+        self.assertIn("--generation-only", text)
+        self.assertIn("--reuse-derived", text)
+
+    def test_result_json_and_artifact_use_lowercase_question_id(self) -> None:
+        text = _workflow_text()
+        self.assertIn(
+            'echo "RESULT_JSON=case00-${qid_lower}-result.json"',
+            text,
+        )
+        self.assertIn(
+            "name: hal-case00-${{ env.QUESTION_ID_LOWER }}-${{ inputs.mission_id }}",
+            text,
+        )
+        self.assertIn("path: ${{ env.RESULT_JSON }}", text)
+
+    def test_q1_result_and_artifact_names_remain_compatible(self) -> None:
+        qid_lower = "Q1".lower()
+        self.assertEqual(f"case00-{qid_lower}-result.json", "case00-q1-result.json")
+        self.assertEqual(
+            f"hal-case00-{qid_lower}-mission-1",
+            "hal-case00-q1-mission-1",
+        )
+
+    def test_workflow_does_not_embed_private_benchmark_payload(self) -> None:
+        text = _workflow_text()
+        self.assertNotIn("proposed_answer", text)
+        self.assertNotIn("gold_answer", text)
+        self.assertNotIn("ACCEPTANCE_CONTRACT_CONTENT_SHA256", text)
+        # Staging still references the checked-in permitted packet path only.
+        self.assertIn("attorney_review_packet_02.json", text)
+
+    def test_b2_boundaries_unchanged(self) -> None:
+        text = _workflow_text()
+        self.assertIn(
+            "Benchmarks/Case-00-Triborough/derived/runtime-cache/",
+            text,
+        )
+        self.assertIn("B2_KEY_ID: ${{ secrets.B2_KEY_ID }}", text)
+        self.assertIn("B2_APPLICATION_KEY: ${{ secrets.B2_APPLICATION_KEY }}", text)
+
+
+class QuestionIdValidationTests(unittest.TestCase):
+    def test_accepted_question_ids(self) -> None:
+        for qid in ("Q1", "Q2", "Q9", "Q10", "Q99", "Q123"):
+            with self.subTest(qid=qid):
+                self.assertRegex(qid, QUESTION_ID_RE)
+
+    def test_rejected_question_ids(self) -> None:
+        for qid in ("", "Q", "Q0", "Q01", "q1", "1", "QQ1", "Q1a", " Q1", "Q1 "):
+            with self.subTest(qid=qid):
+                self.assertIsNone(QUESTION_ID_RE.fullmatch(qid))
+
+    def test_required_benchmark_constant(self) -> None:
+        self.assertEqual(REQUIRED_BENCHMARK, "Case-00-Triborough")
+        self.assertNotEqual(REQUIRED_BENCHMARK, "case-00-triborough")
+
+
+class CandidateArtifactNameTests(unittest.TestCase):
+    def test_q1_preserves_historical_names(self) -> None:
+        self.assertEqual(
+            CLI.candidate_artifact_names("Q1"),
+            (
+                "Q1_candidate_answer.json",
+                "Q1_candidate_answer.md",
+                "generation_manifest.json",
+                "model_input_audit.json",
+            ),
+        )
+        self.assertEqual(CLI.CANDIDATE_ARTIFACT_NAMES, CLI.candidate_artifact_names("Q1"))
+
+    def test_q2_uses_question_aware_names(self) -> None:
+        self.assertEqual(
+            CLI.candidate_artifact_names("Q2"),
+            (
+                "Q2_candidate_answer.json",
+                "Q2_candidate_answer.md",
+                "generation_manifest.json",
+                "model_input_audit.json",
+            ),
+        )
+
+    def test_q10_uses_question_aware_names(self) -> None:
+        names = CLI.candidate_artifact_names("Q10")
+        self.assertEqual(names[0], "Q10_candidate_answer.json")
+        self.assertEqual(names[1], "Q10_candidate_answer.md")
+
+    def test_empty_question_id_fails_closed(self) -> None:
+        with self.assertRaises(CLI.DurableUploadError):
+            CLI.candidate_artifact_names("")
+        with self.assertRaises(CLI.DurableUploadError):
+            CLI.candidate_artifact_names("   ")
+
+
+class QuestionAwareUploadTests(unittest.TestCase):
+    def test_upload_q1_keeps_historical_object_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            candidate = Path(tmp) / "q1-candidate-20260811T000000Z"
+            sizes = _seed_candidate_dir(candidate, "Q1")
+            client = MagicMock()
+
+            def fake_head(*, Bucket, Key):
+                name = Key.rsplit("/", 1)[-1]
+                return {"ContentLength": sizes[name], "ETag": f'"{name}-etag"'}
+
+            client.upload_file.return_value = None
+            client.head_object.side_effect = fake_head
+            config = CLI.rebuild_cli.B2Config.from_env(_b2_env())
+            durable = CLI.upload_candidate_artifacts_to_b2(
+                candidate,
+                prefix=CANONICAL_PREFIX,
+                client=client,
+                config=config,
+                question_id="Q1",
+            )
+            expected = [
+                f"{CANONICAL_PREFIX}{candidate.name}/{name}"
+                for name in CLI.candidate_artifact_names("Q1")
+            ]
+            self.assertEqual(durable["object_keys"], expected)
+            self.assertEqual(durable["question_id"], "Q1")
+
+    def test_upload_q2_uses_dynamic_object_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            candidate = Path(tmp) / "q2-candidate-20260811T000000Z"
+            sizes = _seed_candidate_dir(candidate, "Q2")
+            client = MagicMock()
+
+            def fake_head(*, Bucket, Key):
+                name = Key.rsplit("/", 1)[-1]
+                return {"ContentLength": sizes[name], "ETag": '"ok"'}
+
+            client.upload_file.return_value = None
+            client.head_object.side_effect = fake_head
+            config = CLI.rebuild_cli.B2Config.from_env(_b2_env())
+            durable = CLI.upload_candidate_artifacts_to_b2(
+                candidate,
+                prefix=CANONICAL_PREFIX,
+                client=client,
+                config=config,
+                question_id="Q2",
+            )
+            self.assertTrue(
+                all("/Q2_candidate_answer." in key or key.endswith(
+                    ("generation_manifest.json", "model_input_audit.json")
+                )
+                for key in durable["object_keys"])
+            )
+            self.assertEqual(durable["question_id"], "Q2")
+            self.assertEqual(len(durable["object_keys"]), 4)
+
+    def test_upload_rejects_unexpected_q2_filename(self) -> None:
+        with self.assertRaises(CLI.DurableUploadError) as ctx:
+            CLI.build_candidate_object_key(
+                CANONICAL_PREFIX,
+                "q2-candidate-x",
+                "Q1_candidate_answer.json",
+                question_id="Q2",
+            )
+        self.assertIn("unexpected candidate artifact name", ctx.exception.message)
+
+    def test_default_upload_path_remains_q1_compatible(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            candidate = Path(tmp) / "q1-candidate-default"
+            sizes = _seed_candidate_dir(candidate, "Q1")
+            client = MagicMock()
+
+            def fake_head(*, Bucket, Key):
+                name = Key.rsplit("/", 1)[-1]
+                return {"ContentLength": sizes[name], "ETag": '"ok"'}
+
+            client.upload_file.return_value = None
+            client.head_object.side_effect = fake_head
+            config = CLI.rebuild_cli.B2Config.from_env(_b2_env())
+            durable = CLI.upload_candidate_artifacts_to_b2(
+                candidate,
+                prefix=CANONICAL_PREFIX,
+                client=client,
+                config=config,
+            )
+            self.assertTrue(
+                durable["object_keys"][0].endswith("/Q1_candidate_answer.json")
+            )
+
+
+class WrapperQuestionRoutingTests(unittest.TestCase):
+    def _run_wrapper(self, question_id: str, candidate: Path, sizes: dict[str, int]):
+        generation_payload = {
+            "ok": True,
+            "finalized": True,
+            "candidate_directory": str(candidate),
+        }
+        rebuild_ok = MagicMock(returncode=0, stdout="{}\n", stderr="")
+        generation_ok = MagicMock(
+            returncode=0,
+            stdout=json.dumps(generation_payload) + "\n",
+            stderr="",
+        )
+        client = MagicMock()
+
+        def fake_head(*, Bucket, Key):
+            name = Key.rsplit("/", 1)[-1]
+            return {"ContentLength": sizes[name], "ETag": f'"{name}"'}
+
+        client.upload_file.return_value = None
+        client.head_object.side_effect = fake_head
+        run_calls: list[list[str]] = []
+
+        def capture_run(argv, cwd):
+            run_calls.append(list(argv))
+            if len(run_calls) == 1:
+                return rebuild_ok
+            return generation_ok
+
+        with patch.dict(os.environ, _wrapper_env(), clear=False):
+            with patch.object(CLI, "_run", side_effect=capture_run):
+                with patch.object(
+                    CLI.rebuild_cli,
+                    "create_b2_client",
+                    return_value=client,
+                ):
+                    captured = io.StringIO()
+                    with patch("sys.stdout", captured):
+                        code = CLI.main(
+                            [
+                                "--case-root",
+                                str(candidate.parent),
+                                "--question-id",
+                                question_id,
+                                "--required-commit",
+                                "c" * 40,
+                                "--candidate-output-root",
+                                str(candidate.parent),
+                                "--authorization-confirmed",
+                                "--generation-only",
+                            ]
+                        )
+        return code, json.loads(captured.getvalue()), run_calls
+
+    def test_wrapper_passes_q1_through_and_uploads_q1_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            candidate = Path(tmp) / "q1-candidate-wrap"
+            sizes = _seed_candidate_dir(candidate, "Q1")
+            code, payload, run_calls = self._run_wrapper("Q1", candidate, sizes)
+            self.assertEqual(code, 0)
+            self.assertTrue(payload["ok"])
+            self.assertIn("Q1", run_calls[1])
+            self.assertTrue(
+                payload["durable_artifacts"]["object_keys"][0].endswith(
+                    "/Q1_candidate_answer.json"
+                )
+            )
+
+    def test_wrapper_passes_q2_through_and_uploads_q2_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            candidate = Path(tmp) / "q2-candidate-wrap"
+            sizes = _seed_candidate_dir(candidate, "Q2")
+            code, payload, run_calls = self._run_wrapper("Q2", candidate, sizes)
+            self.assertEqual(code, 0)
+            self.assertTrue(payload["ok"])
+            self.assertIn("Q2", run_calls[1])
+            keys = payload["durable_artifacts"]["object_keys"]
+            self.assertTrue(any(key.endswith("/Q2_candidate_answer.json") for key in keys))
+            self.assertTrue(any(key.endswith("/Q2_candidate_answer.md") for key in keys))
+
+    def test_wrapper_q2_missing_local_artifact_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            candidate = Path(tmp) / "q2-candidate-missing"
+            sizes = _seed_candidate_dir(candidate, "Q2")
+            (candidate / "Q2_candidate_answer.json").unlink()
+            generation_payload = {
+                "ok": True,
+                "finalized": True,
+                "candidate_directory": str(candidate),
+            }
+            rebuild_ok = MagicMock(returncode=0, stdout="{}\n", stderr="")
+            generation_ok = MagicMock(
+                returncode=0,
+                stdout=json.dumps(generation_payload) + "\n",
+                stderr="",
+            )
+            client = MagicMock()
+            with patch.dict(os.environ, _wrapper_env(), clear=False):
+                with patch.object(
+                    CLI, "_run", side_effect=[rebuild_ok, generation_ok]
+                ):
+                    with patch.object(
+                        CLI.rebuild_cli,
+                        "create_b2_client",
+                        return_value=client,
+                    ):
+                        captured = io.StringIO()
+                        with patch("sys.stdout", captured):
+                            code = CLI.main(
+                                [
+                                    "--case-root",
+                                    str(candidate.parent),
+                                    "--question-id",
+                                    "Q2",
+                                    "--required-commit",
+                                    "d" * 40,
+                                    "--candidate-output-root",
+                                    str(candidate.parent),
+                                    "--authorization-confirmed",
+                                    "--generation-only",
+                                ]
+                            )
+            self.assertNotEqual(code, 0)
+            payload = json.loads(captured.getvalue())
+            self.assertFalse(payload["ok"])
+            self.assertEqual(payload["phase"], "durable_upload")
+            client.upload_file.assert_not_called()
+            self.assertEqual(sizes["Q2_candidate_answer.md"], (candidate / "Q2_candidate_answer.md").stat().st_size)
+
+    def test_no_secret_leakage_for_q2_upload_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            candidate = Path(tmp) / "q2-candidate-secrets"
+            _seed_candidate_dir(candidate, "Q2")
+            client = MagicMock()
+            client.upload_file.side_effect = RuntimeError(
+                "boom key-id-secret-value app-key-secret-value"
+            )
+            config = CLI.rebuild_cli.B2Config.from_env(_b2_env())
+            with self.assertRaises(CLI.DurableUploadError) as ctx:
+                CLI.upload_candidate_artifacts_to_b2(
+                    candidate,
+                    prefix=CANONICAL_PREFIX,
+                    client=client,
+                    config=config,
+                    question_id="Q2",
+                )
+            blob = ctx.exception.message + json.dumps(ctx.exception.details)
+            self.assertNotIn("key-id-secret-value", blob)
+            self.assertNotIn("app-key-secret-value", blob)
+
+
+class StagingContractTests(unittest.TestCase):
+    def test_stage_logic_writes_requested_question_only(self) -> None:
+        packet = {
+            "questions": [
+                {"question_id": "Q1", "text": " parties for q1 "},
+                {"question_id": "Q2", "text": " roles for q2 "},
+            ]
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            case_root = Path(tmp) / "case"
+            for question_id in ("Q1", "Q2"):
+                question = next(
+                    item
+                    for item in packet["questions"]
+                    if item["question_id"] == question_id
+                )
+                destination = (
+                    case_root / "derived" / "question-text" / "questions.json"
+                )
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_text(
+                    json.dumps(
+                        {question_id: question["text"].strip()}, sort_keys=True
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+                loaded = json.loads(destination.read_text(encoding="utf-8"))
+                self.assertEqual(set(loaded), {question_id})
+                self.assertEqual(loaded[question_id], question["text"].strip())
+
+    def test_stage_logic_fails_when_question_absent(self) -> None:
+        packet = {"questions": [{"question_id": "Q1", "text": "only q1"}]}
+        question_id = "Q2"
+        question = next(
+            (
+                item
+                for item in packet.get("questions", [])
+                if item.get("question_id") == question_id
+            ),
+            None,
+        )
+        self.assertIsNone(question)
+        with self.assertRaises(SystemExit) as ctx:
+            if not question or not isinstance((question or {}).get("text"), str):
+                raise SystemExit(
+                    f"{question_id} text missing from checked-in permitted packet"
+                )
+        self.assertIn("Q2 text missing", str(ctx.exception))
+
+
+class ResultNamingHelpersTests(unittest.TestCase):
+    def test_result_json_naming(self) -> None:
+        for qid, expected in (
+            ("Q1", "case00-q1-result.json"),
+            ("Q2", "case00-q2-result.json"),
+            ("Q10", "case00-q10-result.json"),
+        ):
+            with self.subTest(qid=qid):
+                self.assertEqual(
+                    f"case00-{qid.lower()}-result.json",
+                    expected,
+                )
+
+    def test_artifact_naming(self) -> None:
+        for qid, mission, expected in (
+            ("Q1", "m1", "hal-case00-q1-m1"),
+            ("Q2", "bridge-9", "hal-case00-q2-bridge-9"),
+            ("Q10", "x", "hal-case00-q10-x"),
+        ):
+            with self.subTest(qid=qid, mission=mission):
+                self.assertEqual(
+                    f"hal-case00-{qid.lower()}-{mission}",
+                    expected,
+                )
+
+
+class PrefixSafetyRegressionTests(unittest.TestCase):
+    def test_canonical_prefix_unchanged(self) -> None:
+        self.assertEqual(CLI.DEFAULT_CANDIDATE_B2_PREFIX, CANONICAL_PREFIX)
+
+    def test_q2_keys_remain_under_canonical_prefix(self) -> None:
+        key = CLI.build_candidate_object_key(
+            CANONICAL_PREFIX,
+            "q2-candidate-safe",
+            "Q2_candidate_answer.json",
+            question_id="Q2",
+        )
+        CLI.assert_key_under_prefix(key, CANONICAL_PREFIX)
+        self.assertTrue(key.startswith(CANONICAL_PREFIX))
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -40,13 +40,6 @@ DEFAULT_CANDIDATE_B2_PREFIX = (
     "Benchmarks/Case-00-Triborough/derived/attorney-feedback-eval/candidate-answers/"
 )
 
-CANDIDATE_ARTIFACT_NAMES = (
-    "Q1_candidate_answer.json",
-    "Q1_candidate_answer.md",
-    "generation_manifest.json",
-    "model_input_audit.json",
-)
-
 # Production acceptance-contract pins (prefer secrets / env; never commit values).
 ACCEPTANCE_CONTRACT_OBJECT_KEY_ENV = "ACCEPTANCE_CONTRACT_OBJECT_KEY"
 ACCEPTANCE_CONTRACT_CONTENT_SHA256_ENV = "ACCEPTANCE_CONTRACT_CONTENT_SHA256"
@@ -69,6 +62,26 @@ class AcceptanceContractConfigError(Exception):
         super().__init__(message)
         self.message = message
         self.details = details
+
+
+def candidate_artifact_names(question_id: str) -> tuple[str, ...]:
+    """Return the four durable candidate basenames for a question id.
+
+    Q1 keeps the historical filenames; Q2+ use ``{question_id}_candidate_answer.*``.
+    """
+    qid = str(question_id or "").strip()
+    if not qid:
+        raise DurableUploadError("question_id must be non-empty for candidate artifacts")
+    return (
+        f"{qid}_candidate_answer.json",
+        f"{qid}_candidate_answer.md",
+        "generation_manifest.json",
+        "model_input_audit.json",
+    )
+
+
+# Historical Q1 tuple retained for callers/tests that pin the classic names.
+CANDIDATE_ARTIFACT_NAMES = candidate_artifact_names("Q1")
 
 
 def _run(argv: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
@@ -203,6 +216,8 @@ def build_candidate_object_key(
     prefix: str,
     candidate_basename: str,
     filename: str,
+    *,
+    question_id: str = "Q1",
 ) -> str:
     normalized_prefix = normalize_candidate_b2_prefix(prefix)
     base = (candidate_basename or "").strip().replace("\\", "/")
@@ -212,11 +227,13 @@ def build_candidate_object_key(
             "candidate directory basename is unsafe or empty",
             candidate_basename=candidate_basename,
         )
-    if name not in CANDIDATE_ARTIFACT_NAMES:
+    allowed = candidate_artifact_names(question_id)
+    if name not in allowed:
         raise DurableUploadError(
             "refusing to upload unexpected candidate artifact name",
             filename=filename,
-            allowed=list(CANDIDATE_ARTIFACT_NAMES),
+            allowed=list(allowed),
+            question_id=str(question_id or "").strip(),
         )
     key = f"{normalized_prefix}{base}/{name}"
     assert_key_under_prefix(key, normalized_prefix)
@@ -265,20 +282,24 @@ def upload_candidate_artifacts_to_b2(
     client: Optional[Any] = None,
     config: Optional[rebuild_cli.B2Config] = None,
     environ: Optional[Mapping[str, str]] = None,
+    question_id: str = "Q1",
 ) -> dict[str, Any]:
     """Upload the four finalized artifacts and verify each with head_object.
 
     Local ``candidate_dir`` is treated as ephemeral. Success requires remote
     verification of every object; missing or size-mismatched objects fail closed.
+    Artifact basenames follow ``candidate_artifact_names(question_id)`` so Q1
+    keeps historical names while Q2+ use question-aware filenames.
     """
     cfg = config if config is not None else rebuild_cli.B2Config.from_env(environ)
     s3 = client if client is not None else rebuild_cli.create_b2_client(cfg)
     normalized_prefix = normalize_candidate_b2_prefix(prefix)
     candidate_path = Path(candidate_dir).resolve()
     basename = candidate_path.name
+    artifact_names = candidate_artifact_names(question_id)
 
     objects: list[dict[str, Any]] = []
-    for filename in CANDIDATE_ARTIFACT_NAMES:
+    for filename in artifact_names:
         local_path = candidate_path / filename
         if not local_path.is_file():
             raise DurableUploadError(
@@ -286,7 +307,12 @@ def upload_candidate_artifacts_to_b2(
                 path=str(local_path),
             )
         expected_size = local_path.stat().st_size
-        object_key = build_candidate_object_key(normalized_prefix, basename, filename)
+        object_key = build_candidate_object_key(
+            normalized_prefix,
+            basename,
+            filename,
+            question_id=question_id,
+        )
         try:
             s3.upload_file(str(local_path), cfg.bucket, object_key)
         except Exception as exc:  # noqa: BLE001 — fail closed, no secret echo
@@ -321,17 +347,18 @@ def upload_candidate_artifacts_to_b2(
             entry["etag"] = etag.strip().strip('"')
         objects.append(entry)
 
-    if len(objects) != len(CANDIDATE_ARTIFACT_NAMES):
+    if len(objects) != len(artifact_names):
         raise DurableUploadError(
             "durable upload incomplete; refusing success",
             uploaded=len(objects),
-            required=len(CANDIDATE_ARTIFACT_NAMES),
+            required=len(artifact_names),
         )
 
     return {
         "bucket": cfg.bucket,
         "prefix": normalized_prefix,
         "candidate_basename": basename,
+        "question_id": str(question_id or "").strip(),
         "object_keys": [item["object_key"] for item in objects],
         "objects": objects,
     }
@@ -515,6 +542,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         durable = upload_candidate_artifacts_to_b2(
             candidate_dir,
             prefix=candidate_prefix,
+            question_id=acceptance["question_id"],
         )
     except rebuild_cli.RebuildError as exc:
         _emit(
