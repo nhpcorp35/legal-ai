@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import io
 import json
 import os
@@ -156,18 +157,15 @@ class WorkflowSurfaceTests(unittest.TestCase):
 
     def test_stage_step_uses_requested_question_id(self) -> None:
         text = _workflow_text()
-        self.assertIn('question_id = os.environ["QUESTION_ID"]', text)
-        self.assertIn(
-            'if item.get("question_id") == question_id',
-            text,
-        )
-        self.assertIn(
-            'f"{question_id} text missing from checked-in permitted packet"',
-            text,
-        )
-        self.assertNotIn('== "Q1"', text.split("Stage permitted question text", 1)[1].split(
+        stage_block = text.split("Stage permitted question text", 1)[1].split(
             "Compute Case-00 derived cache key", 1
-        )[0])
+        )[0]
+        self.assertIn('question_id = os.environ["QUESTION_ID"]', stage_block)
+        self.assertIn("stage_question_from_canonical_b2_packet", stage_block)
+        self.assertIn('question_id=question_id', stage_block)
+        self.assertNotIn('== "Q1"', stage_block)
+        self.assertNotIn("attorney_review_packet_02.json", stage_block)
+        self.assertNotIn("checked-in permitted packet", stage_block)
 
     def test_generator_invoked_with_requested_question_id(self) -> None:
         text = _workflow_text()
@@ -202,8 +200,23 @@ class WorkflowSurfaceTests(unittest.TestCase):
         self.assertNotIn("proposed_answer", text)
         self.assertNotIn("gold_answer", text)
         self.assertNotIn("ACCEPTANCE_CONTRACT_CONTENT_SHA256", text)
-        # Staging still references the checked-in permitted packet path only.
-        self.assertIn("attorney_review_packet_02.json", text)
+        self.assertNotIn("What declarations, causes of action", text)
+        stage_block = text.split("Stage permitted question text", 1)[1].split(
+            "Compute Case-00 derived cache key", 1
+        )[0]
+        self.assertIn("stage_question_from_canonical_b2_packet", stage_block)
+        self.assertIn("PacketStagingError", stage_block)
+        self.assertNotIn("attorney_review_packet_02.json", text)
+        self.assertNotIn("checked-in permitted packet", text)
+        # Allowlisted key + digests live in the helper module, not as packet body.
+        self.assertIn(
+            "attorney_review_packet_02-original.md",
+            CLI.CANONICAL_ATTORNEY_REVIEW_PACKET_OBJECT_KEY,
+        )
+        self.assertIn(
+            "review-20260802-2122f82dafe3",
+            CLI.CANONICAL_ATTORNEY_REVIEW_PACKET_OBJECT_KEY,
+        )
 
     def test_b2_boundaries_unchanged(self) -> None:
         text = _workflow_text()
@@ -213,6 +226,20 @@ class WorkflowSurfaceTests(unittest.TestCase):
         )
         self.assertIn("B2_KEY_ID: ${{ secrets.B2_KEY_ID }}", text)
         self.assertIn("B2_APPLICATION_KEY: ${{ secrets.B2_APPLICATION_KEY }}", text)
+        self.assertIn("B2_BUCKET: ${{ secrets.B2_BUCKET }}", text)
+        self.assertEqual(
+            CLI.CANONICAL_ATTORNEY_REVIEW_PACKET_OBJECT_KEY,
+            (
+                "Benchmarks/Case-00-Triborough/derived/attorney-feedback-eval/"
+                "attorney-reviews/review-20260802-2122f82dafe3/"
+                "attorney_review_packet_02-original.md"
+            ),
+        )
+        self.assertEqual(CLI.CANONICAL_ATTORNEY_REVIEW_PACKET_SIZE, 57278)
+        self.assertEqual(
+            CLI.CANONICAL_ATTORNEY_REVIEW_PACKET_SHA256,
+            "ce7e3a25b22ec23822aec4dcd317b1df38ce6c85b59f684f45f3bdb811316d86",
+        )
 
 
 class QuestionIdValidationTests(unittest.TestCase):
@@ -510,54 +537,167 @@ class WrapperQuestionRoutingTests(unittest.TestCase):
 
 
 class StagingContractTests(unittest.TestCase):
-    def test_stage_logic_writes_requested_question_only(self) -> None:
-        packet = {
-            "questions": [
-                {"question_id": "Q1", "text": " parties for q1 "},
-                {"question_id": "Q2", "text": " roles for q2 "},
-            ]
-        }
+    """Synthetic non-private fixtures for canonical packet question staging."""
+
+    SYNTHETIC_MARKDOWN = (
+        "# Synthetic attorney review packet\n\n"
+        "## Q1. Who are the parties in the synthetic matter?\n\n"
+        "Private-looking body for Q1 that must not be staged.\n\n"
+        "## Q2. What relief does the synthetic complaint request?\n\n"
+        "Private-looking body for Q2 that must not be staged.\n\n"
+        "## Q10. How is venue alleged in the synthetic filing?\n\n"
+        "Trailing notes.\n"
+    )
+
+    def _synthetic_bytes(self) -> bytes:
+        return self.SYNTHETIC_MARKDOWN.encode("utf-8")
+
+    def test_extract_q1_and_q2_headings(self) -> None:
+        md = self.SYNTHETIC_MARKDOWN
+        self.assertEqual(
+            CLI.extract_question_heading_from_markdown(md, "Q1"),
+            "Who are the parties in the synthetic matter?",
+        )
+        self.assertEqual(
+            CLI.extract_question_heading_from_markdown(md, "Q2"),
+            "What relief does the synthetic complaint request?",
+        )
+        self.assertEqual(
+            CLI.extract_question_heading_from_markdown(md, "Q10"),
+            "How is venue alleged in the synthetic filing?",
+        )
+
+    def test_extract_missing_question_fails_closed(self) -> None:
+        with self.assertRaises(CLI.PacketStagingError) as ctx:
+            CLI.extract_question_heading_from_markdown(self.SYNTHETIC_MARKDOWN, "Q3")
+        self.assertIn("missing from canonical packet", ctx.exception.message)
+        self.assertEqual(ctx.exception.details.get("question_id"), "Q3")
+        blob = ctx.exception.message + json.dumps(ctx.exception.details)
+        self.assertNotIn("synthetic complaint", blob)
+        self.assertNotIn("Private-looking", blob)
+
+    def test_verify_digest_mismatch_fails_closed(self) -> None:
+        payload = self._synthetic_bytes()
+        with self.assertRaises(CLI.PacketStagingError) as ctx:
+            CLI.verify_canonical_packet_bytes(
+                payload,
+                expected_size=len(payload),
+                expected_sha256="0" * 64,
+            )
+        self.assertIn("sha256 mismatch", ctx.exception.message)
+        self.assertEqual(ctx.exception.details.get("expected_sha256"), "0" * 64)
+        self.assertEqual(
+            ctx.exception.details.get("actual_sha256"),
+            hashlib.sha256(payload).hexdigest(),
+        )
+
+    def test_verify_size_mismatch_fails_closed(self) -> None:
+        payload = self._synthetic_bytes()
+        digest = hashlib.sha256(payload).hexdigest()
+        with self.assertRaises(CLI.PacketStagingError) as ctx:
+            CLI.verify_canonical_packet_bytes(
+                payload,
+                expected_size=len(payload) + 1,
+                expected_sha256=digest,
+            )
+        self.assertIn("size mismatch", ctx.exception.message)
+        self.assertEqual(ctx.exception.details.get("expected_size"), len(payload) + 1)
+        self.assertEqual(ctx.exception.details.get("actual_size"), len(payload))
+
+    def test_stage_writes_requested_question_only(self) -> None:
+        payload = self._synthetic_bytes()
+        digest = hashlib.sha256(payload).hexdigest()
+
+        class _Body:
+            def __init__(self, data: bytes) -> None:
+                self._data = data
+
+            def read(self) -> bytes:
+                return self._data
+
+        client = MagicMock()
+        client.get_object.return_value = {"Body": _Body(payload)}
+        config = CLI.rebuild_cli.B2Config.from_env(_b2_env())
+
         with tempfile.TemporaryDirectory() as tmp:
             case_root = Path(tmp) / "case"
-            for question_id in ("Q1", "Q2"):
-                question = next(
-                    item
-                    for item in packet["questions"]
-                    if item["question_id"] == question_id
+            for question_id, expected in (
+                ("Q1", "Who are the parties in the synthetic matter?"),
+                ("Q2", "What relief does the synthetic complaint request?"),
+            ):
+                result = CLI.stage_question_from_canonical_b2_packet(
+                    case_root=case_root,
+                    question_id=question_id,
+                    client=client,
+                    config=config,
+                    expected_size=len(payload),
+                    expected_sha256=digest,
                 )
-                destination = (
-                    case_root / "derived" / "question-text" / "questions.json"
+                self.assertTrue(result["ok"])
+                self.assertEqual(result["question_id"], question_id)
+                self.assertEqual(
+                    result["object_key"],
+                    CLI.CANONICAL_ATTORNEY_REVIEW_PACKET_OBJECT_KEY,
                 )
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                destination.write_text(
-                    json.dumps(
-                        {question_id: question["text"].strip()}, sort_keys=True
-                    )
-                    + "\n",
-                    encoding="utf-8",
+                loaded = json.loads(
+                    Path(result["questions_json"]).read_text(encoding="utf-8")
                 )
-                loaded = json.loads(destination.read_text(encoding="utf-8"))
                 self.assertEqual(set(loaded), {question_id})
-                self.assertEqual(loaded[question_id], question["text"].strip())
-
-    def test_stage_logic_fails_when_question_absent(self) -> None:
-        packet = {"questions": [{"question_id": "Q1", "text": "only q1"}]}
-        question_id = "Q2"
-        question = next(
-            (
-                item
-                for item in packet.get("questions", [])
-                if item.get("question_id") == question_id
-            ),
-            None,
-        )
-        self.assertIsNone(question)
-        with self.assertRaises(SystemExit) as ctx:
-            if not question or not isinstance((question or {}).get("text"), str):
-                raise SystemExit(
-                    f"{question_id} text missing from checked-in permitted packet"
+                self.assertEqual(loaded[question_id], expected)
+                # Safe status payload must not include question text.
+                status = json.dumps(
+                    {k: v for k, v in result.items() if k != "questions_json"},
+                    sort_keys=True,
                 )
-        self.assertIn("Q2 text missing", str(ctx.exception))
+                self.assertNotIn(expected, status)
+
+        client.get_object.assert_called()
+        for call in client.get_object.call_args_list:
+            key = call.kwargs.get("Key")
+            if key is None and call.args:
+                # boto3-style positional fallback is unused; require Key kwarg.
+                key = call.args[1] if len(call.args) > 1 else None
+            self.assertEqual(key, CLI.CANONICAL_ATTORNEY_REVIEW_PACKET_OBJECT_KEY)
+
+    def test_stage_missing_question_fails_before_write(self) -> None:
+        payload = self._synthetic_bytes()
+        digest = hashlib.sha256(payload).hexdigest()
+
+        class _Body:
+            def read(self) -> bytes:
+                return payload
+
+        client = MagicMock()
+        client.get_object.return_value = {"Body": _Body()}
+        config = CLI.rebuild_cli.B2Config.from_env(_b2_env())
+        with tempfile.TemporaryDirectory() as tmp:
+            case_root = Path(tmp) / "case"
+            with self.assertRaises(CLI.PacketStagingError) as ctx:
+                CLI.stage_question_from_canonical_b2_packet(
+                    case_root=case_root,
+                    question_id="Q9",
+                    client=client,
+                    config=config,
+                    expected_size=len(payload),
+                    expected_sha256=digest,
+                )
+            self.assertIn("missing from canonical packet", ctx.exception.message)
+            questions_path = (
+                case_root / "derived" / "question-text" / "questions.json"
+            )
+            self.assertFalse(questions_path.exists())
+
+    def test_refuse_non_allowlisted_object_key(self) -> None:
+        client = MagicMock()
+        config = CLI.rebuild_cli.B2Config.from_env(_b2_env())
+        with self.assertRaises(CLI.PacketStagingError) as ctx:
+            CLI.download_allowlisted_packet_bytes(
+                client=client,
+                config=config,
+                object_key="Benchmarks/other/not-allowlisted.md",
+            )
+        self.assertIn("non-allowlisted", ctx.exception.message)
+        client.get_object.assert_not_called()
 
 
 class ResultNamingHelpersTests(unittest.TestCase):

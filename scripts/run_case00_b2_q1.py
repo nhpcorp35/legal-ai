@@ -6,6 +6,10 @@ four finalized candidate artifacts to Backblaze B2. Local --candidate-output-roo
 paths (including /tmp) are ephemeral only; durable handoff is verified B2 object
 keys under the canonical candidate prefix.
 
+Question staging downloads the allowlisted canonical attorney-review markdown
+packet from B2, verifies size and SHA-256, and extracts ``## QN.`` headings into
+runner-local questions.json without logging packet or question body text.
+
 Production Q1 requires an externally supplied acceptance-contract object key,
 expected content SHA-256, and benchmark identity (CLI flags or environment /
 secrets). The generator fails closed before model generation when the contract
@@ -15,8 +19,10 @@ is absent, invalid, identity-mismatched, or hash-mismatched.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -40,10 +46,26 @@ DEFAULT_CANDIDATE_B2_PREFIX = (
     "Benchmarks/Case-00-Triborough/derived/attorney-feedback-eval/candidate-answers/"
 )
 
+# Canonical private attorney-review markdown packet (B2 only; never commit body).
+CANONICAL_ATTORNEY_REVIEW_PACKET_OBJECT_KEY = (
+    "Benchmarks/Case-00-Triborough/derived/attorney-feedback-eval/"
+    "attorney-reviews/review-20260802-2122f82dafe3/"
+    "attorney_review_packet_02-original.md"
+)
+CANONICAL_ATTORNEY_REVIEW_PACKET_SIZE = 57278
+CANONICAL_ATTORNEY_REVIEW_PACKET_SHA256 = (
+    "ce7e3a25b22ec23822aec4dcd317b1df38ce6c85b59f684f45f3bdb811316d86"
+)
+
 # Production acceptance-contract pins (prefer secrets / env; never commit values).
 ACCEPTANCE_CONTRACT_OBJECT_KEY_ENV = "ACCEPTANCE_CONTRACT_OBJECT_KEY"
 ACCEPTANCE_CONTRACT_CONTENT_SHA256_ENV = "ACCEPTANCE_CONTRACT_CONTENT_SHA256"
 ACCEPTANCE_CONTRACT_BENCHMARK_ID_ENV = "ACCEPTANCE_CONTRACT_BENCHMARK_ID"
+
+_QUESTION_HEADING_RE = re.compile(
+    r"^## (Q[1-9][0-9]*)\.\s+(.+?)\s*$",
+    re.MULTILINE,
+)
 
 
 class DurableUploadError(Exception):
@@ -62,6 +84,185 @@ class AcceptanceContractConfigError(Exception):
         super().__init__(message)
         self.message = message
         self.details = details
+
+
+class PacketStagingError(Exception):
+    """Fail-closed canonical packet download / verify / extract error.
+
+    Never embeds packet body or question text in ``message`` / ``details``.
+    """
+
+    def __init__(self, message: str, **details: Any) -> None:
+        super().__init__(message)
+        self.message = message
+        self.details = details
+
+
+def verify_canonical_packet_bytes(
+    payload: bytes,
+    *,
+    expected_size: int = CANONICAL_ATTORNEY_REVIEW_PACKET_SIZE,
+    expected_sha256: str = CANONICAL_ATTORNEY_REVIEW_PACKET_SHA256,
+) -> str:
+    """Verify packet size and SHA-256; fail closed on any mismatch.
+
+    Returns the computed hex digest on success. Does not log or return payload.
+    """
+    if not isinstance(payload, (bytes, bytearray)):
+        raise PacketStagingError(
+            "canonical packet payload must be bytes",
+            payload_type=type(payload).__name__,
+        )
+    actual_size = len(payload)
+    if actual_size != int(expected_size):
+        raise PacketStagingError(
+            "canonical packet size mismatch",
+            expected_size=int(expected_size),
+            actual_size=actual_size,
+        )
+    digest = hashlib.sha256(bytes(payload)).hexdigest()
+    expected = str(expected_sha256 or "").strip().lower()
+    if digest != expected:
+        raise PacketStagingError(
+            "canonical packet sha256 mismatch",
+            expected_sha256=expected,
+            actual_sha256=digest,
+        )
+    return digest
+
+
+def extract_question_heading_from_markdown(markdown: str, question_id: str) -> str:
+    """Extract the ``## QN. <text>`` heading for ``question_id``; fail closed."""
+    qid = str(question_id or "").strip()
+    if not qid:
+        raise PacketStagingError("question_id must be non-empty for packet staging")
+    if not isinstance(markdown, str):
+        raise PacketStagingError(
+            "packet markdown must be a string",
+            markdown_type=type(markdown).__name__,
+        )
+    matched: dict[str, str] = {}
+    for found_id, heading in _QUESTION_HEADING_RE.findall(markdown):
+        text = heading.strip()
+        if not text:
+            continue
+        # First heading wins for a given id (deterministic, fail-closed duplicates).
+        if found_id not in matched:
+            matched[found_id] = text
+    if qid not in matched:
+        raise PacketStagingError(
+            "requested question heading missing from canonical packet",
+            question_id=qid,
+        )
+    return matched[qid]
+
+
+def write_staged_questions_json(
+    case_root: Path,
+    question_id: str,
+    question_text: str,
+) -> Path:
+    """Write runner-local ``derived/question-text/questions.json`` for one question."""
+    qid = str(question_id or "").strip()
+    text = str(question_text or "").strip()
+    if not qid:
+        raise PacketStagingError("question_id must be non-empty for questions.json")
+    if not text:
+        raise PacketStagingError(
+            "question text must be non-empty for questions.json",
+            question_id=qid,
+        )
+    destination = (
+        Path(case_root) / "derived" / "question-text" / "questions.json"
+    )
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(
+        json.dumps({qid: text}, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return destination.resolve()
+
+
+def download_allowlisted_packet_bytes(
+    *,
+    client: Optional[Any] = None,
+    config: Optional[rebuild_cli.B2Config] = None,
+    environ: Optional[Mapping[str, str]] = None,
+    object_key: str = CANONICAL_ATTORNEY_REVIEW_PACKET_OBJECT_KEY,
+) -> bytes:
+    """Download only the fixed allowlisted canonical packet object from B2."""
+    key = str(object_key or "").strip()
+    if key != CANONICAL_ATTORNEY_REVIEW_PACKET_OBJECT_KEY:
+        raise PacketStagingError(
+            "refusing non-allowlisted attorney-review packet object key",
+            object_key=key,
+        )
+    cfg = config if config is not None else rebuild_cli.B2Config.from_env(environ)
+    s3 = client if client is not None else rebuild_cli.create_b2_client(cfg)
+    try:
+        response = s3.get_object(Bucket=cfg.bucket, Key=key)
+        body = response["Body"]
+        payload = body.read() if hasattr(body, "read") else body
+    except PacketStagingError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — fail closed, no secret echo
+        raise PacketStagingError(
+            "B2 download failed for canonical attorney-review packet",
+            object_key=key,
+            error_type=type(exc).__name__,
+        ) from exc
+    if not isinstance(payload, (bytes, bytearray)):
+        raise PacketStagingError(
+            "canonical packet B2 body must be bytes",
+            payload_type=type(payload).__name__,
+        )
+    return bytes(payload)
+
+
+def stage_question_from_canonical_b2_packet(
+    *,
+    case_root: Path,
+    question_id: str,
+    client: Optional[Any] = None,
+    config: Optional[rebuild_cli.B2Config] = None,
+    environ: Optional[Mapping[str, str]] = None,
+    expected_size: int = CANONICAL_ATTORNEY_REVIEW_PACKET_SIZE,
+    expected_sha256: str = CANONICAL_ATTORNEY_REVIEW_PACKET_SHA256,
+) -> dict[str, Any]:
+    """Download, verify, extract, and stage one question into questions.json.
+
+    Never prints or returns packet body or question text.
+    """
+    qid = str(question_id or "").strip()
+    if not qid:
+        raise PacketStagingError("question_id must be non-empty for packet staging")
+    payload = download_allowlisted_packet_bytes(
+        client=client,
+        config=config,
+        environ=environ,
+    )
+    digest = verify_canonical_packet_bytes(
+        payload,
+        expected_size=expected_size,
+        expected_sha256=expected_sha256,
+    )
+    try:
+        markdown = payload.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise PacketStagingError(
+            "canonical packet is not valid utf-8",
+            error_type=type(exc).__name__,
+        ) from exc
+    heading = extract_question_heading_from_markdown(markdown, qid)
+    destination = write_staged_questions_json(case_root, qid, heading)
+    return {
+        "ok": True,
+        "question_id": qid,
+        "object_key": CANONICAL_ATTORNEY_REVIEW_PACKET_OBJECT_KEY,
+        "size": int(expected_size),
+        "sha256": digest,
+        "questions_json": str(destination),
+    }
 
 
 def candidate_artifact_names(question_id: str) -> tuple[str, ...]:

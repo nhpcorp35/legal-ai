@@ -104,36 +104,45 @@ jobs:
           python - <<'PY'
           import json
           import os
+          import sys
           from pathlib import Path
 
+          scripts_dir = Path("scripts").resolve()
+          sys.path.insert(0, str(scripts_dir))
+          import run_case00_b2_q1 as stage_cli
+
           question_id = os.environ["QUESTION_ID"]
-          source = Path(
-              "data/case-00-triborough/derived/"
-              "attorney-review-packet-02-live/attorney_review_packet_02.json"
-          )
-          packet = json.loads(source.read_text(encoding="utf-8"))
-          question = next(
-              (
-                  item
-                  for item in packet.get("questions", [])
-                  if item.get("question_id") == question_id
-              ),
-              None,
-          )
-          if not question or not isinstance(question.get("text"), str):
-              raise SystemExit(
-                  f"{question_id} text missing from checked-in permitted packet"
+          try:
+              result = stage_cli.stage_question_from_canonical_b2_packet(
+                  case_root=Path(os.environ["CASE_ROOT"]),
+                  question_id=question_id,
               )
-          destination = (
-              Path(os.environ["CASE_ROOT"])
-              / "derived"
-              / "question-text"
-              / "questions.json"
-          )
-          destination.parent.mkdir(parents=True, exist_ok=True)
-          destination.write_text(
-              json.dumps({question_id: question["text"].strip()}, sort_keys=True) + "\n",
-              encoding="utf-8",
+          except stage_cli.PacketStagingError as exc:
+              # Never echo packet body or question text — safe metadata only.
+              print(
+                  json.dumps(
+                      {
+                          "ok": False,
+                          "phase": "question_staging",
+                          "blocker": exc.message,
+                          **exc.details,
+                      },
+                      sort_keys=True,
+                  )
+              )
+              raise SystemExit(1) from exc
+          print(
+              json.dumps(
+                  {
+                      "ok": True,
+                      "phase": "question_staging",
+                      "question_id": result["question_id"],
+                      "object_key": result["object_key"],
+                      "size": result["size"],
+                      "sha256": result["sha256"],
+                  },
+                  sort_keys=True,
+              )
           )
           PY
 
