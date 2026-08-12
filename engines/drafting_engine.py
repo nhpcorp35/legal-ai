@@ -1481,7 +1481,9 @@ _CATCH_ALL_RELIEF_RE = re.compile(
     r"such\s+other\s+(?:and\s+further\s+)?relief|"
     r"other\s+and\s+further\s+relief|"
     r"further\s+relief\s+as\s+(?:to\s+)?(?:this\s+)?(?:court|court\s+may)|"
-    r"relief\s+as\s+(?:this\s+)?court\s+(?:may|deems)\s+(?:just|proper|equitable)"
+    # Source-backed equivalents of “any other relief that this court deems…”
+    r"(?:any\s+)?other\s+relief\s+that\s+(?:this\s+)?court\s+deems|"
+    r"relief\s+(?:as|that)\s+(?:this\s+)?court\s+(?:may|deems)\s+(?:just|proper|equitable)"
     r")\b"
 )
 

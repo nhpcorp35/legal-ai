@@ -1839,6 +1839,131 @@ class Q2EmptyStructurePriorPageRoutingTests(unittest.TestCase):
             "same-page catch-all must survive rebuilt excerpt truncation",
         )
 
+    def test_restored_cache_source_catch_all_wording_preserves_passes(self) -> None:
+        """
+        Restored-cache WHEREFORE heading page with full page_text using
+        source-equivalent catch-all wording (not “such other and further”).
+        Routing -> packet -> supported relief -> synthesis; synthetic only.
+        """
+        import complaint_structure as cs
+        from engines import drafting_engine as de
+
+        # Equivalent to “any other relief that this court deems just and
+        # equitable” — must match without broadening retrieval.
+        catch_all_source = (
+            "any other relief that this court deems just and equitable"
+        )
+        full_page = (
+            "WHEREFORE Plaintiff demands judgment declaring the policy void "
+            "ab initio and for rescission of the same; declaring that "
+            "Plaintiff owes neither a duty to defend nor a duty to indemnify "
+            "the named defendants; and for "
+            + catch_all_source
+            + "."
+        )
+        pages = [
+            {
+                "nyscef_document_number": 992,
+                "page_number": 1,
+                "page_id": "nyscef-992-page-0001",
+                "text": full_page,
+                "document_type": "complaint",
+                "document_classification": "complaint",
+                "source_filename": "synth_complaint_992.pdf",
+            },
+        ]
+        structure_map = cs.build_complaint_structure_map({"pages": pages})
+        relief_ids = cs.collect_complaint_relief_page_ids(structure_map)
+        self.assertEqual(relief_ids, ["nyscef-992-page-0001"])
+
+        documents = [
+            {
+                "filename": "synth_complaint_992.pdf",
+                "nyscef_document_number": 992,
+                "type": "complaint",
+                "document_type": "complaint",
+                "pages": pages,
+            }
+        ]
+        # Bounded excerpt may omit the trailing catch-all; restored page_text
+        # retains the full WHEREFORE page (production restored-cache shape).
+        truncated = de._complaint_relief_excerpt_from_page_text(full_page)
+        retrieval = {
+            "query": self.QUESTION,
+            "results": [
+                {
+                    "result_id": "hit-restored-wherefore",
+                    "page_id": "nyscef-992-page-0001",
+                    "nyscef_document_number": 992,
+                    "pdf_page": 1,
+                    "document_type": "complaint",
+                    "excerpt": truncated,
+                    "page_text": full_page,
+                    "classifications": ["legal_position"],
+                    "score": 0.9,
+                }
+            ],
+            "complaint_structure_map": structure_map,
+        }
+        routed = de.route_complaint_relief_evidence(
+            retrieval,
+            question=self.QUESTION,
+            documents=documents,
+            complaint_structure_map=structure_map,
+        )
+        page_ids = [h.get("page_id") for h in (routed.get("results") or [])]
+        self.assertIn("nyscef-992-page-0001", page_ids)
+
+        packet = de.build_evidence_packet(
+            self.QUESTION,
+            routed,
+            complaint_structure_map=structure_map,
+            documents=documents,
+        )
+        # Restored-cache provenance: WHEREFORE hit keeps full page_text.
+        wherefore_hits = [
+            h
+            for h in packet["retrieval_hits"]
+            if h.get("page_id") == "nyscef-992-page-0001"
+        ]
+        self.assertTrue(wherefore_hits)
+        self.assertTrue(
+            any(h.get("page_text") for h in wherefore_hits),
+            "restored-cache packet must retain full page_text",
+        )
+
+        supported = de.extract_supported_complaint_relief(packet)
+        self.assertTrue(supported["rescission_void_ab_initio"]["supported"])
+        self.assertTrue(supported["no_defense_or_indemnity"]["supported"])
+        self.assertTrue(
+            supported["catch_all_relief"]["supported"],
+            "source-equivalent catch-all wording must be recognized",
+        )
+
+        assembled = de.apply_evidence_grounded_relief_synthesis(
+            {
+                "proposed_answer": "Draft omitting grounded relief citations.",
+                "propositions": [],
+                "audit": {},
+            },
+            packet,
+        )
+        answer = assembled["proposed_answer"].lower()
+        # Preserve the three currently passing Q2 criteria.
+        self.assertIn("void ab initio", answer)
+        self.assertIn("no defense or indemnity", answer)
+        self.assertIn("neither a duty to defend nor a duty to indemnify", answer)
+        self.assertIn("pleaded", answer)
+        self.assertIn("not a judicial determination", answer)
+        # Catch-all recognized from source-equivalent wording.
+        self.assertIn("catch-all", answer)
+        self.assertIn("any other relief that this court deems", answer)
+        cats = set(assembled["audit"].get("relief_supported_categories") or [])
+        self.assertIn("rescission_void_ab_initio", cats)
+        self.assertIn("no_defense_or_indemnity", cats)
+        self.assertIn("catch_all_relief", cats)
+        self.assertTrue(assembled["audit"].get("relief_synthesis_applied"))
+
 
 if __name__ == "__main__":
     unittest.main()
