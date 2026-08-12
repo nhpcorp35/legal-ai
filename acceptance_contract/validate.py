@@ -33,6 +33,7 @@ CRIT_FAIL_SEMANTIC = "criterion_fail_semantic"
 
 FALLBACK_NONE = "fallback_none"
 FALLBACK_SKIPPED_EQUIVALENT = "fallback_skipped_equivalent"
+FALLBACK_SKIPPED_UNSUPPORTED = "fallback_skipped_unsupported"
 FALLBACK_INSERTED = "fallback_inserted"
 
 DUP_OK = "duplication_ok"
@@ -402,6 +403,19 @@ def answer_already_contains_equivalent(answer_text: str, fragment: str) -> bool:
     return False
 
 
+def criterion_evidence_already_supported(
+    answer_text: str, spec: CriterionEvalSpec
+) -> bool:
+    """True when the answer already contains every required evidence phrase.
+
+    Empty ``evidence_phrases`` means no evidence constraint. Fallback must not
+    invent evidence linkage; it may only proceed when support is already present.
+    """
+    if not spec.evidence_phrases:
+        return True
+    return _all_phrases_present(_norm(answer_text), spec.evidence_phrases)
+
+
 def apply_idempotent_contract_fallback(
     answer_text: str,
     view: ContractEvaluationView,
@@ -411,6 +425,11 @@ def apply_idempotent_contract_fallback(
     """Append genuinely missing fallback content at most once per criterion.
 
     Skips when equivalent content is already present. Never duplicates.
+
+    Fail-closed for unsupported claims: when a criterion requires evidence
+    phrases that are not already present in the answer, fallback is skipped
+    (``fallback_skipped_unsupported``) rather than inserting prose that would
+    manufacture legal/factual assertions without cited support.
     """
     by_id = view.criterion_by_id()
     targets = list(missing_ids) if missing_ids is not None else list(
@@ -431,6 +450,10 @@ def apply_idempotent_contract_fallback(
             continue
         if cid in inserted_for or answer_already_contains_equivalent(out, frag):
             actions[cid] = FALLBACK_SKIPPED_EQUIVALENT
+            continue
+        # Do not insert fallback that would manufacture unsupported evidence.
+        if not criterion_evidence_already_supported(out, spec):
+            actions[cid] = FALLBACK_SKIPPED_UNSUPPORTED
             continue
         # Insert exactly once.
         if out and not out.endswith(("\n", " ")):
@@ -541,6 +564,9 @@ def validate_final_answer_against_contract(
         text, fallback_actions = apply_idempotent_contract_fallback(
             text, view, missing_ids=missing_for_fallback
         )
+        for cid, action in fallback_actions.items():
+            if action == FALLBACK_SKIPPED_UNSUPPORTED:
+                diagnostics.append(f"fallback_skipped_unsupported:{cid}")
         # Second pass: ensure idempotence (running again must not duplicate).
         text, second = apply_idempotent_contract_fallback(
             text, view, missing_ids=missing_for_fallback

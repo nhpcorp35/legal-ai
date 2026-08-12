@@ -28,7 +28,15 @@ invalidate a valid bearing section. Complaint roadmap is required only when exac
 paragraph numbers or section organization were extracted from evidence or from
 attached complaint_structure_context metadata (overview, intervening factual
 layout, and party sections). Structure context is supplemental and never invents
-ranges. Gold answers and attorney feedback are never loaded into generation.
+ranges.
+
+WHEREFORE / requested-relief questions receive deterministic evidence-grounded
+relief synthesis: rescission/void-ab-initio, no-defense-or-indemnity, and
+catch-all relief propositions are emitted only when cited complaint excerpts
+support them, and the answer expressly distinguishes pleaded requested relief
+from a judicial determination. Unsupported categories are never invented.
+
+Gold answers and attorney feedback are never loaded into generation.
 
 Model calls go through the configured provider abstraction
 (``resolve_model_provider`` / injectable ``model_call``). Generation is
@@ -43,7 +51,7 @@ import re
 import urllib.error
 import urllib.request
 from copy import deepcopy
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 
 ENGINE_VERSION = "Attorney QA Reasoner v1 — Retrieval Grounded"
@@ -1429,6 +1437,427 @@ def detect_party_role_question_intent(question: str) -> bool:
         if role_identity or "party" in tokens or "parties" in tokens:
             return True
     return False
+
+
+# ---------------------------------------------------------------------------
+# Complaint-relief (WHEREFORE / requested-relief) question intent & synthesis
+# ---------------------------------------------------------------------------
+
+_RELIEF_QUERY_PHRASES = (
+    "wherefore",
+    "prayer for relief",
+    "requested relief",
+    "relief requested",
+    "what relief",
+    "which relief",
+    "declaratory relief",
+    "relief sought",
+    "relief does the complaint",
+    "relief does plaintiff",
+    "demands judgment",
+)
+
+_RESCISSION_VOID_RE = re.compile(
+    r"(?i)\b(?:rescission|rescind(?:s|ed|ing)?|void\s+ab\s+initio)\b"
+)
+_NO_DEFENSE_INDEMNITY_RE = re.compile(
+    r"(?i)\b(?:"
+    r"no\s+(?:duty|obligation)\s+to\s+(?:defend|indemnify)|"
+    r"(?:neither|no)\s+(?:defend|defense)\s+(?:nor|or)\s+indemnif\w*|"
+    r"no\s+defense\s+or\s+indemnity|"
+    r"not\s+(?:obligated|required|bound)\s+to\s+(?:defend|indemnify)|"
+    r"(?:declaring|declaration)\s+that\s+(?:.{0,60}?\b)?(?:no|not)\b.{0,60}?"
+    r"(?:duty|obligation)?\s*(?:to\s+)?(?:defend|indemnif\w*)"
+    r")"
+)
+_CATCH_ALL_RELIEF_RE = re.compile(
+    r"(?i)\b(?:"
+    r"such\s+other\s+(?:and\s+further\s+)?relief|"
+    r"other\s+and\s+further\s+relief|"
+    r"further\s+relief\s+as\s+(?:to\s+)?(?:this\s+)?(?:court|court\s+may)|"
+    r"relief\s+as\s+(?:this\s+)?court\s+(?:may|deems)\s+(?:just|proper|equitable)"
+    r")\b"
+)
+
+# Concise pleaded-versus-adjudicated distinction (generic; not case-specific).
+_PLEADED_RELIEF_NOT_ADJUDICATION_PHRASE = (
+    "This answer describes relief requested in the complaint, "
+    "not a judicial determination."
+)
+_PLEADED_NOT_ADJUDICATED_RE = re.compile(
+    r"(?i)\b(?:"
+    r"relief\s+requested\s+in\s+the\s+complaint|"
+    r"requested\s+in\s+the\s+complaint|"
+    r"pleaded\s+(?:requested\s+)?relief|"
+    r"not\s+a\s+judicial\s+determination|"
+    r"not\s+an\s+adjudicat(?:ed|ion)\s+outcome|"
+    r"not\s+(?:a\s+)?(?:court|judicial)\s+(?:finding|ruling|determination|order)"
+    r")\b"
+)
+
+_RELIEF_COMPLAINT_DOC_TYPES = frozenset(
+    {
+        "complaint",
+        "amended complaint",
+        "summons and complaint",
+        "petition",
+        "pleading",
+    }
+)
+
+
+def detect_relief_question_intent(question: str) -> bool:
+    """Detect WHEREFORE / requested-relief questions using general language."""
+    joined = normalize_whitespace(question).lower()
+    if not joined:
+        return False
+    if detect_party_role_question_intent(question):
+        return False
+    if any(phrase in joined for phrase in _RELIEF_QUERY_PHRASES):
+        return True
+    tokens = _question_tokens(question)
+    if "relief" in tokens and any(
+        cue in joined for cue in ("wherefore", "complaint", "plaintiff", "seek", "demand")
+    ):
+        return True
+    return False
+
+
+def _relief_hit_is_complaint_source(hit: Mapping[str, Any]) -> bool:
+    dtype = normalize_whitespace(hit.get("document_type")).lower()
+    if dtype in _RELIEF_COMPLAINT_DOC_TYPES:
+        return True
+    if "complaint" in dtype:
+        return True
+    # Unknown type: still usable when excerpt itself is a WHEREFORE / prayer block.
+    excerpt = normalize_whitespace(hit.get("excerpt") or hit.get("page_text") or "")
+    return bool(
+        re.search(r"(?i)\bwherefore\b|\bprayer\s+for\s+relief\b", excerpt)
+    )
+
+
+def _relief_hit_corpus(hit: Mapping[str, Any]) -> str:
+    return normalize_whitespace(
+        " ".join(
+            [
+                str(hit.get("excerpt") or ""),
+                str(hit.get("page_text") or hit.get("full_page_text") or ""),
+            ]
+        )
+    )
+
+
+def _snippet_around_match(text: str, match: re.Match[str], *, radius: int = 90) -> str:
+    start = max(0, match.start() - radius)
+    end = min(len(text), match.end() + radius)
+    snippet = normalize_whitespace(text[start:end])
+    if start > 0:
+        snippet = "..." + snippet
+    if end < len(text):
+        snippet = snippet + "..."
+    return snippet
+
+
+def extract_supported_complaint_relief(
+    evidence_packet: Optional[Mapping[str, Any]],
+) -> dict:
+    """
+    Derive which relief propositions are supported by cited complaint material.
+
+    Categories are emitted only when a complaint (or WHEREFORE) excerpt contains
+    matching language. Never invents case-specific private text.
+    """
+    packet = evidence_packet or {}
+    hits = [h for h in (packet.get("retrieval_hits") or []) if isinstance(h, dict)]
+    complaint_hits = [h for h in hits if _relief_hit_is_complaint_source(h)]
+    if not complaint_hits:
+        complaint_hits = hits
+
+    categories = {
+        "rescission_void_ab_initio": {
+            "supported": False,
+            "evidence_snippet": "",
+            "page_id": None,
+            "nyscef_document_number": None,
+            "pdf_page": None,
+            "pattern": _RESCISSION_VOID_RE,
+        },
+        "no_defense_or_indemnity": {
+            "supported": False,
+            "evidence_snippet": "",
+            "page_id": None,
+            "nyscef_document_number": None,
+            "pdf_page": None,
+            "pattern": _NO_DEFENSE_INDEMNITY_RE,
+        },
+        "catch_all_relief": {
+            "supported": False,
+            "evidence_snippet": "",
+            "page_id": None,
+            "nyscef_document_number": None,
+            "pdf_page": None,
+            "pattern": _CATCH_ALL_RELIEF_RE,
+        },
+    }
+
+    for hit in complaint_hits:
+        corpus = _relief_hit_corpus(hit)
+        if not corpus:
+            continue
+        for _key, meta in categories.items():
+            if meta["supported"]:
+                continue
+            match = meta["pattern"].search(corpus)
+            if not match:
+                continue
+            meta["supported"] = True
+            meta["evidence_snippet"] = _snippet_around_match(corpus, match)
+            meta["page_id"] = hit.get("page_id")
+            meta["nyscef_document_number"] = hit.get("nyscef_document_number")
+            meta["pdf_page"] = hit.get("pdf_page")
+
+    return {
+        "rescission_void_ab_initio": {
+            k: v
+            for k, v in categories["rescission_void_ab_initio"].items()
+            if k != "pattern"
+        },
+        "no_defense_or_indemnity": {
+            k: v
+            for k, v in categories["no_defense_or_indemnity"].items()
+            if k != "pattern"
+        },
+        "catch_all_relief": {
+            k: v for k, v in categories["catch_all_relief"].items() if k != "pattern"
+        },
+    }
+
+
+def _draft_has_pleaded_relief_not_adjudication(answer: str) -> bool:
+    return bool(_PLEADED_NOT_ADJUDICATED_RE.search(answer or ""))
+
+
+def _draft_has_rescission_void_relief(answer: str) -> bool:
+    return bool(_RESCISSION_VOID_RE.search(answer or ""))
+
+
+def _draft_has_no_defense_or_indemnity_relief(answer: str) -> bool:
+    return bool(_NO_DEFENSE_INDEMNITY_RE.search(answer or ""))
+
+
+def _draft_has_catch_all_relief(answer: str) -> bool:
+    return bool(_CATCH_ALL_RELIEF_RE.search(answer or ""))
+
+
+def _relief_proposition(
+    *,
+    proposition_id: str,
+    text: str,
+    support: Mapping[str, Any],
+) -> dict:
+    return {
+        "proposition_id": proposition_id,
+        "text": text,
+        "classification": "party_allegation",
+        "nyscef_document_number": support.get("nyscef_document_number"),
+        "page_id": support.get("page_id"),
+        "pdf_page": support.get("pdf_page"),
+        "source_excerpt": support.get("evidence_snippet") or "",
+        "confidence": 0.7,
+        "rationale": (
+            "Evidence-grounded complaint relief synthesis from cited "
+            "WHEREFORE / prayer material only."
+        ),
+        "polarity": "supporting",
+    }
+
+
+def assemble_evidence_grounded_relief_paragraphs(
+    supported: Mapping[str, Any],
+) -> List[str]:
+    """
+    Build concise relief paragraphs only for categories with complaint support.
+
+    Each paragraph embeds the supporting complaint snippet. Includes an explicit
+    pleaded-versus-adjudicated distinction when any relief category is supported.
+    """
+    paragraphs: List[str] = []
+    any_supported = any(
+        isinstance(supported.get(key), dict) and supported[key].get("supported")
+        for key in (
+            "rescission_void_ab_initio",
+            "no_defense_or_indemnity",
+            "catch_all_relief",
+        )
+    )
+    if not any_supported:
+        return paragraphs
+
+    paragraphs.append(_PLEADED_RELIEF_NOT_ADJUDICATION_PHRASE)
+
+    rescission = supported.get("rescission_void_ab_initio") or {}
+    if rescission.get("supported"):
+        snippet = rescission.get("evidence_snippet") or ""
+        paragraphs.append(
+            "The complaint requests rescission and/or a declaration that coverage "
+            f"is void ab initio, as reflected in the cited pleading language: "
+            f'"{snippet}".'
+        )
+
+    indemnity = supported.get("no_defense_or_indemnity") or {}
+    if indemnity.get("supported"):
+        snippet = indemnity.get("evidence_snippet") or ""
+        paragraphs.append(
+            "The complaint further seeks relief that there is no defense or "
+            f"indemnity obligation, as reflected in the cited pleading language: "
+            f'"{snippet}".'
+        )
+
+    catch_all = supported.get("catch_all_relief") or {}
+    if catch_all.get("supported"):
+        snippet = catch_all.get("evidence_snippet") or ""
+        paragraphs.append(
+            "The complaint also includes catch-all requested relief, as reflected "
+            f'in the cited pleading language: "{snippet}".'
+        )
+    return paragraphs
+
+
+def apply_evidence_grounded_relief_synthesis(
+    result: dict,
+    evidence_packet: Optional[Mapping[str, Any]],
+) -> dict:
+    """
+    Ensure relief answers ground required propositions in cited complaint support.
+
+    Adds only categories supported by complaint excerpts. Adds the pleaded-versus-
+    adjudicated distinction when support exists. Does not invent unsupported relief.
+    """
+    if not isinstance(result, dict):
+        return result
+    supported = extract_supported_complaint_relief(evidence_packet)
+    answer = normalize_whitespace(result.get("proposed_answer") or "")
+    additions: List[str] = []
+    new_props: List[dict] = []
+
+    any_supported = any(
+        (supported.get(k) or {}).get("supported")
+        for k in (
+            "rescission_void_ab_initio",
+            "no_defense_or_indemnity",
+            "catch_all_relief",
+        )
+    )
+
+    if any_supported and not _draft_has_pleaded_relief_not_adjudication(answer):
+        additions.append(_PLEADED_RELIEF_NOT_ADJUDICATION_PHRASE)
+        new_props.append(
+            {
+                "proposition_id": "relief-pleaded-not-adjudication",
+                "text": _PLEADED_RELIEF_NOT_ADJUDICATION_PHRASE,
+                "classification": "inference",
+                "nyscef_document_number": None,
+                "page_id": None,
+                "pdf_page": None,
+                "source_excerpt": "",
+                "confidence": 0.9,
+                "rationale": (
+                    "Explicit distinction that the answer reports pleaded requested "
+                    "relief, not an adjudicated outcome."
+                ),
+                "polarity": "supporting",
+            }
+        )
+
+    rescission = supported.get("rescission_void_ab_initio") or {}
+    if rescission.get("supported") and not _draft_has_rescission_void_relief(answer):
+        snippet = rescission.get("evidence_snippet") or ""
+        para = (
+            "The complaint requests rescission and/or a declaration that coverage "
+            f"is void ab initio, as reflected in the cited pleading language: "
+            f'"{snippet}".'
+        )
+        additions.append(para)
+        new_props.append(
+            _relief_proposition(
+                proposition_id="relief-rescission-void-ab-initio",
+                text=para,
+                support=rescission,
+            )
+        )
+
+    indemnity = supported.get("no_defense_or_indemnity") or {}
+    if indemnity.get("supported") and not _draft_has_no_defense_or_indemnity_relief(
+        answer
+    ):
+        snippet = indemnity.get("evidence_snippet") or ""
+        para = (
+            "The complaint further seeks relief that there is no defense or "
+            f"indemnity obligation, as reflected in the cited pleading language: "
+            f'"{snippet}".'
+        )
+        additions.append(para)
+        new_props.append(
+            _relief_proposition(
+                proposition_id="relief-no-defense-or-indemnity",
+                text=para,
+                support=indemnity,
+            )
+        )
+
+    catch_all = supported.get("catch_all_relief") or {}
+    if catch_all.get("supported") and not _draft_has_catch_all_relief(answer):
+        snippet = catch_all.get("evidence_snippet") or ""
+        para = (
+            "The complaint also includes catch-all requested relief, as reflected "
+            f'in the cited pleading language: "{snippet}".'
+        )
+        additions.append(para)
+        new_props.append(
+            _relief_proposition(
+                proposition_id="relief-catch-all",
+                text=para,
+                support=catch_all,
+            )
+        )
+
+    if not additions and not new_props:
+        result.setdefault("audit", {})
+        if isinstance(result["audit"], dict):
+            result["audit"]["relief_synthesis_applied"] = False
+            result["audit"]["relief_supported_categories"] = [
+                key
+                for key, meta in supported.items()
+                if isinstance(meta, dict) and meta.get("supported")
+            ]
+        return result
+
+    out = dict(result)
+    merged_answer = answer
+    if additions:
+        if merged_answer and not merged_answer.endswith((" ", "\n")):
+            merged_answer = merged_answer.rstrip() + " "
+        merged_answer = (merged_answer + " ".join(additions)).strip()
+    out["proposed_answer"] = merged_answer
+    props = [p for p in (out.get("propositions") or []) if isinstance(p, dict)]
+    existing_ids = {
+        normalize_whitespace(p.get("proposition_id")) for p in props
+    }
+    for prop in new_props:
+        pid = normalize_whitespace(prop.get("proposition_id"))
+        if pid and pid not in existing_ids:
+            props.append(prop)
+            existing_ids.add(pid)
+    out["propositions"] = props
+    audit = dict(out.get("audit") or {})
+    audit["relief_synthesis_applied"] = True
+    audit["relief_supported_categories"] = [
+        key
+        for key, meta in supported.items()
+        if isinstance(meta, dict) and meta.get("supported")
+    ]
+    out["audit"] = audit
+    return out
 
 
 def _hit_materiality_text(hit: dict) -> str:
@@ -6764,6 +7193,15 @@ def answer_attorney_record_question(
         validated["audit"]["party_role_provider_calls"] = provider_calls
         validated["audit"]["party_role_repair_attempted"] = repair_attempted
         validated["audit"]["party_role_expected_synthesis"] = list(expected_synthesis)
+    elif detect_relief_question_intent(question_text):
+        # Deterministic evidence-grounded relief assembly: only categories
+        # supported by cited complaint material; always distinguish pleaded
+        # requested relief from adjudication when support exists.
+        validated = apply_evidence_grounded_relief_synthesis(
+            validated, evidence_packet
+        )
+        validated.setdefault("audit", {})
+        validated["audit"]["relief_provider_calls"] = provider_calls
     return validated
 
 

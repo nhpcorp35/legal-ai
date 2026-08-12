@@ -379,8 +379,10 @@ class Phase2FallbackAndDuplicationTests(unittest.TestCase):
     def test_missing_fallback_inserted_exactly_once(self) -> None:
         view = _load_view()
         spec = view.criteria[0]
+        # Evidence phrases must already be present; fallback may only add framing.
+        seeded = f"Unrelated preamble with evidence:{spec.id}."
         out, actions = ac.apply_idempotent_contract_fallback(
-            "Unrelated preamble.", view, missing_ids=[spec.id]
+            seeded, view, missing_ids=[spec.id]
         )
         self.assertEqual(actions[spec.id], ac.FALLBACK_INSERTED)
         self.assertEqual(out.count(spec.fallback_text.strip()), 1)
@@ -390,6 +392,29 @@ class Phase2FallbackAndDuplicationTests(unittest.TestCase):
         )
         self.assertEqual(actions2[spec.id], ac.FALLBACK_SKIPPED_EQUIVALENT)
         self.assertEqual(out2.count(spec.fallback_text.strip()), 1)
+
+    def test_fallback_skips_when_evidence_unsupported(self) -> None:
+        view = _load_view()
+        spec = view.criteria[0]
+        # Presence missing and evidence phrases absent — fail closed, no insert.
+        out, actions = ac.apply_idempotent_contract_fallback(
+            "Unrelated preamble without evidence linkage.",
+            view,
+            missing_ids=[spec.id],
+        )
+        self.assertEqual(actions[spec.id], ac.FALLBACK_SKIPPED_UNSUPPORTED)
+        self.assertNotIn(spec.fallback_text.strip(), out)
+        result = ac.validate_final_answer_against_contract(
+            "Unrelated preamble without evidence linkage.",
+            view,
+            apply_fallback=True,
+        )
+        self.assertFalse(result.ok)
+        self.assertEqual(
+            result.fallback_actions.get(spec.id), ac.FALLBACK_SKIPPED_UNSUPPORTED
+        )
+        by_id = {c.criterion_id: c for c in result.criterion_results}
+        self.assertEqual(by_id[spec.id].result_code, ac.CRIT_FAIL_MISSING)
 
     def test_remaining_duplication_repairs_or_fails(self) -> None:
         view = _load_view()
@@ -503,6 +528,307 @@ class Phase2StructureAndProvenanceTests(unittest.TestCase):
             self.assertNotIn(spec.fallback_text, rendered)
             for phrase in spec.presence_phrases:
                 self.assertNotIn(phrase, rendered)
+
+
+# ---------------------------------------------------------------------------
+# Synthetic Q2-shaped relief criteria (no private Case-00 contract/source text)
+# ---------------------------------------------------------------------------
+
+_Q2_CRIT_RESCISSION = "q2-rescission-void-ab-initio"
+_Q2_CRIT_NO_DEFENSE = "q2-no-defense-or-indemnity"
+_Q2_CRIT_PLEADED = "q2-pleaded-relief-not-adjudication"
+_Q2_CRIT_CATCH_ALL = "q2-catch-all-relief"
+
+
+def _q2_shaped_contract() -> dict[str, Any]:
+    """Wholly synthetic Q2-shaped criteria — mirrors ids/shapes, not private prose."""
+    return ac.build_synthetic_contract(
+        contract_id="contract-synth-q2-relief",
+        version="1.0.0",
+        benchmark_id="synth-benchmark-q2",
+        question_id="Q2",
+        object_key="Contracts/synthetic/q2/Q2.acceptance_contract.json",
+        required_criterion_ids=[
+            _Q2_CRIT_RESCISSION,
+            _Q2_CRIT_NO_DEFENSE,
+            _Q2_CRIT_PLEADED,
+            _Q2_CRIT_CATCH_ALL,
+        ],
+        criteria=[
+            {
+                "id": _Q2_CRIT_RESCISSION,
+                "presence_phrases": ["rescission", "void ab initio"],
+                "evidence_phrases": ["synth wherefore void ab initio excerpt"],
+                "semantic_required_phrases": [],
+                "semantic_forbidden_phrases": [],
+                "fallback_text": (
+                    "Fallback rescission and void ab initio framing with "
+                    "synth wherefore void ab initio excerpt."
+                ),
+                "category": "relief",
+            },
+            {
+                "id": _Q2_CRIT_NO_DEFENSE,
+                "presence_phrases": ["no defense or indemnity"],
+                "evidence_phrases": ["synth no duty to defend or indemnify excerpt"],
+                "semantic_required_phrases": [],
+                "semantic_forbidden_phrases": [],
+                "fallback_text": (
+                    "Fallback no defense or indemnity framing with "
+                    "synth no duty to defend or indemnify excerpt."
+                ),
+                "category": "relief",
+            },
+            {
+                "id": _Q2_CRIT_PLEADED,
+                "presence_phrases": [
+                    "relief requested in the complaint",
+                    "not a judicial determination",
+                ],
+                "evidence_phrases": [],
+                "semantic_required_phrases": [],
+                "semantic_forbidden_phrases": ["court has ruled"],
+                "fallback_text": (
+                    "This answer describes relief requested in the complaint, "
+                    "not a judicial determination."
+                ),
+                "category": "relief",
+            },
+            {
+                "id": _Q2_CRIT_CATCH_ALL,
+                "presence_phrases": ["such other and further relief"],
+                "evidence_phrases": ["synth such other and further relief excerpt"],
+                "semantic_required_phrases": [],
+                "semantic_forbidden_phrases": [],
+                "fallback_text": (
+                    "Fallback catch-all framing with "
+                    "synth such other and further relief excerpt."
+                ),
+                "category": "relief",
+            },
+        ],
+    )
+
+
+def _q2_view() -> ac.ContractEvaluationView:
+    doc = _q2_shaped_contract()
+    raw = json.dumps(doc, sort_keys=True).encode("utf-8")
+    loaded = ac.load_acceptance_contract_from_bytes(
+        raw,
+        object_key=doc["object_key"],
+        expected_identity=ac.ContractIdentity(
+            benchmark_id="synth-benchmark-q2",
+            question_id="Q2",
+        ),
+        expected_content_sha256=doc["content_sha256"],
+    )
+    assert loaded.ok and loaded.evaluation is not None
+    return loaded.evaluation
+
+
+def _q2_grounded_answer() -> str:
+    return (
+        "This answer describes relief requested in the complaint, "
+        "not a judicial determination. "
+        "The complaint requests rescission and void ab initio treatment "
+        "(synth wherefore void ab initio excerpt). "
+        "It also seeks no defense or indemnity "
+        "(synth no duty to defend or indemnify excerpt). "
+        "The WHEREFORE includes such other and further relief "
+        "(synth such other and further relief excerpt)."
+    )
+
+
+class Q2ShapedReliefCriterionTests(unittest.TestCase):
+    def test_all_four_criteria_pass_when_evidence_linked(self) -> None:
+        view = _q2_view()
+        result = ac.validate_final_answer_against_contract(
+            _q2_grounded_answer(), view, apply_fallback=True
+        )
+        self.assertTrue(result.ok)
+        by_id = {c.criterion_id: c for c in result.criterion_results}
+        for cid in (
+            _Q2_CRIT_RESCISSION,
+            _Q2_CRIT_NO_DEFENSE,
+            _Q2_CRIT_PLEADED,
+            _Q2_CRIT_CATCH_ALL,
+        ):
+            self.assertEqual(by_id[cid].result_code, ac.CRIT_PASS)
+            self.assertEqual(by_id[cid].evidence, ac.EVIDENCE_SUPPORTED)
+
+    def test_presence_without_evidence_is_unsupported(self) -> None:
+        view = _q2_view()
+        # Mentions relief concepts but omits cited evidence phrases.
+        answer = (
+            "This answer describes relief requested in the complaint, "
+            "not a judicial determination. "
+            "Plaintiff seeks rescission and void ab initio treatment plus "
+            "no defense or indemnity and such other and further relief."
+        )
+        result = ac.validate_final_answer_against_contract(
+            answer, view, apply_fallback=True
+        )
+        self.assertFalse(result.ok)
+        by_id = {c.criterion_id: c for c in result.criterion_results}
+        self.assertEqual(by_id[_Q2_CRIT_RESCISSION].result_code, ac.CRIT_FAIL_UNSUPPORTED)
+        self.assertEqual(by_id[_Q2_CRIT_NO_DEFENSE].result_code, ac.CRIT_FAIL_UNSUPPORTED)
+        self.assertEqual(by_id[_Q2_CRIT_CATCH_ALL].result_code, ac.CRIT_FAIL_UNSUPPORTED)
+        # Pleaded distinction has no evidence phrases — presence alone passes.
+        self.assertEqual(by_id[_Q2_CRIT_PLEADED].result_code, ac.CRIT_PASS)
+
+    def test_pleaded_versus_adjudicated_language_required(self) -> None:
+        view = _q2_view()
+        answer = (
+            "The complaint requests rescission and void ab initio "
+            "(synth wherefore void ab initio excerpt). "
+            "It seeks no defense or indemnity "
+            "(synth no duty to defend or indemnify excerpt). "
+            "It includes such other and further relief "
+            "(synth such other and further relief excerpt)."
+        )
+        result = ac.validate_final_answer_against_contract(
+            answer, view, apply_fallback=False
+        )
+        self.assertFalse(result.ok)
+        by_id = {c.criterion_id: c for c in result.criterion_results}
+        self.assertEqual(by_id[_Q2_CRIT_PLEADED].result_code, ac.CRIT_FAIL_MISSING)
+        self.assertEqual(by_id[_Q2_CRIT_PLEADED].presence, ac.PRESENCE_ABSENT)
+
+    def test_fallback_inserts_pleaded_distinction_when_evidence_ready(self) -> None:
+        view = _q2_view()
+        # Evidence-linked relief present; pleaded distinction missing → fallback ok.
+        answer = (
+            "The complaint requests rescission and void ab initio "
+            "(synth wherefore void ab initio excerpt). "
+            "It seeks no defense or indemnity "
+            "(synth no duty to defend or indemnify excerpt). "
+            "It includes such other and further relief "
+            "(synth such other and further relief excerpt)."
+        )
+        result = ac.validate_final_answer_against_contract(
+            answer, view, apply_fallback=True
+        )
+        self.assertTrue(result.ok)
+        self.assertEqual(
+            result.fallback_actions.get(_Q2_CRIT_PLEADED), ac.FALLBACK_INSERTED
+        )
+        self.assertIn("not a judicial determination", result.final_answer.lower())
+
+    def test_fallback_cannot_manufacture_unsupported_relief_claims(self) -> None:
+        view = _q2_view()
+        # Missing rescission entirely (no presence, no evidence) — must not insert.
+        answer = (
+            "This answer describes relief requested in the complaint, "
+            "not a judicial determination. "
+            "It seeks no defense or indemnity "
+            "(synth no duty to defend or indemnify excerpt). "
+            "It includes such other and further relief "
+            "(synth such other and further relief excerpt)."
+        )
+        result = ac.validate_final_answer_against_contract(
+            answer, view, apply_fallback=True
+        )
+        self.assertFalse(result.ok)
+        self.assertEqual(
+            result.fallback_actions.get(_Q2_CRIT_RESCISSION),
+            ac.FALLBACK_SKIPPED_UNSUPPORTED,
+        )
+        by_id = {c.criterion_id: c for c in result.criterion_results}
+        self.assertEqual(by_id[_Q2_CRIT_RESCISSION].result_code, ac.CRIT_FAIL_MISSING)
+        # Fallback prose must not appear when support was absent.
+        rescission_spec = view.criterion_by_id()[_Q2_CRIT_RESCISSION]
+        self.assertNotIn(rescission_spec.fallback_text.strip(), result.final_answer)
+
+
+class Q2ReliefSynthesisAssemblyTests(unittest.TestCase):
+    """Evidence-grounded relief synthesis (synthetic complaint excerpts only)."""
+
+    def _packet(self, excerpt: str) -> dict:
+        return {
+            "question": "What relief is requested in the WHEREFORE clause?",
+            "retrieval_hit_count": 1,
+            "retrieval_hits": [
+                {
+                    "result_id": "hit-wherefore",
+                    "page_id": "nyscef-900-page-0004",
+                    "nyscef_document_number": 900,
+                    "pdf_page": 4,
+                    "document_type": "complaint",
+                    "excerpt": excerpt,
+                    "classifications": ["legal_position"],
+                }
+            ],
+        }
+
+    def test_synthesis_grounds_supported_categories_and_pleaded_distinction(self) -> None:
+        from engines import drafting_engine as de
+
+        excerpt = (
+            "WHEREFORE Plaintiff demands judgment declaring the policy void ab initio "
+            "and for rescission of the same; declaring that there is no duty to defend "
+            "or indemnify Defendants; and for such other and further relief as the "
+            "Court deems just and proper."
+        )
+        packet = self._packet(excerpt)
+        self.assertTrue(
+            de.detect_relief_question_intent(packet["question"])
+        )
+        supported = de.extract_supported_complaint_relief(packet)
+        self.assertTrue(supported["rescission_void_ab_initio"]["supported"])
+        self.assertTrue(supported["no_defense_or_indemnity"]["supported"])
+        self.assertTrue(supported["catch_all_relief"]["supported"])
+
+        assembled = de.apply_evidence_grounded_relief_synthesis(
+            {
+                "proposed_answer": "Partial draft omitting required relief detail.",
+                "propositions": [],
+                "audit": {},
+            },
+            packet,
+        )
+        answer = assembled["proposed_answer"].lower()
+        self.assertIn("not a judicial determination", answer)
+        self.assertIn("relief requested in the complaint", answer)
+        self.assertIn("void ab initio", answer)
+        self.assertIn("rescission", answer)
+        self.assertIn("no defense or indemnity", answer)
+        self.assertIn("catch-all", answer)
+        # Evidence snippets from the complaint must remain linked.
+        self.assertIn("void ab initio", assembled["proposed_answer"])
+        self.assertTrue(assembled["audit"].get("relief_synthesis_applied"))
+        cats = set(assembled["audit"].get("relief_supported_categories") or [])
+        self.assertEqual(
+            cats,
+            {
+                "rescission_void_ab_initio",
+                "no_defense_or_indemnity",
+                "catch_all_relief",
+            },
+        )
+
+    def test_synthesis_rejects_absent_support(self) -> None:
+        from engines import drafting_engine as de
+
+        packet = self._packet(
+            "WHEREFORE Plaintiff demands costs and disbursements of this action."
+        )
+        supported = de.extract_supported_complaint_relief(packet)
+        self.assertFalse(supported["rescission_void_ab_initio"]["supported"])
+        self.assertFalse(supported["no_defense_or_indemnity"]["supported"])
+        self.assertFalse(supported["catch_all_relief"]["supported"])
+
+        assembled = de.apply_evidence_grounded_relief_synthesis(
+            {
+                "proposed_answer": "No supported relief categories in this excerpt.",
+                "propositions": [],
+                "audit": {},
+            },
+            packet,
+        )
+        answer = assembled["proposed_answer"].lower()
+        self.assertNotIn("void ab initio", answer)
+        self.assertNotIn("no defense or indemnity", answer)
+        self.assertFalse(assembled["audit"].get("relief_synthesis_applied"))
 
 
 if __name__ == "__main__":
