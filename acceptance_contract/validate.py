@@ -64,6 +64,9 @@ _DEFENDANTS_RE = re.compile(r"\bdefendants?\b", re.IGNORECASE)
 # Material-omission diagnostics for source-identified pleaded counts.
 MATERIAL_OMISSION_COUNT_MISSING = "material_omission_source_count_missing"
 MATERIAL_OMISSION_COUNT_REPAIRED = "material_omission_source_count_repaired"
+MATERIAL_OMISSION_COUNT_SUBSTANCE_MISSING = (
+    "material_omission_source_count_substance_missing"
+)
 SOURCE_IDENTIFIED_COUNTS_KEY = "source_identified_pleaded_counts"
 
 
@@ -321,7 +324,9 @@ def source_identified_counts_from_validated(
     """Return structured source-identified pleaded counts (no invented titles).
 
     Reads optional ``source_identified_pleaded_counts`` on the validated claims
-    object. Each row must carry an ordinal/label; titles are ignored/nullified.
+    object. Each row must carry an ordinal/label. Verified source-grounded
+    ``title``, ``substantive_excerpt``, ``substance_phrases``, and ``page_id``
+    are preserved when present — never nullified.
     """
     if not isinstance(validated_claims, Mapping):
         return []
@@ -343,16 +348,69 @@ def source_identified_counts_from_validated(
         if key in seen:
             continue
         seen.add(key)
+        title = str(row.get("title") or "").strip() or None
+        excerpt = str(row.get("substantive_excerpt") or "").strip() or None
+        phrases_raw = row.get("substance_phrases")
+        phrases: list[str] = []
+        if isinstance(phrases_raw, list):
+            for p in phrases_raw:
+                cleaned = str(p or "").strip()
+                if cleaned and cleaned.lower() not in {x.lower() for x in phrases}:
+                    phrases.append(cleaned)
         out.append(
             {
                 "ordinal": ordinal or None,
                 "label": label,
                 "observed_marker": str(row.get("observed_marker") or label),
-                "title": None,
+                "title": title,
+                "substantive_excerpt": excerpt,
+                "substance_phrases": phrases,
                 "page_id": str(row.get("page_id") or "").strip() or None,
             }
         )
     return out
+
+
+def _safe_count_diag_token(label: str) -> str:
+    return re.sub(r"[^A-Za-z0-9 ]+", "", label).strip().replace(" ", "_")
+
+
+def substance_phrases_for_source_count(row: Mapping[str, Any]) -> list[str]:
+    """Return verified substance phrases for a pleaded-count row."""
+    phrases: list[str] = []
+    seen: set[str] = set()
+
+    def _add(value: Any) -> None:
+        text = _WS_RE.sub(" ", str(value or "").strip())
+        key = text.lower()
+        if len(text) < 4 or key in seen:
+            return
+        seen.add(key)
+        phrases.append(text)
+
+    raw = row.get("substance_phrases")
+    if isinstance(raw, list):
+        for item in raw:
+            _add(item)
+    _add(row.get("title"))
+    excerpt = _WS_RE.sub(" ", str(row.get("substantive_excerpt") or "").strip())
+    if excerpt:
+        # Prefer compact leading span so coverage checks stay fail-closed.
+        span = excerpt if len(excerpt) <= 96 else excerpt[:96].rsplit(" ", 1)[0]
+        _add(span)
+    return phrases
+
+
+def answer_covers_source_count_substance(
+    answer_text: str,
+    row: Mapping[str, Any],
+) -> bool:
+    """True when the answer covers verified substance for one pleaded count."""
+    phrases = substance_phrases_for_source_count(row)
+    if not phrases:
+        return False
+    norm_answer = _norm(answer_text)
+    return _any_phrase_present(norm_answer, phrases)
 
 
 def missing_source_identified_count_labels(
@@ -378,6 +436,50 @@ def missing_source_identified_count_labels(
     return missing
 
 
+def missing_source_identified_count_substance_labels(
+    answer_text: str,
+    source_counts: Sequence[Mapping[str, Any]],
+) -> list[str]:
+    """Return labels present or required whose verified substance is absent."""
+    missing: list[str] = []
+    for row in source_counts or []:
+        if not isinstance(row, Mapping):
+            continue
+        label = str(row.get("label") or "").strip()
+        if not label:
+            continue
+        if answer_covers_source_count_substance(answer_text, row):
+            continue
+        missing.append(label)
+    return missing
+
+
+def _verified_repair_clause_for_count(row: Mapping[str, Any]) -> Optional[str]:
+    """Build a cited substance repair clause, or None to fail closed."""
+    label = str(row.get("label") or "").strip()
+    page_id = str(row.get("page_id") or "").strip()
+    if not label or not page_id:
+        return None
+    phrases = substance_phrases_for_source_count(row)
+    if not phrases:
+        return None
+    # Prefer title, else first phrase, else bounded excerpt — all source-grounded.
+    title = str(row.get("title") or "").strip()
+    excerpt = str(row.get("substantive_excerpt") or "").strip()
+    if title:
+        substance = title
+    elif excerpt:
+        substance = excerpt if len(excerpt) <= 160 else excerpt[:160].rsplit(" ", 1)[0]
+    else:
+        substance = phrases[0]
+    substance = _WS_RE.sub(" ", substance).strip()
+    if len(substance) < 4:
+        return None
+    return (
+        f" {label} seeks {substance} (page_id {page_id})."
+    )
+
+
 def apply_source_identified_count_omission_repair(
     answer_text: str,
     source_counts: Sequence[Mapping[str, Any]],
@@ -385,28 +487,47 @@ def apply_source_identified_count_omission_repair(
     """
     Bounded repair for omitted source-identified pleaded counts.
 
-    Appends only observed count labels (never titles). Returns
-    ``(answer, repaired_labels)``.
+    Appends verified source-grounded substance with page_id citation only.
+    Bare labels are never sufficient. Returns ``(answer, repaired_labels)``.
+    When verified substance or citation is unavailable for a gap, that count is
+    left unrepaired (caller fails closed).
     """
-    missing = missing_source_identified_count_labels(answer_text, source_counts)
-    if not missing:
+    label_missing = set(
+        missing_source_identified_count_labels(answer_text, source_counts)
+    )
+    substance_missing = set(
+        missing_source_identified_count_substance_labels(answer_text, source_counts)
+    )
+    needs = label_missing | substance_missing
+    if not needs:
         return answer_text or "", []
-    if len(missing) == 1:
-        clause = f" The complaint separately pleads {missing[0]}."
-    elif len(missing) == 2:
-        clause = (
-            f" The complaint separately pleads {missing[0]} and {missing[1]}."
-        )
-    else:
-        clause = (
-            " The complaint separately pleads "
-            + ", ".join(missing[:-1])
-            + f", and {missing[-1]}."
-        )
+
+    by_label = {
+        str(row.get("label") or "").strip(): row
+        for row in (source_counts or [])
+        if isinstance(row, Mapping) and str(row.get("label") or "").strip()
+    }
+    clauses: list[str] = []
+    repaired: list[str] = []
+    for label in [
+        str(row.get("label") or "").strip()
+        for row in (source_counts or [])
+        if isinstance(row, Mapping) and str(row.get("label") or "").strip() in needs
+    ]:
+        row = by_label.get(label)
+        if not isinstance(row, Mapping):
+            continue
+        clause = _verified_repair_clause_for_count(row)
+        if not clause:
+            continue
+        clauses.append(clause)
+        repaired.append(label)
+    if not clauses:
+        return answer_text or "", []
     base = (answer_text or "").rstrip()
     if base and base[-1] not in ".!?":
         base += "."
-    return (base + clause).strip(), list(missing)
+    return (base + "".join(clauses)).strip(), repaired
 
 
 def evaluate_material_omissions_for_source_counts(
@@ -419,11 +540,11 @@ def evaluate_material_omissions_for_source_counts(
     """
     Enforce ``forbid_material_omissions`` against structured source counts.
 
-    Shared (not Case-00-specific): operates only on source-identified count
-    labels/categories supplied by the caller. When omissions are found and
-    ``apply_repair`` is true, performs one bounded label repair; if labels are
-    still missing, fails closed.
-    Returns ``(answer_text, ok, diagnostics)``.
+    Shared (not Case-00-specific): every source-identified pleaded count must
+    appear with verified substantive coverage (title/excerpt/phrases). Bare
+    Count I/II labels are insufficient. When gaps exist and ``apply_repair`` is
+    true, performs one bounded substance+citation repair; otherwise fails
+    closed. Returns ``(answer_text, ok, diagnostics)``.
     """
     diagnostics: list[str] = []
     text = answer_text or ""
@@ -432,8 +553,11 @@ def evaluate_material_omissions_for_source_counts(
     if not source_counts:
         return text, True, diagnostics
 
-    missing = missing_source_identified_count_labels(text, source_counts)
-    if not missing:
+    label_missing = missing_source_identified_count_labels(text, source_counts)
+    substance_missing = missing_source_identified_count_substance_labels(
+        text, source_counts
+    )
+    if not label_missing and not substance_missing:
         return text, True, diagnostics
 
     if apply_repair:
@@ -441,16 +565,23 @@ def evaluate_material_omissions_for_source_counts(
             text, source_counts
         )
         for label in repaired:
-            # Safe label token only (Count I / Count II) — no private prose.
-            safe = re.sub(r"[^A-Za-z0-9 ]+", "", label).strip().replace(" ", "_")
+            safe = _safe_count_diag_token(label)
             diagnostics.append(f"{MATERIAL_OMISSION_COUNT_REPAIRED}:{safe}")
-        missing = missing_source_identified_count_labels(text, source_counts)
-        if not missing:
+        label_missing = missing_source_identified_count_labels(text, source_counts)
+        substance_missing = missing_source_identified_count_substance_labels(
+            text, source_counts
+        )
+        if not label_missing and not substance_missing:
             return text, True, diagnostics
 
-    for label in missing:
-        safe = re.sub(r"[^A-Za-z0-9 ]+", "", label).strip().replace(" ", "_")
+    for label in label_missing:
+        safe = _safe_count_diag_token(label)
         diagnostics.append(f"{MATERIAL_OMISSION_COUNT_MISSING}:{safe}")
+    for label in substance_missing:
+        if label in label_missing:
+            continue
+        safe = _safe_count_diag_token(label)
+        diagnostics.append(f"{MATERIAL_OMISSION_COUNT_SUBSTANCE_MISSING}:{safe}")
     return text, False, diagnostics
 
 
@@ -876,8 +1007,10 @@ def validate_final_answer_against_contract(
     evaluator (not OCR-derived contract phrase matching).
 
     When ``forbid_material_omissions`` is set, source-identified pleaded counts
-    (from ``source_identified_counts`` or ``validated_claims``) must appear in
-    the answer; missing counts trigger one bounded label repair or fail closed.
+    (from ``source_identified_counts`` or ``validated_claims``) must appear with
+    verified substantive coverage; bare labels are insufficient. Missing
+    substance triggers one bounded cited repair when source-grounded substance
+    and page_id are available, otherwise fails closed.
     """
     text = answer_text or ""
     fallback_actions: dict[str, str] = {}

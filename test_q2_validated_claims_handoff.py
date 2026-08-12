@@ -1442,8 +1442,8 @@ class NoPrivateTextLeakageTests(unittest.TestCase):
 
 
 _Q2_COMPLETENESS_QUESTION = (
-    "What relief does the complaint request in the WHEREFORE / "
-    "requested-relief section?"
+    "What declarations, causes of action, and other relief does the complaint "
+    "request?"
 )
 
 
@@ -1499,6 +1499,40 @@ def _count_completeness_documents(*, include_count_i_page: bool = True) -> list:
     ]
 
 
+def _source_counts_with_substance() -> list:
+    """Verified Count I/II rows with source-grounded substance + page_id."""
+    return [
+        {
+            "ordinal": "I",
+            "label": "Count I",
+            "observed_marker": "COUNT I",
+            "title": None,
+            "substantive_excerpt": (
+                "Plaintiff seeks rescission of the Policies and declares "
+                "coverage void ab initio under the Policies."
+            ),
+            "substance_phrases": ["rescission", "void ab initio", "declaration"],
+            "page_id": "nyscef-001-page-0024",
+        },
+        {
+            "ordinal": "II",
+            "label": "Count II",
+            "observed_marker": "COUNT II",
+            "title": "Have No Obligations to Provide Defense",
+            "substantive_excerpt": (
+                "Declaring that there is no duty to defend or indemnify "
+                "Defendants under the Policies."
+            ),
+            "substance_phrases": [
+                "Have No Obligations to Provide Defense",
+                "no duty to defend",
+                "indemnify",
+            ],
+            "page_id": "nyscef-001-page-0025",
+        },
+    ]
+
+
 class Q2CauseOfActionCompletenessTests(unittest.TestCase):
     """Count I omission fails/repairs; complete Count I+II passes."""
 
@@ -1512,9 +1546,32 @@ class Q2CauseOfActionCompletenessTests(unittest.TestCase):
         # WHEREFORE page only from structure; Count I arrives via lookback routing.
         self.assertIn("nyscef-001-page-0025", relief_ids)
         self.assertNotIn("nyscef-001-page-0024", relief_ids)
-        counts = cs.enumerate_source_identified_pleaded_counts(structure_map)
+        counts = cs.enumerate_source_identified_pleaded_counts(
+            structure_map,
+            page_texts=[
+                {
+                    "page_id": p["page_id"],
+                    "page_number": p["page_number"],
+                    "text": p["text"],
+                }
+                for p in pages
+            ],
+        )
         labels = [c["label"] for c in counts]
         self.assertEqual(labels, ["Count I", "Count II"])
+        by_label = {c["label"]: c for c in counts}
+        # Verified substance / title preserved (not nullified).
+        self.assertTrue(
+            by_label["Count I"].get("substantive_excerpt")
+            or by_label["Count I"].get("substance_phrases")
+        )
+        self.assertTrue(
+            by_label["Count II"].get("title")
+            or by_label["Count II"].get("substantive_excerpt")
+        )
+        self.assertIn("void ab initio", " ".join(
+            by_label["Count I"].get("substance_phrases") or []
+        ).lower())
 
         # Ordinary retrieval only saw page 25 (Count I heading omitted).
         retrieval = {
@@ -1553,6 +1610,13 @@ class Q2CauseOfActionCompletenessTests(unittest.TestCase):
             routing.get("source_identified_pleaded_count_labels") or [],
         )
         self.assertTrue(routing.get("pleaded_count_completeness_ok"))
+        # Packet must preserve source-grounded substance (not nullify title/excerpt).
+        packet_counts = routed.get("source_identified_pleaded_counts") or []
+        packet_by_label = {c.get("label"): c for c in packet_counts}
+        self.assertTrue(
+            packet_by_label.get("Count I", {}).get("substantive_excerpt")
+            or packet_by_label.get("Count I", {}).get("substance_phrases")
+        )
 
     def test_complete_count_i_and_ii_synthesis_and_acceptance(self) -> None:
         import acceptance_contract as ac
@@ -1599,11 +1663,17 @@ class Q2CauseOfActionCompletenessTests(unittest.TestCase):
             )
         )
         audit = assembled.get("audit") or {}
-        audit_labels = [
-            r.get("label")
-            for r in (audit.get("source_identified_pleaded_counts") or [])
-        ]
+        audit_rows = audit.get("source_identified_pleaded_counts") or []
+        audit_labels = [r.get("label") for r in audit_rows]
         self.assertEqual(audit_labels, ["Count I", "Count II"])
+        # Verified substance must not be nullified in audit handoff.
+        for row in audit_rows:
+            self.assertTrue(
+                row.get("title")
+                or row.get("substantive_excerpt")
+                or row.get("substance_phrases"),
+                row,
+            )
 
         ident = _identity()
         contract = ac.build_synthetic_contract(
@@ -1695,6 +1765,69 @@ class Q2CauseOfActionCompletenessTests(unittest.TestCase):
         self.assertTrue(result.ok, result.as_safe_dict())
         self.assertIn("Count I", result.final_answer)
         self.assertIn("Count II", result.final_answer)
+        self.assertIn("void ab initio", result.final_answer.lower())
+        self.assertIn("no defense or indemnity", result.final_answer.lower())
+
+    def test_bare_labels_without_count_i_substance_fail(self) -> None:
+        """Negative: both labels present but Count I substance omitted fails."""
+        import acceptance_contract as ac
+
+        ident = _identity()
+        contract = ac.build_synthetic_contract(
+            contract_id="contract-q2-bare-labels",
+            version="1.0.2",
+            benchmark_id=ident["benchmark_id"],
+            question_id="Q2",
+            object_key=ident["object_key"],
+            required_criterion_ids=["q2-pleaded-relief-not-adjudication"],
+            criteria=[
+                {
+                    "id": "q2-pleaded-relief-not-adjudication",
+                    "presence_phrases": [
+                        "pleaded requested relief",
+                        "not a judicial determination",
+                    ],
+                    "evidence_phrases": [],
+                    "semantic_required_phrases": ["pleaded"],
+                    "semantic_forbidden_phrases": [],
+                    "fallback_text": (
+                        "This answer describes pleaded requested relief in the "
+                        "complaint, not a judicial determination."
+                    ),
+                    "category": "caveat",
+                }
+            ],
+        )
+        loaded = ac.load_acceptance_contract_from_bytes(
+            json.dumps(contract, sort_keys=True).encode("utf-8"),
+            object_key=contract["object_key"],
+            expected_identity=ac.ContractIdentity(
+                benchmark_id=ident["benchmark_id"], question_id="Q2"
+            ),
+            expected_content_sha256=contract["content_sha256"],
+        )
+        self.assertTrue(loaded.ok)
+        # Both labels present; Count II substance ok; Count I substance omitted.
+        answer = (
+            "This answer describes pleaded requested relief in the complaint, "
+            "not a judicial determination. Count I. Count II seeks no defense "
+            "or indemnity and no duty to defend."
+        )
+        source_counts = _source_counts_with_substance()
+        fail_closed = ac.validate_final_answer_against_contract(
+            answer,
+            loaded.evaluation,
+            apply_fallback=False,
+            source_identified_counts=source_counts,
+        )
+        self.assertFalse(fail_closed.ok)
+        self.assertTrue(
+            any(
+                "material_omission_source_count_substance_missing:Count_I" in d
+                for d in fail_closed.diagnostics
+            ),
+            fail_closed.diagnostics,
+        )
 
     def test_omitted_count_i_fails_material_omission_without_repair(self) -> None:
         import acceptance_contract as ac
@@ -1737,9 +1870,28 @@ class Q2CauseOfActionCompletenessTests(unittest.TestCase):
         # Answer covers categories but omits source-identified Count I.
         answer = (
             "This answer describes pleaded requested relief in the complaint, "
-            "not a judicial determination. Count II seeks no defense or indemnity."
+            "not a judicial determination. Count II seeks no defense or indemnity "
+            "and no duty to defend."
         )
-        source_counts = [
+        source_counts = _source_counts_with_substance()
+        fail_closed = ac.validate_final_answer_against_contract(
+            answer,
+            loaded.evaluation,
+            apply_fallback=False,
+            source_identified_counts=source_counts,
+        )
+        self.assertFalse(fail_closed.ok)
+        self.assertTrue(
+            any(
+                "material_omission_source_count_missing:Count_I" in d
+                or "material_omission_source_count_substance_missing:Count_I" in d
+                for d in fail_closed.diagnostics
+            ),
+            fail_closed.diagnostics,
+        )
+
+        # Bare-label-only rows cannot be repaired (fail closed).
+        bare_only = [
             {
                 "ordinal": "I",
                 "label": "Count I",
@@ -1755,20 +1907,13 @@ class Q2CauseOfActionCompletenessTests(unittest.TestCase):
                 "page_id": "nyscef-001-page-0025",
             },
         ]
-        fail_closed = ac.validate_final_answer_against_contract(
+        bare_repair = ac.validate_final_answer_against_contract(
             answer,
             loaded.evaluation,
-            apply_fallback=False,
-            source_identified_counts=source_counts,
+            apply_fallback=True,
+            source_identified_counts=bare_only,
         )
-        self.assertFalse(fail_closed.ok)
-        self.assertTrue(
-            any(
-                "material_omission_source_count_missing:Count_I" in d
-                for d in fail_closed.diagnostics
-            ),
-            fail_closed.diagnostics,
-        )
+        self.assertFalse(bare_repair.ok)
 
         repaired = ac.validate_final_answer_against_contract(
             answer,
@@ -1778,6 +1923,8 @@ class Q2CauseOfActionCompletenessTests(unittest.TestCase):
         )
         self.assertTrue(repaired.ok, repaired.as_safe_dict())
         self.assertIn("Count I", repaired.final_answer)
+        self.assertIn("void ab initio", repaired.final_answer.lower())
+        self.assertIn("page_id nyscef-001-page-0024", repaired.final_answer)
         self.assertTrue(
             any(
                 "material_omission_source_count_repaired:Count_I" in d
@@ -1819,6 +1966,11 @@ class Q2CauseOfActionCompletenessTests(unittest.TestCase):
             de.detect_party_role_question_intent(_Q2_COMPLETENESS_QUESTION)
         )
         self.assertTrue(de.detect_relief_question_intent(_Q2_COMPLETENESS_QUESTION))
+        self.assertEqual(
+            _Q2_COMPLETENESS_QUESTION,
+            "What declarations, causes of action, and other relief does the "
+            "complaint request?",
+        )
 
 
 if __name__ == "__main__":

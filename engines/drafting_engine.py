@@ -1466,6 +1466,9 @@ _RELIEF_QUERY_PHRASES = (
     "relief does the complaint",
     "relief does plaintiff",
     "demands judgment",
+    # Exact Case-00 Q2 wording (declarations / causes of action / other relief).
+    "declarations, causes of action, and other relief",
+    "causes of action, and other relief",
 )
 
 _RESCISSION_VOID_RE = re.compile(
@@ -2676,52 +2679,49 @@ def _pair_source_counts_with_relief_categories(
     return pairing
 
 
+def _privacy_safe_source_count_row(row: Mapping[str, Any]) -> dict:
+    """Preserve verified label/title/excerpt/phrases + page provenance."""
+    phrases_raw = row.get("substance_phrases")
+    phrases: List[str] = []
+    if isinstance(phrases_raw, list):
+        for item in phrases_raw:
+            cleaned = normalize_whitespace(item)
+            if cleaned and cleaned.lower() not in {p.lower() for p in phrases}:
+                phrases.append(cleaned)
+    title = normalize_whitespace(row.get("title") or "") or None
+    excerpt = normalize_whitespace(row.get("substantive_excerpt") or "") or None
+    return {
+        "ordinal": row.get("ordinal"),
+        "label": row.get("label"),
+        "observed_marker": row.get("observed_marker"),
+        "title": title,
+        "substantive_excerpt": excerpt,
+        "substance_phrases": phrases,
+        "page_id": row.get("page_id"),
+        "page_number": row.get("page_number"),
+        "match_key": row.get("match_key"),
+    }
+
+
 def ensure_source_identified_count_labels_in_answer(
     answer: str,
     source_counts: Optional[Sequence[Mapping[str, Any]]],
 ) -> tuple[str, list[str]]:
     """
-    Bounded repair: append missing source-identified count labels.
+    Bounded repair: append missing source-identified count substance + citation.
 
-    Emits only observed labels (``Count I``, ``Count II``, …) — never titles.
-    Returns (answer, repaired_labels).
+    Requires verified title/excerpt/phrases and page_id. Bare labels alone are
+    never emitted. Returns (answer, repaired_labels).
     """
+    from acceptance_contract import validate as ac_validate
+
     text = str(answer or "")
-    repaired: List[str] = []
     if not source_counts:
-        return text, repaired
-    low = text.lower()
-    missing: List[str] = []
-    for row in source_counts:
-        if not isinstance(row, Mapping):
-            continue
-        label = normalize_whitespace(row.get("label") or "")
-        if not label:
-            continue
-        needle = label.lower()
-        # Word-boundary match so ``Count I`` does not hit inside ``Count II``.
-        if re.search(rf"(?<![a-z0-9]){re.escape(needle)}(?![a-z0-9])", low):
-            continue
-        missing.append(label)
-    if not missing:
-        return text, repaired
-    if len(missing) == 1:
-        clause = f" The complaint separately pleads {missing[0]}."
-    elif len(missing) == 2:
-        clause = (
-            f" The complaint separately pleads {missing[0]} and {missing[1]}."
-        )
-    else:
-        clause = (
-            " The complaint separately pleads "
-            + ", ".join(missing[:-1])
-            + f", and {missing[-1]}."
-        )
-    base = text.rstrip()
-    if base and base[-1] not in ".!?":
-        base += "."
-    repaired = list(missing)
-    return normalize_whitespace(base + clause), repaired
+        return text, []
+    repaired_text, repaired = ac_validate.apply_source_identified_count_omission_repair(
+        text, source_counts
+    )
+    return normalize_whitespace(repaired_text), list(repaired)
 
 
 def assemble_evidence_grounded_relief_paragraphs(
@@ -3018,13 +3018,7 @@ def apply_evidence_grounded_relief_synthesis(
     ]
 
     safe_count_rows = [
-        {
-            "ordinal": r.get("ordinal"),
-            "label": r.get("label"),
-            "page_id": r.get("page_id"),
-            "title": None,
-        }
-        for r in source_counts
+        _privacy_safe_source_count_row(r) for r in source_counts
     ]
 
     if not any_supported:
@@ -4369,17 +4363,9 @@ def build_evidence_packet(
             }
         counts = retrieval.get("source_identified_pleaded_counts")
         if isinstance(counts, list):
-            # Privacy-safe: labels/ordinals/page_ids only — no title invention.
+            # Preserve verified title / bounded excerpt / phrases + page_id.
             packet["source_identified_pleaded_counts"] = [
-                {
-                    "ordinal": row.get("ordinal"),
-                    "label": row.get("label"),
-                    "observed_marker": row.get("observed_marker"),
-                    "title": None,
-                    "page_id": row.get("page_id"),
-                    "page_number": row.get("page_number"),
-                    "match_key": row.get("match_key"),
-                }
+                _privacy_safe_source_count_row(row)
                 for row in counts
                 if isinstance(row, Mapping)
             ]

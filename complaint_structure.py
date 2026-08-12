@@ -334,7 +334,7 @@ _MIDLINE_RELIEF_HEADING_RE = re.compile(
 )
 
 # Pleaded count headings (``COUNT I``, ``COUNT II``, ``Count 1``). Observed
-# ordinal only — never invents a cause-of-action title.
+# ordinal only — never invents a cause-of-action title from mashed OCR.
 _COUNT_ORDINAL_TOKEN = r"(?:[IVXLC]{1,8}|\d{1,2})"
 _COUNT_HEADING_LINE_RE = re.compile(
     r"(?im)^\s*(?P<body>COUNT\s+(?P<ordinal>"
@@ -346,7 +346,67 @@ _COUNT_HEADING_LINE_RE = re.compile(
 _MIDLINE_COUNT_HEADING_RE = re.compile(
     r"(?i)(?P<body>\bCOUNT\s+(?P<ordinal>" + _COUNT_ORDINAL_TOKEN + r")\b)"
 )
+# Same-line verified title tail after COUNT <ordinal> (letters-led; bounded).
+_COUNT_TITLE_TAIL_RE = re.compile(
+    r"(?i)\bCOUNT\s+(?P<ordinal>"
+    + _COUNT_ORDINAL_TOKEN
+    + r")\b(?P<title_tail>\s+[A-Za-z][A-Za-z0-9 ,;:'\"/\-]{3,120})?"
+)
 _PLEADED_COUNT_MATCH_KEY = "pleaded_count"
+# Source-grounded substance cues used only to populate coverage phrases.
+_COUNT_SUBSTANCE_CUE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"(?i)\bvoid\s+ab\s+initio\b"), "void ab initio"),
+    (re.compile(r"(?i)\brescission\b|\brescind(?:s|ed|ing)?\b"), "rescission"),
+    (
+        re.compile(
+            r"(?i)\bno\s+duty\s+to\s+defend\b|\bno\s+defense\s+or\s+indemnity\b|"
+            r"\bneither\s+defense\s+nor\s+indemnity\b|"
+            r"\bhave\s+no\s+obligations?\s+to\s+provide\s+defense\b"
+        ),
+        "no duty to defend",
+    ),
+    (re.compile(r"(?i)\bindemnif(?:y|ies|ied|ying|ication)\b|\bindemnity\b"), "indemnify"),
+    (
+        re.compile(r"(?i)\bdeclar(?:e|es|ing|ation)\b|\bdeclarations?\b"),
+        "declaration",
+    ),
+)
+_COUNT_SUBSTANCE_STOPWORDS = frozenset(
+    {
+        "count",
+        "the",
+        "and",
+        "for",
+        "that",
+        "this",
+        "with",
+        "from",
+        "under",
+        "have",
+        "has",
+        "had",
+        "are",
+        "was",
+        "were",
+        "been",
+        "being",
+        "into",
+        "onto",
+        "upon",
+        "such",
+        "other",
+        "further",
+        "plaintiff",
+        "defendant",
+        "defendants",
+        "complaint",
+        "policies",
+        "policy",
+        "herein",
+        "thereof",
+        "therein",
+    }
+)
 
 
 def document_id_for_nyscef(nyscef_document_number: int) -> str:
@@ -1561,6 +1621,122 @@ def collect_complaint_relief_page_ids(
     return ordered
 
 
+def _clean_verified_count_title(title_tail: str) -> Optional[str]:
+    """Return a bounded same-line title when it is source-readable; else None."""
+    title = _collapse_ws(title_tail or "").strip(" :.-—–_•·")
+    if len(title) < 4 or len(title) > 120:
+        return None
+    # Reject mashed OCR (many single-letter tokens / extreme spacing).
+    tokens = [t for t in re.split(r"\s+", title) if t]
+    if not tokens:
+        return None
+    short = sum(1 for t in tokens if len(re.sub(r"[^A-Za-z0-9]", "", t)) <= 1)
+    if short >= max(2, len(tokens) // 2):
+        return None
+    if not re.search(r"[A-Za-z]{3,}", title):
+        return None
+    return title
+
+
+def _bounded_substantive_excerpt_after_count(text: str, start_at: int) -> Optional[str]:
+    """Bounded allegation excerpt after a COUNT marker (no invented prose)."""
+    if not text or start_at < 0 or start_at >= len(text):
+        return None
+    tail = text[start_at:]
+    # Skip residual heading punctuation / whitespace.
+    tail = re.sub(r"^[\s:.\-—–_•·]+", "", tail)
+    # Drop a same-line title already captured; prefer following allegation prose.
+    lines = [ln.strip() for ln in tail.splitlines() if ln.strip()]
+    chunks: list[str] = []
+    for ln in lines[:4]:
+        # Skip pure COUNT restatement lines.
+        if _COUNT_HEADING_LINE_RE.match(ln):
+            continue
+        # Strip leading paragraph numbers (``180.`` / ``186.``).
+        ln = re.sub(r"^\d{1,4}\.\s*", "", ln)
+        ln = _collapse_ws(ln)
+        if len(ln) < 12:
+            continue
+        chunks.append(ln)
+        joined = _collapse_ws(" ".join(chunks))
+        if len(joined) >= 40:
+            break
+    if not chunks:
+        return None
+    excerpt = _collapse_ws(" ".join(chunks))
+    if len(excerpt) > 240:
+        excerpt = excerpt[:240].rsplit(" ", 1)[0].strip()
+    if len(excerpt) < 12:
+        return None
+    return excerpt
+
+
+def _substance_phrases_from_count_fields(
+    *,
+    title: Optional[str],
+    substantive_excerpt: Optional[str],
+) -> list[str]:
+    """Derive coverage phrases from verified title/excerpt only."""
+    phrases: list[str] = []
+    seen: set[str] = set()
+
+    def _add(phrase: str) -> None:
+        cleaned = _collapse_ws(phrase or "")
+        key = cleaned.lower()
+        if len(cleaned) < 4 or key in seen:
+            return
+        seen.add(key)
+        phrases.append(cleaned)
+
+    if title:
+        _add(title)
+        for token in re.findall(r"[A-Za-z][A-Za-z\-]{3,}", title):
+            if token.lower() not in _COUNT_SUBSTANCE_STOPWORDS:
+                _add(token)
+    corpus = _collapse_ws(f"{title or ''} {substantive_excerpt or ''}")
+    for pattern, canonical in _COUNT_SUBSTANCE_CUE_PATTERNS:
+        if pattern.search(corpus):
+            _add(canonical)
+    if substantive_excerpt and not phrases:
+        # Fail-closed fallback: retain a short verbatim span when cues absent.
+        span = substantive_excerpt[:80].rsplit(" ", 1)[0].strip()
+        _add(span)
+    return phrases
+
+
+def _enrich_pleaded_count_row_from_text(
+    row: dict[str, Any],
+    text: str,
+) -> dict[str, Any]:
+    """Preserve verified title or bounded excerpt + phrases from page text."""
+    if not text:
+        return row
+    ordinal = str(row.get("ordinal") or "").strip().upper()
+    if not ordinal:
+        return row
+    title = row.get("title")
+    excerpt = row.get("substantive_excerpt")
+    for m in _COUNT_TITLE_TAIL_RE.finditer(text):
+        if str(m.group("ordinal") or "").strip().upper() != ordinal:
+            continue
+        if not title:
+            title = _clean_verified_count_title(m.group("title_tail") or "")
+        if not excerpt:
+            excerpt = _bounded_substantive_excerpt_after_count(text, m.end())
+        break
+    phrases = list(row.get("substance_phrases") or [])
+    if not phrases:
+        phrases = _substance_phrases_from_count_fields(
+            title=title if isinstance(title, str) else None,
+            substantive_excerpt=excerpt if isinstance(excerpt, str) else None,
+        )
+    out = dict(row)
+    out["title"] = title if title else None
+    out["substantive_excerpt"] = excerpt if excerpt else None
+    out["substance_phrases"] = phrases
+    return out
+
+
 def enumerate_source_identified_pleaded_counts(
     structure_map: Mapping[str, Any] | Sequence[Mapping[str, Any]] | None = None,
     *,
@@ -1570,12 +1746,20 @@ def enumerate_source_identified_pleaded_counts(
     Enumerate source-grounded pleaded counts separately from prayer for relief.
 
     Emits one row per distinct observed ``COUNT <ordinal>`` marker with page
-    provenance. Never invents titles — ``title`` is always null (titles from
-    mashed OCR headings are intentionally omitted). Deterministic order follows
-    first-seen ordinal appearance.
+    provenance. Preserves a verified same-line heading title when readable, or a
+    bounded substantive excerpt from the count page — never invents titles from
+    mashed OCR. Deterministic order follows first-seen ordinal appearance.
     """
     rows: list[dict[str, Any]] = []
     seen_ordinals: set[str] = set()
+    page_text_by_id: dict[str, str] = {}
+    for entry in page_texts or []:
+        if not isinstance(entry, Mapping):
+            continue
+        pid = str(entry.get("page_id") or "").strip()
+        text = str(entry.get("text") or entry.get("page_text") or "")
+        if pid and text and pid not in page_text_by_id:
+            page_text_by_id[pid] = text
 
     def _take(
         *,
@@ -1583,6 +1767,9 @@ def enumerate_source_identified_pleaded_counts(
         observed_marker: str,
         page_id: Any,
         page_number: Any,
+        title: Any = None,
+        substantive_excerpt: Any = None,
+        substance_phrases: Optional[Sequence[str]] = None,
     ) -> None:
         ord_key = str(ordinal or "").strip().upper()
         if not ord_key or ord_key in seen_ordinals:
@@ -1590,17 +1777,27 @@ def enumerate_source_identified_pleaded_counts(
         marker = _collapse_ws(observed_marker or "") or f"COUNT {ord_key}"
         # Canonical display label preserves Roman/arabic ordinal from source.
         label = f"Count {ord_key}"
-        rows.append(
-            {
-                "ordinal": ord_key,
-                "label": label,
-                "observed_marker": marker,
-                "title": None,
-                "page_id": str(page_id).strip() if page_id else None,
-                "page_number": page_number,
-                "match_key": _PLEADED_COUNT_MATCH_KEY,
-            }
-        )
+        row = {
+            "ordinal": ord_key,
+            "label": label,
+            "observed_marker": marker,
+            "title": _collapse_ws(title) if title else None,
+            "substantive_excerpt": (
+                _collapse_ws(substantive_excerpt) if substantive_excerpt else None
+            ),
+            "substance_phrases": [
+                _collapse_ws(p)
+                for p in (substance_phrases or [])
+                if _collapse_ws(p)
+            ],
+            "page_id": str(page_id).strip() if page_id else None,
+            "page_number": page_number,
+            "match_key": _PLEADED_COUNT_MATCH_KEY,
+        }
+        pid = row["page_id"]
+        if pid and pid in page_text_by_id:
+            row = _enrich_pleaded_count_row_from_text(row, page_text_by_id[pid])
+        rows.append(row)
         seen_ordinals.add(ord_key)
 
     for smap in _iter_structure_documents(structure_map, require_current_schema=False):
@@ -1649,12 +1846,20 @@ def enumerate_source_identified_pleaded_counts(
         text = str(entry.get("text") or entry.get("page_text") or "")
         if not text:
             continue
-        for m in _MIDLINE_COUNT_HEADING_RE.finditer(text):
+        for m in _COUNT_TITLE_TAIL_RE.finditer(text):
+            title = _clean_verified_count_title(m.group("title_tail") or "")
+            excerpt = _bounded_substantive_excerpt_after_count(text, m.end())
+            phrases = _substance_phrases_from_count_fields(
+                title=title, substantive_excerpt=excerpt
+            )
             _take(
                 ordinal=m.group("ordinal"),
-                observed_marker=m.group("body"),
+                observed_marker=f"COUNT {str(m.group('ordinal') or '').strip()}",
                 page_id=entry.get("page_id"),
                 page_number=entry.get("page_number") or entry.get("pdf_page"),
+                title=title,
+                substantive_excerpt=excerpt,
+                substance_phrases=phrases,
             )
 
     return rows
