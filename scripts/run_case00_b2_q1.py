@@ -10,10 +10,13 @@ Question staging downloads the allowlisted canonical attorney-review markdown
 packet from B2, verifies size and SHA-256, and extracts ``## QN.`` headings into
 runner-local questions.json without logging packet or question body text.
 
-Production Q1 requires an externally supplied acceptance-contract object key,
-expected content SHA-256, and benchmark identity (CLI flags or environment /
-secrets). The generator fails closed before model generation when the contract
-is absent, invalid, identity-mismatched, or hash-mismatched.
+Production Case-00 generation requires an acceptance-contract object key,
+expected content SHA-256, and benchmark identity. Prefer the question-aware
+canonical resolver (benchmark_id + question_id → allowlisted object key and
+exact size pin, then verified content SHA-256). CLI flags or environment /
+secrets remain supported for compatibility. The generator fails closed before
+model generation when the contract is absent, invalid, identity-mismatched, or
+hash-mismatched. Never log or return contract body bytes.
 """
 
 from __future__ import annotations
@@ -35,6 +38,7 @@ _SCRIPTS = Path(__file__).resolve().parent
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
 
+import acceptance_contract as ac  # noqa: E402
 import rebuild_case00_derived as rebuild_cli  # noqa: E402
 
 AUTHORIZATION_ACKNOWLEDGEMENT = (
@@ -61,6 +65,15 @@ CANONICAL_ATTORNEY_REVIEW_PACKET_SHA256 = (
 ACCEPTANCE_CONTRACT_OBJECT_KEY_ENV = "ACCEPTANCE_CONTRACT_OBJECT_KEY"
 ACCEPTANCE_CONTRACT_CONTENT_SHA256_ENV = "ACCEPTANCE_CONTRACT_CONTENT_SHA256"
 ACCEPTANCE_CONTRACT_BENCHMARK_ID_ENV = "ACCEPTANCE_CONTRACT_BENCHMARK_ID"
+
+REQUIRED_CASE00_BENCHMARK_ID = "Case-00-Triborough"
+_QUESTION_ID_RE = re.compile(r"^Q[1-9][0-9]*$")
+CANONICAL_ACCEPTANCE_CONTRACT_VERSION = "v1.0.0"
+
+# Exact object-size pins for allowlisted canonical contracts (never commit body).
+CANONICAL_ACCEPTANCE_CONTRACT_EXPECTED_SIZES: dict[tuple[str, str], int] = {
+    (REQUIRED_CASE00_BENCHMARK_ID, "Q2"): 3463,
+}
 
 _QUESTION_HEADING_RE = re.compile(
     r"^## (Q[1-9][0-9]*)\.\s+(.+?)\s*$",
@@ -304,6 +317,229 @@ def _env_strip(environ: Mapping[str, str], name: str) -> str:
     return str(environ.get(name, "") or "").strip()
 
 
+def build_canonical_acceptance_contract_object_key(
+    benchmark_id: str,
+    question_id: str,
+) -> str:
+    """Build the canonical private acceptance-contract object key.
+
+    Safe path construction from explicit identities only — never from corpus
+    contents. Restricted to Case-00-Triborough + ``Q[1-9][0-9]*``.
+    """
+    bench = str(benchmark_id or "").strip()
+    qid = str(question_id or "").strip()
+    if bench != REQUIRED_CASE00_BENCHMARK_ID:
+        raise AcceptanceContractConfigError(
+            "acceptance-contract object key requires Case-00-Triborough benchmark_id",
+            benchmark_id=bench,
+            question_id=qid,
+        )
+    if not qid or _QUESTION_ID_RE.fullmatch(qid) is None:
+        raise AcceptanceContractConfigError(
+            "acceptance-contract object key requires question_id matching Q[1-9][0-9]*",
+            benchmark_id=bench,
+            question_id=qid,
+        )
+    q_lower = qid.lower()
+    return (
+        "Benchmarks/acceptance-contracts/case-00-triborough/"
+        f"{qid}/case00-triborough-{q_lower}/"
+        f"{CANONICAL_ACCEPTANCE_CONTRACT_VERSION}/acceptance_contract.json"
+    )
+
+
+def resolve_canonical_acceptance_contract_spec(
+    *,
+    benchmark_id: str,
+    question_id: str,
+) -> dict[str, Any]:
+    """Resolve allowlisted object key + exact size pin for a question.
+
+    Fail closed when the (benchmark_id, question_id) pair has no size pin.
+    Does not read or return contract body bytes.
+    """
+    bench = str(benchmark_id or "").strip()
+    qid = str(question_id or "").strip()
+    missing: list[str] = []
+    if not bench:
+        missing.append("benchmark_id")
+    if not qid:
+        missing.append("question_id")
+    if missing:
+        raise AcceptanceContractConfigError(
+            "canonical acceptance-contract resolution requires benchmark_id "
+            "and question_id",
+            missing=missing,
+        )
+    object_key = build_canonical_acceptance_contract_object_key(bench, qid)
+    expected_size = CANONICAL_ACCEPTANCE_CONTRACT_EXPECTED_SIZES.get((bench, qid))
+    if expected_size is None:
+        raise AcceptanceContractConfigError(
+            "no allowlisted acceptance-contract size pin for benchmark_id/question_id",
+            benchmark_id=bench,
+            question_id=qid,
+            object_key=object_key,
+        )
+    return {
+        "object_key": object_key,
+        "expected_size": int(expected_size),
+        "benchmark_id": bench,
+        "question_id": qid,
+    }
+
+
+def verify_acceptance_contract_object_bytes(
+    payload: bytes,
+    *,
+    object_key: str,
+    expected_size: int,
+    expected_benchmark_id: str,
+    expected_question_id: str,
+) -> dict[str, Any]:
+    """Verify exact size and authenticate identity + content SHA-256.
+
+    Returns safe generator pins only. Never returns or logs contract body.
+    """
+    if not isinstance(payload, (bytes, bytearray)):
+        raise AcceptanceContractConfigError(
+            "acceptance-contract payload must be bytes",
+            payload_type=type(payload).__name__,
+            object_key=object_key,
+        )
+    actual_size = len(payload)
+    if actual_size != int(expected_size):
+        raise AcceptanceContractConfigError(
+            "acceptance-contract object size mismatch",
+            object_key=object_key,
+            expected_size=int(expected_size),
+            actual_size=actual_size,
+        )
+    identity = ac.ContractIdentity(
+        benchmark_id=str(expected_benchmark_id or "").strip(),
+        question_id=str(expected_question_id or "").strip(),
+    )
+    result = ac.load_acceptance_contract_from_bytes(
+        bytes(payload),
+        object_key=object_key,
+        expected_identity=identity,
+    )
+    if not result.ok or not result.computed_content_sha256:
+        raise AcceptanceContractConfigError(
+            "acceptance-contract authentication failed",
+            object_key=object_key,
+            error_code=result.error_code,
+            diagnostics=list(result.diagnostics),
+        )
+    meta = result.metadata
+    if meta is None:
+        raise AcceptanceContractConfigError(
+            "acceptance-contract authentication failed",
+            object_key=object_key,
+            error_code=result.error_code or ac.ERROR_SCHEMA_INVALID,
+        )
+    if (
+        meta.benchmark_id != identity.benchmark_id
+        or meta.question_id != identity.question_id
+    ):
+        raise AcceptanceContractConfigError(
+            "acceptance-contract identity mismatch",
+            object_key=object_key,
+            error_code=ac.ERROR_IDENTITY_MISMATCH,
+            expected_benchmark_id=identity.benchmark_id,
+            expected_question_id=identity.question_id,
+            actual_benchmark_id=meta.benchmark_id,
+            actual_question_id=meta.question_id,
+        )
+    return {
+        "object_key": object_key,
+        "content_sha256": result.computed_content_sha256,
+        "benchmark_id": identity.benchmark_id,
+        "question_id": identity.question_id,
+        "size": int(expected_size),
+    }
+
+
+def download_canonical_acceptance_contract_bytes(
+    *,
+    object_key: str,
+    client: Optional[Any] = None,
+    config: Optional[rebuild_cli.B2Config] = None,
+    environ: Optional[Mapping[str, str]] = None,
+) -> bytes:
+    """Download one allowlisted canonical acceptance-contract object from B2."""
+    key = str(object_key or "").strip()
+    if not key.startswith("Benchmarks/acceptance-contracts/"):
+        raise AcceptanceContractConfigError(
+            "refusing non-allowlisted acceptance-contract object key prefix",
+            object_key=key,
+        )
+    if ".." in key.split("/") or key.endswith("/"):
+        raise AcceptanceContractConfigError(
+            "acceptance-contract object key is unsafe",
+            object_key=key,
+        )
+    cfg = config if config is not None else rebuild_cli.B2Config.from_env(environ)
+    s3 = client if client is not None else rebuild_cli.create_b2_client(cfg)
+    try:
+        response = s3.get_object(Bucket=cfg.bucket, Key=key)
+        body = response["Body"]
+        payload = body.read() if hasattr(body, "read") else body
+    except AcceptanceContractConfigError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — fail closed, no secret/body echo
+        raise AcceptanceContractConfigError(
+            "B2 download failed for acceptance-contract object",
+            object_key=key,
+            error_type=type(exc).__name__,
+        ) from exc
+    if not isinstance(payload, (bytes, bytearray)):
+        raise AcceptanceContractConfigError(
+            "acceptance-contract B2 body must be bytes",
+            payload_type=type(payload).__name__,
+            object_key=key,
+        )
+    return bytes(payload)
+
+
+def resolve_and_verify_canonical_acceptance_contract(
+    *,
+    benchmark_id: str,
+    question_id: str,
+    client: Optional[Any] = None,
+    config: Optional[rebuild_cli.B2Config] = None,
+    environ: Optional[Mapping[str, str]] = None,
+) -> dict[str, Any]:
+    """Resolve by identities, download, verify size/hash/identity; return pins.
+
+    Safe metadata only — never prints or returns contract body.
+    """
+    spec = resolve_canonical_acceptance_contract_spec(
+        benchmark_id=benchmark_id,
+        question_id=question_id,
+    )
+    payload = download_canonical_acceptance_contract_bytes(
+        object_key=spec["object_key"],
+        client=client,
+        config=config,
+        environ=environ,
+    )
+    verified = verify_acceptance_contract_object_bytes(
+        payload,
+        object_key=spec["object_key"],
+        expected_size=int(spec["expected_size"]),
+        expected_benchmark_id=spec["benchmark_id"],
+        expected_question_id=spec["question_id"],
+    )
+    return {
+        "ok": True,
+        "object_key": verified["object_key"],
+        "content_sha256": verified["content_sha256"],
+        "benchmark_id": verified["benchmark_id"],
+        "question_id": verified["question_id"],
+        "size": verified["size"],
+    }
+
+
 def resolve_production_acceptance_contract(
     *,
     question_id: str,
@@ -312,10 +548,11 @@ def resolve_production_acceptance_contract(
     benchmark_id: Optional[str] = None,
     environ: Optional[Mapping[str, str]] = None,
 ) -> dict[str, str]:
-    """Require external acceptance-contract object key, SHA-256, and identities.
+    """Require acceptance-contract object key, SHA-256, and identities.
 
-    Values may come from CLI flags or environment/secrets. Benchmark and
-    question identities are passed explicitly — never inferred from private
+    Values may come from CLI flags or environment/secrets (including pins
+    produced by ``resolve_and_verify_canonical_acceptance_contract``). Benchmark
+    and question identities are passed explicitly — never inferred from private
     corpus contents. Does not read or return contract body bytes.
     """
     env = os.environ if environ is None else environ
@@ -339,7 +576,7 @@ def resolve_production_acceptance_contract(
         missing.append("question_id")
     if missing:
         raise AcceptanceContractConfigError(
-            "production Q1 requires externally supplied acceptance-contract "
+            "production Case-00 generation requires acceptance-contract "
             "object key, content SHA-256, benchmark id, and question id",
             missing=missing,
         )

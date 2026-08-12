@@ -295,6 +295,61 @@ jobs:
           print(json.dumps({"verified": True, "objects": objects}, sort_keys=True))
           PY
 
+      - name: Resolve and verify acceptance contract
+        id: acceptance-contract
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import sys
+          from pathlib import Path
+
+          scripts_dir = Path("scripts").resolve()
+          sys.path.insert(0, str(scripts_dir))
+          import run_case00_b2_q1 as contract_cli
+
+          try:
+              result = contract_cli.resolve_and_verify_canonical_acceptance_contract(
+                  benchmark_id=os.environ["BENCHMARK_ID"],
+                  question_id=os.environ["QUESTION_ID"],
+              )
+          except contract_cli.AcceptanceContractConfigError as exc:
+              # Never echo contract body — safe metadata / diagnostics only.
+              print(
+                  json.dumps(
+                      {
+                          "ok": False,
+                          "phase": "acceptance_contract",
+                          "blocker": exc.message,
+                          **exc.details,
+                      },
+                      sort_keys=True,
+                  )
+              )
+              raise SystemExit(1) from exc
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"object_key={result['object_key']}\n")
+              output.write(f"content_sha256={result['content_sha256']}\n")
+              output.write(f"benchmark_id={result['benchmark_id']}\n")
+              output.write(f"question_id={result['question_id']}\n")
+          print(
+              json.dumps(
+                  {
+                      "ok": True,
+                      "phase": "acceptance_contract",
+                      "object_key": result["object_key"],
+                      "content_sha256": result["content_sha256"],
+                      "benchmark_id": result["benchmark_id"],
+                      "question_id": result["question_id"],
+                      "size": result["size"],
+                  },
+                  sort_keys=True,
+              )
+          )
+          PY
+
       - name: Generate requested question and publish four verified artifacts to B2
         id: case00
         shell: bash
@@ -308,6 +363,9 @@ jobs:
             --authorization-confirmed \
             --generation-only \
             --reuse-derived \
+            --acceptance-contract-object-key "${{ steps.acceptance-contract.outputs.object_key }}" \
+            --acceptance-contract-content-sha256 "${{ steps.acceptance-contract.outputs.content_sha256 }}" \
+            --acceptance-contract-benchmark-id "${{ steps.acceptance-contract.outputs.benchmark_id }}" \
             | tee "$RESULT_JSON"
           status=${PIPESTATUS[0]}
           echo "exit_code=$status" >> "$GITHUB_OUTPUT"
