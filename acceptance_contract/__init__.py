@@ -21,6 +21,7 @@ from acceptance_contract.loader import (
     compute_content_sha256,
     load_acceptance_contract_from_b2,
     load_acceptance_contract_from_bytes,
+    normalize_benchmark_id,
     validate_and_authenticate_contract,
 )
 from acceptance_contract.schema import (
@@ -119,6 +120,7 @@ __all__ = [
     "evaluate_criterion",
     "load_acceptance_contract_from_b2",
     "load_acceptance_contract_from_bytes",
+    "normalize_benchmark_id",
     "safe_provenance_record",
     "texts_are_equivalent",
     "validate_acceptance_contract_schema",

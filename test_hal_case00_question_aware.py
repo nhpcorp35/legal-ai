@@ -913,6 +913,90 @@ class CanonicalAcceptanceContractResolveTests(unittest.TestCase):
         blob = ctx.exception.message + json.dumps(ctx.exception.details)
         self.assertNotIn("PRIVATE_CONTRACT_BODY_MUST_NOT_LEAK", blob)
 
+    def test_benchmark_id_case_equivalence_accepted_and_preserves_ids(self) -> None:
+        """Display-case workflow ID matches lowercase embedded contract ID."""
+        import acceptance_contract as ac
+
+        embedded = "case-00-triborough"
+        self.assertEqual(REQUIRED_BENCHMARK, "Case-00-Triborough")
+        self.assertNotEqual(REQUIRED_BENCHMARK, embedded)
+        self.assertEqual(
+            ac.normalize_benchmark_id(REQUIRED_BENCHMARK),
+            ac.normalize_benchmark_id(embedded),
+        )
+
+        doc = self._synth_doc(benchmark_id=embedded, question_id="Q2")
+        raw = self._payload(doc)
+        loaded = ac.load_acceptance_contract_from_bytes(
+            raw,
+            object_key=self.Q2_OBJECT_KEY,
+            expected_identity=ac.ContractIdentity(
+                benchmark_id=REQUIRED_BENCHMARK,
+                question_id="Q2",
+            ),
+            expected_content_sha256=doc["content_sha256"],
+        )
+        self.assertTrue(loaded.ok)
+        assert loaded.metadata is not None
+        # Archived/stored identity casing is preserved in metadata.
+        self.assertEqual(loaded.metadata.benchmark_id, embedded)
+        self.assertEqual(loaded.metadata.question_id, "Q2")
+
+        verified = CLI.verify_acceptance_contract_object_bytes(
+            raw,
+            object_key=self.Q2_OBJECT_KEY,
+            expected_size=len(raw),
+            expected_benchmark_id=REQUIRED_BENCHMARK,
+            expected_question_id="Q2",
+        )
+        # Supplied workflow ID preserved in output pins.
+        self.assertEqual(verified["benchmark_id"], REQUIRED_BENCHMARK)
+        self.assertEqual(verified["question_id"], "Q2")
+        self.assertEqual(verified["content_sha256"], doc["content_sha256"])
+        blob = json.dumps(verified, sort_keys=True)
+        self.assertNotIn("PRIVATE_CONTRACT_BODY_MUST_NOT_LEAK", blob)
+
+    def test_different_benchmark_id_rejected_with_redaction(self) -> None:
+        import acceptance_contract as ac
+
+        doc = self._synth_doc(
+            benchmark_id="case-00-triborough",
+            question_id="Q2",
+        )
+        payload = self._payload(doc)
+        other = "Case-00-Otherborough"
+        self.assertNotEqual(
+            ac.normalize_benchmark_id(other),
+            ac.normalize_benchmark_id("case-00-triborough"),
+        )
+        loaded = ac.load_acceptance_contract_from_bytes(
+            payload,
+            object_key=self.Q2_OBJECT_KEY,
+            expected_identity=ac.ContractIdentity(
+                benchmark_id=other,
+                question_id="Q2",
+            ),
+        )
+        self.assertFalse(loaded.ok)
+        self.assertEqual(loaded.error_code, ac.ERROR_IDENTITY_MISMATCH)
+
+        with self.assertRaises(CLI.AcceptanceContractConfigError) as ctx:
+            CLI.verify_acceptance_contract_object_bytes(
+                payload,
+                object_key=self.Q2_OBJECT_KEY,
+                expected_size=len(payload),
+                expected_benchmark_id=other,
+                expected_question_id="Q2",
+            )
+        self.assertIn("authentication failed", ctx.exception.message)
+        self.assertEqual(
+            ctx.exception.details.get("error_code"),
+            "identity_mismatch",
+        )
+        blob = ctx.exception.message + json.dumps(ctx.exception.details)
+        self.assertNotIn("PRIVATE_CONTRACT_BODY_MUST_NOT_LEAK", blob)
+        self.assertNotIn("fallback_text", blob)
+
     def test_size_mismatch_fails_closed(self) -> None:
         doc = self._synth_doc()
         payload = self._payload(doc)

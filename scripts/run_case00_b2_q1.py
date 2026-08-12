@@ -437,8 +437,11 @@ def verify_acceptance_contract_object_bytes(
             object_key=object_key,
             error_code=result.error_code or ac.ERROR_SCHEMA_INVALID,
         )
+    # Benchmark: normalized equivalence only. Question ID remains strict.
+    # Preserve original supplied/stored IDs in returned pins and metadata.
     if (
-        meta.benchmark_id != identity.benchmark_id
+        ac.normalize_benchmark_id(meta.benchmark_id)
+        != ac.normalize_benchmark_id(identity.benchmark_id)
         or meta.question_id != identity.question_id
     ):
         raise AcceptanceContractConfigError(

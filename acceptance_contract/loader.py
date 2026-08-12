@@ -174,6 +174,17 @@ def sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def normalize_benchmark_id(benchmark_id: str) -> str:
+    """Canonical form for benchmark-ID identity equivalence checks only.
+
+    Trims surrounding whitespace and applies casefold. Does not strip
+    punctuation or otherwise collapse distinct identifiers. Callers must
+    preserve original supplied/stored IDs in metadata and outputs — this
+    helper is never used to rewrite archived contract bodies.
+    """
+    return str(benchmark_id or "").strip().casefold()
+
+
 def canonical_json_bytes(document: Mapping[str, Any]) -> bytes:
     """Deterministic UTF-8 JSON bytes (sorted keys, no content_sha256 field)."""
     without = {k: v for k, v in document.items() if k != "content_sha256"}
@@ -269,10 +280,13 @@ def validate_and_authenticate_contract(
     identity = document.get("identity") or {}
     bench = identity.get("benchmark_id") if isinstance(identity, dict) else None
     qid = identity.get("question_id") if isinstance(identity, dict) else None
-    if (
-        bench != expected_identity.benchmark_id
-        or qid != expected_identity.question_id
-    ):
+    # Benchmark IDs: trim + casefold equivalence only. Question IDs stay strict.
+    bench_ok = (
+        bench is not None
+        and normalize_benchmark_id(str(bench))
+        == normalize_benchmark_id(expected_identity.benchmark_id)
+    )
+    if not bench_ok or qid != expected_identity.question_id:
         return _fail(
             object_key=object_key,
             error_code=ERROR_IDENTITY_MISMATCH,
