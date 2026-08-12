@@ -350,8 +350,26 @@ jobs:
           )
           PY
 
+      - name: Q2 production-boundary preflight
+        id: q2-preflight
+        shell: bash
+        run: |
+          set +e
+          python scripts/q2_production_boundary_preflight.py \
+            --fixture testdata/q2_production_boundary_31629603939_fixture.json \
+            | tee "$RESULT_JSON"
+          status=${PIPESTATUS[0]}
+          if [ "$status" -eq 0 ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
+          exit "$status"
+
       - name: Generate requested question and publish four verified artifacts to B2
         id: case00
+        if: ${{ success() && steps.q2-preflight.outputs.ok == 'true' }}
         shell: bash
         run: |
           set +e

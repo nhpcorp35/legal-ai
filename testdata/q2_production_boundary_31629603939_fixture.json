@@ -1,0 +1,94 @@
+{
+  "schema_version": "q2_production_boundary_preflight_fixture.v1",
+  "diagnostic_run_correlation_id": "31629603939",
+  "question_id": "Q2",
+  "question_text": "What relief does the complaint request in the WHEREFORE / requested-relief section?",
+  "page_ids": {
+    "page_25": "nyscef-001-page-0025",
+    "page_26": "nyscef-001-page-0026"
+  },
+  "length_shape": {
+    "page_25": {
+      "excerpt_present": true,
+      "page_text_present": true
+    },
+    "page_26": {
+      "excerpt_present": true,
+      "page_text_present": false
+    }
+  },
+  "expected_relief_selection_reason_codes": {
+    "rescission_void_ab_initio": "supported_with_clean_excerpt",
+    "no_defense_or_indemnity": "supported_needs_paraphrase",
+    "catch_all_relief": "supported_with_clean_excerpt"
+  },
+  "banned_ocr_markers": [
+    "Named Insured",
+    "non-disclos ures",
+    "COUNT II",
+    "indemni fy",
+    "Def en dants"
+  ],
+  "clean_catch_all_excerpt": "for such other and further relief as the Court deems just and proper",
+  "page_25_excerpt": "184. On the basis of the material misrepresentations the Insurer is entitled to void the Policies ab initio and for rescission of the same.",
+  "page_25_page_text": "25\n\n184. On the basis of the material misrepresentations the Insurer is entitled to void the Policies ab initio and for rescission of the same.\nCOUNT II Have No Obligations to Provide Defense or Indemnification to Named Insured or Any Other Entity Void Ab Initio 186. Declaring that there is no duty to defend or indemni fy Def en dants under the Policies.\n187. WHEREFORE the Insurer demands judgment for such other and further relief as the Court deems just and proper.",
+  "page_26_excerpt": "and for such other and further relief as the Court deems just and proper.",
+  "ocr_rescission_quote_body": "25\n\n183. Upon information and belief, the Named Insured has been licensed.\n184. On the basis of the material misrepresentations and non-disclos ures the Insurer is entitled to void the Policies ab initio and for rescission of the same.\n185. The Insurer has no adequate remedy at law.",
+  "acceptance_contract": {
+    "contract_id": "contract-synth-q2-preflight-31629603939",
+    "version": "1.0.0",
+    "benchmark_id": "synth-benchmark-q2-preflight",
+    "question_id": "Q2",
+    "object_key": "Contracts/synthetic/q2/Q2.production_boundary_preflight.acceptance_contract.json",
+    "required_criterion_ids": [
+      "q2-rescission-void-ab-initio",
+      "q2-no-defense-or-indemnity",
+      "q2-pleaded-relief-not-adjudication",
+      "q2-catch-all-relief"
+    ],
+    "criteria": [
+      {
+        "id": "q2-rescission-void-ab-initio",
+        "presence_phrases": ["rescission", "void ab initio"],
+        "evidence_phrases": ["void the Policies ab initio"],
+        "semantic_required_phrases": [],
+        "semantic_forbidden_phrases": [],
+        "fallback_text": "Fallback rescission and void ab initio framing with void the Policies ab initio.",
+        "category": "relief"
+      },
+      {
+        "id": "q2-no-defense-or-indemnity",
+        "presence_phrases": ["no defense or indemnity"],
+        "evidence_phrases": ["no defense or indemnity"],
+        "semantic_required_phrases": [],
+        "semantic_forbidden_phrases": [],
+        "fallback_text": "Fallback no defense or indemnity framing with no defense or indemnity.",
+        "category": "relief"
+      },
+      {
+        "id": "q2-pleaded-relief-not-adjudication",
+        "presence_phrases": [
+          "pleaded requested relief",
+          "not a judicial determination"
+        ],
+        "evidence_phrases": [],
+        "semantic_required_phrases": ["pleaded"],
+        "semantic_forbidden_phrases": [
+          "court has ruled",
+          "established entitlement"
+        ],
+        "fallback_text": "This answer describes pleaded requested relief in the complaint, not a judicial determination.",
+        "category": "relief"
+      },
+      {
+        "id": "q2-catch-all-relief",
+        "presence_phrases": ["such other and further relief"],
+        "evidence_phrases": ["for such other and further relief as the Court deems just and proper"],
+        "semantic_required_phrases": [],
+        "semantic_forbidden_phrases": [],
+        "fallback_text": "Fallback catch-all with for such other and further relief as the Court deems just and proper.",
+        "category": "relief"
+      }
+    ]
+  }
+}
