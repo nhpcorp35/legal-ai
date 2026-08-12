@@ -1584,6 +1584,20 @@ def _relief_hit_corpus(hit: Mapping[str, Any]) -> str:
     return excerpt or page_text
 
 
+def _is_glued_ocr_paragraph_number_period(raw: str, period_index: int) -> bool:
+    """
+    True when ``raw[period_index]`` is the ``.`` in an OCR-glued ``186.`` marker.
+
+    Production restored-cache pages often mash ``Void Ab Initio 186. Declaring``
+    onto one line; treating that period as a sentence end truncates the verified
+    duty-to-defend clause that follows.
+    """
+    if period_index < 0 or period_index >= len(raw) or raw[period_index] != ".":
+        return False
+    before = raw[max(0, period_index - 6) : period_index]
+    return bool(re.search(r"\d{1,4}$", before))
+
+
 def _relief_evidence_span(
     text: str,
     match: re.Match[str],
@@ -1596,6 +1610,12 @@ def _relief_evidence_span(
     Expands to WHEREFORE enumerated-clause boundaries when present so contract
     evidence_phrases that span a full demand item remain linkable. Never invents
     text — only slices the observed corpus. Does not wrap with ellipsis markers.
+
+    On whitespace-normalized production cache corpora (newlines already collapsed),
+    numbered pleading markers such as ``185.`` also bound the left edge so the
+    span does not drag in the entire folio. Right-edge periods that belong to
+    glued OCR paragraph numbers (``186.``) are skipped so the following clean
+    declaration clause remains inside the verified evidence object.
     """
     raw = text or ""
     if not raw:
@@ -1608,18 +1628,35 @@ def _relief_evidence_span(
         raw[:m_start],
     ):
         left_boundary = boundary.end()
-    right_rel = re.search(
-        r"(?i)(?:;|\s*\([a-z0-9]+\)|\n{2,}|\.(?:\s|$))",
-        raw[m_end:],
-    )
-    if right_rel:
+    # Normalized page_text loses newline boundaries; start after the nearest
+    # numbered pleading marker so the marker itself (``185.`` / ``186.``) is
+    # not retained inside the verified evidence span.
+    for boundary in re.finditer(r"(?:^|\s)(\d{2,4}\.\s+)", raw[:m_start]):
+        left_boundary = max(left_boundary, boundary.end(1))
+
+    right_boundary = len(raw)
+    search_pos = 0
+    region = raw[m_end:]
+    while True:
+        right_rel = re.search(
+            r"(?i)(?:;|\s*\([a-z0-9]+\)|\n{2,}|\.(?:\s|$))",
+            region[search_pos:],
+        )
+        if not right_rel:
+            break
+        abs_start = m_end + search_pos + right_rel.start()
         token = right_rel.group(0)
         if "." in token and not token.strip().startswith(";"):
-            right_boundary = m_end + right_rel.start() + token.find(".") + 1
-        else:
-            right_boundary = m_end + right_rel.start()
-    else:
-        right_boundary = len(raw)
+            period_at = abs_start + token.find(".")
+            if _is_glued_ocr_paragraph_number_period(raw, period_at):
+                # Skip ``186.`` and keep scanning for the real clause end.
+                search_pos = period_at - m_end + 1
+                continue
+            right_boundary = period_at + 1
+            break
+        right_boundary = abs_start
+        break
+
     start, end = left_boundary, right_boundary
     if end < m_end:
         end = m_end
@@ -2124,17 +2161,21 @@ def prefer_clean_relief_display_excerpt(
         cores = _RELIEF_DISPLAY_EXCERPT_CORES[category]
     else:
         cores = _ALL_RELIEF_DISPLAY_EXCERPT_CORES
+    # When a category filter is set, skip returning the whole span — production
+    # restored-cache spans often mix sibling relief clauses after glued OCR
+    # paragraph numbers, and the attorney display must stay category-scoped.
     if (
-        not displayed_quote_fails_readability_gate(raw)
+        not category
+        and not displayed_quote_fails_readability_gate(raw)
         and len(raw) <= max_len
         and any(re.search(core, raw, flags=re.IGNORECASE) for core in cores)
     ):
         return raw
     if not displayed_quote_fails_readability_gate(raw) and len(raw) <= max_len:
-        # Readable but off-category: keep only when no category filter applies.
+        # Readable but off-category / mixed: keep only when no category filter.
         if not category:
             return raw
-        return ""
+        # Fall through to piece / window selection for category-scoped quotes.
 
     # Prefer intact clauses / numbered-paragraph bodies over sliding windows.
     pieces = [
@@ -2450,18 +2491,41 @@ def _format_relief_display_evidence(
     """
     Format displayed evidence for one relief category.
 
-    Readable quotes keep a clean source snippet and cite only that category's
-    originating page_id. Raw OCR dumps, page-numeral lines, OCR-split tokens,
-    mashed headings, and truncated tails are not displayed — prefer a shorter
-    clean excerpt when one exists; otherwise use a concise source-grounded
-    paraphrase plus page citation. Structured ``evidence_snippet`` on
-    ``support`` is left unchanged.
+    Operates on the production-derived support object (evidence_snippet, page_id,
+    category). Captures verified semantic claims and citation identity from that
+    structured support BEFORE any destructive OCR display scrub, then prefers a
+    category-scoped clean excerpt for the quote; otherwise emits a concise
+    source-grounded paraphrase that still retains a readable verified claim when
+    one exists. Raw OCR dumps, page-numeral lines, OCR-split tokens, mashed
+    headings, and truncated tails are not displayed. Structured
+    ``evidence_snippet`` on ``support`` is left unchanged for provenance.
     """
     snippet = normalize_whitespace(support.get("evidence_snippet") or "")
     cite = _relief_page_citation(support)
+
+    # Capture verified claim + citation identity from the structured support
+    # object before any display scrub mutates what the attorney sees.
+    verified_claim = ""
+    if snippet:
+        verified = extract_verified_relief_support_from_text(
+            snippet,
+            page_id=support.get("page_id"),
+            nyscef_document_number=support.get("nyscef_document_number"),
+            pdf_page=support.get("pdf_page"),
+        )
+        meta = verified.get(category) if category else None
+        if isinstance(meta, Mapping) and meta.get("supported"):
+            verified_claim = prefer_clean_relief_display_excerpt(
+                snippet, category=category
+            )
+            if not verified_claim:
+                tight = normalize_whitespace(meta.get("evidence_snippet") or "")
+                if tight and not displayed_quote_fails_readability_gate(tight):
+                    verified_claim = tight
+
     display = snippet
     if snippet and displayed_quote_fails_readability_gate(snippet):
-        display = prefer_clean_relief_display_excerpt(
+        display = verified_claim or prefer_clean_relief_display_excerpt(
             snippet, category=category
         )
     elif snippet and category:
@@ -2471,10 +2535,19 @@ def _format_relief_display_evidence(
         )
         if scoped:
             display = scoped
+        elif verified_claim:
+            display = verified_claim
     if display and not displayed_quote_fails_readability_gate(display):
         return (
             f'{readable_intro}, as reflected in the cited pleading language: '
             f'"{display}"{cite}.'
+        )
+    # Paraphrase path: when a verified clean claim was captured before scrub,
+    # retain it as the grounded excerpt so evidence_phrases stay linkable.
+    if verified_claim and not displayed_quote_fails_readability_gate(verified_claim):
+        return (
+            f'{paraphrase_intro}, as reflected in the cited pleading language: '
+            f'"{verified_claim}"{cite}.'
         )
     return (
         f"{paraphrase_intro}, as reflected in the cited pleading on the "

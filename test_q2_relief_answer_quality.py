@@ -792,10 +792,13 @@ class Q2Candidate175821ZOcrDumpRegressionTests(unittest.TestCase):
         self.assertIn("just and equitable", answer_l)
         self.assertNotIn("and/or", answer_l)
 
-        # Exact citation id preserved; prefer clean catch-all excerpt when present.
+        # Exact citation id preserved; prefer clean excerpts over paraphrase
+        # when the verified claim is readable after claim capture.
         self.assertIn(f"page_id {page_id}", answer)
-        self.assertIn("originating source page", answer_l)
+        self.assertIn("cited pleading language", answer_l)
         self.assertIn("just and equitable", answer)
+        self.assertIn("no duty to defend or indemnify", answer_l)
+        self.assertNotIn("originating source page", answer_l)
 
     def test_serializer_scrubs_175821z_pattern_with_json_md_parity(self) -> None:
         """Final serializer rejects embedded OCR dumps; JSON/MD stay aligned."""
@@ -1022,6 +1025,322 @@ class Q2Production31626668919OcrHandoffRegressionTests(unittest.TestCase):
         self.assertNotIn("no defense or indemnity", scrubbed.lower())
         self.assertNotIn("Tri borough", scrubbed)
         self.assertIn("page_id nyscef-001-page-0099", scrubbed)
+
+
+# ---------------------------------------------------------------------------
+# Regression: production run 31627595953 at d70994d — prior quote-string
+# scrub fixture did not mirror restored-cache evidence object shape
+# (truncated excerpt + full page_text). Glued OCR ``186.`` truncated the
+# verified no-defense clause before display scrub, so synthesis paraphrased
+# without evidence_phrases → criterion failure / fallback_skipped_unsupported.
+# ---------------------------------------------------------------------------
+
+_Q2_31627595953_PAGE_ID = "nyscef-001-page-0025"
+
+# Privacy-safe multi-paragraph OCR dump: same nesting/categories/page identity
+# shape as production restored-cache records (not private Case-00 prose).
+_Q2_31627595953_PAGE_TEXT = (
+    "25\n\n"
+    "183. Upon information and belief, Tri borough has been licensed with the "
+    "DOB under the names of various entities and/or individuals.\n"
+    "184. On the basis of the material misrepresentations and non-disclos ures "
+    "made by Triborough in their application to obtain the Policies, "
+    "Underwriters are entitled to void the Policies ab initio and for "
+    "rescission of the same.\n"
+    "185. Underwriters have no adequate remedy at law. COUNT II Underwriters "
+    "Have No Obligations to Provide Defense or Indemnification to Triborough "
+    "or Any Other Entity, As the Policies Were Obtained as a Result of "
+    "Triborough's Material Misrepresentations And Are Void Ab Initio 186. "
+    "Declaring that there is no duty to defend or indemnify Defendants.\n"
+    "187. WHEREFORE Underwriters demand judgment for such other and further "
+    "relief as the Court deems just and proper."
+)
+
+# Production retrieval often ships a truncated excerpt that omits no-defense /
+# catch-all; restored page_text carries the full folio.
+_Q2_31627595953_EXCERPT = (
+    "183. Upon information and belief, Tri borough has been licensed.\n"
+    "184. On the basis of the material misrepresentations and non-disclos ures "
+    "Underwriters are entitled to void the Policies ab initio and for "
+    "rescission of the same."
+)
+
+_Q2_31627595953_NO_DEFENSE_EVIDENCE = (
+    "no duty to defend or indemnify Defendants"
+)
+_Q2_31627595953_RESCISSION_EVIDENCE = "void the Policies ab initio"
+_Q2_31627595953_CATCH_ALL_EVIDENCE = (
+    "for such other and further relief as the Court deems just and proper"
+)
+
+
+class Q2Production31627595953CacheShapeHandoffTests(unittest.TestCase):
+    """Production restored-cache evidence object → synthesis → canonical."""
+
+    def _packet(self) -> dict[str, Any]:
+        return {
+            "question": _Q2_QUESTION,
+            "retrieval_hit_count": 1,
+            "retrieval_hits": [
+                {
+                    "result_id": "hit-synth-31627595953",
+                    "page_id": _Q2_31627595953_PAGE_ID,
+                    "nyscef_document_number": 1,
+                    "pdf_page": 25,
+                    "document_type": "complaint",
+                    "excerpt": _Q2_31627595953_EXCERPT,
+                    "page_text": _Q2_31627595953_PAGE_TEXT,
+                    "classifications": ["legal_position"],
+                    "score": 0.91,
+                }
+            ],
+        }
+
+    def _contract_view(self) -> ac.ContractEvaluationView:
+        contract = _q2_shaped_contract(
+            rescission_evidence=_Q2_31627595953_RESCISSION_EVIDENCE,
+            no_defense_evidence=_Q2_31627595953_NO_DEFENSE_EVIDENCE,
+            catch_all_evidence=_Q2_31627595953_CATCH_ALL_EVIDENCE,
+        )
+        raw = json.dumps(contract, sort_keys=True).encode("utf-8")
+        loaded = ac.load_acceptance_contract_from_bytes(
+            raw,
+            object_key=contract["object_key"],
+            expected_identity=ac.ContractIdentity(
+                benchmark_id="synth-benchmark-q2-quality",
+                question_id="Q2",
+            ),
+            expected_content_sha256=contract["content_sha256"],
+        )
+        assert loaded.ok and loaded.evaluation is not None
+        return loaded.evaluation
+
+    def test_production_cache_shape_captures_claims_before_display_scrub(
+        self,
+    ) -> None:
+        from engines import drafting_engine as de
+
+        packet = self._packet()
+        hit = packet["retrieval_hits"][0]
+        # Mirror production restored-cache keys/nesting.
+        for key in (
+            "page_id",
+            "excerpt",
+            "page_text",
+            "nyscef_document_number",
+            "pdf_page",
+            "document_type",
+        ):
+            self.assertIn(key, hit)
+        self.assertNotEqual(hit["excerpt"], hit["page_text"])
+        self.assertIn("non-disclos ures", hit["page_text"])
+        self.assertIn("COUNT II", hit["page_text"])
+        self.assertIn(
+            _Q2_31627595953_NO_DEFENSE_EVIDENCE, hit["page_text"]
+        )
+
+        supported = de.extract_supported_complaint_relief(packet)
+        for key in (
+            "rescission_void_ab_initio",
+            "no_defense_or_indemnity",
+            "catch_all_relief",
+        ):
+            meta = supported[key]
+            self.assertTrue(meta["supported"], msg=key)
+            self.assertEqual(meta["page_id"], _Q2_31627595953_PAGE_ID)
+            self.assertEqual(meta["nyscef_document_number"], 1)
+            self.assertEqual(meta["pdf_page"], 25)
+            self.assertTrue(meta["evidence_snippet"])
+
+        no_def = supported["no_defense_or_indemnity"]
+        # Glued ``186.`` must not truncate the clean declaration clause.
+        self.assertIn(
+            _Q2_31627595953_NO_DEFENSE_EVIDENCE, no_def["evidence_snippet"]
+        )
+        self.assertTrue(
+            de.displayed_quote_fails_readability_gate(no_def["evidence_snippet"])
+        )
+        clean = de.prefer_clean_relief_display_excerpt(
+            no_def["evidence_snippet"],
+            category="no_defense_or_indemnity",
+        )
+        self.assertIn(_Q2_31627595953_NO_DEFENSE_EVIDENCE, clean)
+        self.assertFalse(de.displayed_quote_fails_readability_gate(clean))
+
+    def test_synthesis_canonical_passes_all_four_with_clean_prose_and_parity(
+        self,
+    ) -> None:
+        from engines import drafting_engine as de
+
+        packet = self._packet()
+        assembled = de.apply_evidence_grounded_relief_synthesis(
+            {
+                "proposed_answer": "Long prior draft synthesis.",
+                "propositions": [],
+                "audit": {},
+            },
+            packet,
+        )
+        answer = assembled["proposed_answer"]
+        self.assertTrue(assembled["audit"].get("relief_synthesis_applied"))
+        cats = set(assembled["audit"].get("relief_supported_categories") or [])
+        self.assertEqual(
+            cats,
+            {
+                "rescission_void_ab_initio",
+                "no_defense_or_indemnity",
+                "catch_all_relief",
+            },
+        )
+        # Citation identity retained; OCR artifacts never displayed.
+        self.assertIn(f"page_id {_Q2_31627595953_PAGE_ID}", answer)
+        self.assertIn(_Q2_31627595953_NO_DEFENSE_EVIDENCE, answer)
+        self.assertIn("no defense or indemnity", answer.lower())
+        for banned in ("Tri borough", "non-disclos ures", "COUNT II"):
+            self.assertNotIn(banned, answer)
+
+        view = self._contract_view()
+        canonical, validation = GEN.finalize_canonical_answer_against_contract(
+            answer, view
+        )
+        self.assertTrue(validation.ok)
+        by_id = {c.criterion_id: c for c in validation.criterion_results}
+        for crit_id in (
+            _Q2_CRIT_RESCISSION,
+            _Q2_CRIT_NO_DEFENSE,
+            _Q2_CRIT_PLEADED,
+            _Q2_CRIT_CATCH_ALL,
+        ):
+            row = by_id[crit_id]
+            self.assertEqual(row.result_code, ac.CRIT_PASS, msg=crit_id)
+            self.assertEqual(row.presence, ac.PRESENCE_PRESENT, msg=crit_id)
+            self.assertEqual(
+                row.evidence, ac.EVIDENCE_SUPPORTED, msg=crit_id
+            )
+        no_def = by_id[_Q2_CRIT_NO_DEFENSE]
+        self.assertNotEqual(no_def.result_code, ac.CRIT_FAIL_MISSING)
+        self.assertNotIn(
+            f"fallback_skipped_unsupported:{_Q2_CRIT_NO_DEFENSE}",
+            validation.diagnostics,
+        )
+        for banned in ("Tri borough", "non-disclos ures", "COUNT II"):
+            self.assertNotIn(banned, canonical)
+        # Concise prose: canonical list form, not a raw OCR dump.
+        self.assertLess(len(canonical), 1200)
+        self.assertNotIn("\n\n\n", canonical)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp) / "cand"
+            files = GEN.write_candidate_artifacts(
+                out_dir,
+                question_id="Q2",
+                question_text=_Q2_QUESTION,
+                required_commit="b" * 40,
+                reasoner_result={
+                    "status": "READY",
+                    "proposed_answer": canonical,
+                    "propositions": assembled.get("propositions") or [],
+                    "supporting_evidence": [],
+                    "contrary_evidence": [],
+                    "unresolved_questions": [],
+                    "documents_pages_reviewed": [],
+                    "attorney_review": {"requires_attorney_review": True},
+                    "audit": {"model": "synth", "provider": "synth"},
+                    "confidence": 0.5,
+                },
+                model_input_audit={"retrieval_hit_count": 1},
+                commit_info={
+                    "checkout_commit": "b" * 40,
+                    "origin_main_commit": "b" * 40,
+                },
+                completeness={"ok": True},
+            )
+            candidate = json.loads(
+                Path(files["Q2_candidate_answer.json"]).read_text(
+                    encoding="utf-8"
+                )
+            )
+            markdown = Path(files["Q2_candidate_answer.md"]).read_text(
+                encoding="utf-8"
+            )
+            marker = "## Proposed answer\n\n"
+            start = markdown.index(marker) + len(marker)
+            end = markdown.index("\n## Review limitation", start)
+            md_proposed = markdown[start:end].strip("\n")
+            self.assertEqual(candidate["proposed_answer"], canonical)
+            self.assertEqual(md_proposed, canonical)
+            self.assertEqual(
+                GEN.normalize_proposed_answer_whitespace(
+                    candidate["proposed_answer"]
+                ),
+                GEN.normalize_proposed_answer_whitespace(md_proposed),
+            )
+
+    def test_unsupported_no_defense_remains_fail_closed(self) -> None:
+        from engines import drafting_engine as de
+
+        # Same cache shape, but page_text has no verified no-defense language.
+        page = (
+            "25\n\n"
+            "184. Underwriters are entitled to void the Policies ab initio "
+            "and for rescission of the same.\n"
+            "187. WHEREFORE for such other and further relief as the Court "
+            "deems just and proper."
+        )
+        packet = {
+            "question": _Q2_QUESTION,
+            "retrieval_hit_count": 1,
+            "retrieval_hits": [
+                {
+                    "result_id": "hit-synth-no-indemnity",
+                    "page_id": "nyscef-001-page-0099",
+                    "nyscef_document_number": 1,
+                    "pdf_page": 99,
+                    "document_type": "complaint",
+                    "excerpt": page[:80],
+                    "page_text": page,
+                    "classifications": ["legal_position"],
+                }
+            ],
+        }
+        supported = de.extract_supported_complaint_relief(packet)
+        self.assertFalse(supported["no_defense_or_indemnity"]["supported"])
+        assembled = de.apply_evidence_grounded_relief_synthesis(
+            {
+                "proposed_answer": "Draft.",
+                "propositions": [],
+                "audit": {},
+            },
+            packet,
+        )
+        answer = assembled["proposed_answer"]
+        self.assertNotIn("no defense or indemnity", answer.lower())
+        self.assertNotIn(
+            _Q2_31627595953_NO_DEFENSE_EVIDENCE, answer
+        )
+
+        view = self._contract_view()
+        canonical = GEN.canonical_proposed_answer(answer)
+        result = ac.validate_final_answer_against_contract(
+            canonical,
+            view,
+            apply_fallback=True,
+            apply_duplication_repair=True,
+        )
+        by_id = {c.criterion_id: c for c in result.criterion_results}
+        no_def = by_id[_Q2_CRIT_NO_DEFENSE]
+        self.assertIn(
+            no_def.result_code,
+            {ac.CRIT_FAIL_MISSING, ac.CRIT_FAIL_UNSUPPORTED},
+        )
+        self.assertNotEqual(no_def.result_code, ac.CRIT_PASS)
+        self.assertNotEqual(no_def.evidence, ac.EVIDENCE_SUPPORTED)
+        actions = result.fallback_actions or {}
+        if _Q2_CRIT_NO_DEFENSE in actions:
+            self.assertEqual(
+                actions[_Q2_CRIT_NO_DEFENSE],
+                ac.FALLBACK_SKIPPED_UNSUPPORTED,
+            )
 
 
 if __name__ == "__main__":
