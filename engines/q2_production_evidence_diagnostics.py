@@ -526,6 +526,40 @@ def sanitize_diagnostic(diagnostic: Mapping[str, Any]) -> dict[str, Any]:
     return cleaned
 
 
+PREFLIGHT_REPLAY_SCHEMA_VERSION = "q2_production_boundary_preflight_replay.v1"
+
+
+def build_sanitized_preflight_replay(
+    evidence_packet: Optional[Mapping[str, Any]],
+    *,
+    question_id: str = "Q2",
+) -> dict[str, Any]:
+    """Build a privacy-safe preflight replay from a live evidence packet.
+
+    Invokes the same restored-cache + relief-synthesis observers used by
+    production diagnostics, then fail-closed sanitizes. The replay retains only
+    allowlisted structure, safe citation/page IDs, booleans, reason codes,
+    counts, lengths, and nonreversible hashes — never source or answer text.
+    """
+    qid = str(question_id or "Q2").strip() or "Q2"
+    raw = {
+        "schema_version": PREFLIGHT_REPLAY_SCHEMA_VERSION,
+        "question_id": qid,
+        "cache_evidence": diagnose_restored_cache_evidence(evidence_packet),
+        "relief_synthesis": diagnose_relief_synthesis(evidence_packet),
+    }
+    cleaned = _sanitize_value(None, raw)
+    if not isinstance(cleaned, dict):
+        return {
+            "schema_version": PREFLIGHT_REPLAY_SCHEMA_VERSION,
+            "stage": "sanitizer_fail_closed",
+            "question_id": qid,
+        }
+    cleaned["schema_version"] = PREFLIGHT_REPLAY_SCHEMA_VERSION
+    cleaned["question_id"] = qid
+    return cleaned
+
+
 def build_q2_production_evidence_diagnostics(
     *,
     evidence_packet: Optional[Mapping[str, Any]] = None,

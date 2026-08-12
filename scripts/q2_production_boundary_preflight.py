@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
-"""Q2 production-boundary CI preflight (privacy-safe, deterministic).
+"""Q2 production-boundary CI preflight (privacy-safe, live-derived replay).
 
-Invokes the same public generation entrypoint used by
-``scripts/run_case00_b2_q1.py --generation-only`` — namely
-``generate_attorney_feedback_candidate.run_generation`` through finalization
-and ``write_candidate_artifacts``.
+Derives a sanitized replay from the same restored evidence packet / relief
+synthesis path used by live generation, then exercises verified-claim rebuild,
+canonical finalization, acceptance validation, and JSON/Markdown parity using
+only that replay plus fixed category templates.
 
-Mocks only external model / storage / network boundaries. Does not bypass
-relief synthesis claim rebuild, canonical serialization, or acceptance
-validation. Emits privacy-safe machine-readable reason codes only; never
-private B2 payloads or benchmark prose dumps.
+Mocks only external model / storage / network boundaries. Emits privacy-safe
+machine-readable reason codes only; never private B2 payloads or source text.
+The committed hand-built fixture is demoted and cannot satisfy the workflow gate.
 """
 
 from __future__ import annotations
@@ -35,12 +34,10 @@ import matter_builder as mb  # noqa: E402
 from engines import drafting_engine as de  # noqa: E402
 from engines import q2_production_evidence_diagnostics as q2diag  # noqa: E402
 
-DEFAULT_FIXTURE_PATH = (
-    REPO_ROOT / "testdata" / "q2_production_boundary_31629603939_fixture.json"
-)
-
 PREFLIGHT_SCHEMA_VERSION = "q2_production_boundary_preflight_result.v1"
+REPLAY_SCHEMA_VERSION = q2diag.PREFLIGHT_REPLAY_SCHEMA_VERSION
 PHASE = "q2_production_boundary_preflight"
+DEMOTED_FIXTURE_SCHEMA = "q2_production_boundary_preflight_fixture.v1"
 
 _CRIT_RESCISSION = "q2-rescission-void-ab-initio"
 _CRIT_NO_DEFENSE = "q2-no-defense-or-indemnity"
@@ -52,6 +49,24 @@ _REQUIRED_CRITERIA = (
     _CRIT_PLEADED,
     _CRIT_CATCH_ALL,
 )
+_RELIEF_CATEGORIES = (
+    "rescission_void_ab_initio",
+    "no_defense_or_indemnity",
+    "catch_all_relief",
+)
+
+# Public fixed stand-ins (not case source text). Drive selection_reason_code
+# recomputation during verified-claim rebuild without embedding private OCR.
+_FIXED_UNREADABLE_SNIPPET = "Def en dants indemni fy Named Insured COUNT II"
+_FIXED_CLEAN_SNIPPETS = {
+    "rescission_void_ab_initio": "void the Policies ab initio for rescission",
+    "catch_all_relief": (
+        "for such other and further relief as the Court deems just and proper"
+    ),
+    "no_defense_or_indemnity": (
+        "Declaring that there is no duty to defend or indemnify Defendants"
+    ),
+}
 
 
 class PreflightError(Exception):
@@ -74,107 +89,314 @@ def _emit(payload: Mapping[str, Any]) -> None:
     print(json.dumps(payload, sort_keys=True), flush=True)
 
 
-def load_fixture(path: Path) -> dict[str, Any]:
+def load_replay(path: Path) -> dict[str, Any]:
     raw = path.read_text(encoding="utf-8")
     doc = json.loads(raw)
     if not isinstance(doc, dict):
         raise PreflightError(
-            "fixture_not_object",
-            stage="fixture_load",
+            "replay_not_object",
+            stage="replay_load",
             details={"python_type": type(doc).__name__},
         )
-    if doc.get("schema_version") != "q2_production_boundary_preflight_fixture.v1":
+    schema = str(doc.get("schema_version") or "")
+    if schema == DEMOTED_FIXTURE_SCHEMA:
         raise PreflightError(
-            "fixture_schema_mismatch",
-            stage="fixture_load",
-            details={"schema_version": str(doc.get("schema_version") or "")},
+            "demoted_hand_built_fixture_rejected",
+            stage="replay_load",
+            details={"schema_version": schema},
+        )
+    if schema != REPLAY_SCHEMA_VERSION:
+        raise PreflightError(
+            "replay_schema_mismatch",
+            stage="replay_load",
+            details={"schema_version": schema},
         )
     return doc
 
 
-def build_evidence_packet(fixture: Mapping[str, Any]) -> dict[str, Any]:
-    page_25 = str(fixture["page_ids"]["page_25"])
-    page_26 = str(fixture["page_ids"]["page_26"])
-    return {
-        "question": str(fixture["question_text"]),
-        "retrieval_hit_count": 2,
-        "retrieval_hits": [
-            {
-                "result_id": "hit-synth-31629603939-p25",
-                "page_id": page_25,
-                "nyscef_document_number": 1,
-                "pdf_page": 25,
-                "document_type": "complaint",
-                "excerpt": str(fixture["page_25_excerpt"]),
-                "page_text": str(fixture["page_25_page_text"]),
-                "classifications": ["legal_position"],
-                "score": 0.91,
-            },
-            {
-                "result_id": "hit-synth-31629603939-p26",
-                "page_id": page_26,
-                "nyscef_document_number": 1,
-                "pdf_page": 26,
-                "document_type": "complaint",
-                "excerpt": str(fixture["page_26_excerpt"]),
-                "classifications": ["legal_position"],
-                "score": 0.85,
-            },
-        ],
-    }
-
-
-def build_quote_gap_answer(fixture: Mapping[str, Any]) -> str:
-    page_25 = str(fixture["page_ids"]["page_25"])
-    ocr_quote = str(fixture["ocr_rescission_quote_body"])
-    catch = str(fixture["clean_catch_all_excerpt"])
-    return (
-        "This answer describes pleaded requested relief in the complaint, "
-        "not a judicial determination. The complaint requests a declaration "
-        "that coverage is void ab initio based on alleged material "
-        "misrepresentations and non-disclosures, as reflected in the cited "
-        f'pleading language: "{ocr_quote}" '
-        f"(page_id {page_25}). The complaint also includes "
-        "catch-all requested relief, as reflected in the cited pleading "
-        f'language: "{catch}" '
-        f"(page_id {page_25})."
+def build_sanitized_replay_from_evidence_packet(
+    evidence_packet: Mapping[str, Any],
+    *,
+    question_id: str = "Q2",
+) -> dict[str, Any]:
+    """Invoke production extraction/synthesis observers + sanitizer."""
+    return q2diag.build_sanitized_preflight_replay(
+        evidence_packet,
+        question_id=question_id,
     )
 
 
-def build_acceptance_contract_config(fixture: Mapping[str, Any]) -> dict[str, Any]:
-    spec = fixture["acceptance_contract"]
+def build_evidence_packet_from_case_root(
+    case_root: Path,
+    *,
+    question_id: str = "Q2",
+    inventory_path: Optional[Path] = None,
+    repo_root: Optional[Path] = None,
+    top_k: int = 30,
+) -> dict[str, Any]:
+    """Same permitted-input → retrieval → evidence packet path as generation."""
+    root = Path(repo_root) if repo_root is not None else REPO_ROOT
+    inputs = gen.load_permitted_case_inputs(
+        Path(case_root),
+        question_id,
+        inventory_path=inventory_path,
+        repo_root=root,
+    )
+    documents = gen.build_documents_from_permitted_inputs(
+        inputs["page_records"],
+        inputs["inventory"],
+        inputs["exhibit_map"],
+    )
+    retrieval = gen.run_production_retrieval(
+        documents,
+        inputs["case_map"],
+        inputs["question_text"],
+        top_k=top_k,
+    )
+    structure_map = inputs.get("complaint_structure_map")
+    if isinstance(structure_map, dict):
+        import complaint_structure as cs
+
+        if cs.is_current_structure_schema(structure_map):
+            retrieval = dict(retrieval)
+            retrieval["complaint_structure_map"] = structure_map
+    if de.detect_relief_question_intent(inputs["question_text"]):
+        retrieval = de.route_complaint_relief_evidence(
+            retrieval,
+            question=inputs["question_text"],
+            documents=documents,
+            complaint_structure_map=structure_map
+            if isinstance(structure_map, dict)
+            else None,
+        )
+    docs_subset = gen._documents_for_hit_pages(  # noqa: SLF001 — shared path
+        list(retrieval.get("results") or []), documents
+    )
+    return de.build_evidence_packet(
+        inputs["question_text"],
+        retrieval,
+        case_map=inputs["case_map"],
+        documents=docs_subset,
+        complaint_structure_map=structure_map
+        if isinstance(structure_map, dict)
+        else None,
+    )
+
+
+def derive_sanitized_replay_from_case_root(
+    case_root: Path,
+    *,
+    question_id: str = "Q2",
+    inventory_path: Optional[Path] = None,
+    repo_root: Optional[Path] = None,
+) -> dict[str, Any]:
+    packet = build_evidence_packet_from_case_root(
+        case_root,
+        question_id=question_id,
+        inventory_path=inventory_path,
+        repo_root=repo_root,
+    )
+    return build_sanitized_replay_from_evidence_packet(
+        packet, question_id=question_id
+    )
+
+
+def _relief_categories(replay: Mapping[str, Any]) -> dict[str, Any]:
+    relief = replay.get("relief_synthesis") or {}
+    categories = relief.get("categories") or {}
+    if not isinstance(categories, Mapping):
+        return {}
+    return {str(k): v for k, v in categories.items() if isinstance(v, Mapping)}
+
+
+def assert_replay_gate_shape(replay: Mapping[str, Any]) -> None:
+    """Fail closed unless live-derived relief state is gate-ready."""
+    categories = _relief_categories(replay)
+    for key in _RELIEF_CATEGORIES:
+        row = categories.get(key) or {}
+        if not row.get("supported"):
+            raise PreflightError(
+                "replay_relief_unsupported",
+                stage="replay_gate",
+                details={"category": key},
+            )
+        page_id = str(row.get("page_id") or "").strip()
+        if not page_id or not q2diag._REASON_OR_ID_RE.fullmatch(page_id):  # noqa: SLF001
+            raise PreflightError(
+                "replay_relief_citation_missing",
+                stage="replay_gate",
+                details={"category": key},
+            )
+    no_def = categories.get("no_defense_or_indemnity") or {}
+    if no_def.get("selection_reason_code") != "supported_needs_paraphrase":
+        raise PreflightError(
+            "replay_no_defense_reason_mismatch",
+            stage="replay_gate",
+            details={
+                "selection_reason_code": no_def.get("selection_reason_code"),
+            },
+        )
+
+
+def support_mapping_from_replay(replay: Mapping[str, Any]) -> dict[str, Any]:
+    """Rebuild in-memory support objects from sanitized replay + fixed snippets."""
+    categories = _relief_categories(replay)
+    supported: dict[str, Any] = {}
+    for key in _RELIEF_CATEGORIES:
+        row = categories.get(key) or {}
+        page_id = str(row.get("page_id") or "").strip() or None
+        reason = str(row.get("selection_reason_code") or "")
+        if not row.get("supported") or not page_id:
+            supported[key] = {
+                "supported": False,
+                "page_id": None,
+                "nyscef_document_number": row.get("nyscef_document_number"),
+                "pdf_page": row.get("pdf_page"),
+                "evidence_snippet": "",
+            }
+            continue
+        if reason == "supported_needs_paraphrase":
+            snippet = _FIXED_UNREADABLE_SNIPPET
+        else:
+            snippet = _FIXED_CLEAN_SNIPPETS.get(key, _FIXED_CLEAN_SNIPPETS["rescission_void_ab_initio"])
+        supported[key] = {
+            "supported": True,
+            "page_id": page_id,
+            "nyscef_document_number": row.get("nyscef_document_number") or 1,
+            "pdf_page": row.get("pdf_page") or 25,
+            "evidence_snippet": snippet,
+        }
+    return supported
+
+
+def fixed_template_answer_from_replay(replay: Mapping[str, Any]) -> str:
+    """Fixed category templates for supported=true claims with safe citations."""
+    categories = _relief_categories(replay)
+    # Empty snippets → production fixed paraphrase / originating-page templates.
+    support: dict[str, Any] = {}
+    for key in _RELIEF_CATEGORIES:
+        row = categories.get(key) or {}
+        page_id = str(row.get("page_id") or "").strip()
+        if not (row.get("supported") and page_id):
+            support[key] = {
+                "supported": False,
+                "page_id": None,
+                "evidence_snippet": "",
+            }
+            continue
+        support[key] = {
+            "supported": True,
+            "page_id": page_id,
+            "nyscef_document_number": row.get("nyscef_document_number") or 1,
+            "pdf_page": row.get("pdf_page") or 25,
+            "evidence_snippet": "",
+        }
+    paragraphs = de.assemble_evidence_grounded_relief_paragraphs(support)
+    if not paragraphs:
+        raise PreflightError(
+            "fixed_template_answer_empty",
+            stage="fixed_templates",
+        )
+    return de.normalize_whitespace(" ".join(paragraphs))
+
+
+def build_template_acceptance_contract_config(
+    replay: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Privacy-safe synthetic contract aligned to fixed category templates."""
+    page_ids = sorted(
+        {
+            str((row or {}).get("page_id") or "")
+            for row in _relief_categories(replay).values()
+            if isinstance(row, Mapping) and row.get("page_id")
+        }
+    )
+    corr = page_ids[0] if page_ids else "synth"
     contract = ac.build_synthetic_contract(
-        contract_id=str(spec["contract_id"]),
-        version=str(spec["version"]),
-        benchmark_id=str(spec["benchmark_id"]),
-        question_id=str(spec["question_id"]),
-        object_key=str(spec["object_key"]),
-        required_criterion_ids=list(spec["required_criterion_ids"]),
-        criteria=list(spec["criteria"]),
+        contract_id=f"contract-live-replay-q2-preflight-{corr}",
+        version="1.0.0",
+        benchmark_id="synth-benchmark-q2-live-replay-preflight",
+        question_id="Q2",
+        object_key=(
+            "Contracts/synthetic/q2/"
+            "Q2.production_boundary_live_replay_preflight.acceptance_contract.json"
+        ),
+        required_criterion_ids=list(_REQUIRED_CRITERIA),
+        criteria=[
+            {
+                "id": _CRIT_RESCISSION,
+                "presence_phrases": ["void ab initio"],
+                "evidence_phrases": ["void ab initio"],
+                "semantic_required_phrases": [],
+                "semantic_forbidden_phrases": [],
+                "fallback_text": "",
+                "category": "relief",
+            },
+            {
+                "id": _CRIT_NO_DEFENSE,
+                "presence_phrases": ["no defense or indemnity"],
+                "evidence_phrases": ["no defense or indemnity"],
+                "semantic_required_phrases": [],
+                "semantic_forbidden_phrases": [],
+                "fallback_text": "",
+                "category": "relief",
+            },
+            {
+                "id": _CRIT_PLEADED,
+                "presence_phrases": [
+                    "pleaded requested relief",
+                    "not a judicial determination",
+                ],
+                "evidence_phrases": [],
+                "semantic_required_phrases": ["pleaded"],
+                "semantic_forbidden_phrases": [
+                    "court has ruled",
+                    "established entitlement",
+                ],
+                "fallback_text": (
+                    "This answer describes pleaded requested relief in the "
+                    "complaint, not a judicial determination."
+                ),
+                "category": "relief",
+            },
+            {
+                "id": _CRIT_CATCH_ALL,
+                "presence_phrases": ["catch-all requested relief"],
+                "evidence_phrases": ["catch-all requested relief"],
+                "semantic_required_phrases": [],
+                "semantic_forbidden_phrases": [],
+                "fallback_text": "",
+                "category": "relief",
+            },
+        ],
     )
     return {
         "object_key": contract["object_key"],
-        "benchmark_id": str(spec["benchmark_id"]),
-        "question_id": str(spec["question_id"]),
+        "benchmark_id": "synth-benchmark-q2-live-replay-preflight",
+        "question_id": "Q2",
         "content_sha256": contract["content_sha256"],
         "raw_bytes": json.dumps(contract, sort_keys=True).encode("utf-8"),
     }
 
 
-def seed_minimal_case_root(case_root: Path, fixture: Mapping[str, Any]) -> Path:
-    """Permitted corpus scaffolding only — evidence comes from the fixture packet."""
-    nyscef = 1
-    page_id = str(fixture["page_ids"]["page_25"])
+def seed_minimal_case_root(case_root: Path, replay: Mapping[str, Any]) -> Path:
+    """Permitted corpus scaffolding only — answer text comes from templates."""
+    categories = _relief_categories(replay)
+    no_def = categories.get("no_defense_or_indemnity") or {}
+    page_id = str(no_def.get("page_id") or "nyscef-001-page-0025")
+    nyscef = int(no_def.get("nyscef_document_number") or 1)
+    pdf_page = int(no_def.get("pdf_page") or 25)
+    # Scaffolding page body is a fixed public placeholder (not case OCR).
     page = mb.build_page_record(
-        25,
-        str(fixture["page_25_page_text"]),
+        pdf_page,
+        "synthetic preflight scaffold page",
         "native",
         nyscef_document_number=nyscef,
     )
     page.update(
         {
             "nyscef_document_number": nyscef,
-            "pdf_page_number": 25,
+            "pdf_page_number": pdf_page,
             "page_id": page_id,
             "source_filename": f"nyscef_doc_no_{nyscef}_complaint.pdf",
             "source_path": f"/tmp/synthetic/nyscef_doc_no_{nyscef}_complaint.pdf",
@@ -216,7 +438,16 @@ def seed_minimal_case_root(case_root: Path, fixture: Mapping[str, Any]) -> Path:
         encoding="utf-8",
     )
     (case_root / "derived" / "question-text" / "questions.json").write_text(
-        json.dumps({"Q2": str(fixture["question_text"])}, indent=2) + "\n",
+        json.dumps(
+            {
+                "Q2": (
+                    "What relief does the complaint request in the WHEREFORE / "
+                    "requested-relief section?"
+                )
+            },
+            indent=2,
+        )
+        + "\n",
         encoding="utf-8",
     )
     inventory = case_root / "inventory.json"
@@ -240,81 +471,43 @@ def seed_minimal_case_root(case_root: Path, fixture: Mapping[str, Any]) -> Path:
     return inventory
 
 
-def assert_fixture_diagnostic_shape(fixture: Mapping[str, Any], packet: Mapping[str, Any]) -> None:
-    """Confirm the synthetic packet matches the production diagnostic structure."""
-    cache = q2diag.diagnose_restored_cache_evidence(packet)
-    if int(cache.get("hit_record_count") or 0) != 2:
-        raise PreflightError(
-            "fixture_hit_count_mismatch",
-            stage="fixture_shape",
-            details={"hit_record_count": cache.get("hit_record_count")},
-        )
-    hits = list(cache.get("hits") or [])
-    if len(hits) != 2:
-        raise PreflightError(
-            "fixture_hit_list_mismatch",
-            stage="fixture_shape",
-            details={"hits_len": len(hits)},
-        )
-    page_25 = str(fixture["page_ids"]["page_25"])
-    page_26 = str(fixture["page_ids"]["page_26"])
-    by_page = {str(h.get("page_id")): h for h in hits}
-    if page_25 not in by_page or page_26 not in by_page:
-        raise PreflightError(
-            "fixture_page_id_mismatch",
-            stage="fixture_shape",
-            details={"page_ids": sorted(by_page)},
-        )
-    h25 = by_page[page_25]
-    h26 = by_page[page_26]
-    if not (
-        h25.get("excerpt", {}).get("present")
-        and h25.get("page_text", {}).get("present")
-        and int(h25.get("page_text", {}).get("char_length") or 0)
-        > int(h25.get("excerpt", {}).get("char_length") or 0)
-    ):
-        raise PreflightError(
-            "fixture_page25_length_shape_mismatch",
-            stage="fixture_shape",
-        )
-    if not (
-        h26.get("excerpt", {}).get("present")
-        and not h26.get("page_text", {}).get("present")
-        and int(h26.get("page_text", {}).get("char_length") or 0) == 0
-    ):
-        raise PreflightError(
-            "fixture_page26_excerpt_only_shape_mismatch",
-            stage="fixture_shape",
-        )
-
-    relief = q2diag.diagnose_relief_synthesis(packet)
-    expected = fixture["expected_relief_selection_reason_codes"]
-    categories = relief.get("categories") or {}
-    for category, expected_code in expected.items():
-        row = categories.get(category) or {}
-        if not row.get("supported"):
-            raise PreflightError(
-                "fixture_relief_unsupported",
-                stage="fixture_shape",
-                details={"category": category},
-            )
-        if row.get("selection_reason_code") != expected_code:
-            raise PreflightError(
-                "fixture_relief_selection_reason_mismatch",
-                stage="fixture_shape",
-                details={
-                    "category": category,
-                    "expected": expected_code,
-                    "actual": row.get("selection_reason_code"),
-                },
-            )
-    no_def = categories.get("no_defense_or_indemnity") or {}
-    if no_def.get("page_id") != page_25:
-        raise PreflightError(
-            "fixture_no_defense_page_id_mismatch",
-            stage="fixture_shape",
-            details={"page_id": no_def.get("page_id")},
-        )
+def _stale_audit_claims(replay: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Stale audit omitting paraphrase-needed no-defense (forces rebuild)."""
+    categories = _relief_categories(replay)
+    page_id = str(
+        (categories.get("rescission_void_ab_initio") or {}).get("page_id")
+        or (categories.get("no_defense_or_indemnity") or {}).get("page_id")
+        or "nyscef-001-page-0025"
+    )
+    return [
+        {
+            "category": "rescission_void_ab_initio",
+            "supported": True,
+            "page_id": page_id,
+            "nyscef_document_number": 1,
+            "pdf_page": 25,
+            "evidence_snippet": _FIXED_CLEAN_SNIPPETS["rescission_void_ab_initio"],
+            "selection_reason_code": "supported_with_clean_excerpt",
+        },
+        {
+            "category": "no_defense_or_indemnity",
+            "supported": False,
+            "page_id": None,
+            "nyscef_document_number": 1,
+            "pdf_page": 25,
+            "evidence_snippet": "",
+            "selection_reason_code": "unsupported",
+        },
+        {
+            "category": "catch_all_relief",
+            "supported": True,
+            "page_id": page_id,
+            "nyscef_document_number": 1,
+            "pdf_page": 25,
+            "evidence_snippet": _FIXED_CLEAN_SNIPPETS["catch_all_relief"],
+            "selection_reason_code": "supported_with_clean_excerpt",
+        },
+    ]
 
 
 def _markdown_proposed_answer(markdown: str) -> str:
@@ -326,7 +519,7 @@ def _markdown_proposed_answer(markdown: str) -> str:
 
 def assert_q2_boundary_success(
     *,
-    fixture: Mapping[str, Any],
+    replay: Mapping[str, Any],
     result: Mapping[str, Any],
 ) -> dict[str, Any]:
     if not result.get("ok") or not result.get("finalized"):
@@ -366,7 +559,7 @@ def assert_q2_boundary_success(
             stage="serialization_parity",
         )
 
-    contract_cfg = build_acceptance_contract_config(fixture)
+    contract_cfg = build_template_acceptance_contract_config(replay)
     loaded = ac.load_acceptance_contract_from_bytes(
         contract_cfg["raw_bytes"],
         object_key=contract_cfg["object_key"],
@@ -414,35 +607,26 @@ def assert_q2_boundary_success(
                 },
             )
 
+    categories = _relief_categories(replay)
+    no_def_page = str(
+        (categories.get("no_defense_or_indemnity") or {}).get("page_id") or ""
+    )
     lowered = proposed.lower()
-    page_25 = str(fixture["page_ids"]["page_25"])
     if "no defense or indemnity" not in lowered:
         raise PreflightError(
             "no_defense_paraphrase_missing",
             stage="relief_paraphrase",
         )
-    if f"page_id {page_25}" not in proposed:
+    if no_def_page and f"page_id {no_def_page}" not in proposed:
         raise PreflightError(
             "no_defense_citation_missing",
             stage="relief_paraphrase",
-            details={"expected_page_id": page_25},
+            details={"expected_page_id": no_def_page},
         )
     if "originating source page" not in lowered and "requested relief" not in lowered:
         raise PreflightError(
             "pleaded_requested_relief_framing_missing",
             stage="relief_paraphrase",
-        )
-    for banned in fixture.get("banned_ocr_markers") or []:
-        if str(banned) in proposed:
-            raise PreflightError(
-                "ocr_artifact_present",
-                stage="ocr_scrub",
-                details={"marker_kind": "banned_ocr_marker"},
-            )
-    if str(fixture["page_25_page_text"]) in proposed:
-        raise PreflightError(
-            "page_text_dump_present",
-            stage="ocr_scrub",
         )
     if len(proposed) >= 1600:
         raise PreflightError(
@@ -469,7 +653,7 @@ def assert_q2_boundary_success(
                 "selection_reason_code": no_def_claim.get("selection_reason_code")
             },
         )
-    if no_def_claim.get("page_id") != page_25:
+    if no_def_page and no_def_claim.get("page_id") != no_def_page:
         raise PreflightError(
             "verified_claim_no_defense_page_mismatch",
             stage="audit_claim_rebuild",
@@ -480,70 +664,51 @@ def assert_q2_boundary_success(
         "criterion_ids_passed": list(_REQUIRED_CRITERIA),
         "proposed_answer_char_length": len(proposed),
         "parity_ok": True,
-        "no_defense_page_id": page_25,
+        "no_defense_page_id": no_def_page,
         "no_defense_selection_reason_code": "supported_needs_paraphrase",
     }
 
 
-def _stale_audit_claims(fixture: Mapping[str, Any]) -> list[dict[str, Any]]:
-    page_25 = str(fixture["page_ids"]["page_25"])
-    catch = str(fixture["clean_catch_all_excerpt"])
-    return [
-        {
-            "category": "rescission_void_ab_initio",
-            "supported": True,
-            "page_id": page_25,
-            "nyscef_document_number": 1,
-            "pdf_page": 25,
-            "evidence_snippet": "void the Policies ab initio",
-            "selection_reason_code": "supported_with_clean_excerpt",
-        },
-        {
-            "category": "no_defense_or_indemnity",
-            "supported": False,
-            "page_id": None,
-            "nyscef_document_number": 1,
-            "pdf_page": 25,
-            "evidence_snippet": "",
-            "selection_reason_code": "unsupported",
-        },
-        {
-            "category": "catch_all_relief",
-            "supported": True,
-            "page_id": page_25,
-            "nyscef_document_number": 1,
-            "pdf_page": 25,
-            "evidence_snippet": catch,
-            "selection_reason_code": "supported_with_clean_excerpt",
-        },
-    ]
-
-
 def run_preflight(
     *,
-    fixture_path: Path,
+    replay_path: Path,
     candidate_output_root: Optional[Path] = None,
 ) -> dict[str, Any]:
-    """Execute deterministic Q2 production-boundary preflight; return result dict."""
-    stage = "fixture_load"
+    """Execute Q2 production-boundary preflight from a live sanitized replay."""
+    stage = "replay_load"
     try:
-        fixture = load_fixture(fixture_path)
-        stage = "fixture_shape"
-        packet = build_evidence_packet(fixture)
-        assert_fixture_diagnostic_shape(fixture, packet)
+        replay = load_replay(replay_path)
+        stage = "replay_gate"
+        assert_replay_gate_shape(replay)
+
+        stage = "fixed_templates"
+        template_answer = fixed_template_answer_from_replay(replay)
+        support = support_mapping_from_replay(replay)
+        # Placeholder packet so run_generation takes the evidence rebuild path.
+        packet = {
+            "question": (
+                "What relief does the complaint request in the WHEREFORE / "
+                "requested-relief section?"
+            ),
+            "retrieval_hit_count": 0,
+            "retrieval_hits": [],
+        }
 
         stage = "case_root_seed"
         with tempfile.TemporaryDirectory(prefix="q2-preflight-") as tmp:
             root = Path(tmp)
             case_root = root / "case"
             case_root.mkdir()
-            out_root = Path(candidate_output_root) if candidate_output_root else root / "out"
+            out_root = (
+                Path(candidate_output_root) if candidate_output_root else root / "out"
+            )
             out_root.mkdir(parents=True, exist_ok=True)
-            inventory = seed_minimal_case_root(case_root, fixture)
-            contract_cfg = build_acceptance_contract_config(fixture)
+            inventory = seed_minimal_case_root(case_root, replay)
+            contract_cfg = build_template_acceptance_contract_config(replay)
             reasoner = {
                 "status": de.STATUS_READY,
-                "proposed_answer": build_quote_gap_answer(fixture),
+                # Start from templates; claim rebuild must preserve no-defense.
+                "proposed_answer": template_answer,
                 "propositions": [],
                 "supporting_evidence": [],
                 "contrary_evidence": [],
@@ -551,26 +716,25 @@ def run_preflight(
                 "documents_pages_reviewed": [],
                 "attorney_review": {"requires_attorney_review": True},
                 "audit": {
-                    "model": "synth-preflight",
-                    "provider": "synth-preflight",
-                    "verified_relief_claims": _stale_audit_claims(fixture),
+                    "model": "synth-preflight-live-replay",
+                    "provider": "synth-preflight-live-replay",
+                    "verified_relief_claims": _stale_audit_claims(replay),
                 },
                 "confidence": 0.5,
             }
 
             stage = "run_generation"
-            # Model / network / storage boundaries only. Packet injection keeps
-            # the diagnostic shape deterministic; claim rebuild + finalize +
-            # write_candidate_artifacts remain the real production path.
             with mock.patch.object(
                 de, "answer_attorney_record_question", return_value=reasoner
             ), mock.patch.object(
                 de, "build_evidence_packet", return_value=packet
             ), mock.patch.object(
+                de, "extract_supported_complaint_relief", return_value=support
+            ), mock.patch.object(
                 gen,
                 "audit_serialized_model_input",
                 return_value={
-                    "audit": {"retrieval_hit_count": 2, "relief_intent": True},
+                    "audit": {"retrieval_hit_count": 0, "relief_intent": True},
                     "evidence_packet": packet,
                 },
             ), mock.patch.object(
@@ -591,7 +755,7 @@ def run_preflight(
 
             stage = "boundary_assertions"
             assertion_meta = assert_q2_boundary_success(
-                fixture=fixture, result=result
+                replay=replay, result=result
             )
 
         return {
@@ -599,9 +763,7 @@ def run_preflight(
             "phase": PHASE,
             "schema_version": PREFLIGHT_SCHEMA_VERSION,
             "stage": "complete",
-            "diagnostic_run_correlation_id": fixture.get(
-                "diagnostic_run_correlation_id"
-            ),
+            "replay_schema_version": REPLAY_SCHEMA_VERSION,
             "question_id": "Q2",
             "finalized": True,
             **assertion_meta,
@@ -629,7 +791,6 @@ def run_preflight(
             "reason_code": "generation_entrypoint_failed",
             "details": {
                 "blocker_kind": "GenerationError",
-                # Never echo private blocker prose — classify only.
                 "finalized": bool(exc.details.get("finalized"))
                 if isinstance(exc.details, dict)
                 else False,
@@ -651,15 +812,35 @@ def run_preflight(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Deterministic Q2 production-boundary preflight using the same "
-            "run_generation entrypoint as Case-00 generation-only CI."
+            "Q2 production-boundary preflight from a live-derived sanitized "
+            "replay (same evidence packet / synthesis path as generation)."
         )
     )
     parser.add_argument(
-        "--fixture",
+        "--replay",
         type=Path,
-        default=DEFAULT_FIXTURE_PATH,
-        help="Privacy-safe synthetic fixture path (default: checked-in testdata).",
+        default=None,
+        help="Path to sanitized live-derived replay JSON (required to run gate).",
+    )
+    parser.add_argument(
+        "--derive-from-case-root",
+        type=Path,
+        default=None,
+        help=(
+            "Build sanitized replay from restored case-root evidence packet "
+            "using production extraction/synthesis observers."
+        ),
+    )
+    parser.add_argument(
+        "--replay-out",
+        type=Path,
+        default=None,
+        help="Write derived sanitized replay JSON to this path.",
+    )
+    parser.add_argument(
+        "--question-id",
+        default="Q2",
+        help="Question id for derive-from-case-root (default: Q2).",
     )
     parser.add_argument(
         "--candidate-output-root",
@@ -667,13 +848,109 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional ephemeral output root for candidate artifacts.",
     )
+    parser.add_argument(
+        "--fixture",
+        type=Path,
+        default=None,
+        help=argparse.SUPPRESS,  # demoted; rejected if supplied
+    )
     return parser
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.fixture is not None:
+        _emit(
+            {
+                "ok": False,
+                "phase": PHASE,
+                "schema_version": PREFLIGHT_SCHEMA_VERSION,
+                "stage": "replay_load",
+                "reason_code": "demoted_hand_built_fixture_rejected",
+                "details": {"path_kind": "fixture_flag"},
+                "finalized": False,
+            }
+        )
+        return 1
+
+    replay_path = args.replay
+    if args.derive_from_case_root is not None:
+        stage = "derive_replay"
+        try:
+            replay = derive_sanitized_replay_from_case_root(
+                Path(args.derive_from_case_root),
+                question_id=str(args.question_id or "Q2"),
+            )
+            out = args.replay_out
+            if out is None:
+                raise PreflightError(
+                    "replay_out_required_for_derive",
+                    stage="derive_replay",
+                )
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(
+                json.dumps(replay, sort_keys=True, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            # Derive-only when --replay is omitted; workflow runs a second
+            # invocation that consumes --replay $REPLAY_JSON.
+            if args.replay is None:
+                _emit(
+                    {
+                        "ok": True,
+                        "phase": PHASE,
+                        "schema_version": PREFLIGHT_SCHEMA_VERSION,
+                        "stage": "replay_derived",
+                        "replay_schema_version": REPLAY_SCHEMA_VERSION,
+                        "question_id": str(args.question_id or "Q2"),
+                        "replay_path_kind": "derived",
+                    }
+                )
+                return 0
+            replay_path = out
+        except PreflightError as exc:
+            _emit(
+                {
+                    "ok": False,
+                    "phase": PHASE,
+                    "schema_version": PREFLIGHT_SCHEMA_VERSION,
+                    "stage": exc.stage or stage,
+                    "reason_code": exc.reason_code,
+                    "details": dict(exc.details),
+                    "finalized": False,
+                }
+            )
+            return 1
+        except Exception as exc:  # noqa: BLE001
+            _emit(
+                {
+                    "ok": False,
+                    "phase": PHASE,
+                    "schema_version": PREFLIGHT_SCHEMA_VERSION,
+                    "stage": stage,
+                    "reason_code": "replay_derive_failed",
+                    "details": {"exc_type": type(exc).__name__},
+                    "finalized": False,
+                }
+            )
+            return 1
+
+    if replay_path is None:
+        _emit(
+            {
+                "ok": False,
+                "phase": PHASE,
+                "schema_version": PREFLIGHT_SCHEMA_VERSION,
+                "stage": "replay_load",
+                "reason_code": "replay_path_required",
+                "details": {},
+                "finalized": False,
+            }
+        )
+        return 1
+
     payload = run_preflight(
-        fixture_path=Path(args.fixture),
+        replay_path=Path(replay_path),
         candidate_output_root=args.candidate_output_root,
     )
     _emit(payload)

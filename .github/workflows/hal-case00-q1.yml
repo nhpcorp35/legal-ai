@@ -350,13 +350,35 @@ jobs:
           )
           PY
 
+      - name: Derive Q2 sanitized live-replay from restored evidence
+        id: q2-replay
+        shell: bash
+        run: |
+          set +e
+          REPLAY_JSON="$RUNNER_TEMP/q2-production-boundary-live-replay.json"
+          echo "REPLAY_JSON=$REPLAY_JSON" >> "$GITHUB_ENV"
+          python scripts/q2_production_boundary_preflight.py \
+            --derive-from-case-root "$CASE_ROOT" \
+            --question-id Q2 \
+            --replay-out "$REPLAY_JSON" \
+            | tee "$RESULT_JSON"
+          status=${PIPESTATUS[0]}
+          if [ "$status" -eq 0 ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
+          exit "$status"
+
       - name: Q2 production-boundary preflight
         id: q2-preflight
+        if: ${{ success() && steps.q2-replay.outputs.ok == 'true' }}
         shell: bash
         run: |
           set +e
           python scripts/q2_production_boundary_preflight.py \
-            --fixture testdata/q2_production_boundary_31629603939_fixture.json \
+            --replay "$REPLAY_JSON" \
             | tee "$RESULT_JSON"
           status=${PIPESTATUS[0]}
           if [ "$status" -eq 0 ]; then
@@ -369,7 +391,7 @@ jobs:
 
       - name: Generate requested question and publish four verified artifacts to B2
         id: case00
-        if: ${{ success() && steps.q2-preflight.outputs.ok == 'true' }}
+        if: ${{ success() && steps.q2-replay.outputs.ok == 'true' && steps.q2-preflight.outputs.ok == 'true' }}
         shell: bash
         run: |
           set +e
