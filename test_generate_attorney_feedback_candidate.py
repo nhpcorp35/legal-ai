@@ -514,5 +514,188 @@ class GenerateAttorneyFeedbackCandidateCLITests(unittest.TestCase):
         self.assertIs(de.resolve_model_provider(model), model)
 
 
+def _extract_markdown_proposed_answer(md_text: str) -> str:
+    marker = "## Proposed answer\n\n"
+    start = md_text.index(marker) + len(marker)
+    end = md_text.index("\n## Review limitation", start)
+    return md_text[start:end].strip("\n")
+
+
+def _write_serializer_artifacts(out_dir: Path, *, question_id: str, proposed: str) -> dict:
+    """Write candidate artifacts with a fixed reasoner proposed_answer."""
+    reasoner_result = {
+        "status": "ok",
+        "proposed_answer": proposed,
+        "confidence": 0.9,
+        "propositions": [],
+        "supporting_evidence": [],
+        "contrary_evidence": [],
+        "unresolved_questions": [],
+        "documents_pages_reviewed": [],
+        "attorney_review": {"requires_attorney_review": True},
+        "audit": {
+            "model": "serializer-test",
+            "provider": "injected_model_call",
+            "model_provenance_reason": "Focused serializer unit test.",
+        },
+    }
+    return CLI.write_candidate_artifacts(
+        out_dir,
+        question_id=question_id,
+        question_text=f"{question_id} serializer parity question",
+        required_commit="95407c73201ca375b7f824d8cbcbe06ed598405c",
+        reasoner_result=reasoner_result,
+        model_input_audit={"retrieval_hit_count": 0},
+        commit_info={
+            "checkout_commit": "95407c73201ca375b7f824d8cbcbe06ed598405c",
+            "origin_main_commit": "95407c73201ca375b7f824d8cbcbe06ed598405c",
+        },
+        completeness={"ok": True},
+    )
+
+
+class ProposedAnswerSerializerParityTests(unittest.TestCase):
+    """JSON/Markdown proposed-answer parity for the candidate serializer."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmpdir.name)
+
+    def tearDown(self):
+        self._tmpdir.cleanup()
+
+    def test_q2_numbered_and_bulleted_answer_formatting(self):
+        numbered_raw = (
+            "The complaint seeks the following pleaded requested relief. "
+            "1. Rescission and void ab initio coverage (page_id nyscef-1-page-0002). "
+            "2. No duty to defend or indemnify (page_id nyscef-1-page-0002). "
+            "3. Catch-all further relief (page_id nyscef-1-page-0002)."
+        )
+        numbered = CLI.canonical_proposed_answer(numbered_raw)
+        self.assertIn(
+            "The complaint seeks the following pleaded requested relief.", numbered
+        )
+        self.assertIn(
+            "\n1. Rescission and void ab initio coverage (page_id nyscef-1-page-0002).",
+            numbered,
+        )
+        self.assertIn(
+            "\n2. No duty to defend or indemnify (page_id nyscef-1-page-0002).",
+            numbered,
+        )
+        self.assertIn(
+            "\n3. Catch-all further relief (page_id nyscef-1-page-0002).",
+            numbered,
+        )
+        self.assertNotIn(" • ", numbered)
+
+        bulleted_raw = (
+            "The pleaded requested relief includes: • Void ab initio coverage. "
+            "• No defense or indemnity. • Catch-all further relief."
+        )
+        bulleted = CLI.canonical_proposed_answer(bulleted_raw)
+        self.assertIn("The pleaded requested relief includes:", bulleted)
+        self.assertIn("\n- Void ab initio coverage.", bulleted)
+        self.assertIn("\n- No defense or indemnity.", bulleted)
+        self.assertIn("\n- Catch-all further relief.", bulleted)
+        self.assertNotIn(" • ", bulleted)
+
+    def test_whitespace_normalization_parity_between_json_and_markdown(self):
+        raw = (
+            "The complaint seeks the following pleaded requested relief. "
+            "1. Rescission and void ab initio coverage. "
+            "2. No duty to defend or indemnify. "
+            "3. Catch-all further relief."
+        )
+        out_dir = self.root / "q2_parity"
+        files = _write_serializer_artifacts(
+            out_dir, question_id="Q2", proposed=raw
+        )
+        candidate = json.loads(
+            Path(files["Q2_candidate_answer.json"]).read_text(encoding="utf-8")
+        )
+        markdown = Path(files["Q2_candidate_answer.md"]).read_text(encoding="utf-8")
+        md_proposed = _extract_markdown_proposed_answer(markdown)
+        canonical = CLI.canonical_proposed_answer(raw)
+
+        self.assertEqual(candidate["proposed_answer"], canonical)
+        self.assertEqual(md_proposed, canonical)
+        self.assertEqual(
+            CLI.normalize_proposed_answer_whitespace(candidate["proposed_answer"]),
+            CLI.normalize_proposed_answer_whitespace(md_proposed),
+        )
+        self.assertIn("\n1. Rescission and void ab initio coverage.", md_proposed)
+        self.assertIn("\n2. No duty to defend or indemnify.", md_proposed)
+
+    def test_no_literal_escape_artifacts_in_serialized_answers(self):
+        raw = (
+            "The complaint seeks relief:\\n\\n"
+            "1. Void ab initio coverage.\\n"
+            "2. No defense or indemnity.\\n"
+            "3. Catch-all further relief."
+        )
+        out_dir = self.root / "q2_escapes"
+        files = _write_serializer_artifacts(
+            out_dir, question_id="Q2", proposed=raw
+        )
+        candidate = json.loads(
+            Path(files["Q2_candidate_answer.json"]).read_text(encoding="utf-8")
+        )
+        markdown = Path(files["Q2_candidate_answer.md"]).read_text(encoding="utf-8")
+        md_proposed = _extract_markdown_proposed_answer(markdown)
+        proposed = candidate["proposed_answer"]
+
+        self.assertEqual(proposed, md_proposed)
+        self.assertNotIn("\\n", proposed)
+        self.assertNotIn("\\t", proposed)
+        self.assertNotIn("\\r", proposed)
+        self.assertNotIn("\\n", md_proposed)
+        # Real newlines remain for clean Markdown list formatting.
+        self.assertIn("\n1. Void ab initio coverage.", proposed)
+        self.assertIn("\n2. No defense or indemnity.", proposed)
+        self.assertIn("\n3. Catch-all further relief.", proposed)
+        # On-disk JSON may escape newlines as JSON \\n; loaded value must not.
+        on_disk = Path(files["Q2_candidate_answer.json"]).read_text(encoding="utf-8")
+        self.assertIn('"proposed_answer"', on_disk)
+        loaded = json.loads(on_disk)["proposed_answer"]
+        self.assertNotIn("\\n", loaded)
+        self.assertEqual(loaded, proposed)
+
+    def test_q1_serialization_regression_shared_canonical_answer(self):
+        raw = (
+            "The pleaded roles are: • Plaintiff: insurer. • Defendant: insured. "
+            "• Notice defendant: broker."
+        )
+        out_dir = self.root / "q1_regression"
+        files = _write_serializer_artifacts(
+            out_dir, question_id="Q1", proposed=raw
+        )
+        candidate = json.loads(
+            Path(files["Q1_candidate_answer.json"]).read_text(encoding="utf-8")
+        )
+        markdown = Path(files["Q1_candidate_answer.md"]).read_text(encoding="utf-8")
+        md_proposed = _extract_markdown_proposed_answer(markdown)
+        canonical = CLI.canonical_proposed_answer(raw)
+
+        self.assertEqual(candidate["question_id"], "Q1")
+        self.assertEqual(candidate["proposed_answer"], canonical)
+        self.assertEqual(md_proposed, canonical)
+        self.assertIn("\n- Plaintiff: insurer.", md_proposed)
+        self.assertIn("\n- Defendant: insured.", md_proposed)
+        self.assertIn("\n- Notice defendant: broker.", md_proposed)
+        self.assertEqual(
+            CLI.normalize_proposed_answer_whitespace(candidate["proposed_answer"]),
+            CLI.normalize_proposed_answer_whitespace(md_proposed),
+        )
+        # Historical Q1 sentence-fallback formatting remains available.
+        sentence_formatted = CLI._format_proposed_answer_markdown(
+            "The caption identifies the parties. Underwriters is the insurer. "
+            "Triborough is the insured. DSSR is a notice defendant."
+        )
+        self.assertIn("\n- Underwriters is the insurer.", sentence_formatted)
+        self.assertIn("\n- Triborough is the insured.", sentence_formatted)
+        self.assertIn("\n- DSSR is a notice defendant.", sentence_formatted)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -702,19 +702,117 @@ def candidate_content_sha256(candidate: dict) -> str:
     return _sha256_bytes(_canonical_json_bytes(without))
 
 
+_LITERAL_ESCAPE_ARTIFACT_RE = re.compile(r"\\([nrt])")
+_MARKDOWN_LIST_LINE_RE = re.compile(r"^\s*(?:[-*]|\d+\.)\s+\S")
+_NUMBERED_ITEM_START_RE = re.compile(r"(?=\b\d+\.\s+\S)")
+
+
+def normalize_proposed_answer_whitespace(text: str) -> str:
+    """Documented whitespace normalization for JSON/Markdown answer parity.
+
+    Collapses all Unicode whitespace runs (spaces, tabs, newlines) to a single
+    space and strips ends. The JSON candidate ``proposed_answer`` and the
+    Markdown ``## Proposed answer`` body must be identical under this function.
+    """
+    return " ".join(str(text or "").split()).strip()
+
+
+def _decode_literal_escape_artifacts(text: str) -> str:
+    """Replace literal ``\\n`` / ``\\t`` / ``\\r`` sequences with real whitespace.
+
+    Prevents two-character escape artifacts from appearing mid-answer when an
+    upstream string carried escaped newlines instead of real line breaks.
+    """
+
+    def _repl(match: re.Match[str]) -> str:
+        return {"n": "\n", "r": "\n", "t": " "}[match.group(1)]
+
+    return _LITERAL_ESCAPE_ARTIFACT_RE.sub(_repl, str(text or ""))
+
+
+def _collapse_inline_whitespace(text: str) -> str:
+    return " ".join(str(text or "").split())
+
+
 def _format_proposed_answer_markdown(proposed: str) -> str:
-    """Turn the reasoner's compact bullet prose into scannable Markdown."""
-    parts = [part.strip() for part in proposed.split(" • ") if part.strip()]
-    if len(parts) <= 1:
-        parts = [
-            part.strip()
-            for part in re.split(r"(?<=[.!?])\s+(?=[A-Z])", proposed.strip())
+    """Turn compact bullet/numbered prose into scannable Markdown lists.
+
+    Preserves list substance; does not inject literal escape artifacts.
+    """
+    text = _decode_literal_escape_artifacts(proposed).strip()
+    if not text:
+        return ""
+
+    # Already a clean multiline Markdown list: keep structure, drop escape noise.
+    lines = text.splitlines()
+    list_line_count = sum(1 for ln in lines if _MARKDOWN_LIST_LINE_RE.match(ln))
+    if list_line_count >= 2:
+        cleaned: list[str] = []
+        for ln in lines:
+            stripped = ln.rstrip()
+            if not stripped:
+                if cleaned and cleaned[-1] != "":
+                    cleaned.append("")
+                continue
+            if _MARKDOWN_LIST_LINE_RE.match(stripped):
+                marker_match = re.match(r"^(\s*(?:[-*]|\d+\.)\s+)(.*)$", stripped)
+                assert marker_match is not None
+                cleaned.append(
+                    marker_match.group(1)
+                    + _collapse_inline_whitespace(marker_match.group(2))
+                )
+            else:
+                cleaned.append(_collapse_inline_whitespace(stripped))
+        while cleaned and cleaned[-1] == "":
+            cleaned.pop()
+        return "\n".join(cleaned)
+
+    compact = _collapse_inline_whitespace(text)
+
+    parts = [part.strip() for part in compact.split(" • ") if part.strip()]
+    if len(parts) > 2:
+        overview, *items = parts
+        cleaned_items = [
+            re.sub(r"^[-*]\s+", "", item).strip() for item in items if item.strip()
+        ]
+        return overview + "\n\n" + "\n".join(f"- {item}" for item in cleaned_items)
+
+    numbered_starts = list(_NUMBERED_ITEM_START_RE.finditer(compact))
+    if len(numbered_starts) >= 2:
+        first_at = numbered_starts[0].start()
+        overview = compact[:first_at].strip()
+        rest = compact[first_at:].strip()
+        items = [
+            _collapse_inline_whitespace(part)
+            for part in _NUMBERED_ITEM_START_RE.split(rest)
             if part.strip()
         ]
+        # split() keeps delimiters empty; filter to true numbered items only.
+        items = [part for part in items if re.match(r"^\d+\.\s+\S", part)]
+        if len(items) >= 2:
+            body = "\n".join(items)
+            if overview:
+                return overview + "\n\n" + body
+            return body
+
+    parts = [
+        part.strip()
+        for part in re.split(r"(?<=[.!?])\s+(?=[A-Z])", compact)
+        if part.strip()
+    ]
     if len(parts) <= 2:
-        return proposed.strip()
+        return compact
     overview, *items = parts
     return overview + "\n\n" + "\n".join(f"- {item}" for item in items)
+
+
+def canonical_proposed_answer(proposed: str) -> str:
+    """Single canonical proposed-answer string for JSON and Markdown serializers.
+
+    Both artifact channels derive from this representation so substance matches
+    after ``normalize_proposed_answer_whitespace``.
+    """
+    return _format_proposed_answer_markdown(proposed)
 
 
 def write_candidate_artifacts(
@@ -732,7 +830,8 @@ def write_candidate_artifacts(
     """Write the four candidate artifacts and verify absolute-path hashes."""
     out_dir.mkdir(parents=True, exist_ok=False)
     generated_at = _utc_now()
-    proposed = reasoner_result.get("proposed_answer") or ""
+    # One canonical string feeds JSON proposed_answer and Markdown body alike.
+    proposed = canonical_proposed_answer(reasoner_result.get("proposed_answer") or "")
     reasoner_audit = reasoner_result.get("audit") or {}
     model_name = reasoner_audit.get("model") or "unknown"
     provider = reasoner_audit.get("provider") or "unknown"
@@ -813,7 +912,7 @@ def write_candidate_artifacts(
         f"generated_at: `{generated_at}`\n\n"
         f"candidate_sha256: `{candidate_hash}`\n\n"
         f"## Question\n\n{question_text}\n\n"
-        f"## Proposed answer\n\n{_format_proposed_answer_markdown(proposed)}\n\n"
+        f"## Proposed answer\n\n{proposed}\n\n"
         f"## Review limitation\n\n"
         f"This is a generation-finalized candidate, not an attorney-approved answer. "
         f"Its conclusions remain limited to the retrieved evidence identified above.\n"
