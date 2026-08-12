@@ -611,6 +611,7 @@ def assert_q2_boundary_success(
     *,
     replay: Mapping[str, Any],
     result: Mapping[str, Any],
+    validated_claims: Mapping[str, Any],
 ) -> dict[str, Any]:
     if not result.get("ok") or not result.get("finalized"):
         raise PreflightError(
@@ -649,6 +650,23 @@ def assert_q2_boundary_success(
             stage="serialization_parity",
         )
 
+    # Shared semantic evaluator (same function final acceptance uses).
+    from acceptance_contract.validate import (
+        evaluate_q2_no_defense_or_indemnity,
+        q2_no_defense_claim_from_validated,
+    )
+
+    no_def_eval = evaluate_q2_no_defense_or_indemnity(proposed, validated_claims)
+    if no_def_eval.result_code != ac.CRIT_PASS:
+        raise PreflightError(
+            "q2_no_defense_semantic_failed",
+            stage="relief_paraphrase",
+            details={
+                "result_code": no_def_eval.result_code,
+                "diagnostics": list(no_def_eval.diagnostics)[:8],
+            },
+        )
+
     contract_cfg = build_template_acceptance_contract_config(replay)
     loaded = ac.load_acceptance_contract_from_bytes(
         contract_cfg["raw_bytes"],
@@ -670,6 +688,7 @@ def assert_q2_boundary_success(
         loaded.evaluation,
         apply_fallback=False,
         apply_duplication_repair=False,
+        validated_claims=validated_claims,
     )
     if not validation.ok:
         raise PreflightError(
@@ -697,22 +716,7 @@ def assert_q2_boundary_success(
                 },
             )
 
-    categories = _relief_categories(replay)
-    no_def_page = str(
-        (categories.get("no_defense_or_indemnity") or {}).get("page_id") or ""
-    )
     lowered = proposed.lower()
-    if "no defense or indemnity" not in lowered:
-        raise PreflightError(
-            "no_defense_paraphrase_missing",
-            stage="relief_paraphrase",
-        )
-    if no_def_page and f"page_id {no_def_page}" not in proposed:
-        raise PreflightError(
-            "no_defense_citation_missing",
-            stage="relief_paraphrase",
-            details={"expected_page_id": no_def_page},
-        )
     if "originating source page" not in lowered and "requested relief" not in lowered:
         raise PreflightError(
             "pleaded_requested_relief_framing_missing",
@@ -725,29 +729,32 @@ def assert_q2_boundary_success(
             details={"char_length": len(proposed)},
         )
 
-    audit_claims = (candidate.get("audit") or {}).get("verified_relief_claims") or []
-    by_cat = {
-        str(c.get("category")): c for c in audit_claims if isinstance(c, Mapping)
-    }
-    no_def_claim = by_cat.get("no_defense_or_indemnity") or {}
+    no_def_claim = q2_no_defense_claim_from_validated(validated_claims) or {}
+    no_def_page = str(no_def_claim.get("page_id") or "")
     if not no_def_claim.get("supported"):
         raise PreflightError(
             "verified_claim_no_defense_unsupported",
-            stage="audit_claim_rebuild",
+            stage="validated_claims_authority",
         )
     if no_def_claim.get("selection_reason_code") != "supported_needs_paraphrase":
         raise PreflightError(
             "verified_claim_no_defense_reason_mismatch",
-            stage="audit_claim_rebuild",
+            stage="validated_claims_authority",
             details={
                 "selection_reason_code": no_def_claim.get("selection_reason_code")
             },
         )
-    if no_def_page and no_def_claim.get("page_id") != no_def_page:
+
+    audit_claims = (candidate.get("audit") or {}).get("verified_relief_claims") or []
+    by_cat = {
+        str(c.get("category")): c for c in audit_claims if isinstance(c, Mapping)
+    }
+    audit_no_def = by_cat.get("no_defense_or_indemnity") or {}
+    if audit_no_def.get("page_id") != no_def_claim.get("page_id"):
         raise PreflightError(
             "verified_claim_no_defense_page_mismatch",
             stage="audit_claim_rebuild",
-            details={"page_id": no_def_claim.get("page_id")},
+            details={"page_id": audit_no_def.get("page_id")},
         )
 
     return {
@@ -921,7 +928,9 @@ def run_preflight(
 
             stage = "boundary_assertions"
             assertion_meta = assert_q2_boundary_success(
-                replay=replay, result=result
+                replay=replay,
+                result=result,
+                validated_claims=internal_claims,
             )
 
         payload = {

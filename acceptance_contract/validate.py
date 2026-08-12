@@ -49,6 +49,18 @@ LOAD_NOT_CONFIGURED = "load_not_configured"
 _WS_RE = re.compile(r"\s+")
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+|\n+")
 
+# Shared Q2 no-defense semantic evaluation (preflight + final acceptance).
+Q2_NO_DEFENSE_CRITERION_ID = "q2-no-defense-or-indemnity"
+Q2_NO_DEFENSE_CATEGORY = "no_defense_or_indemnity"
+Q2_VALIDATED_CLAIMS_SCHEMA_VERSION = "q2_validated_structured_claims.v1"
+
+_NO_DUTY_RE = re.compile(r"\bno\b(?:\s+\w+){0,3}\s+duty\b", re.IGNORECASE)
+_DEFEND_RE = re.compile(r"\bdefend(?:s|ed|ing)?\b", re.IGNORECASE)
+_INDEMNIFY_RE = re.compile(
+    r"\bindemnif(?:y|ies|ied|ying)\b|\bindemnity\b", re.IGNORECASE
+)
+_DEFENDANTS_RE = re.compile(r"\bdefendants?\b", re.IGNORECASE)
+
 
 def _norm(text: str) -> str:
     return _WS_RE.sub(" ", (text or "").strip().lower())
@@ -298,12 +310,162 @@ def build_evaluation_view_from_document(
     )
 
 
+def q2_no_defense_claim_from_validated(
+    validated_claims: Optional[Mapping[str, Any]],
+) -> Optional[Mapping[str, Any]]:
+    """Return the exact no_defense claim row from validated claims (no copy).
+
+    Reads ``q2_validated_structured_claims.v1`` only. Does not rebuild or mutate
+    claims. Returns ``None`` when the object or category row is absent.
+    """
+    if not isinstance(validated_claims, Mapping):
+        return None
+    if str(validated_claims.get("schema_version") or "") != (
+        Q2_VALIDATED_CLAIMS_SCHEMA_VERSION
+    ):
+        return None
+    claims = validated_claims.get("claims")
+    if not isinstance(claims, list):
+        return None
+    for row in claims:
+        if not isinstance(row, Mapping):
+            continue
+        if str(row.get("category") or "") == Q2_NO_DEFENSE_CATEGORY:
+            return row
+    return None
+
+
+def q2_no_defense_semantic_signals(
+    answer_text: str,
+    *,
+    page_id: str,
+) -> dict[str, bool]:
+    """Privacy-safe semantic signals for the no-defense safe paraphrase.
+
+    Requires no-duty meaning, defend and/or indemnify meaning, defendants, and
+    the supporting page citation. Does not require OCR-derived wording (e.g.
+    Count II / indemnification) and does not inspect quote bodies for OCR.
+    """
+    text = answer_text or ""
+    page = (page_id or "").strip()
+    return {
+        "no_duty": bool(_NO_DUTY_RE.search(text)),
+        "defend_or_indemnify": bool(
+            _DEFEND_RE.search(text) or _INDEMNIFY_RE.search(text)
+        ),
+        "defendants": bool(_DEFENDANTS_RE.search(text)),
+        "page_citation": bool(page) and f"page_id {page}" in text,
+    }
+
+
+def evaluate_q2_no_defense_or_indemnity(
+    answer_text: str,
+    validated_claims: Mapping[str, Any],
+) -> CriterionResult:
+    """Shared semantic evaluator for ``q2-no-defense-or-indemnity``.
+
+    Support authority is the exact immutable ``q2_validated_structured_claims.v1``
+    object. Used by production-boundary preflight and final acceptance so both
+    paths share one interpretation. Never rebuilds or mutates claims; never
+    requires unreadable OCR phrasing.
+    """
+    claim = q2_no_defense_claim_from_validated(validated_claims)
+    if claim is None:
+        return CriterionResult(
+            criterion_id=Q2_NO_DEFENSE_CRITERION_ID,
+            presence=PRESENCE_ABSENT,
+            evidence=EVIDENCE_UNSUPPORTED,
+            semantic=SEMANTIC_NOT_APPLICABLE,
+            result_code=CRIT_FAIL_MISSING,
+            diagnostics=["q2_no_defense_claim_missing"],
+        )
+    if not claim.get("supported"):
+        return CriterionResult(
+            criterion_id=Q2_NO_DEFENSE_CRITERION_ID,
+            presence=PRESENCE_ABSENT,
+            evidence=EVIDENCE_UNSUPPORTED,
+            semantic=SEMANTIC_NOT_APPLICABLE,
+            result_code=CRIT_FAIL_UNSUPPORTED,
+            diagnostics=["q2_no_defense_claim_unsupported"],
+        )
+
+    page_id = str(claim.get("page_id") or "").strip()
+    if not page_id:
+        return CriterionResult(
+            criterion_id=Q2_NO_DEFENSE_CRITERION_ID,
+            presence=PRESENCE_ABSENT,
+            evidence=EVIDENCE_UNSUPPORTED,
+            semantic=SEMANTIC_NOT_APPLICABLE,
+            result_code=CRIT_FAIL_UNSUPPORTED,
+            diagnostics=["q2_no_defense_claim_citation_missing"],
+        )
+
+    signals = q2_no_defense_semantic_signals(answer_text, page_id=page_id)
+    diagnostics: list[str] = []
+    if not signals["no_duty"]:
+        diagnostics.append("q2_no_defense_missing_no_duty")
+    if not signals["defend_or_indemnify"]:
+        diagnostics.append("q2_no_defense_missing_defend_or_indemnify")
+    if not signals["defendants"]:
+        diagnostics.append("q2_no_defense_missing_defendants")
+    if not signals["page_citation"]:
+        diagnostics.append("q2_no_defense_missing_page_citation")
+
+    if diagnostics:
+        # Distinguish total absence of no-defense meaning from partial near-miss.
+        presence = (
+            PRESENCE_PRESENT
+            if (
+                signals["no_duty"]
+                or signals["defend_or_indemnify"]
+                or signals["defendants"]
+            )
+            else PRESENCE_ABSENT
+        )
+        if presence == PRESENCE_ABSENT:
+            result_code = CRIT_FAIL_MISSING
+        elif not signals["page_citation"] and all(
+            signals[k]
+            for k in ("no_duty", "defend_or_indemnify", "defendants")
+        ):
+            result_code = CRIT_FAIL_UNSUPPORTED
+        else:
+            result_code = CRIT_FAIL_SEMANTIC
+        return CriterionResult(
+            criterion_id=Q2_NO_DEFENSE_CRITERION_ID,
+            presence=presence,
+            evidence=EVIDENCE_UNSUPPORTED,
+            semantic=SEMANTIC_VIOLATED,
+            result_code=result_code,
+            diagnostics=tuple(diagnostics),
+        )
+
+    return CriterionResult(
+        criterion_id=Q2_NO_DEFENSE_CRITERION_ID,
+        presence=PRESENCE_PRESENT,
+        evidence=EVIDENCE_SUPPORTED,
+        semantic=SEMANTIC_PRESERVED,
+        result_code=CRIT_PASS,
+        diagnostics=(),
+    )
+
+
 def evaluate_criterion(
     answer_text: str,
     spec: CriterionEvalSpec,
     *,
     semantic_preservation: Mapping[str, Any],
+    validated_claims: Optional[Mapping[str, Any]] = None,
 ) -> CriterionResult:
+    # Single shared path for Q2 no-defense when validated claims are the
+    # support authority — do not fall back to OCR-derived phrase matching.
+    if (
+        spec.id == Q2_NO_DEFENSE_CRITERION_ID
+        and q2_no_defense_claim_from_validated(validated_claims) is not None
+    ):
+        assert validated_claims is not None
+        return evaluate_q2_no_defense_or_indemnity(answer_text, validated_claims)
+
     norm = _norm(answer_text)
     present = _all_phrases_present(norm, spec.presence_phrases) if spec.presence_phrases else (
         bool(_norm(spec.fallback_text)) and _contains_phrase(norm, spec.fallback_text)
@@ -404,13 +566,30 @@ def answer_already_contains_equivalent(answer_text: str, fragment: str) -> bool:
 
 
 def criterion_evidence_already_supported(
-    answer_text: str, spec: CriterionEvalSpec
+    answer_text: str,
+    spec: CriterionEvalSpec,
+    *,
+    validated_claims: Optional[Mapping[str, Any]] = None,
 ) -> bool:
     """True when the answer already contains every required evidence phrase.
 
     Empty ``evidence_phrases`` means no evidence constraint. Fallback must not
     invent evidence linkage; it may only proceed when support is already present.
+
+    When validated claims authorize Q2 no-defense, semantic evidence support
+    replaces OCR-derived evidence phrase matching.
     """
+    if (
+        spec.id == Q2_NO_DEFENSE_CRITERION_ID
+        and q2_no_defense_claim_from_validated(validated_claims) is not None
+    ):
+        assert validated_claims is not None
+        return (
+            evaluate_q2_no_defense_or_indemnity(
+                answer_text, validated_claims
+            ).result_code
+            == CRIT_PASS
+        )
     if not spec.evidence_phrases:
         return True
     return _all_phrases_present(_norm(answer_text), spec.evidence_phrases)
@@ -421,6 +600,7 @@ def apply_idempotent_contract_fallback(
     view: ContractEvaluationView,
     *,
     missing_ids: Optional[Sequence[str]] = None,
+    validated_claims: Optional[Mapping[str, Any]] = None,
 ) -> tuple[str, dict[str, str]]:
     """Append genuinely missing fallback content at most once per criterion.
 
@@ -452,7 +632,9 @@ def apply_idempotent_contract_fallback(
             actions[cid] = FALLBACK_SKIPPED_EQUIVALENT
             continue
         # Do not insert fallback that would manufacture unsupported evidence.
-        if not criterion_evidence_already_supported(out, spec):
+        if not criterion_evidence_already_supported(
+            out, spec, validated_claims=validated_claims
+        ):
             actions[cid] = FALLBACK_SKIPPED_UNSUPPORTED
             continue
         # Insert exactly once.
@@ -537,11 +719,16 @@ def validate_final_answer_against_contract(
     *,
     apply_fallback: bool = True,
     apply_duplication_repair: bool = True,
+    validated_claims: Optional[Mapping[str, Any]] = None,
 ) -> AcceptanceValidationResult:
     """Validate fully assembled final answer; optionally fallback + dedupe.
 
     A configured-contract run cannot pass unless every required criterion passes
     and the duplication gate is ok/repaired.
+
+    When ``validated_claims`` is the immutable ``q2_validated_structured_claims.v1``
+    object, ``q2-no-defense-or-indemnity`` is evaluated by the shared semantic
+    evaluator (not OCR-derived contract phrase matching).
     """
     text = answer_text or ""
     fallback_actions: dict[str, str] = {}
@@ -555,21 +742,30 @@ def validate_final_answer_against_contract(
             diagnostics.append(f"missing_criterion_spec:{cid}")
             continue
         trial = evaluate_criterion(
-            text, spec, semantic_preservation=view.semantic_preservation
+            text,
+            spec,
+            semantic_preservation=view.semantic_preservation,
+            validated_claims=validated_claims,
         )
         if trial.result_code == CRIT_FAIL_MISSING:
             missing_for_fallback.append(cid)
 
     if apply_fallback and missing_for_fallback:
         text, fallback_actions = apply_idempotent_contract_fallback(
-            text, view, missing_ids=missing_for_fallback
+            text,
+            view,
+            missing_ids=missing_for_fallback,
+            validated_claims=validated_claims,
         )
         for cid, action in fallback_actions.items():
             if action == FALLBACK_SKIPPED_UNSUPPORTED:
                 diagnostics.append(f"fallback_skipped_unsupported:{cid}")
         # Second pass: ensure idempotence (running again must not duplicate).
         text, second = apply_idempotent_contract_fallback(
-            text, view, missing_ids=missing_for_fallback
+            text,
+            view,
+            missing_ids=missing_for_fallback,
+            validated_claims=validated_claims,
         )
         for cid, action in second.items():
             if action == FALLBACK_INSERTED:
@@ -605,7 +801,10 @@ def validate_final_answer_against_contract(
             all_pass = False
             continue
         result = evaluate_criterion(
-            text, spec, semantic_preservation=view.semantic_preservation
+            text,
+            spec,
+            semantic_preservation=view.semantic_preservation,
+            validated_claims=validated_claims,
         )
         results.append(result)
         if result.result_code != CRIT_PASS:

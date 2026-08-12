@@ -1335,6 +1335,7 @@ def finalize_canonical_answer_against_contract(
     *,
     canonicalize: Optional[Callable[[str], str]] = None,
     verified_relief_claims: Optional[Sequence[Mapping[str, Any]]] = None,
+    validated_claims: Optional[Mapping[str, Any]] = None,
 ) -> tuple[str, ac.AcceptanceValidationResult]:
     """Repair, canonicalize for presentation, then validate the exact final string.
 
@@ -1348,6 +1349,10 @@ def finalize_canonical_answer_against_contract(
     JSON and Markdown serializers must both consume the returned canonical
     string. Optional ``verified_relief_claims`` from synthesis are merged
     during canonicalization independently of displayed quotes.
+
+    When ``validated_claims`` is the immutable ``q2_validated_structured_claims.v1``
+    object, final acceptance uses the shared Q2 no-defense semantic evaluator
+    (same authority as production-boundary preflight).
     """
     if canonicalize is not None:
         canonicalize_fn = canonicalize
@@ -1367,6 +1372,7 @@ def finalize_canonical_answer_against_contract(
         contract_view,
         apply_fallback=True,
         apply_duplication_repair=True,
+        validated_claims=validated_claims,
     )
     if not repaired.ok:
         return repaired.final_answer, repaired
@@ -1377,6 +1383,7 @@ def finalize_canonical_answer_against_contract(
         contract_view,
         apply_fallback=False,
         apply_duplication_repair=False,
+        validated_claims=validated_claims,
     )
     lost = presentation_rewrite_lost_satisfied_criteria(repaired, final)
     if lost:
@@ -2047,6 +2054,7 @@ def run_generation(
             proposed,
             contract_view,
             verified_relief_claims=verified_claims,
+            validated_claims=validated_claims_doc,
         )
         if q2_diagnostics is not None:
             q2_diagnostics = build_q2_production_evidence_diagnostics(

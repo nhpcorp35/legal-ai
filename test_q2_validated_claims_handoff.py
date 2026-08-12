@@ -267,12 +267,23 @@ class ExactClaimsReachFinalizerTests(unittest.TestCase):
 
             real_finalize = GEN.finalize_canonical_answer_against_contract
 
-            def _capture_finalize(proposed, view, verified_relief_claims=None):
+            def _capture_finalize(
+                proposed,
+                view,
+                verified_relief_claims=None,
+                validated_claims=None,
+                **kwargs,
+            ):
                 captured["verified_relief_claims"] = list(
                     verified_relief_claims or []
                 )
+                captured["validated_claims"] = validated_claims
                 return real_finalize(
-                    proposed, view, verified_relief_claims=verified_relief_claims
+                    proposed,
+                    view,
+                    verified_relief_claims=verified_relief_claims,
+                    validated_claims=validated_claims,
+                    **kwargs,
                 )
 
             reasoner = {
@@ -345,6 +356,7 @@ class ExactClaimsReachFinalizerTests(unittest.TestCase):
                 captured["verified_relief_claims"],
                 expected_claims,
             )
+            self.assertEqual(captured.get("validated_claims"), doc)
             candidate = json.loads(
                 Path(result["files"]["Q2_candidate_answer.json"]).read_text(
                     encoding="utf-8"
@@ -967,6 +979,7 @@ class RetainValidatedNeedsParaphraseNoDefenseTests(unittest.TestCase):
             gap,
             view,
             verified_relief_claims=exact_claims,
+            validated_claims=doc,
         )
         self.assertTrue(validation.ok, validation.diagnostics)
         by_id = {c.criterion_id: c for c in validation.criterion_results}
@@ -1072,6 +1085,309 @@ class RetainValidatedNeedsParaphraseNoDefenseTests(unittest.TestCase):
             )
             for banned in _Q2_31638756328_BANNED_OCR:
                 self.assertNotIn(banned, proposed)
+
+
+# ---------------------------------------------------------------------------
+# 5c. Regression: run 31641606686 at bc537d2 — generation retained the safe
+# paraphrase (830-char production-shaped answer) but final acceptance still
+# reported presence=absent / evidence_unsupported / fallback_skipped_unsupported
+# because OCR-derived contract phrases (indemnification, Count II) diverged
+# from the shared semantic paraphrase. One evaluator must serve preflight and
+# final acceptance using exact q2_validated_structured_claims.v1 authority.
+# ---------------------------------------------------------------------------
+
+_Q2_31641606686_PAGE_ID = "nyscef-001-page-0025"
+_Q2_31641606686_BANNED_OCR = (
+    "Count II",
+    "Tri borough",
+    "non-disclos ures",
+    "indemni fy",
+    "Def en dants",
+)
+# Exact 830-character production-shaped continuous answer (privacy-safe public
+# phrasing only). Contains the fixed no-defense paraphrase with no duty /
+# defend-or-indemnify / Defendants / page citation, and deliberately omits
+# OCR-derived contract tokens (indemnification, Count II).
+_Q2_31641606686_ANSWER_830 = (
+    "This answer describes pleaded requested relief in the complaint, "
+    "not a judicial determination. The complaint requests a declaration "
+    "that coverage is void ab initio based on alleged material "
+    "misrepresentations and non-disclosures, as reflected in the cited "
+    'pleading language: "void the Policies ab initio and for rescission of the same" '
+    f"(page_id {_Q2_31641606686_PAGE_ID}). The complaint also still includes "
+    "catch-all requested relief, as reflected in the cited pleading "
+    'language: "for such other and further relief as the Court deems just and proper" '
+    f"(page_id {_Q2_31641606686_PAGE_ID}). "
+    "The complaint further seeks relief that there is no defense or "
+    "indemnity obligation and declaring that there is no duty to defend "
+    "or indemnify Defendants, as reflected in the cited pleading on the "
+    f"originating source page (page_id {_Q2_31641606686_PAGE_ID})."
+)
+
+
+class UnifyQ2NoDefenseSemanticValidation31641606686Tests(unittest.TestCase):
+    """Shared semantic evaluator closes run 31641606686 acceptance gap."""
+
+    def setUp(self) -> None:
+        self.assertEqual(len(_Q2_31641606686_ANSWER_830), 830)
+
+    def _production_ocr_phrase_contract_cfg(self) -> dict:
+        """Mirrors live Q2 contract phrase shape that rejects the paraphrase."""
+        import acceptance_contract as ac
+
+        ident = _identity()
+        contract = ac.build_synthetic_contract(
+            contract_id="contract-31641606686-semantic",
+            version="1.0.0",
+            benchmark_id=ident["benchmark_id"],
+            question_id="Q2",
+            object_key=ident["object_key"],
+            required_criterion_ids=[
+                "q2-rescission-void-ab-initio",
+                "q2-no-defense-or-indemnity",
+                "q2-pleaded-relief-not-adjudication",
+                "q2-catch-all-relief",
+            ],
+            criteria=[
+                {
+                    "id": "q2-rescission-void-ab-initio",
+                    "presence_phrases": ["void ab initio"],
+                    "evidence_phrases": ["void ab initio"],
+                    "semantic_required_phrases": [],
+                    "semantic_forbidden_phrases": [],
+                    "fallback_text": "",
+                    "category": "relief",
+                },
+                {
+                    "id": "q2-no-defense-or-indemnity",
+                    # Production-shaped OCR/heading tokens — not the safe paraphrase.
+                    "presence_phrases": ["defense", "indemnification"],
+                    "evidence_phrases": ["Count II"],
+                    "semantic_required_phrases": ["no obligation"],
+                    "semantic_forbidden_phrases": ["court held no coverage"],
+                    "fallback_text": (
+                        "Fallback no defense or indemnity framing with "
+                        "Count II indemnification wording."
+                    ),
+                    "category": "relief",
+                },
+                {
+                    "id": "q2-pleaded-relief-not-adjudication",
+                    "presence_phrases": [
+                        "pleaded requested relief",
+                        "not a judicial determination",
+                    ],
+                    "evidence_phrases": [],
+                    "semantic_required_phrases": ["pleaded"],
+                    "semantic_forbidden_phrases": [
+                        "court has ruled",
+                        "established entitlement",
+                    ],
+                    "fallback_text": (
+                        "This answer describes pleaded requested relief in the "
+                        "complaint, not a judicial determination."
+                    ),
+                    "category": "relief",
+                },
+                {
+                    "id": "q2-catch-all-relief",
+                    "presence_phrases": ["catch-all requested relief"],
+                    "evidence_phrases": [
+                        "for such other and further relief as the Court "
+                        "deems just and proper"
+                    ],
+                    "semantic_required_phrases": [],
+                    "semantic_forbidden_phrases": [],
+                    "fallback_text": "",
+                    "category": "relief",
+                },
+            ],
+        )
+        raw = json.dumps(contract, sort_keys=True).encode("utf-8")
+        return {
+            "object_key": contract["object_key"],
+            "benchmark_id": ident["benchmark_id"],
+            "question_id": "Q2",
+            "content_sha256": contract["content_sha256"],
+            "raw_bytes": raw,
+            "_contract": contract,
+        }
+
+    def _validated_claims_doc(self, contract_cfg: dict) -> dict:
+        return GEN.build_validated_structured_claims(
+            benchmark_id=contract_cfg["benchmark_id"],
+            question_id="Q2",
+            acceptance_contract_object_key=contract_cfg["object_key"],
+            acceptance_contract_content_sha256=contract_cfg["content_sha256"],
+            claims=[
+                {
+                    "category": "rescission_void_ab_initio",
+                    "supported": True,
+                    "page_id": _Q2_31641606686_PAGE_ID,
+                    "nyscef_document_number": 1,
+                    "pdf_page": 25,
+                    "selection_reason_code": "supported_with_clean_excerpt",
+                },
+                {
+                    "category": "no_defense_or_indemnity",
+                    "supported": True,
+                    "page_id": _Q2_31641606686_PAGE_ID,
+                    "nyscef_document_number": 1,
+                    "pdf_page": 25,
+                    "selection_reason_code": "supported_needs_paraphrase",
+                },
+                {
+                    "category": "catch_all_relief",
+                    "supported": True,
+                    "page_id": _Q2_31641606686_PAGE_ID,
+                    "nyscef_document_number": 1,
+                    "pdf_page": 25,
+                    "selection_reason_code": "supported_with_clean_excerpt",
+                },
+            ],
+        )
+
+    def _load_view(self, contract_cfg: dict):
+        import acceptance_contract as ac
+
+        loaded = ac.load_acceptance_contract_from_bytes(
+            contract_cfg["raw_bytes"],
+            object_key=contract_cfg["object_key"],
+            expected_identity=ac.ContractIdentity(
+                benchmark_id=contract_cfg["benchmark_id"],
+                question_id="Q2",
+            ),
+            expected_content_sha256=contract_cfg["content_sha256"],
+        )
+        self.assertTrue(loaded.ok and loaded.evaluation is not None)
+        return loaded.evaluation
+
+    def test_phrase_matching_alone_reproduces_31641606686_failure(self) -> None:
+        import acceptance_contract as ac
+
+        view = self._load_view(self._production_ocr_phrase_contract_cfg())
+        result = ac.validate_final_answer_against_contract(
+            _Q2_31641606686_ANSWER_830,
+            view,
+            apply_fallback=True,
+            apply_duplication_repair=False,
+            # No validated claims → OCR phrase path (the production defect).
+        )
+        by_id = {c.criterion_id: c for c in result.criterion_results}
+        no_def = by_id["q2-no-defense-or-indemnity"]
+        self.assertEqual(no_def.presence, ac.PRESENCE_ABSENT)
+        self.assertEqual(no_def.evidence, ac.EVIDENCE_UNSUPPORTED)
+        self.assertIn(
+            "fallback_skipped_unsupported:q2-no-defense-or-indemnity",
+            result.diagnostics,
+        )
+        self.assertNotEqual(no_def.result_code, ac.CRIT_PASS)
+
+    def test_shared_evaluator_passes_830_char_production_shaped_answer(self) -> None:
+        import acceptance_contract as ac
+        from acceptance_contract.validate import evaluate_q2_no_defense_or_indemnity
+
+        contract_cfg = self._production_ocr_phrase_contract_cfg()
+        doc = self._validated_claims_doc(contract_cfg)
+        view = self._load_view(contract_cfg)
+
+        shared = evaluate_q2_no_defense_or_indemnity(
+            _Q2_31641606686_ANSWER_830, doc
+        )
+        self.assertEqual(shared.result_code, ac.CRIT_PASS)
+        self.assertEqual(shared.presence, ac.PRESENCE_PRESENT)
+        self.assertEqual(shared.evidence, ac.EVIDENCE_SUPPORTED)
+
+        result = ac.validate_final_answer_against_contract(
+            _Q2_31641606686_ANSWER_830,
+            view,
+            apply_fallback=True,
+            apply_duplication_repair=False,
+            validated_claims=doc,
+        )
+        self.assertTrue(result.ok, result.diagnostics)
+        by_id = {c.criterion_id: c for c in result.criterion_results}
+        no_def = by_id["q2-no-defense-or-indemnity"]
+        self.assertEqual(no_def.result_code, ac.CRIT_PASS)
+        self.assertEqual(no_def.presence, ac.PRESENCE_PRESENT)
+        self.assertEqual(no_def.evidence, ac.EVIDENCE_SUPPORTED)
+        self.assertNotIn(
+            "fallback_skipped_unsupported:q2-no-defense-or-indemnity",
+            result.diagnostics,
+        )
+        for banned in _Q2_31641606686_BANNED_OCR:
+            self.assertNotIn(banned, _Q2_31641606686_ANSWER_830)
+        self.assertNotIn("indemnification", _Q2_31641606686_ANSWER_830.lower())
+
+        # Preflight consumes the identical shared evaluator.
+        preflight_eval = evaluate_q2_no_defense_or_indemnity(
+            _Q2_31641606686_ANSWER_830, doc
+        )
+        self.assertEqual(preflight_eval.as_safe_dict(), shared.as_safe_dict())
+
+    def test_near_miss_answers_fail_shared_evaluator(self) -> None:
+        import acceptance_contract as ac
+        from acceptance_contract.validate import evaluate_q2_no_defense_or_indemnity
+
+        contract_cfg = self._production_ocr_phrase_contract_cfg()
+        doc = self._validated_claims_doc(contract_cfg)
+        page = _Q2_31641606686_PAGE_ID
+        base_tail = (
+            f"as reflected in the cited pleading on the originating source "
+            f"page (page_id {page})."
+        )
+        near_misses = {
+            "missing_no_duty": (
+                "The complaint further seeks relief that there is defense or "
+                "indemnity obligation and declaring a duty to defend or "
+                f"indemnify Defendants, {base_tail}"
+            ),
+            "missing_defend_or_indemnify": (
+                "The complaint further seeks relief that there is no duty owed "
+                f"to Defendants, {base_tail}"
+            ),
+            "missing_defendants": (
+                "The complaint further seeks relief that there is no defense or "
+                "indemnity obligation and declaring that there is no duty to "
+                f"defend or indemnify, {base_tail}"
+            ),
+            "missing_page_citation": (
+                "The complaint further seeks relief that there is no defense or "
+                "indemnity obligation and declaring that there is no duty to "
+                "defend or indemnify Defendants, as reflected in the cited "
+                "pleading on the originating source page."
+            ),
+        }
+        for label, answer in near_misses.items():
+            with self.subTest(label=label):
+                result = evaluate_q2_no_defense_or_indemnity(answer, doc)
+                self.assertNotEqual(
+                    result.result_code,
+                    ac.CRIT_PASS,
+                    msg=f"{label} unexpectedly passed: {result.diagnostics}",
+                )
+
+        unsupported = GEN.build_validated_structured_claims(
+            benchmark_id=contract_cfg["benchmark_id"],
+            question_id="Q2",
+            acceptance_contract_object_key=contract_cfg["object_key"],
+            acceptance_contract_content_sha256=contract_cfg["content_sha256"],
+            claims=[
+                {
+                    "category": "no_defense_or_indemnity",
+                    "supported": False,
+                    "page_id": page,
+                    "nyscef_document_number": 1,
+                    "pdf_page": 25,
+                    "selection_reason_code": "unsupported",
+                }
+            ],
+        )
+        bad = evaluate_q2_no_defense_or_indemnity(
+            _Q2_31641606686_ANSWER_830, unsupported
+        )
+        self.assertNotEqual(bad.result_code, ac.CRIT_PASS)
+        self.assertIn("q2_no_defense_claim_unsupported", bad.diagnostics)
 
 
 # ---------------------------------------------------------------------------
