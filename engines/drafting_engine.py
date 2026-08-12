@@ -1860,6 +1860,247 @@ def apply_evidence_grounded_relief_synthesis(
     return out
 
 
+# ---------------------------------------------------------------------------
+# Complaint-relief evidence routing (structure-backed WHEREFORE selection)
+# ---------------------------------------------------------------------------
+
+_RELIEF_SECTION_START_RE = re.compile(
+    r"(?is)(?:\bwherefore\b|\bprayer\s+for\s+relief\b).*"
+)
+_RELIEF_EXCERPT_MAX = 3500
+
+
+def _complaint_relief_excerpt_from_page_text(text: str) -> str:
+    """
+    Prefer the WHEREFORE / prayer block; fall back to a bounded page window.
+
+    Does not invent text — only slices observed page content.
+    """
+    raw = text or ""
+    if not raw.strip():
+        return ""
+    match = _RELIEF_SECTION_START_RE.search(raw)
+    if match:
+        return normalize_whitespace(match.group(0))[:_RELIEF_EXCERPT_MAX]
+    return normalize_whitespace(raw)[:_RELIEF_EXCERPT_MAX]
+
+
+def _page_looks_like_complaint_relief(text: str) -> bool:
+    return bool(
+        re.search(r"(?i)\bwherefore\b|\bprayer\s+for\s+relief\b", text or "")
+    )
+
+
+def _iter_document_pages_for_relief(
+    documents: Optional[Sequence[dict]],
+) -> Dict[str, dict]:
+    """page_id → {text, nyscef, pdf_page, document_type, filename}."""
+    lookup: Dict[str, dict] = {}
+    for document in documents or []:
+        if not isinstance(document, dict):
+            continue
+        nyscef = document.get("nyscef_document_number")
+        filename = (
+            document.get("filename")
+            or document.get("title")
+            or document.get("name")
+            or ""
+        )
+        doc_type = (
+            document.get("type")
+            or document.get("document_type")
+            or document.get("category")
+            or "other"
+        )
+        for page in document.get("pages") or []:
+            if not isinstance(page, dict):
+                continue
+            page_id = page.get("page_id")
+            if not page_id:
+                continue
+            page_doc_type = (
+                page.get("document_type")
+                or page.get("document_classification")
+                or doc_type
+            )
+            lookup[str(page_id)] = {
+                "page_id": str(page_id),
+                "text": page.get("text") or "",
+                "nyscef_document_number": nyscef
+                if nyscef is not None
+                else page.get("nyscef_document_number"),
+                "pdf_page": page.get("page_number") or page.get("pdf_page_number"),
+                "document_type": page_doc_type,
+                "filename": page.get("source_filename") or filename,
+            }
+    return lookup
+
+
+def _build_complaint_relief_hit_from_page(entry: Mapping[str, Any]) -> dict:
+    text = str(entry.get("text") or "")
+    excerpt = _complaint_relief_excerpt_from_page_text(text)
+    page_id = entry.get("page_id")
+    return {
+        "result_id": f"relief-route:{page_id}",
+        "page_id": page_id,
+        "nyscef_document_number": entry.get("nyscef_document_number"),
+        "pdf_page": entry.get("pdf_page"),
+        "source_filename": entry.get("filename"),
+        "document_type": entry.get("document_type") or "complaint",
+        "excerpt": excerpt,
+        "page_text": text,
+        "classifications": ["legal_position"],
+        "assertion_kind": "party_allegation",
+        "score": 1.0,
+        "complaint_relief_section_routed": True,
+        "ranking_explanation": [
+            "structure-backed WHEREFORE / prayer-for-relief evidence routing"
+        ],
+    }
+
+
+def _fallback_relief_page_ids_from_documents(
+    documents: Optional[Sequence[dict]],
+) -> list[str]:
+    """When structure lacks relief sections, use observed WHEREFORE page text."""
+    ordered: List[str] = []
+    seen: set[str] = set()
+    lookup = _iter_document_pages_for_relief(documents)
+    for page_id, entry in sorted(
+        lookup.items(),
+        key=lambda item: (
+            item[1].get("nyscef_document_number") is None,
+            item[1].get("nyscef_document_number")
+            if item[1].get("nyscef_document_number") is not None
+            else 10**9,
+            item[1].get("pdf_page") or 0,
+            item[0],
+        ),
+    ):
+        dtype = normalize_whitespace(entry.get("document_type")).lower()
+        if dtype and dtype not in _RELIEF_COMPLAINT_DOC_TYPES and "complaint" not in dtype:
+            # Still allow unknown/other when the page itself is a WHEREFORE block.
+            if not _page_looks_like_complaint_relief(entry.get("text") or ""):
+                continue
+        elif not _page_looks_like_complaint_relief(entry.get("text") or ""):
+            continue
+        if page_id in seen:
+            continue
+        seen.add(page_id)
+        ordered.append(page_id)
+    return ordered
+
+
+def route_complaint_relief_evidence(
+    retrieval: Optional[Mapping[str, Any]],
+    *,
+    question: str,
+    documents: Optional[Sequence[dict]] = None,
+    complaint_structure_map: Optional[Mapping[str, Any]] = None,
+) -> dict:
+    """
+    Ensure complaint WHEREFORE / requested-relief records reach synthesis.
+
+    Selects the smallest structure-backed relief page set (WHEREFORE / prayer
+    sections), injects any missing cited pages from the document corpus, and
+    expands excerpts so relief language is not truncated by ordinary query
+    windows. Does not invent private pleading text. Non-relief questions are
+    returned unchanged.
+    """
+    base = dict(retrieval or {})
+    if not detect_relief_question_intent(question):
+        return base
+
+    import complaint_structure as cs  # noqa: WPS433
+
+    structure_payload = complaint_structure_map
+    if structure_payload is None:
+        raw = base.get("complaint_structure_map")
+        if isinstance(raw, dict):
+            structure_payload = raw
+
+    relief_page_ids = cs.collect_complaint_relief_page_ids(structure_payload)
+    structure_context = cs.select_complaint_relief_structure_context(structure_payload)
+    if not relief_page_ids:
+        relief_page_ids = _fallback_relief_page_ids_from_documents(documents)
+
+    existing = [h for h in (base.get("results") or []) if isinstance(h, dict)]
+    by_page = {
+        str(h.get("page_id")): dict(h)
+        for h in existing
+        if h.get("page_id")
+    }
+    page_lookup = _iter_document_pages_for_relief(documents)
+
+    routed: List[dict] = []
+    seen: set[str] = set()
+    for page_id in relief_page_ids:
+        pid = str(page_id)
+        if pid in seen:
+            continue
+        seen.add(pid)
+        entry = page_lookup.get(pid)
+        if pid in by_page:
+            hit = dict(by_page[pid])
+            text = (entry or {}).get("text") or hit.get("page_text") or ""
+            if text:
+                hit["excerpt"] = _complaint_relief_excerpt_from_page_text(text)
+                hit.setdefault("page_text", text)
+            elif hit.get("excerpt"):
+                # Keep existing excerpt when page text is unavailable.
+                hit["excerpt"] = _complaint_relief_excerpt_from_page_text(
+                    str(hit.get("excerpt") or "")
+                ) or hit.get("excerpt")
+            hit["complaint_relief_section_routed"] = True
+            routed.append(hit)
+            continue
+        if entry is None:
+            continue
+        if not _page_looks_like_complaint_relief(entry.get("text") or ""):
+            # Structure pointed here but page text lacks relief markers — skip.
+            continue
+        routed.append(_build_complaint_relief_hit_from_page(entry))
+
+    # If structure/fallback found nothing injectable, keep ordinary retrieval
+    # but still expand any already-ranked WHEREFORE complaint hits.
+    if not routed:
+        for hit in existing:
+            text = str(
+                hit.get("page_text")
+                or hit.get("full_page_text")
+                or hit.get("excerpt")
+                or ""
+            )
+            if not _relief_hit_is_complaint_source(hit):
+                continue
+            if not _page_looks_like_complaint_relief(text):
+                continue
+            refreshed = dict(hit)
+            page_id = refreshed.get("page_id")
+            entry = page_lookup.get(str(page_id)) if page_id else None
+            source_text = (entry or {}).get("text") or text
+            refreshed["excerpt"] = _complaint_relief_excerpt_from_page_text(source_text)
+            if entry is not None:
+                refreshed.setdefault("page_text", entry.get("text") or "")
+            refreshed["complaint_relief_section_routed"] = True
+            routed.append(refreshed)
+
+    out = dict(base)
+    if routed:
+        # Smallest supported set: structure-backed relief pages only.
+        out["results"] = routed
+        out["result_count"] = len(routed)
+    out["complaint_relief_routing"] = {
+        "applied": bool(routed),
+        "relief_page_ids": list(relief_page_ids),
+        "routed_hit_count": len(routed),
+        "structure_backed": bool(structure_context),
+    }
+    if structure_context is not None:
+        out["complaint_relief_structure_context"] = structure_context
+    return out
+
+
 def _hit_materiality_text(hit: dict) -> str:
     """
     Text used for party-role materiality decisions.
@@ -2447,7 +2688,19 @@ def build_evidence_packet(
     exhibit_context: Optional[Any] = None,
     allowed_sources: Optional[Sequence[str]] = None,
     complaint_structure_map: Optional[dict] = None,
+    documents: Optional[Sequence[dict]] = None,
 ) -> dict:
+    # Apply relief routing when callers pass documents/structure (idempotent when
+    # retrieval was already routed upstream).
+    if detect_relief_question_intent(question):
+        retrieval = route_complaint_relief_evidence(
+            retrieval,
+            question=question,
+            documents=documents,
+            complaint_structure_map=complaint_structure_map
+            or (retrieval or {}).get("complaint_structure_map"),
+        )
+
     results = list((retrieval or {}).get("results") or [])
     materiality_filter = None
     party_role_intent = detect_party_role_question_intent(question)
@@ -6816,6 +7069,16 @@ def answer_attorney_record_question(
     question_text = normalize_whitespace(question)
     retrieval = retrieval or {"query": question_text, "results": []}
 
+    # Structure-backed WHEREFORE routing before packet assembly so synthesis
+    # receives cited complaint relief records (production Q2 path).
+    if detect_relief_question_intent(question_text):
+        retrieval = route_complaint_relief_evidence(
+            retrieval,
+            question=question_text,
+            documents=documents,
+            complaint_structure_map=complaint_structure_map,
+        )
+
     provider = resolve_model_provider(model_call)
     provider_provenance = describe_model_provider(model_call)
     if provider is None:
@@ -6840,6 +7103,7 @@ def answer_attorney_record_question(
         exhibit_context=exhibit_context,
         allowed_sources=allowed_sources,
         complaint_structure_map=complaint_structure_map,
+        documents=documents,
     )
     party_role_intent = detect_party_role_question_intent(question_text)
     user_prompt = build_user_prompt(

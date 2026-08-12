@@ -831,5 +831,211 @@ class Q2ReliefSynthesisAssemblyTests(unittest.TestCase):
         self.assertFalse(assembled["audit"].get("relief_synthesis_applied"))
 
 
+class Q2ReliefRoutingProductionShapedTests(unittest.TestCase):
+    """
+    Production-shaped routing: truncated retrieval is repaired via structure-
+    backed WHEREFORE page selection so synthesis sees cited relief records.
+    Synthetic non-private evidence only.
+    """
+
+    QUESTION = (
+        "What relief does the complaint request in the WHEREFORE / "
+        "requested-relief section?"
+    )
+
+    _WHEREFORE_TEXT = (
+        "WHEREFORE\n"
+        "Plaintiff demands judgment: (a) declaring the subject "
+        "coverage void ab initio and for rescission; (b) declaring that there "
+        "is no duty to defend or indemnify the named defendants under the "
+        "policy; and (c) awarding such other and further relief as the Court "
+        "deems just and proper."
+    )
+
+    def _synthetic_corpus(self, *, include_wherefore: bool = True) -> tuple:
+        import complaint_structure as cs
+        from engines import drafting_engine as de
+
+        noise = (
+            "INTRODUCTION\n"
+            "1. This is a synthetic coverage dispute pleading.\n"
+            "PARTIES\n"
+            "2. Plaintiff Synthetic Carrier LLC is a domestic company.\n"
+            "3. Defendant Harbor Logistics Inc. is a domestic corporation.\n"
+            "FACTS\n"
+            "4. The parties dispute coverage under a commercial policy.\n"
+        )
+        wherefore_page = (
+            self._WHEREFORE_TEXT
+            if include_wherefore
+            else (
+                "WHEREFORE\n"
+                "Plaintiff demands costs and disbursements only."
+            )
+        )
+        pages = [
+            {
+                "nyscef_document_number": 940,
+                "page_number": 1,
+                "page_id": "nyscef-940-page-0001",
+                "text": noise,
+                "document_type": "complaint",
+                "document_classification": "complaint",
+                "source_filename": "synth_complaint_940.pdf",
+            },
+            {
+                "nyscef_document_number": 940,
+                "page_number": 2,
+                "page_id": "nyscef-940-page-0002",
+                "text": wherefore_page,
+                "document_type": "complaint",
+                "document_classification": "complaint",
+                "source_filename": "synth_complaint_940.pdf",
+            },
+            {
+                "nyscef_document_number": 941,
+                "page_number": 1,
+                "page_id": "nyscef-941-page-0001",
+                "text": (
+                    "STIPULATION unrelated to requested relief or WHEREFORE demands."
+                ),
+                "document_type": "stipulation",
+                "document_classification": "stipulation",
+                "source_filename": "synth_stip_941.pdf",
+            },
+        ]
+        structure_map = cs.build_complaint_structure_map({"pages": pages})
+        documents = [
+            {
+                "filename": "synth_complaint_940.pdf",
+                "nyscef_document_number": 940,
+                "type": "complaint",
+                "document_type": "complaint",
+                "pages": [p for p in pages if p["nyscef_document_number"] == 940],
+            },
+            {
+                "filename": "synth_stip_941.pdf",
+                "nyscef_document_number": 941,
+                "type": "stipulation",
+                "document_type": "stipulation",
+                "pages": [p for p in pages if p["nyscef_document_number"] == 941],
+            },
+        ]
+        # Simulate ordinary retrieval that missed the WHEREFORE page and only
+        # returned a truncated intro snippet plus unrelated noise.
+        retrieval = {
+            "query": self.QUESTION,
+            "results": [
+                {
+                    "result_id": "hit-intro-truncated",
+                    "page_id": "nyscef-940-page-0001",
+                    "nyscef_document_number": 940,
+                    "pdf_page": 1,
+                    "document_type": "complaint",
+                    "excerpt": "This is a synthetic coverage dispute pleading.",
+                    "classifications": ["party_allegation"],
+                    "score": 0.4,
+                },
+                {
+                    "result_id": "hit-stip",
+                    "page_id": "nyscef-941-page-0001",
+                    "nyscef_document_number": 941,
+                    "pdf_page": 1,
+                    "document_type": "stipulation",
+                    "excerpt": "STIPULATION unrelated to requested relief.",
+                    "classifications": ["unknown"],
+                    "score": 0.3,
+                },
+            ],
+            "complaint_structure_map": structure_map,
+        }
+        return structure_map, documents, retrieval, de
+
+    def test_routing_selects_wherefore_and_grounds_all_three_relief_items(self) -> None:
+        structure_map, documents, retrieval, de = self._synthetic_corpus(
+            include_wherefore=True
+        )
+        self.assertIn(
+            "nyscef-940-page-0002",
+            __import__(
+                "complaint_structure"
+            ).collect_complaint_relief_page_ids(structure_map),
+        )
+        routed = de.route_complaint_relief_evidence(
+            retrieval,
+            question=self.QUESTION,
+            documents=documents,
+            complaint_structure_map=structure_map,
+        )
+        self.assertTrue((routed.get("complaint_relief_routing") or {}).get("applied"))
+        page_ids = [h.get("page_id") for h in (routed.get("results") or [])]
+        self.assertEqual(page_ids, ["nyscef-940-page-0002"])
+        excerpt = (routed["results"][0].get("excerpt") or "").lower()
+        self.assertIn("void ab initio", excerpt)
+        self.assertIn("no duty to defend", excerpt)
+        self.assertIn("such other and further relief", excerpt)
+
+        packet = de.build_evidence_packet(
+            self.QUESTION,
+            routed,
+            complaint_structure_map=structure_map,
+            documents=documents,
+        )
+        # Party-role roadmap must not pollute relief packets.
+        self.assertNotIn("complaint_structure_context", packet)
+        supported = de.extract_supported_complaint_relief(packet)
+        self.assertTrue(supported["rescission_void_ab_initio"]["supported"])
+        self.assertTrue(supported["no_defense_or_indemnity"]["supported"])
+        self.assertTrue(supported["catch_all_relief"]["supported"])
+
+        assembled = de.apply_evidence_grounded_relief_synthesis(
+            {
+                "proposed_answer": "Draft lacking grounded relief detail.",
+                "propositions": [],
+                "audit": {},
+            },
+            packet,
+        )
+        answer = assembled["proposed_answer"].lower()
+        self.assertIn("not a judicial determination", answer)
+        self.assertIn("void ab initio", answer)
+        self.assertIn("no defense or indemnity", answer)
+        self.assertIn("catch-all", answer)
+        self.assertTrue(assembled["audit"].get("relief_synthesis_applied"))
+
+    def test_routing_missing_relief_evidence_still_fails_closed(self) -> None:
+        structure_map, documents, retrieval, de = self._synthetic_corpus(
+            include_wherefore=False
+        )
+        routed = de.route_complaint_relief_evidence(
+            retrieval,
+            question=self.QUESTION,
+            documents=documents,
+            complaint_structure_map=structure_map,
+        )
+        packet = de.build_evidence_packet(
+            self.QUESTION,
+            routed,
+            complaint_structure_map=structure_map,
+            documents=documents,
+        )
+        supported = de.extract_supported_complaint_relief(packet)
+        self.assertFalse(supported["rescission_void_ab_initio"]["supported"])
+        self.assertFalse(supported["no_defense_or_indemnity"]["supported"])
+        self.assertFalse(supported["catch_all_relief"]["supported"])
+        assembled = de.apply_evidence_grounded_relief_synthesis(
+            {
+                "proposed_answer": "No grounded relief categories available.",
+                "propositions": [],
+                "audit": {},
+            },
+            packet,
+        )
+        answer = assembled["proposed_answer"].lower()
+        self.assertNotIn("void ab initio", answer)
+        self.assertNotIn("no defense or indemnity", answer)
+        self.assertFalse(assembled["audit"].get("relief_synthesis_applied"))
+
+
 if __name__ == "__main__":
     unittest.main()

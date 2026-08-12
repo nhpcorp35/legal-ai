@@ -1270,6 +1270,117 @@ def sections_from_document_structure(
     return sections
 
 
+# WHEREFORE / prayer-for-relief match keys used by complaint-relief routing.
+_RELIEF_MATCH_KEYS = frozenset({"wherefore", "prayer_for_relief"})
+
+COMPLAINT_RELIEF_STRUCTURE_NOTE = (
+    "Complaint relief structure metadata identifies observed WHEREFORE / "
+    "prayer-for-relief sections with page provenance; it is not a substitute "
+    "for substantive retrieval hits and must not invent paragraph ranges or "
+    "private pleading text."
+)
+
+
+def _iter_structure_documents(
+    structure_map: Mapping[str, Any] | Sequence[Mapping[str, Any]] | None,
+    *,
+    require_current_schema: bool = True,
+) -> list[Mapping[str, Any]]:
+    """Normalize a structure map or document list into document structures."""
+    documents_in: list[Mapping[str, Any]] = []
+    if isinstance(structure_map, Mapping):
+        if require_current_schema and not is_current_structure_schema(structure_map):
+            return []
+        selection = structure_map.get("selection")
+        if isinstance(selection, dict):
+            sel_status = selection.get("status")
+            if sel_status in {
+                SELECTION_STATUS_AMBIGUOUS,
+                SELECTION_STATUS_UNAVAILABLE,
+            }:
+                return []
+        documents_in = [
+            doc for doc in (structure_map.get("documents") or []) if isinstance(doc, dict)
+        ]
+    elif isinstance(structure_map, Sequence) and not isinstance(
+        structure_map, (str, bytes)
+    ):
+        for item in structure_map:
+            if isinstance(item, dict):
+                documents_in.append(item)
+    return documents_in
+
+
+def collect_complaint_relief_page_ids(
+    structure_map: Mapping[str, Any] | Sequence[Mapping[str, Any]] | None,
+) -> list[str]:
+    """
+    Return ordered unique page_ids for observed WHEREFORE / prayer sections.
+
+    Uses structural match_key / kind labels only. Does not invent pages.
+    """
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for smap in _iter_structure_documents(structure_map):
+        for sec in sections_from_document_structure(smap):
+            match_key = str(sec.get("match_key") or "").strip().lower()
+            if match_key not in _RELIEF_MATCH_KEYS:
+                continue
+            for page_id in sec.get("page_ids") or []:
+                pid = str(page_id or "").strip()
+                if not pid or pid in seen:
+                    continue
+                seen.add(pid)
+                ordered.append(pid)
+    return ordered
+
+
+def select_complaint_relief_structure_context(
+    structure_map: Mapping[str, Any] | Sequence[Mapping[str, Any]] | None,
+) -> Optional[dict[str, Any]]:
+    """
+    Build compact, source-cited WHEREFORE / prayer section metadata.
+
+    Emits only observed relief-section records with page provenance. Supplemental
+    routing signal for complaint-relief questions — never invents ranges or
+    pleading prose. Returns None when schema is stale/absent, controlling-
+    complaint selection failed, or no relief sections are available.
+    """
+    documents_out: list[dict[str, Any]] = []
+    for smap in _iter_structure_documents(structure_map):
+        selected: list[dict[str, Any]] = []
+        for sec in sections_from_document_structure(smap):
+            match_key = str(sec.get("match_key") or "").strip().lower()
+            if match_key not in _RELIEF_MATCH_KEYS:
+                continue
+            compact = _compact_structure_section_for_roadmap(sec)
+            if not compact:
+                continue
+            compact["provenance"] = dict(compact.get("provenance") or {})
+            compact["provenance"]["nyscef_document_number"] = smap.get(
+                "nyscef_document_number"
+            )
+            compact["provenance"]["document_id"] = smap.get("document_id")
+            selected.append(compact)
+        if not selected:
+            continue
+        documents_out.append(
+            {
+                "document_id": smap.get("document_id"),
+                "nyscef_document_number": smap.get("nyscef_document_number"),
+                "schema_version": SCHEMA_VERSION,
+                "sections": selected,
+            }
+        )
+    if not documents_out:
+        return None
+    return {
+        "note": COMPLAINT_RELIEF_STRUCTURE_NOTE,
+        "schema_version": SCHEMA_VERSION,
+        "documents": documents_out,
+    }
+
+
 def select_party_role_complaint_roadmap_context(
     structure_map: Mapping[str, Any] | Sequence[Mapping[str, Any]] | None,
 ) -> Optional[dict[str, Any]]:

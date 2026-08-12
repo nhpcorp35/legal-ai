@@ -625,6 +625,7 @@ def audit_serialized_model_input(
     *,
     case_map: Optional[dict] = None,
     complaint_structure_map: Optional[dict] = None,
+    documents: Optional[list] = None,
 ) -> dict:
     """Build/audit exact serialized evidence input via production helpers."""
     evidence_packet = de.build_evidence_packet(
@@ -634,8 +635,10 @@ def audit_serialized_model_input(
         exhibit_context=None,
         allowed_sources=[],
         complaint_structure_map=complaint_structure_map,
+        documents=documents,
     )
     party_role_intent = de.detect_party_role_question_intent(question_text)
+    relief_intent = de.detect_relief_question_intent(question_text)
     user_prompt = de.build_user_prompt(
         evidence_packet,
         party_role_completeness=party_role_intent,
@@ -653,6 +656,7 @@ def audit_serialized_model_input(
     audit = {
         "question": question_text,
         "party_role_intent": bool(party_role_intent),
+        "relief_intent": bool(relief_intent),
         "evidence_page_ids": [h.get("page_id") for h in hits],
         "per_page_serialized_excerpt_lengths": per_page_lengths,
         "total_serialized_evidence_characters": sum(per_page_lengths.values()),
@@ -670,6 +674,7 @@ def audit_serialized_model_input(
         "complaint_structure_attached": bool(
             evidence_packet.get("complaint_structure_context")
         ),
+        "complaint_relief_routing": retrieval.get("complaint_relief_routing"),
         "retrieval_count_semantics": {
             "upstream_retrieval_hit_count": (
                 "Hits returned before evidence-packet materiality and budget filtering."
@@ -686,6 +691,7 @@ def audit_serialized_model_input(
         "evidence_packet": evidence_packet,
         "user_prompt": user_prompt,
         "party_role_intent": party_role_intent,
+        "relief_intent": relief_intent,
         "expected_attributes": expected,
         "audit": audit,
     }
@@ -1191,6 +1197,18 @@ def run_generation(
             retrieval = dict(retrieval)
             retrieval["complaint_structure_context"] = merged
 
+    # Q2 / relief: route structure-backed WHEREFORE pages into retrieval before
+    # hit-page subsetting so synthesis receives cited complaint relief records.
+    if de.detect_relief_question_intent(inputs["question_text"]):
+        retrieval = de.route_complaint_relief_evidence(
+            retrieval,
+            question=inputs["question_text"],
+            documents=documents,
+            complaint_structure_map=structure_map
+            if isinstance(structure_map, dict)
+            else None,
+        )
+
     inspection = audit_serialized_model_input(
         inputs["question_text"],
         retrieval,
@@ -1198,6 +1216,7 @@ def run_generation(
         complaint_structure_map=structure_map
         if isinstance(structure_map, dict)
         else None,
+        documents=documents,
     )
 
     docs_subset = _documents_for_hit_pages(
