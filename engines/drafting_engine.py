@@ -1462,12 +1462,18 @@ _RESCISSION_VOID_RE = re.compile(
 )
 _NO_DEFENSE_INDEMNITY_RE = re.compile(
     r"(?i)\b(?:"
-    r"no\s+(?:duty|obligation)\s+to\s+(?:defend|indemnify)|"
-    r"(?:neither|no)\s+(?:defend|defense)\s+(?:nor|or)\s+indemnif\w*|"
+    r"no\s+(?:duty|obligation)(?:\s+or\s+(?:duty|obligation))?\s+"
+    r"(?:whatsoever\s+)?to\s+(?:provide\s+(?:a\s+)?)?(?:defend|defense|indemnif\w*)|"
+    r"no\s+duty\s+of\s+(?:defense|indemnif\w*)|"
+    r"neither\s+(?:a\s+)?duty\s+to\s+defend\s+nor\s+(?:a\s+)?duty\s+to\s+indemnif\w*|"
+    r"(?:neither|no)\s+(?:a\s+)?(?:duty\s+to\s+)?(?:defend|defense)\s+"
+    r"(?:nor|or)\s+(?:a\s+)?(?:duty\s+to\s+)?indemnif\w*|"
+    r"neither\s+defense\s+nor\s+indemnity|"
     r"no\s+defense\s+or\s+indemnity|"
     r"not\s+(?:obligated|required|bound)\s+to\s+(?:defend|indemnify)|"
-    r"(?:declaring|declaration)\s+that\s+(?:.{0,60}?\b)?(?:no|not)\b.{0,60}?"
-    r"(?:duty|obligation)?\s*(?:to\s+)?(?:defend|indemnif\w*)"
+    r"(?:declaring|declaration)\s+that\s+(?:.{0,80}?\b)?(?:no|not|neither)\b.{0,80}?"
+    r"(?:(?:duty|obligation).{0,40}?)?(?:defend|defense|indemnif\w*)|"
+    r"declaration\s+of\s+no\s+(?:coverage,\s*)?(?:defense|indemnif\w*)"
     r")"
 )
 _CATCH_ALL_RELIEF_RE = re.compile(
@@ -1537,17 +1543,81 @@ def _relief_hit_is_complaint_source(hit: Mapping[str, Any]) -> bool:
 
 
 def _relief_hit_corpus(hit: Mapping[str, Any]) -> str:
-    return normalize_whitespace(
-        " ".join(
-            [
-                str(hit.get("excerpt") or ""),
-                str(hit.get("page_text") or hit.get("full_page_text") or ""),
-            ]
-        )
+    """
+    Prefer the routed relief excerpt; use page text when it is the only source.
+
+    Avoid concatenating excerpt + page_text (duplication shifts snippet windows
+    and can truncate cited spans away from contract evidence phrases).
+    """
+    excerpt = normalize_whitespace(hit.get("excerpt") or "")
+    page_text = normalize_whitespace(
+        hit.get("page_text") or hit.get("full_page_text") or ""
     )
+    if excerpt and page_text:
+        # When the excerpt is a contiguous slice of the page, keep the excerpt
+        # (structure-backed WHEREFORE window). Otherwise prefer the longer page.
+        if excerpt in page_text:
+            return excerpt
+        return page_text if len(page_text) > len(excerpt) else excerpt
+    return excerpt or page_text
+
+
+def _relief_evidence_span(
+    text: str,
+    match: re.Match[str],
+    *,
+    max_len: int = 1200,
+) -> str:
+    """
+    Cite the source clause / sentence containing a relief match.
+
+    Expands to WHEREFORE enumerated-clause boundaries when present so contract
+    evidence_phrases that span a full demand item remain linkable. Never invents
+    text — only slices the observed corpus. Does not wrap with ellipsis markers.
+    """
+    raw = text or ""
+    if not raw:
+        return ""
+    m_start, m_end = match.start(), match.end()
+    left_boundary = 0
+    for boundary in re.finditer(
+        r"(?i)(?:;|\bwherefore\b:?\s*|\bprayer\s+for\s+relief\b:?\s*"
+        r"|\([a-z0-9]+\)\s*|\n+)",
+        raw[:m_start],
+    ):
+        left_boundary = boundary.end()
+    right_rel = re.search(
+        r"(?i)(?:;|\s*\([a-z0-9]+\)|\n{2,}|\.(?:\s|$))",
+        raw[m_end:],
+    )
+    if right_rel:
+        token = right_rel.group(0)
+        if "." in token and not token.strip().startswith(";"):
+            right_boundary = m_end + right_rel.start() + token.find(".") + 1
+        else:
+            right_boundary = m_end + right_rel.start()
+    else:
+        right_boundary = len(raw)
+    start, end = left_boundary, right_boundary
+    if end < m_end:
+        end = m_end
+    if start > m_start:
+        start = m_start
+    if end - start > max_len:
+        if m_end - start <= max_len:
+            end = start + max_len
+        elif end - m_start <= max_len:
+            start = end - max_len
+        else:
+            half = max_len // 2
+            start = max(0, m_start - half)
+            end = min(len(raw), start + max_len)
+            start = max(0, end - max_len)
+    return normalize_whitespace(raw[start:end])
 
 
 def _snippet_around_match(text: str, match: re.Match[str], *, radius: int = 90) -> str:
+    """Legacy short window helper; relief synthesis uses ``_relief_evidence_span``."""
     start = max(0, match.start() - radius)
     end = min(len(text), match.end() + radius)
     snippet = normalize_whitespace(text[start:end])
@@ -1611,7 +1681,7 @@ def extract_supported_complaint_relief(
             if not match:
                 continue
             meta["supported"] = True
-            meta["evidence_snippet"] = _snippet_around_match(corpus, match)
+            meta["evidence_snippet"] = _relief_evidence_span(corpus, match)
             meta["page_id"] = hit.get("page_id")
             meta["nyscef_document_number"] = hit.get("nyscef_document_number")
             meta["pdf_page"] = hit.get("pdf_page")
@@ -1647,6 +1717,55 @@ def _draft_has_no_defense_or_indemnity_relief(answer: str) -> bool:
 
 def _draft_has_catch_all_relief(answer: str) -> bool:
     return bool(_CATCH_ALL_RELIEF_RE.search(answer or ""))
+
+
+def _normalize_relief_snippet_for_link_check(snippet: str) -> str:
+    """Normalize a cited relief snippet for containment checks (no ellipsis)."""
+    needle = normalize_whitespace(snippet).lower()
+    while needle.startswith("..."):
+        needle = needle[3:].lstrip()
+    while needle.endswith("..."):
+        needle = needle[:-3].rstrip()
+    return needle
+
+
+def _answer_links_relief_snippet(answer: str, snippet: str) -> bool:
+    """True when the answer already embeds the cited source excerpt."""
+    needle = _normalize_relief_snippet_for_link_check(snippet)
+    if not needle:
+        return False
+    hay = normalize_whitespace(answer).lower()
+    if needle in hay:
+        return True
+    # Long spans: require a substantial contiguous core so minor clause-boundary
+    # differences do not force duplicate paragraphs when the excerpt is present.
+    if len(needle) >= 48:
+        core_len = min(96, len(needle))
+        mid = max(0, (len(needle) - core_len) // 2)
+        core = needle[mid : mid + core_len]
+        if core and core in hay:
+            return True
+    return False
+
+
+def _relief_category_needs_synthesis(
+    answer: str,
+    support: Mapping[str, Any],
+    *,
+    has_presence: bool,
+) -> bool:
+    """
+    Emit grounded relief prose when support exists but presence or evidence
+    linkage is missing. Presence alone is not enough — evidence_phrases must
+    be linkable via the cited source excerpt.
+    """
+    if not support.get("supported"):
+        return False
+    snippet = str(support.get("evidence_snippet") or "")
+    linked = _answer_links_relief_snippet(answer, snippet)
+    if has_presence and linked:
+        return False
+    return True
 
 
 def _relief_proposition(
@@ -1770,7 +1889,11 @@ def apply_evidence_grounded_relief_synthesis(
         )
 
     rescission = supported.get("rescission_void_ab_initio") or {}
-    if rescission.get("supported") and not _draft_has_rescission_void_relief(answer):
+    if _relief_category_needs_synthesis(
+        answer,
+        rescission,
+        has_presence=_draft_has_rescission_void_relief(answer),
+    ):
         snippet = rescission.get("evidence_snippet") or ""
         para = (
             "The complaint requests rescission and/or a declaration that coverage "
@@ -1787,8 +1910,10 @@ def apply_evidence_grounded_relief_synthesis(
         )
 
     indemnity = supported.get("no_defense_or_indemnity") or {}
-    if indemnity.get("supported") and not _draft_has_no_defense_or_indemnity_relief(
-        answer
+    if _relief_category_needs_synthesis(
+        answer,
+        indemnity,
+        has_presence=_draft_has_no_defense_or_indemnity_relief(answer),
     ):
         snippet = indemnity.get("evidence_snippet") or ""
         para = (
@@ -1806,7 +1931,11 @@ def apply_evidence_grounded_relief_synthesis(
         )
 
     catch_all = supported.get("catch_all_relief") or {}
-    if catch_all.get("supported") and not _draft_has_catch_all_relief(answer):
+    if _relief_category_needs_synthesis(
+        answer,
+        catch_all,
+        has_presence=_draft_has_catch_all_relief(answer),
+    ):
         snippet = catch_all.get("evidence_snippet") or ""
         para = (
             "The complaint also includes catch-all requested relief, as reflected "
@@ -2019,10 +2148,12 @@ def route_complaint_relief_evidence(
         if isinstance(raw, dict):
             structure_payload = raw
 
-    relief_page_ids = cs.collect_complaint_relief_page_ids(structure_payload)
+    structure_relief_page_ids = cs.collect_complaint_relief_page_ids(structure_payload)
     structure_context = cs.select_complaint_relief_structure_context(structure_payload)
+    relief_page_ids = list(structure_relief_page_ids)
     if not relief_page_ids:
         relief_page_ids = _fallback_relief_page_ids_from_documents(documents)
+    structure_page_id_set = {str(pid) for pid in structure_relief_page_ids}
 
     existing = [h for h in (base.get("results") or []) if isinstance(h, dict)]
     by_page = {
@@ -2056,8 +2187,15 @@ def route_complaint_relief_evidence(
             continue
         if entry is None:
             continue
-        if not _page_looks_like_complaint_relief(entry.get("text") or ""):
-            # Structure pointed here but page text lacks relief markers — skip.
+        page_text = entry.get("text") or ""
+        if not normalize_whitespace(page_text):
+            continue
+        # Structure-backed page_ids are authoritative — include WHEREFORE
+        # continuation pages that omit the heading keyword. Fallback page
+        # selection still requires an explicit relief marker on-page.
+        if pid not in structure_page_id_set and not _page_looks_like_complaint_relief(
+            page_text
+        ):
             continue
         routed.append(_build_complaint_relief_hit_from_page(entry))
 
@@ -2704,6 +2842,7 @@ def build_evidence_packet(
     results = list((retrieval or {}).get("results") or [])
     materiality_filter = None
     party_role_intent = detect_party_role_question_intent(question)
+    relief_intent = detect_relief_question_intent(question)
     if party_role_intent:
         results, materiality_filter = filter_hits_for_party_role_materiality(results)
 
@@ -2747,6 +2886,14 @@ def build_evidence_packet(
                 "score": hit.get("score"),
             }
         )
+        # Preserve full page text for relief routing provenance so synthesis can
+        # cite clause-bounded source excerpts beyond short query windows.
+        if relief_intent:
+            page_text = hit.get("page_text") or hit.get("full_page_text")
+            if page_text:
+                compact_hits[-1]["page_text"] = page_text
+            if hit.get("complaint_relief_section_routed"):
+                compact_hits[-1]["complaint_relief_section_routed"] = True
 
     case_map_signals = None
     if isinstance(case_map, dict):

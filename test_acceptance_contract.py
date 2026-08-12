@@ -1037,5 +1037,345 @@ class Q2ReliefRoutingProductionShapedTests(unittest.TestCase):
         self.assertFalse(assembled["audit"].get("relief_synthesis_applied"))
 
 
+class Q2EvidenceProvenanceLinkageTests(unittest.TestCase):
+    """
+    Production-shaped provenance: clause-bounded citations, presence-without-
+    evidence repair, and multi-page WHEREFORE continuation routing.
+    Synthetic non-private evidence only — never private Case-00 complaint text.
+    """
+
+    QUESTION = (
+        "What relief does the complaint request in the WHEREFORE / "
+        "requested-relief section?"
+    )
+
+    # Long enumerated rescission clause — evidence_phrase must survive span trim.
+    _RESCISSION_CLAUSE = (
+        "(a) declaring that the subject commercial coverage form issued to "
+        "Harbor Logistics Inc. is void ab initio because of material "
+        "misrepresentations in the application and for rescission of the same"
+    )
+    _NO_DEFENSE_CLAUSE = (
+        "(b) declaring that Plaintiff owes neither a duty to defend nor a "
+        "duty to indemnify the named defendants under the policy"
+    )
+    _CATCH_ALL_CLAUSE = (
+        "(c) awarding such other and further relief as the Court deems just "
+        "and proper"
+    )
+
+    def _long_wherefore(self) -> str:
+        return (
+            "WHEREFORE\n"
+            "Plaintiff demands judgment: "
+            + self._RESCISSION_CLAUSE
+            + "; "
+            + self._NO_DEFENSE_CLAUSE
+            + "; and "
+            + self._CATCH_ALL_CLAUSE
+            + "."
+        )
+
+    def test_clause_bounded_span_preserves_long_evidence_phrase(self) -> None:
+        from engines import drafting_engine as de
+
+        excerpt = self._long_wherefore()
+        packet = {
+            "question": self.QUESTION,
+            "retrieval_hit_count": 1,
+            "retrieval_hits": [
+                {
+                    "result_id": "hit-wherefore-long",
+                    "page_id": "nyscef-950-page-0003",
+                    "nyscef_document_number": 950,
+                    "pdf_page": 3,
+                    "document_type": "complaint",
+                    "excerpt": excerpt,
+                    "classifications": ["legal_position"],
+                }
+            ],
+        }
+        supported = de.extract_supported_complaint_relief(packet)
+        self.assertTrue(supported["rescission_void_ab_initio"]["supported"])
+        rescission_snip = supported["rescission_void_ab_initio"]["evidence_snippet"]
+        # Contract-style evidence phrase equals the enumerated demand item.
+        self.assertIn(
+            "void ab initio because of material misrepresentations",
+            rescission_snip.lower(),
+        )
+        self.assertIn("for rescission of the same", rescission_snip.lower())
+        self.assertNotIn("...", rescission_snip)
+
+        self.assertTrue(supported["no_defense_or_indemnity"]["supported"])
+        indemnity_snip = supported["no_defense_or_indemnity"]["evidence_snippet"]
+        self.assertIn("neither a duty to defend nor a duty to indemnify", indemnity_snip.lower())
+
+    def test_presence_without_evidence_gets_source_excerpt_linked(self) -> None:
+        """Mirrors Q2 failure: rescission present in draft, evidence unsupported."""
+        from engines import drafting_engine as de
+
+        excerpt = self._long_wherefore()
+        packet = {
+            "question": self.QUESTION,
+            "retrieval_hit_count": 1,
+            "retrieval_hits": [
+                {
+                    "result_id": "hit-wherefore-long",
+                    "page_id": "nyscef-950-page-0003",
+                    "nyscef_document_number": 950,
+                    "pdf_page": 3,
+                    "document_type": "complaint",
+                    "excerpt": excerpt,
+                    "classifications": ["legal_position"],
+                }
+            ],
+        }
+        # Draft already has presence language but omits cited source excerpts.
+        draft = (
+            "The complaint requests rescission and void ab initio treatment. "
+            "It also mentions catch-all relief in general terms."
+        )
+        assembled = de.apply_evidence_grounded_relief_synthesis(
+            {"proposed_answer": draft, "propositions": [], "audit": {}},
+            packet,
+        )
+        answer = assembled["proposed_answer"]
+        answer_l = answer.lower()
+        self.assertIn("not a judicial determination", answer_l)
+        self.assertIn("void ab initio because of material misrepresentations", answer_l)
+        self.assertIn("for rescission of the same", answer_l)
+        self.assertIn("neither a duty to defend nor a duty to indemnify", answer_l)
+        self.assertIn("such other and further relief", answer_l)
+        self.assertTrue(assembled["audit"].get("relief_synthesis_applied"))
+
+        # Wire through a synthetic Q2 contract whose evidence phrases match
+        # this production-shaped excerpt (not private Case-00 prose).
+        base = _q2_shaped_contract()
+        by_id = {c["id"]: c for c in base["criteria"]}
+        by_id[_Q2_CRIT_RESCISSION]["evidence_phrases"] = [
+            "void ab initio because of material misrepresentations in the application "
+            "and for rescission of the same"
+        ]
+        by_id[_Q2_CRIT_NO_DEFENSE]["evidence_phrases"] = [
+            "neither a duty to defend nor a duty to indemnify the named defendants"
+        ]
+        by_id[_Q2_CRIT_CATCH_ALL]["evidence_phrases"] = [
+            "such other and further relief as the Court deems just and proper"
+        ]
+        contract = ac.build_synthetic_contract(
+            contract_id=base["contract_id"],
+            version=base["version"],
+            benchmark_id=base["identity"]["benchmark_id"],
+            question_id=base["identity"]["question_id"],
+            object_key=base["object_key"],
+            required_criterion_ids=list(base["required_criterion_ids"]),
+            criteria=list(base["criteria"]),
+        )
+        loaded = ac.load_acceptance_contract_from_bytes(
+            json.dumps(contract, sort_keys=True).encode("utf-8"),
+            object_key=contract["object_key"],
+            expected_identity=ac.ContractIdentity(
+                benchmark_id="synth-benchmark-q2",
+                question_id="Q2",
+            ),
+            expected_content_sha256=contract["content_sha256"],
+        )
+        self.assertTrue(loaded.ok)
+        view = loaded.evaluation
+        result = ac.validate_final_answer_against_contract(
+            answer, view, apply_fallback=True
+        )
+        self.assertTrue(result.ok, result.as_safe_dict())
+        by_crit = {c.criterion_id: c for c in result.criterion_results}
+        for cid in (
+            _Q2_CRIT_RESCISSION,
+            _Q2_CRIT_NO_DEFENSE,
+            _Q2_CRIT_PLEADED,
+            _Q2_CRIT_CATCH_ALL,
+        ):
+            self.assertEqual(by_crit[cid].result_code, ac.CRIT_PASS)
+            self.assertEqual(by_crit[cid].evidence, ac.EVIDENCE_SUPPORTED)
+
+    def test_multipage_wherefore_continuation_routes_no_defense(self) -> None:
+        """Structure lists continuation page lacking WHEREFORE heading."""
+        import complaint_structure as cs
+        from engines import drafting_engine as de
+
+        page1 = (
+            "WHEREFORE\n"
+            "Plaintiff demands judgment: "
+            + self._RESCISSION_CLAUSE
+            + ";"
+        )
+        page2 = (
+            self._NO_DEFENSE_CLAUSE
+            + "; and "
+            + self._CATCH_ALL_CLAUSE
+            + "."
+        )
+        pages = [
+            {
+                "nyscef_document_number": 960,
+                "page_number": 1,
+                "page_id": "nyscef-960-page-0001",
+                "text": "INTRODUCTION\n1. Synthetic coverage dispute.",
+                "document_type": "complaint",
+                "document_classification": "complaint",
+                "source_filename": "synth_complaint_960.pdf",
+            },
+            {
+                "nyscef_document_number": 960,
+                "page_number": 2,
+                "page_id": "nyscef-960-page-0002",
+                "text": page1,
+                "document_type": "complaint",
+                "document_classification": "complaint",
+                "source_filename": "synth_complaint_960.pdf",
+            },
+            {
+                "nyscef_document_number": 960,
+                "page_number": 3,
+                "page_id": "nyscef-960-page-0003",
+                "text": page2,
+                "document_type": "complaint",
+                "document_classification": "complaint",
+                "source_filename": "synth_complaint_960.pdf",
+            },
+        ]
+        structure_map = cs.build_complaint_structure_map({"pages": pages})
+        # Force both relief pages into the structure selection even if the
+        # builder only tagged the heading page — mirrors production multi-page
+        # WHEREFORE provenance records.
+        relief_ids = cs.collect_complaint_relief_page_ids(structure_map)
+        if "nyscef-960-page-0003" not in relief_ids:
+            # Inject continuation page_id into the observed wherefore section.
+            for doc in structure_map.get("documents") or []:
+                for sec in doc.get("sections") or []:
+                    match_key = str(sec.get("match_key") or "").lower()
+                    if match_key in {"wherefore", "prayer_for_relief"}:
+                        ids = list(sec.get("page_ids") or [])
+                        if "nyscef-960-page-0003" not in ids:
+                            ids.append("nyscef-960-page-0003")
+                        sec["page_ids"] = ids
+        self.assertIn(
+            "nyscef-960-page-0003",
+            cs.collect_complaint_relief_page_ids(structure_map),
+        )
+
+        documents = [
+            {
+                "filename": "synth_complaint_960.pdf",
+                "nyscef_document_number": 960,
+                "type": "complaint",
+                "document_type": "complaint",
+                "pages": [p for p in pages if p["nyscef_document_number"] == 960],
+            }
+        ]
+        retrieval = {
+            "query": self.QUESTION,
+            "results": [
+                {
+                    "result_id": "hit-intro",
+                    "page_id": "nyscef-960-page-0001",
+                    "nyscef_document_number": 960,
+                    "pdf_page": 1,
+                    "document_type": "complaint",
+                    "excerpt": "Synthetic coverage dispute.",
+                    "classifications": ["party_allegation"],
+                    "score": 0.4,
+                }
+            ],
+            "complaint_structure_map": structure_map,
+        }
+        routed = de.route_complaint_relief_evidence(
+            retrieval,
+            question=self.QUESTION,
+            documents=documents,
+            complaint_structure_map=structure_map,
+        )
+        page_ids = [h.get("page_id") for h in (routed.get("results") or [])]
+        self.assertIn("nyscef-960-page-0002", page_ids)
+        self.assertIn("nyscef-960-page-0003", page_ids)
+
+        packet = de.build_evidence_packet(
+            self.QUESTION,
+            routed,
+            complaint_structure_map=structure_map,
+            documents=documents,
+        )
+        # Provenance: relief packets retain page_text for clause citation.
+        for hit in packet["retrieval_hits"]:
+            if hit.get("page_id") in {
+                "nyscef-960-page-0002",
+                "nyscef-960-page-0003",
+            }:
+                self.assertTrue(hit.get("page_text") or hit.get("excerpt"))
+
+        supported = de.extract_supported_complaint_relief(packet)
+        self.assertTrue(supported["rescission_void_ab_initio"]["supported"])
+        self.assertTrue(
+            supported["no_defense_or_indemnity"]["supported"],
+            "continuation-page no-defense language must be selected when "
+            "present in the canonical source",
+        )
+        self.assertTrue(supported["catch_all_relief"]["supported"])
+
+        assembled = de.apply_evidence_grounded_relief_synthesis(
+            {
+                "proposed_answer": "Draft omitting grounded relief citations.",
+                "propositions": [],
+                "audit": {},
+            },
+            packet,
+        )
+        answer = assembled["proposed_answer"].lower()
+        self.assertIn("not a judicial determination", answer)
+        self.assertIn("void ab initio", answer)
+        self.assertIn("no defense or indemnity", answer)
+        self.assertIn("neither a duty to defend nor a duty to indemnify", answer)
+        self.assertIn("such other and further relief", answer)
+
+    def test_no_defense_absent_from_source_fails_closed(self) -> None:
+        """If canonical source lacks no-defense relief, never invent it."""
+        from engines import drafting_engine as de
+
+        excerpt = (
+            "WHEREFORE Plaintiff demands judgment declaring the policy void ab "
+            "initio and for rescission of the same, and for such other and "
+            "further relief as the Court deems just and proper."
+        )
+        packet = {
+            "question": self.QUESTION,
+            "retrieval_hit_count": 1,
+            "retrieval_hits": [
+                {
+                    "result_id": "hit-wherefore-no-indemnity",
+                    "page_id": "nyscef-970-page-0002",
+                    "nyscef_document_number": 970,
+                    "pdf_page": 2,
+                    "document_type": "complaint",
+                    "excerpt": excerpt,
+                    "classifications": ["legal_position"],
+                }
+            ],
+        }
+        supported = de.extract_supported_complaint_relief(packet)
+        self.assertTrue(supported["rescission_void_ab_initio"]["supported"])
+        self.assertFalse(supported["no_defense_or_indemnity"]["supported"])
+        self.assertTrue(supported["catch_all_relief"]["supported"])
+        assembled = de.apply_evidence_grounded_relief_synthesis(
+            {
+                "proposed_answer": "Partial draft.",
+                "propositions": [],
+                "audit": {},
+            },
+            packet,
+        )
+        answer = assembled["proposed_answer"].lower()
+        self.assertNotIn("no defense or indemnity", answer)
+        cats = set(assembled["audit"].get("relief_supported_categories") or [])
+        self.assertNotIn("no_defense_or_indemnity", cats)
+
+
 if __name__ == "__main__":
     unittest.main()
