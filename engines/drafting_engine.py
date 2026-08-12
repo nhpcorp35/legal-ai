@@ -1560,6 +1560,14 @@ def _relief_hit_corpus(hit: Mapping[str, Any]) -> str:
         # When the excerpt is a contiguous slice of the page, keep the excerpt
         # (structure-backed WHEREFORE window). Otherwise prefer the longer page.
         if excerpt in page_text:
+            # Rebuilt-cache routing may emit a bounded WHEREFORE window that
+            # omits a trailing catch-all still present on the same page.
+            # Prefer full page text only in that narrow case — never invent.
+            if (
+                _CATCH_ALL_RELIEF_RE.search(page_text)
+                and not _CATCH_ALL_RELIEF_RE.search(excerpt)
+            ) or len(excerpt) >= _RELIEF_EXCERPT_MAX:
+                return page_text
             return excerpt
         return page_text if len(page_text) > len(excerpt) else excerpt
     return excerpt or page_text
@@ -2135,16 +2143,17 @@ def _page_carries_relief_proposition(text: str) -> bool:
     )
 
 
-def _expand_relief_page_ids_with_prior_support(
+def _expand_relief_page_ids_with_adjacent_support(
     relief_page_ids: Sequence[str],
     page_lookup: Mapping[str, dict],
 ) -> list[str]:
     """
-    Narrow adjacent-page rule: include the immediately prior same-document
-    complaint page when it carries a relief proposition (e.g. no-defense
-    language immediately before the WHEREFORE heading page).
+    Narrow adjacent-page rule: include the immediately prior and next
+    same-document complaint pages when they carry a relief proposition
+    (e.g. no-defense before WHEREFORE; catch-all continuation after).
 
-    Does not broadly retrieve — at most one prior page per WHEREFORE page.
+    Does not broadly retrieve — at most one prior and one next page per
+    WHEREFORE / relief page.
     """
     by_doc_page: Dict[tuple, str] = {}
     for pid, entry in page_lookup.items():
@@ -2166,24 +2175,39 @@ def _expand_relief_page_ids_with_prior_support(
         seen.add(pid)
         ordered.append(pid)
 
+    def _adjacent_support_pid(nyscef: Any, pdf_page: Any, delta: int) -> Optional[str]:
+        try:
+            if nyscef is None or pdf_page is None:
+                return None
+            return by_doc_page.get((int(nyscef), int(pdf_page) + int(delta)))
+        except (TypeError, ValueError):
+            return None
+
     for page_id in relief_page_ids:
         pid = str(page_id)
         entry = page_lookup.get(pid) or {}
         nyscef = entry.get("nyscef_document_number")
         pdf_page = entry.get("pdf_page")
-        prior_pid = None
-        try:
-            if nyscef is not None and pdf_page is not None:
-                prior_pid = by_doc_page.get((int(nyscef), int(pdf_page) - 1))
-        except (TypeError, ValueError):
-            prior_pid = None
+        prior_pid = _adjacent_support_pid(nyscef, pdf_page, -1)
         if prior_pid:
             prior_entry = page_lookup.get(prior_pid) or {}
             prior_text = str(prior_entry.get("text") or "")
             if _page_carries_relief_proposition(prior_text):
                 _take(prior_pid)
         _take(pid)
+        next_pid = _adjacent_support_pid(nyscef, pdf_page, 1)
+        if next_pid:
+            next_entry = page_lookup.get(next_pid) or {}
+            next_text = str(next_entry.get("text") or "")
+            if _page_carries_relief_proposition(next_text):
+                _take(next_pid)
     return ordered
+
+
+# Backward-compatible alias for callers/tests that import the prior name.
+_expand_relief_page_ids_with_prior_support = (
+    _expand_relief_page_ids_with_adjacent_support
+)
 
 
 def route_complaint_relief_evidence(
@@ -2219,16 +2243,17 @@ def route_complaint_relief_evidence(
     page_lookup = _iter_document_pages_for_relief(documents)
     relief_page_ids = list(structure_relief_page_ids)
     if not relief_page_ids:
-        # Empty structure: WHEREFORE-marked pages plus the immediately prior
-        # complaint page when it carries relief propositions (narrow rule).
+        # Empty structure: WHEREFORE-marked pages plus immediately adjacent
+        # complaint pages when they carry relief propositions (narrow rule).
         relief_page_ids = _fallback_relief_page_ids_from_documents(documents)
-        relief_page_ids = _expand_relief_page_ids_with_prior_support(
+        relief_page_ids = _expand_relief_page_ids_with_adjacent_support(
             relief_page_ids, page_lookup
         )
     else:
         # Structure often tags only the WHEREFORE heading page; include the
-        # immediately prior same-doc page when it carries relief propositions.
-        relief_page_ids = _expand_relief_page_ids_with_prior_support(
+        # immediately prior/next same-doc pages when they carry relief
+        # propositions (no-defense before; catch-all continuation after).
+        relief_page_ids = _expand_relief_page_ids_with_adjacent_support(
             relief_page_ids, page_lookup
         )
     structure_page_id_set = {str(pid) for pid in relief_page_ids}

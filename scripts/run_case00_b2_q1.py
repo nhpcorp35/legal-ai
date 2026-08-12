@@ -12,11 +12,13 @@ runner-local questions.json without logging packet or question body text.
 
 Production Case-00 generation requires an acceptance-contract object key,
 expected content SHA-256, and benchmark identity. Prefer the question-aware
-canonical resolver (benchmark_id + question_id → allowlisted object key and
-exact size pin, then verified content SHA-256). CLI flags or environment /
-secrets remain supported for compatibility. The generator fails closed before
-model generation when the contract is absent, invalid, identity-mismatched, or
-hash-mismatched. Never log or return contract body bytes.
+canonical resolver (benchmark_id + question_id → list allowlisted versions,
+select the highest compatible semantic version deterministically, then verify
+size / identity / schema / embedded content hash / object integrity). CLI
+flags or environment / secrets remain supported for compatibility. The
+generator fails closed before model generation when the contract is absent,
+invalid, identity-mismatched, or hash-mismatched. Never log or return contract
+body bytes.
 """
 
 from __future__ import annotations
@@ -68,12 +70,19 @@ ACCEPTANCE_CONTRACT_BENCHMARK_ID_ENV = "ACCEPTANCE_CONTRACT_BENCHMARK_ID"
 
 REQUIRED_CASE00_BENCHMARK_ID = "Case-00-Triborough"
 _QUESTION_ID_RE = re.compile(r"^Q[1-9][0-9]*$")
-CANONICAL_ACCEPTANCE_CONTRACT_VERSION = "v1.0.0"
+_ACCEPTANCE_CONTRACT_SEMVER_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
+_ACCEPTANCE_CONTRACT_OBJECT_NAME = "acceptance_contract.json"
 
-# Exact object-size pins for allowlisted canonical contracts (never commit body).
-CANONICAL_ACCEPTANCE_CONTRACT_EXPECTED_SIZES: dict[tuple[str, str], int] = {
-    (REQUIRED_CASE00_BENCHMARK_ID, "Q2"): 3463,
-}
+# (benchmark_id, question_id) pairs eligible for canonical private resolution.
+CANONICAL_ACCEPTANCE_CONTRACT_ALLOWLIST: frozenset[tuple[str, str]] = frozenset(
+    {
+        (REQUIRED_CASE00_BENCHMARK_ID, "Q2"),
+    }
+)
+
+# Backward-compatible alias: historical callers treated this as a size pin map.
+# Version selection is now listing-driven; sizes come from B2 object metadata.
+CANONICAL_ACCEPTANCE_CONTRACT_EXPECTED_SIZES: dict[tuple[str, str], int] = {}
 
 _QUESTION_HEADING_RE = re.compile(
     r"^## (Q[1-9][0-9]*)\.\s+(.+?)\s*$",
@@ -317,11 +326,30 @@ def _env_strip(environ: Mapping[str, str], name: str) -> str:
     return str(environ.get(name, "") or "").strip()
 
 
-def build_canonical_acceptance_contract_object_key(
+def canonical_acceptance_contract_id(benchmark_id: str, question_id: str) -> str:
+    """Deterministic contract-id slug for the Case-00 allowlisted path."""
+    bench = str(benchmark_id or "").strip()
+    qid = str(question_id or "").strip()
+    if bench != REQUIRED_CASE00_BENCHMARK_ID:
+        raise AcceptanceContractConfigError(
+            "acceptance-contract id requires Case-00-Triborough benchmark_id",
+            benchmark_id=bench,
+            question_id=qid,
+        )
+    if not qid or _QUESTION_ID_RE.fullmatch(qid) is None:
+        raise AcceptanceContractConfigError(
+            "acceptance-contract id requires question_id matching Q[1-9][0-9]*",
+            benchmark_id=bench,
+            question_id=qid,
+        )
+    return f"case00-triborough-{qid.lower()}"
+
+
+def build_canonical_acceptance_contract_prefix(
     benchmark_id: str,
     question_id: str,
 ) -> str:
-    """Build the canonical private acceptance-contract object key.
+    """Build the version-parent prefix for an allowlisted acceptance contract.
 
     Safe path construction from explicit identities only — never from corpus
     contents. Restricted to Case-00-Triborough + ``Q[1-9][0-9]*``.
@@ -340,22 +368,201 @@ def build_canonical_acceptance_contract_object_key(
             benchmark_id=bench,
             question_id=qid,
         )
-    q_lower = qid.lower()
+    contract_id = canonical_acceptance_contract_id(bench, qid)
     return (
         "Benchmarks/acceptance-contracts/case-00-triborough/"
-        f"{qid}/case00-triborough-{q_lower}/"
-        f"{CANONICAL_ACCEPTANCE_CONTRACT_VERSION}/acceptance_contract.json"
+        f"{qid}/{contract_id}/"
     )
+
+
+def parse_acceptance_contract_semver(version_token: str) -> tuple[int, int, int]:
+    """Parse ``vMAJOR.MINOR.PATCH``; fail closed on malformed tokens."""
+    token = str(version_token or "").strip()
+    matched = _ACCEPTANCE_CONTRACT_SEMVER_RE.fullmatch(token)
+    if matched is None:
+        raise AcceptanceContractConfigError(
+            "malformed acceptance-contract semantic version",
+            version=token,
+        )
+    return int(matched.group(1)), int(matched.group(2)), int(matched.group(3))
+
+
+def build_canonical_acceptance_contract_object_key(
+    benchmark_id: str,
+    question_id: str,
+    *,
+    version: str,
+) -> str:
+    """Build the canonical private acceptance-contract object key for a version."""
+    prefix = build_canonical_acceptance_contract_prefix(benchmark_id, question_id)
+    ver = str(version or "").strip()
+    parse_acceptance_contract_semver(ver)
+    return f"{prefix}{ver}/{_ACCEPTANCE_CONTRACT_OBJECT_NAME}"
+
+
+def list_acceptance_contract_version_candidates(
+    objects: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...],
+    *,
+    prefix: str,
+) -> list[dict[str, Any]]:
+    """Parse version candidates under ``prefix``; ignore listing order.
+
+    Fail closed on malformed version directories or duplicate version keys.
+    """
+    normalized_prefix = str(prefix or "")
+    if not normalized_prefix.endswith("/"):
+        normalized_prefix = normalized_prefix + "/"
+    candidates: list[dict[str, Any]] = []
+    seen_versions: dict[str, str] = {}
+    for item in objects:
+        if not isinstance(item, Mapping):
+            continue
+        key = str(item.get("key") or item.get("Key") or "").strip()
+        if not key or not key.startswith(normalized_prefix):
+            continue
+        rest = key[len(normalized_prefix) :]
+        parts = rest.split("/")
+        if len(parts) != 2 or parts[1] != _ACCEPTANCE_CONTRACT_OBJECT_NAME:
+            # Version-like junk under the contract prefix is fail-closed noise.
+            head = parts[0] if parts else ""
+            if head.startswith("v") and any(ch.isdigit() for ch in head):
+                raise AcceptanceContractConfigError(
+                    "malformed acceptance-contract version object key",
+                    object_key=key,
+                    prefix=normalized_prefix,
+                )
+            continue
+        version = parts[0]
+        semver = parse_acceptance_contract_semver(version)
+        prior = seen_versions.get(version)
+        if prior is not None and prior != key:
+            raise AcceptanceContractConfigError(
+                "ambiguous acceptance-contract version candidates",
+                version=version,
+                object_keys=sorted({prior, key}),
+            )
+        seen_versions[version] = key
+        size_raw = item.get("size", item.get("Size"))
+        try:
+            size = int(size_raw) if size_raw is not None else None
+        except (TypeError, ValueError) as exc:
+            raise AcceptanceContractConfigError(
+                "acceptance-contract listing size is invalid",
+                object_key=key,
+                size=size_raw,
+            ) from exc
+        candidates.append(
+            {
+                "version": version,
+                "semver": semver,
+                "object_key": key,
+                "size": size,
+            }
+        )
+    return candidates
+
+
+def select_highest_acceptance_contract_candidate(
+    candidates: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...],
+) -> dict[str, Any]:
+    """Choose the highest semantic version deterministically (not listing order)."""
+    if not candidates:
+        raise AcceptanceContractConfigError(
+            "no acceptance-contract version candidates under prefix",
+        )
+    ordered = sorted(
+        (dict(c) for c in candidates),
+        key=lambda c: (tuple(c["semver"]), str(c["object_key"])),
+        reverse=True,
+    )
+    top = ordered[0]
+    ties = [
+        c
+        for c in ordered
+        if tuple(c["semver"]) == tuple(top["semver"])
+        and str(c["object_key"]) != str(top["object_key"])
+    ]
+    if ties:
+        raise AcceptanceContractConfigError(
+            "ambiguous acceptance-contract highest version",
+            version=top.get("version"),
+            object_keys=sorted(
+                {str(top["object_key"]), *(str(t["object_key"]) for t in ties)}
+            ),
+        )
+    return top
+
+
+def list_canonical_acceptance_contract_objects(
+    *,
+    prefix: str,
+    client: Optional[Any] = None,
+    config: Optional[rebuild_cli.B2Config] = None,
+    environ: Optional[Mapping[str, str]] = None,
+) -> list[dict[str, Any]]:
+    """List acceptance-contract objects under ``prefix`` (key + size only)."""
+    normalized_prefix = str(prefix or "")
+    if not normalized_prefix.startswith("Benchmarks/acceptance-contracts/"):
+        raise AcceptanceContractConfigError(
+            "refusing non-allowlisted acceptance-contract listing prefix",
+            prefix=normalized_prefix,
+        )
+    if ".." in normalized_prefix.split("/") or not normalized_prefix.endswith("/"):
+        raise AcceptanceContractConfigError(
+            "acceptance-contract listing prefix is unsafe",
+            prefix=normalized_prefix,
+        )
+    cfg = config if config is not None else rebuild_cli.B2Config.from_env(environ)
+    s3 = client if client is not None else rebuild_cli.create_b2_client(cfg)
+    objects: list[dict[str, Any]] = []
+    continuation_token: Optional[str] = None
+    try:
+        while True:
+            kwargs: dict[str, Any] = {
+                "Bucket": cfg.bucket,
+                "Prefix": normalized_prefix,
+            }
+            if continuation_token is not None:
+                kwargs["ContinuationToken"] = continuation_token
+            response = s3.list_objects_v2(**kwargs)
+            for item in response.get("Contents") or ():
+                key = item.get("Key")
+                if key is None:
+                    continue
+                key_str = str(key)
+                if key_str.endswith("/"):
+                    continue
+                objects.append({"key": key_str, "size": item.get("Size")})
+            if not response.get("IsTruncated"):
+                break
+            continuation_token = response.get("NextContinuationToken")
+            if not continuation_token:
+                break
+    except AcceptanceContractConfigError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — fail closed, no secret echo
+        raise AcceptanceContractConfigError(
+            "B2 listing failed for acceptance-contract prefix",
+            prefix=normalized_prefix,
+            error_type=type(exc).__name__,
+        ) from exc
+    # Deterministic order for diagnostics; selection sorts by semver separately.
+    objects.sort(key=lambda row: str(row["key"]))
+    return objects
 
 
 def resolve_canonical_acceptance_contract_spec(
     *,
     benchmark_id: str,
     question_id: str,
+    object_keys: Optional[list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...]] = None,
+    client: Optional[Any] = None,
+    config: Optional[rebuild_cli.B2Config] = None,
+    environ: Optional[Mapping[str, str]] = None,
 ) -> dict[str, Any]:
-    """Resolve allowlisted object key + exact size pin for a question.
+    """Resolve highest compatible version for an allowlisted question.
 
-    Fail closed when the (benchmark_id, question_id) pair has no size pin.
+    Selection is deterministic by semantic version (not B2 listing order).
     Does not read or return contract body bytes.
     """
     bench = str(benchmark_id or "").strip()
@@ -371,20 +578,64 @@ def resolve_canonical_acceptance_contract_spec(
             "and question_id",
             missing=missing,
         )
-    object_key = build_canonical_acceptance_contract_object_key(bench, qid)
-    expected_size = CANONICAL_ACCEPTANCE_CONTRACT_EXPECTED_SIZES.get((bench, qid))
-    if expected_size is None:
+    if (bench, qid) not in CANONICAL_ACCEPTANCE_CONTRACT_ALLOWLIST:
         raise AcceptanceContractConfigError(
-            "no allowlisted acceptance-contract size pin for benchmark_id/question_id",
+            "no allowlisted acceptance-contract for benchmark_id/question_id",
             benchmark_id=bench,
             question_id=qid,
-            object_key=object_key,
+        )
+    prefix = build_canonical_acceptance_contract_prefix(bench, qid)
+    contract_id = canonical_acceptance_contract_id(bench, qid)
+    listed = (
+        list(object_keys)
+        if object_keys is not None
+        else list_canonical_acceptance_contract_objects(
+            prefix=prefix,
+            client=client,
+            config=config,
+            environ=environ,
+        )
+    )
+    # Accept bare key strings from older synthetic fixtures.
+    normalized_objects: list[dict[str, Any]] = []
+    for item in listed:
+        if isinstance(item, str):
+            normalized_objects.append({"key": item, "size": None})
+        elif isinstance(item, Mapping):
+            normalized_objects.append(dict(item))
+    candidates = list_acceptance_contract_version_candidates(
+        normalized_objects,
+        prefix=prefix,
+    )
+    if not candidates:
+        raise AcceptanceContractConfigError(
+            "no acceptance-contract version candidates under prefix",
+            benchmark_id=bench,
+            question_id=qid,
+            contract_id=contract_id,
+            prefix=prefix,
+        )
+    selected = select_highest_acceptance_contract_candidate(candidates)
+    expected_size = selected.get("size")
+    if expected_size is None:
+        # Optional legacy pin map (empty by default) — never invent sizes.
+        expected_size = CANONICAL_ACCEPTANCE_CONTRACT_EXPECTED_SIZES.get((bench, qid))
+    if expected_size is None:
+        raise AcceptanceContractConfigError(
+            "acceptance-contract candidate missing object size",
+            benchmark_id=bench,
+            question_id=qid,
+            object_key=selected["object_key"],
+            version=selected["version"],
         )
     return {
-        "object_key": object_key,
+        "object_key": str(selected["object_key"]),
         "expected_size": int(expected_size),
         "benchmark_id": bench,
         "question_id": qid,
+        "contract_id": contract_id,
+        "version": str(selected["version"]),
+        "prefix": prefix,
     }
 
 
@@ -395,8 +646,10 @@ def verify_acceptance_contract_object_bytes(
     expected_size: int,
     expected_benchmark_id: str,
     expected_question_id: str,
+    expected_contract_id: Optional[str] = None,
+    expected_version: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Verify exact size and authenticate identity + content SHA-256.
+    """Verify size, identity, schema, embedded hash, and object integrity.
 
     Returns safe generator pins only. Never returns or logs contract body.
     """
@@ -414,6 +667,7 @@ def verify_acceptance_contract_object_bytes(
             expected_size=int(expected_size),
             actual_size=actual_size,
         )
+    object_sha256 = hashlib.sha256(bytes(payload)).hexdigest()
     identity = ac.ContractIdentity(
         benchmark_id=str(expected_benchmark_id or "").strip(),
         question_id=str(expected_question_id or "").strip(),
@@ -453,11 +707,51 @@ def verify_acceptance_contract_object_bytes(
             actual_benchmark_id=meta.benchmark_id,
             actual_question_id=meta.question_id,
         )
+    expected_cid = str(expected_contract_id or "").strip()
+    # Path slug is authoritative for selection; embedded contract_id must be
+    # present and, when it uses the same slug form, must match. Synthetic
+    # fixtures may use distinct contract_id labels and are checked via
+    # object_key + benchmark/question identity instead.
+    if expected_cid:
+        actual_cid = str(meta.contract_id or "").strip()
+        if not actual_cid:
+            raise AcceptanceContractConfigError(
+                "acceptance-contract contract_id missing",
+                object_key=object_key,
+                error_code=ac.ERROR_IDENTITY_MISMATCH,
+                expected_contract_id=expected_cid,
+            )
+        if actual_cid == expected_cid or actual_cid.startswith("case00-"):
+            if actual_cid.startswith("case00-") and actual_cid != expected_cid:
+                raise AcceptanceContractConfigError(
+                    "acceptance-contract contract_id mismatch",
+                    object_key=object_key,
+                    error_code=ac.ERROR_IDENTITY_MISMATCH,
+                    expected_contract_id=expected_cid,
+                    actual_contract_id=actual_cid,
+                )
+    if expected_version is not None:
+        # Embedded document version is MAJOR.MINOR.PATCH; object path uses v-prefix.
+        path_version = str(expected_version or "").strip()
+        parse_acceptance_contract_semver(path_version)
+        embedded = str(meta.version or "").strip()
+        embedded_token = embedded if embedded.startswith("v") else f"v{embedded}"
+        if embedded_token != path_version:
+            raise AcceptanceContractConfigError(
+                "acceptance-contract version mismatch",
+                object_key=object_key,
+                error_code=ac.ERROR_IDENTITY_MISMATCH,
+                expected_version=path_version,
+                actual_version=meta.version,
+            )
     return {
         "object_key": object_key,
         "content_sha256": result.computed_content_sha256,
+        "object_sha256": object_sha256,
         "benchmark_id": identity.benchmark_id,
         "question_id": identity.question_id,
+        "contract_id": meta.contract_id,
+        "version": meta.version,
         "size": int(expected_size),
     }
 
@@ -511,14 +805,21 @@ def resolve_and_verify_canonical_acceptance_contract(
     client: Optional[Any] = None,
     config: Optional[rebuild_cli.B2Config] = None,
     environ: Optional[Mapping[str, str]] = None,
+    object_keys: Optional[list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...]] = None,
 ) -> dict[str, Any]:
-    """Resolve by identities, download, verify size/hash/identity; return pins.
+    """Select highest compatible version, download, verify; return pins.
 
-    Safe metadata only — never prints or returns contract body.
+    Fail closed when the newest candidate fails verification — never silently
+    falls back to an older version. Safe metadata only — never prints or
+    returns contract body.
     """
     spec = resolve_canonical_acceptance_contract_spec(
         benchmark_id=benchmark_id,
         question_id=question_id,
+        object_keys=object_keys,
+        client=client,
+        config=config,
+        environ=environ,
     )
     payload = download_canonical_acceptance_contract_bytes(
         object_key=spec["object_key"],
@@ -532,13 +833,18 @@ def resolve_and_verify_canonical_acceptance_contract(
         expected_size=int(spec["expected_size"]),
         expected_benchmark_id=spec["benchmark_id"],
         expected_question_id=spec["question_id"],
+        expected_contract_id=spec["contract_id"],
+        expected_version=spec["version"],
     )
     return {
         "ok": True,
         "object_key": verified["object_key"],
         "content_sha256": verified["content_sha256"],
+        "object_sha256": verified["object_sha256"],
         "benchmark_id": verified["benchmark_id"],
         "question_id": verified["question_id"],
+        "contract_id": verified["contract_id"],
+        "version": verified.get("version") or spec["version"],
         "size": verified["size"],
     }
 

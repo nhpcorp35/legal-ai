@@ -777,10 +777,14 @@ class PrefixSafetyRegressionTests(unittest.TestCase):
 class CanonicalAcceptanceContractResolveTests(unittest.TestCase):
     """Question-aware acceptance-contract resolution (synthetic fixtures only)."""
 
-    Q2_OBJECT_KEY = (
+    Q2_PREFIX = (
         "Benchmarks/acceptance-contracts/case-00-triborough/Q2/"
-        "case00-triborough-q2/v1.0.0/acceptance_contract.json"
+        "case00-triborough-q2/"
     )
+    Q2_OBJECT_KEY_V100 = Q2_PREFIX + "v1.0.0/acceptance_contract.json"
+    Q2_OBJECT_KEY_V101 = Q2_PREFIX + "v1.0.1/acceptance_contract.json"
+    # Historical alias used by older assertions.
+    Q2_OBJECT_KEY = Q2_OBJECT_KEY_V100
 
     def _synth_doc(
         self,
@@ -788,14 +792,16 @@ class CanonicalAcceptanceContractResolveTests(unittest.TestCase):
         benchmark_id: str = REQUIRED_BENCHMARK,
         question_id: str = "Q2",
         object_key: str | None = None,
+        version: str = "1.0.0",
+        contract_id: str = "contract-synth-case00-q2",
         poison_phrase: str = "PRIVATE_CONTRACT_BODY_MUST_NOT_LEAK",
     ) -> dict:
         import acceptance_contract as ac
 
-        key = object_key or self.Q2_OBJECT_KEY
+        key = object_key or self.Q2_OBJECT_KEY_V100
         doc = ac.build_synthetic_contract(
-            contract_id="contract-synth-case00-q2",
-            version="1.0.0",
+            contract_id=contract_id,
+            version=version,
             benchmark_id=benchmark_id,
             question_id=question_id,
             object_key=key,
@@ -812,27 +818,144 @@ class CanonicalAcceptanceContractResolveTests(unittest.TestCase):
     def _payload(self, doc: dict) -> bytes:
         return json.dumps(doc, sort_keys=True).encode("utf-8")
 
-    def test_q2_object_key_and_size_pin(self) -> None:
+    def test_selects_highest_semver_from_unordered_listing(self) -> None:
+        # Oldest-first listing must not control selection.
+        listing = [
+            {"key": self.Q2_OBJECT_KEY_V100, "size": 3463},
+            {"key": self.Q2_OBJECT_KEY_V101, "size": 2709},
+        ]
         spec = CLI.resolve_canonical_acceptance_contract_spec(
             benchmark_id=REQUIRED_BENCHMARK,
             question_id="Q2",
+            object_keys=listing,
         )
-        self.assertEqual(spec["object_key"], self.Q2_OBJECT_KEY)
-        self.assertEqual(spec["expected_size"], 3463)
+        self.assertEqual(spec["object_key"], self.Q2_OBJECT_KEY_V101)
+        self.assertEqual(spec["expected_size"], 2709)
+        self.assertEqual(spec["version"], "v1.0.1")
+        self.assertEqual(spec["contract_id"], "case00-triborough-q2")
         self.assertEqual(spec["benchmark_id"], REQUIRED_BENCHMARK)
         self.assertEqual(spec["question_id"], "Q2")
         self.assertEqual(
             CLI.build_canonical_acceptance_contract_object_key(
-                REQUIRED_BENCHMARK, "Q2"
+                REQUIRED_BENCHMARK, "Q2", version="v1.0.1"
             ),
-            self.Q2_OBJECT_KEY,
+            self.Q2_OBJECT_KEY_V101,
         )
+
+    def test_unordered_listing_prefers_v101_over_v100(self) -> None:
+        candidates = CLI.list_acceptance_contract_version_candidates(
+            [
+                {"key": self.Q2_OBJECT_KEY_V101, "size": 2709},
+                {"key": self.Q2_OBJECT_KEY_V100, "size": 3463},
+            ],
+            prefix=self.Q2_PREFIX,
+        )
+        selected = CLI.select_highest_acceptance_contract_candidate(candidates)
+        self.assertEqual(selected["version"], "v1.0.1")
+        # Same result when listing order flips.
+        candidates_rev = CLI.list_acceptance_contract_version_candidates(
+            [
+                {"key": self.Q2_OBJECT_KEY_V100, "size": 3463},
+                {"key": self.Q2_OBJECT_KEY_V101, "size": 2709},
+            ],
+            prefix=self.Q2_PREFIX,
+        )
+        selected_rev = CLI.select_highest_acceptance_contract_candidate(candidates_rev)
+        self.assertEqual(selected_rev["object_key"], self.Q2_OBJECT_KEY_V101)
+
+    def test_corrupt_newest_fails_closed_without_fallback(self) -> None:
+        good_v100 = self._synth_doc(
+            object_key=self.Q2_OBJECT_KEY_V100,
+            version="1.0.0",
+        )
+        bad_v101 = self._synth_doc(
+            object_key=self.Q2_OBJECT_KEY_V101,
+            version="1.0.1",
+        )
+        bad_v101["content_sha256"] = "0" * 64
+        payloads = {
+            self.Q2_OBJECT_KEY_V100: self._payload(good_v100),
+            self.Q2_OBJECT_KEY_V101: self._payload(bad_v101),
+        }
+        listing = [
+            {"key": self.Q2_OBJECT_KEY_V100, "size": len(payloads[self.Q2_OBJECT_KEY_V100])},
+            {"key": self.Q2_OBJECT_KEY_V101, "size": len(payloads[self.Q2_OBJECT_KEY_V101])},
+        ]
+
+        class _Body:
+            def __init__(self, data: bytes) -> None:
+                self._data = data
+
+            def read(self) -> bytes:
+                return self._data
+
+        client = MagicMock()
+
+        def _get_object(**kwargs):
+            key = kwargs.get("Key")
+            return {"Body": _Body(payloads[key])}
+
+        client.get_object.side_effect = _get_object
+        config = CLI.rebuild_cli.B2Config.from_env(_b2_env())
+        with self.assertRaises(CLI.AcceptanceContractConfigError) as ctx:
+            CLI.resolve_and_verify_canonical_acceptance_contract(
+                benchmark_id=REQUIRED_BENCHMARK,
+                question_id="Q2",
+                client=client,
+                config=config,
+                object_keys=listing,
+            )
+        self.assertIn("authentication failed", ctx.exception.message)
+        # Newest key was attempted; must not silently return v1.0.0 pins.
+        client.get_object.assert_called_once()
+        self.assertEqual(
+            client.get_object.call_args.kwargs.get("Key"),
+            self.Q2_OBJECT_KEY_V101,
+        )
+        blob = ctx.exception.message + json.dumps(ctx.exception.details)
+        self.assertNotIn("PRIVATE_CONTRACT_BODY_MUST_NOT_LEAK", blob)
+
+    def test_normalized_benchmark_identity_in_resolution(self) -> None:
+        import acceptance_contract as ac
+
+        embedded = "case-00-triborough"
+        self.assertEqual(
+            ac.normalize_benchmark_id(REQUIRED_BENCHMARK),
+            ac.normalize_benchmark_id(embedded),
+        )
+        doc = self._synth_doc(
+            benchmark_id=embedded,
+            object_key=self.Q2_OBJECT_KEY_V101,
+            version="1.0.1",
+        )
+        payload = self._payload(doc)
+        listing = [{"key": self.Q2_OBJECT_KEY_V101, "size": len(payload)}]
+        client = MagicMock()
+
+        class _Body:
+            def read(self) -> bytes:
+                return payload
+
+        client.get_object.return_value = {"Body": _Body()}
+        config = CLI.rebuild_cli.B2Config.from_env(_b2_env())
+        result = CLI.resolve_and_verify_canonical_acceptance_contract(
+            benchmark_id=REQUIRED_BENCHMARK,
+            question_id="Q2",
+            client=client,
+            config=config,
+            object_keys=listing,
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["object_key"], self.Q2_OBJECT_KEY_V101)
+        self.assertEqual(result["benchmark_id"], REQUIRED_BENCHMARK)
+        self.assertEqual(result["content_sha256"], doc["content_sha256"])
 
     def test_missing_metadata_fails_closed(self) -> None:
         with self.assertRaises(CLI.AcceptanceContractConfigError) as ctx:
             CLI.resolve_canonical_acceptance_contract_spec(
                 benchmark_id="",
                 question_id="Q2",
+                object_keys=[{"key": self.Q2_OBJECT_KEY_V101, "size": 2709}],
             )
         self.assertIn("benchmark_id", ctx.exception.details["missing"])
 
@@ -840,6 +963,7 @@ class CanonicalAcceptanceContractResolveTests(unittest.TestCase):
             CLI.resolve_canonical_acceptance_contract_spec(
                 benchmark_id=REQUIRED_BENCHMARK,
                 question_id="",
+                object_keys=[{"key": self.Q2_OBJECT_KEY_V101, "size": 2709}],
             )
         self.assertIn("question_id", ctx.exception.details["missing"])
 
@@ -847,27 +971,28 @@ class CanonicalAcceptanceContractResolveTests(unittest.TestCase):
             CLI.resolve_canonical_acceptance_contract_spec(
                 benchmark_id=REQUIRED_BENCHMARK,
                 question_id="Q1",
+                object_keys=[{"key": self.Q2_OBJECT_KEY_V101, "size": 2709}],
             )
         self.assertIn("no allowlisted", ctx.exception.message)
         self.assertEqual(ctx.exception.details.get("question_id"), "Q1")
 
     def test_verify_q2_success_returns_safe_pins(self) -> None:
         doc = self._synth_doc()
-        # Pad/truncate is not used — size must match allowlisted pin via override
-        # of expected_size in the verify helper for synthetic fixtures.
         payload = self._payload(doc)
         verified = CLI.verify_acceptance_contract_object_bytes(
             payload,
-            object_key=self.Q2_OBJECT_KEY,
+            object_key=self.Q2_OBJECT_KEY_V100,
             expected_size=len(payload),
             expected_benchmark_id=REQUIRED_BENCHMARK,
             expected_question_id="Q2",
+            expected_version="v1.0.0",
         )
-        self.assertEqual(verified["object_key"], self.Q2_OBJECT_KEY)
+        self.assertEqual(verified["object_key"], self.Q2_OBJECT_KEY_V100)
         self.assertEqual(verified["benchmark_id"], REQUIRED_BENCHMARK)
         self.assertEqual(verified["question_id"], "Q2")
         self.assertEqual(verified["content_sha256"], doc["content_sha256"])
         self.assertEqual(verified["size"], len(payload))
+        self.assertEqual(len(verified["object_sha256"]), 64)
         blob = json.dumps(verified, sort_keys=True)
         self.assertNotIn("PRIVATE_CONTRACT_BODY_MUST_NOT_LEAK", blob)
         self.assertNotIn("fallback_text", blob)
@@ -880,7 +1005,7 @@ class CanonicalAcceptanceContractResolveTests(unittest.TestCase):
         with self.assertRaises(CLI.AcceptanceContractConfigError) as ctx:
             CLI.verify_acceptance_contract_object_bytes(
                 payload,
-                object_key=self.Q2_OBJECT_KEY,
+                object_key=self.Q2_OBJECT_KEY_V100,
                 expected_size=len(payload),
                 expected_benchmark_id=REQUIRED_BENCHMARK,
                 expected_question_id="Q2",
@@ -900,7 +1025,7 @@ class CanonicalAcceptanceContractResolveTests(unittest.TestCase):
         with self.assertRaises(CLI.AcceptanceContractConfigError) as ctx:
             CLI.verify_acceptance_contract_object_bytes(
                 payload,
-                object_key=self.Q2_OBJECT_KEY,
+                object_key=self.Q2_OBJECT_KEY_V100,
                 expected_size=len(payload),
                 expected_benchmark_id=REQUIRED_BENCHMARK,
                 expected_question_id="Q9",
@@ -929,7 +1054,7 @@ class CanonicalAcceptanceContractResolveTests(unittest.TestCase):
         raw = self._payload(doc)
         loaded = ac.load_acceptance_contract_from_bytes(
             raw,
-            object_key=self.Q2_OBJECT_KEY,
+            object_key=self.Q2_OBJECT_KEY_V100,
             expected_identity=ac.ContractIdentity(
                 benchmark_id=REQUIRED_BENCHMARK,
                 question_id="Q2",
@@ -944,7 +1069,7 @@ class CanonicalAcceptanceContractResolveTests(unittest.TestCase):
 
         verified = CLI.verify_acceptance_contract_object_bytes(
             raw,
-            object_key=self.Q2_OBJECT_KEY,
+            object_key=self.Q2_OBJECT_KEY_V100,
             expected_size=len(raw),
             expected_benchmark_id=REQUIRED_BENCHMARK,
             expected_question_id="Q2",
@@ -971,7 +1096,7 @@ class CanonicalAcceptanceContractResolveTests(unittest.TestCase):
         )
         loaded = ac.load_acceptance_contract_from_bytes(
             payload,
-            object_key=self.Q2_OBJECT_KEY,
+            object_key=self.Q2_OBJECT_KEY_V100,
             expected_identity=ac.ContractIdentity(
                 benchmark_id=other,
                 question_id="Q2",
@@ -983,7 +1108,7 @@ class CanonicalAcceptanceContractResolveTests(unittest.TestCase):
         with self.assertRaises(CLI.AcceptanceContractConfigError) as ctx:
             CLI.verify_acceptance_contract_object_bytes(
                 payload,
-                object_key=self.Q2_OBJECT_KEY,
+                object_key=self.Q2_OBJECT_KEY_V100,
                 expected_size=len(payload),
                 expected_benchmark_id=other,
                 expected_question_id="Q2",
@@ -1003,7 +1128,7 @@ class CanonicalAcceptanceContractResolveTests(unittest.TestCase):
         with self.assertRaises(CLI.AcceptanceContractConfigError) as ctx:
             CLI.verify_acceptance_contract_object_bytes(
                 payload,
-                object_key=self.Q2_OBJECT_KEY,
+                object_key=self.Q2_OBJECT_KEY_V100,
                 expected_size=len(payload) + 1,
                 expected_benchmark_id=REQUIRED_BENCHMARK,
                 expected_question_id="Q2",
@@ -1012,8 +1137,11 @@ class CanonicalAcceptanceContractResolveTests(unittest.TestCase):
         self.assertEqual(ctx.exception.details.get("expected_size"), len(payload) + 1)
         self.assertEqual(ctx.exception.details.get("actual_size"), len(payload))
 
-    def test_resolve_and_verify_downloads_q2_and_returns_pins(self) -> None:
-        doc = self._synth_doc()
+    def test_resolve_and_verify_downloads_highest_and_returns_pins(self) -> None:
+        doc = self._synth_doc(
+            object_key=self.Q2_OBJECT_KEY_V101,
+            version="1.0.1",
+        )
         payload = self._payload(doc)
 
         class _Body:
@@ -1023,26 +1151,26 @@ class CanonicalAcceptanceContractResolveTests(unittest.TestCase):
         client = MagicMock()
         client.get_object.return_value = {"Body": _Body()}
         config = CLI.rebuild_cli.B2Config.from_env(_b2_env())
-        with patch.dict(
-            CLI.CANONICAL_ACCEPTANCE_CONTRACT_EXPECTED_SIZES,
-            {(REQUIRED_BENCHMARK, "Q2"): len(payload)},
-            clear=False,
-        ):
-            result = CLI.resolve_and_verify_canonical_acceptance_contract(
-                benchmark_id=REQUIRED_BENCHMARK,
-                question_id="Q2",
-                client=client,
-                config=config,
-            )
+        listing = [
+            {"key": self.Q2_OBJECT_KEY_V100, "size": 3463},
+            {"key": self.Q2_OBJECT_KEY_V101, "size": len(payload)},
+        ]
+        result = CLI.resolve_and_verify_canonical_acceptance_contract(
+            benchmark_id=REQUIRED_BENCHMARK,
+            question_id="Q2",
+            client=client,
+            config=config,
+            object_keys=listing,
+        )
         self.assertTrue(result["ok"])
-        self.assertEqual(result["object_key"], self.Q2_OBJECT_KEY)
+        self.assertEqual(result["object_key"], self.Q2_OBJECT_KEY_V101)
         self.assertEqual(result["content_sha256"], doc["content_sha256"])
         self.assertEqual(result["benchmark_id"], REQUIRED_BENCHMARK)
         self.assertEqual(result["question_id"], "Q2")
         self.assertEqual(result["size"], len(payload))
         client.get_object.assert_called_once()
         call_kwargs = client.get_object.call_args.kwargs
-        self.assertEqual(call_kwargs.get("Key"), self.Q2_OBJECT_KEY)
+        self.assertEqual(call_kwargs.get("Key"), self.Q2_OBJECT_KEY_V101)
         status = json.dumps(result, sort_keys=True)
         self.assertNotIn("PRIVATE_CONTRACT_BODY_MUST_NOT_LEAK", status)
 

@@ -1670,6 +1670,175 @@ class Q2EmptyStructurePriorPageRoutingTests(unittest.TestCase):
         self.assertNotIn("no defense or indemnity", answer)
         self.assertNotIn("void ab initio", answer)
 
+    def test_rebuilt_cache_routes_catch_all_continuation_and_preserves_passes(
+        self,
+    ) -> None:
+        """
+        Production-shaped rebuilt structure tags only the WHEREFORE heading
+        page. Adjacent expansion must preserve prior-page no-defense and
+        next-page catch-all without broad retrieval. Synthetic text only.
+        """
+        import complaint_structure as cs
+        from engines import drafting_engine as de
+
+        prior_page = (
+            "Count II further seeks a declaration that Plaintiff owes neither "
+            "a duty to defend nor a duty to indemnify the named defendants."
+        )
+        wherefore_page = (
+            "26 WHEREFORE Plaintiff demands judgment declaring coverage void "
+            "ab initio and for rescission of the same;"
+        )
+        continuation_page = (
+            "and awarding such other and further relief as the Court deems "
+            "just and proper."
+        )
+        pages = [
+            {
+                "nyscef_document_number": 990,
+                "page_number": 1,
+                "page_id": "nyscef-990-page-0001",
+                "text": prior_page,
+                "document_type": "complaint",
+                "document_classification": "complaint",
+                "source_filename": "synth_complaint_990.pdf",
+            },
+            {
+                "nyscef_document_number": 990,
+                "page_number": 2,
+                "page_id": "nyscef-990-page-0002",
+                "text": wherefore_page,
+                "document_type": "complaint",
+                "document_classification": "complaint",
+                "source_filename": "synth_complaint_990.pdf",
+            },
+            {
+                "nyscef_document_number": 990,
+                "page_number": 3,
+                "page_id": "nyscef-990-page-0003",
+                "text": continuation_page,
+                "document_type": "complaint",
+                "document_classification": "complaint",
+                "source_filename": "synth_complaint_990.pdf",
+            },
+        ]
+        structure_map = cs.build_complaint_structure_map({"pages": pages})
+        # Rebuilt cache: heading page only (no continuation provenance).
+        relief_ids = cs.collect_complaint_relief_page_ids(structure_map)
+        self.assertEqual(relief_ids, ["nyscef-990-page-0002"])
+
+        documents = [
+            {
+                "filename": "synth_complaint_990.pdf",
+                "nyscef_document_number": 990,
+                "type": "complaint",
+                "document_type": "complaint",
+                "pages": pages,
+            }
+        ]
+        retrieval = {
+            "query": self.QUESTION,
+            "results": [
+                {
+                    "result_id": "hit-noise",
+                    "page_id": "nyscef-990-page-0001",
+                    "nyscef_document_number": 990,
+                    "pdf_page": 1,
+                    "document_type": "complaint",
+                    "excerpt": "Count II further seeks a declaration.",
+                    "classifications": ["party_allegation"],
+                    "score": 0.2,
+                }
+            ],
+            "complaint_structure_map": structure_map,
+        }
+        routed = de.route_complaint_relief_evidence(
+            retrieval,
+            question=self.QUESTION,
+            documents=documents,
+            complaint_structure_map=structure_map,
+        )
+        page_ids = [h.get("page_id") for h in (routed.get("results") or [])]
+        self.assertEqual(
+            page_ids,
+            [
+                "nyscef-990-page-0001",
+                "nyscef-990-page-0002",
+                "nyscef-990-page-0003",
+            ],
+        )
+
+        packet = de.build_evidence_packet(
+            self.QUESTION,
+            routed,
+            complaint_structure_map=structure_map,
+            documents=documents,
+        )
+        supported = de.extract_supported_complaint_relief(packet)
+        self.assertTrue(supported["no_defense_or_indemnity"]["supported"])
+        self.assertTrue(supported["catch_all_relief"]["supported"])
+        self.assertTrue(supported["rescission_void_ab_initio"]["supported"])
+
+        assembled = de.apply_evidence_grounded_relief_synthesis(
+            {
+                "proposed_answer": "Draft omitting grounded relief citations.",
+                "propositions": [],
+                "audit": {},
+            },
+            packet,
+        )
+        answer = assembled["proposed_answer"].lower()
+        # Preserve the two previously passing criteria.
+        self.assertIn("pleaded", answer)
+        self.assertIn("not a judicial determination", answer)
+        self.assertIn("no defense or indemnity", answer)
+        self.assertIn("neither a duty to defend nor a duty to indemnify", answer)
+        # Catch-all must remain source-backed after rebuilt-cache routing.
+        self.assertIn("catch-all", answer)
+        self.assertIn("such other and further relief", answer)
+        cats = set(assembled["audit"].get("relief_supported_categories") or [])
+        self.assertIn("no_defense_or_indemnity", cats)
+        self.assertIn("catch_all_relief", cats)
+        self.assertTrue(assembled["audit"].get("relief_synthesis_applied"))
+
+    def test_truncated_wherefore_excerpt_preserves_same_page_catch_all(self) -> None:
+        """Bounded WHEREFORE excerpt must not drop same-page catch-all text."""
+        from engines import drafting_engine as de
+
+        filler = "Synthetic enumerated demand clause. " * 120
+        full_page = (
+            "WHEREFORE Plaintiff demands judgment declaring the policy void "
+            "ab initio and for rescission; "
+            + filler
+            + "and for such other and further relief as the Court deems just "
+            "and proper."
+        )
+        # Mimic routed truncated excerpt that omits the trailing catch-all.
+        truncated = de._complaint_relief_excerpt_from_page_text(full_page)
+        self.assertLessEqual(len(truncated), de._RELIEF_EXCERPT_MAX)
+        packet = {
+            "question": self.QUESTION,
+            "retrieval_hit_count": 1,
+            "retrieval_hits": [
+                {
+                    "result_id": "hit-truncated-wherefore",
+                    "page_id": "nyscef-991-page-0001",
+                    "nyscef_document_number": 991,
+                    "pdf_page": 1,
+                    "document_type": "complaint",
+                    "excerpt": truncated,
+                    "page_text": full_page,
+                    "classifications": ["legal_position"],
+                }
+            ],
+        }
+        supported = de.extract_supported_complaint_relief(packet)
+        self.assertTrue(supported["rescission_void_ab_initio"]["supported"])
+        self.assertTrue(
+            supported["catch_all_relief"]["supported"],
+            "same-page catch-all must survive rebuilt excerpt truncation",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
