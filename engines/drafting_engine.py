@@ -2051,50 +2051,50 @@ def _has_hyphen_stem_ocr_split(raw: str) -> bool:
     return False
 
 
-def displayed_quote_fails_readability_gate(text: str) -> bool:
+def readability_gate_reason_codes(text: str) -> Tuple[str, ...]:
     """
-    Deterministic readability gate for displayed quotes/excerpts.
+    Privacy-safe readability-gate reason codes (no source/OCR text).
 
-    Rejects OCR mid-word fragmentation, isolated page numerals, hyphen/titlecase
-    OCR splits, multi-paragraph pleading dumps, mashed count headings, and
-    truncated paragraph tails. Does not mutate structured internal evidence —
-    callers decide whether to paraphrase for display.
+    Empty tuple means the quote/excerpt passes the display readability gate.
+    Codes are stable audit labels only — never embed the inspected text.
     """
+    reasons: List[str] = []
     # Preserve newline structure long enough to catch isolated folio lines, then
     # also evaluate the whitespace-normalized form used in final prose.
     original = str(text or "")
     if not original.strip():
-        return False
+        return ()
     if re.search(r"(?m)^(?:page\s*)?\d{1,4}\s*$", original):
-        return True
+        reasons.append("isolated_folio_line")
     raw = normalize_whitespace(original)
     if not raw:
-        return False
+        return tuple(reasons)
     if _OCR_SINGLE_LETTER_RUN_RE.search(raw):
-        return True
+        reasons.append("single_letter_run")
     if _OCR_LEADING_PAGE_NUMERAL_RE.search(raw):
-        return True
+        reasons.append("leading_page_numeral")
     if _OCR_ISOLATED_PAGE_NUMERAL_RE.search(raw):
-        return True
+        reasons.append("isolated_page_numeral")
     if _has_hyphen_stem_ocr_split(raw):
-        return True
+        reasons.append("hyphen_stem_ocr_split")
     for match in _OCR_TITLECASE_SPLIT_RE.finditer(raw):
         head = match.group(1).lower()
         if head not in _OCR_TITLECASE_SPLIT_ALLOWLIST:
-            return True
+            reasons.append("titlecase_ocr_split")
+            break
     if len(_OCR_NUMBERED_PLEADING_PARA_RE.findall(raw)) >= 2:
-        return True
+        reasons.append("multi_numbered_pleading_paras")
     if _OCR_MASHED_COUNT_HEADING_RE.search(raw):
-        return True
+        reasons.append("mashed_count_heading")
     if _OCR_TRUNCATED_PARA_TAIL_RE.search(raw):
-        return True
+        reasons.append("truncated_para_tail")
     if _OCR_GLUED_PARA_NUMBER_RE.search(raw):
-        return True
+        reasons.append("glued_para_number")
     healed = heal_ocr_intra_word_spaces(
         raw, join_words=_OCR_RELIEF_DISPLAY_JOIN_WORDS
     )
     if normalize_whitespace(healed).lower() != raw.lower():
-        return True
+        reasons.append("intra_word_ocr_spaces")
     # Multi-fragment mid-word splits (e.g. ``Def en dants`` → defendants) that
     # pairwise vocabulary healing may miss when the join needs 3+ tokens.
     tokens = re.findall(r"[A-Za-z]+", raw)
@@ -2109,8 +2109,21 @@ def displayed_quote_fails_readability_gate(text: str) -> bool:
             acc += part.lower()
             saw_short = saw_short or len(part) <= 3
             if j > i and saw_short and acc in vocab:
-                return True
-    return False
+                reasons.append("multi_token_ocr_join")
+                return tuple(reasons)
+    return tuple(reasons)
+
+
+def displayed_quote_fails_readability_gate(text: str) -> bool:
+    """
+    Deterministic readability gate for displayed quotes/excerpts.
+
+    Rejects OCR mid-word fragmentation, isolated page numerals, hyphen/titlecase
+    OCR splits, multi-paragraph pleading dumps, mashed count headings, and
+    truncated paragraph tails. Does not mutate structured internal evidence —
+    callers decide whether to paraphrase for display.
+    """
+    return bool(readability_gate_reason_codes(text))
 
 
 _RELIEF_DISPLAY_EXCERPT_CORES: Dict[str, Tuple[str, ...]] = {

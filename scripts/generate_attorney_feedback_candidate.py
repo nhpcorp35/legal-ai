@@ -34,6 +34,10 @@ if str(_SCRIPTS) not in sys.path:
 import matter_builder as mb  # noqa: E402
 import complaint_structure as cs  # noqa: E402
 from engines import drafting_engine as de  # noqa: E402
+from engines.q2_production_evidence_diagnostics import (  # noqa: E402
+    DIAGNOSTIC_RESULT_KEY,
+    build_q2_production_evidence_diagnostics,
+)
 import acceptance_contract as ac  # noqa: E402
 import rebuild_case00_derived as rebuild_cli  # noqa: E402
 
@@ -1637,6 +1641,29 @@ def run_generation(
             provider_calls=provider_calls,
         )
 
+    # Privacy-safe Q2 evidence-routing diagnostics (metadata only). Built from
+    # the same production evidence packet the reasoner consumed; never alters
+    # synthesis, scrub, canonicalization, or acceptance outcomes.
+    q2_diagnostics = None
+    evidence_packet: Optional[dict[str, Any]] = None
+    if de.detect_relief_question_intent(inputs["question_text"]):
+        evidence_packet = de.build_evidence_packet(
+            inputs["question_text"],
+            retrieval,
+            case_map=inputs["case_map"],
+            documents=docs_subset,
+            complaint_structure_map=structure_map
+            if isinstance(structure_map, dict)
+            else None,
+        )
+        q2_diagnostics = build_q2_production_evidence_diagnostics(
+            evidence_packet=evidence_packet,
+            reasoner_result=reasoner_result,
+            proposed_before_canonical=str(
+                reasoner_result.get("proposed_answer") or ""
+            ),
+        )
+
     # Final acceptance-contract validation after synthesis / repair / cleanup /
     # Markdown canonicalization. The exact canonical string is what JSON and
     # Markdown both serialize; fail closed if presentation rewriting drops any
@@ -1647,16 +1674,31 @@ def run_generation(
             proposed,
             contract_view,
         )
+        if q2_diagnostics is not None:
+            q2_diagnostics = build_q2_production_evidence_diagnostics(
+                evidence_packet=evidence_packet,
+                reasoner_result=reasoner_result,
+                proposed_before_canonical=proposed,
+                canonical=canonical,
+                validation=validation,
+            )
         acceptance_provenance = ac.safe_provenance_record(
             load_status=load_status,
             view=contract_view,
             validation=validation,
         )
         if not validation.ok:
+            err_kwargs: dict[str, Any] = {
+                "acceptance_contract": acceptance_provenance.get(
+                    "acceptance_contract"
+                ),
+                "finalized": False,
+            }
+            if q2_diagnostics is not None:
+                err_kwargs[DIAGNOSTIC_RESULT_KEY] = q2_diagnostics
             raise GenerationError(
                 "Acceptance-contract validation failed; candidate not finalized",
-                acceptance_contract=acceptance_provenance.get("acceptance_contract"),
-                finalized=False,
+                **err_kwargs,
             )
         reasoner_result = dict(reasoner_result)
         reasoner_result["proposed_answer"] = canonical
@@ -1684,7 +1726,7 @@ def run_generation(
         acceptance_provenance=acceptance_provenance,
     )
 
-    return {
+    result_payload: dict[str, Any] = {
         "ok": True,
         "finalized": True,
         "candidate_directory": str(out_dir.resolve()),
@@ -1697,6 +1739,11 @@ def run_generation(
         "model_input_audit": inspection["audit"],
         "acceptance_contract": acceptance_provenance.get("acceptance_contract"),
     }
+    if q2_diagnostics is not None:
+        # Retained on the machine-readable run result (GHA artifact, 7 days);
+        # never uploaded to canonical B2 candidate objects.
+        result_payload[DIAGNOSTIC_RESULT_KEY] = q2_diagnostics
+    return result_payload
 
 
 def build_parser() -> argparse.ArgumentParser:
