@@ -2040,6 +2040,12 @@ _OCR_MASHED_COUNT_HEADING_RE = re.compile(
 _OCR_TRUNCATED_PARA_TAIL_RE = re.compile(r"(?i)\b\d{1,4}\.\s*$")
 # Paragraph number glued mid-sentence after prose (``Initio 186. Declaring``).
 _OCR_GLUED_PARA_NUMBER_RE = re.compile(r"(?i)[a-z]\s+\d{2,4}\.\s+[A-Z]")
+# Sliding-window / OCR cut starts mid-clause (e.g. ``the Policies, Underwriters...``).
+_MID_CLAUSE_DISPLAY_FRAGMENT_RE = re.compile(
+    r"^[a-z][^.]{0,48},\s+[A-Z][A-Za-z]+"
+)
+# Trailing bare pleading number without a following sentence (``...Initio 186``).
+_TRAILING_BARE_PARA_NUMBER_RE = re.compile(r"(?i)\b[A-Za-z]\s+\d{2,4}$")
 
 
 def _has_hyphen_stem_ocr_split(raw: str) -> bool:
@@ -2101,6 +2107,10 @@ def readability_gate_reason_codes(text: str) -> Tuple[str, ...]:
         reasons.append("truncated_para_tail")
     if _OCR_GLUED_PARA_NUMBER_RE.search(raw):
         reasons.append("glued_para_number")
+    if _MID_CLAUSE_DISPLAY_FRAGMENT_RE.search(raw):
+        reasons.append("mid_clause_display_fragment")
+    if _TRAILING_BARE_PARA_NUMBER_RE.search(raw):
+        reasons.append("trailing_bare_para_number")
     healed = heal_ocr_intra_word_spaces(
         raw, join_words=_OCR_RELIEF_DISPLAY_JOIN_WORDS
     )
@@ -2130,9 +2140,10 @@ def displayed_quote_fails_readability_gate(text: str) -> bool:
     Deterministic readability gate for displayed quotes/excerpts.
 
     Rejects OCR mid-word fragmentation, isolated page numerals, hyphen/titlecase
-    OCR splits, multi-paragraph pleading dumps, mashed count headings, and
-    truncated paragraph tails. Does not mutate structured internal evidence —
-    callers decide whether to paraphrase for display.
+    OCR splits, multi-paragraph pleading dumps, mashed count headings,
+    truncated paragraph tails, mid-clause window fragments, and trailing bare
+    paragraph numbers. Does not mutate structured internal evidence — callers
+    decide whether to paraphrase for display.
     """
     return bool(readability_gate_reason_codes(text))
 
@@ -2423,6 +2434,12 @@ _MATERIAL_MISREP_RE = re.compile(
 _NON_DISCLOSURE_RE = re.compile(
     r"(?i)\bnon[\s-]*dis[\s-]*clos[\s-]*ures?\b"
 )
+# Count I inducement / intent-to-defraud issuance theory (heading or allegation).
+_INTENT_TO_DEFRAUD_ISSUANCE_RE = re.compile(
+    r"(?i)\bintent(?:ion)?\s+to\s+defraud\b"
+    r"|\bdefraud\w*(?:\s+\w+){0,4}\s+into\s+issu"
+    r"|\binduce\w*(?:\s+\w+){0,4}\s+into\s+issu"
+)
 
 
 def _snippet_mentions_material_misrepresentation(snippet: str) -> bool:
@@ -2433,14 +2450,18 @@ def _snippet_mentions_non_disclosure(snippet: str) -> bool:
     return bool(_NON_DISCLOSURE_RE.search(snippet or ""))
 
 
+def _snippet_mentions_intent_to_defraud_issuance(snippet: str) -> bool:
+    return bool(_INTENT_TO_DEFRAUD_ISSUANCE_RE.search(snippet or ""))
+
+
 def _rescission_alleged_basis_clause(support: Mapping[str, Any]) -> str:
     """
     Source-grounded pleaded basis for rescission / void-ab-initio relief.
 
-    When the cited snippet supports misrepresentation or non-disclosure language,
-    retain that substance in concise prose as *alleged* (pleading posture only —
-    never an adjudicated finding). Returns "" when the source does not ground
-    either concept.
+    When the cited snippet supports misrepresentation, non-disclosure, or
+    intent-to-defraud/induce-issuance language, retain that substance in concise
+    prose as *alleged* (pleading posture only — never an adjudicated finding).
+    Returns "" when the source does not ground any of those concepts.
     """
     snippet = str(support.get("evidence_snippet") or "")
     probe = heal_ocr_intra_word_spaces(
@@ -2452,17 +2473,34 @@ def _rescission_alleged_basis_clause(support: Mapping[str, Any]) -> str:
     has_nondisc = _snippet_mentions_non_disclosure(
         snippet
     ) or _snippet_mentions_non_disclosure(probe)
-    if not has_misrep and not has_nondisc:
+    has_intent = _snippet_mentions_intent_to_defraud_issuance(
+        snippet
+    ) or _snippet_mentions_intent_to_defraud_issuance(probe)
+    if not has_misrep and not has_nondisc and not has_intent:
         return ""
+    intent_clause = "alleged intent to induce/defraud issuance"
     # Keep "alleged material misrepresentations" exact for semantic contracts;
-    # pair with non-disclosures only when that concept is also source-backed.
+    # pair with non-disclosures / intent only when those concepts are source-backed.
+    if has_misrep and has_nondisc and has_intent:
+        return (
+            " based on alleged material misrepresentations and non-disclosures "
+            f"and {intent_clause}"
+        )
+    if has_misrep and has_intent:
+        return (
+            f" based on alleged material misrepresentations and {intent_clause}"
+        )
     if has_misrep and has_nondisc:
         return (
             " based on alleged material misrepresentations and non-disclosures"
         )
     if has_misrep:
         return " based on alleged material misrepresentations"
-    return " based on alleged non-disclosures"
+    if has_nondisc and has_intent:
+        return f" based on alleged non-disclosures and {intent_clause}"
+    if has_nondisc:
+        return " based on alleged non-disclosures"
+    return f" based on {intent_clause}"
 
 
 def _rescission_void_lead_clause(support: Mapping[str, Any]) -> str:
@@ -2561,14 +2599,22 @@ def _format_relief_display_evidence(
             display = scoped
         elif verified_claim:
             display = verified_claim
-    if display and not displayed_quote_fails_readability_gate(display):
+    if (
+        display
+        and not displayed_quote_fails_readability_gate(display)
+        and _display_quote_is_grammatically_intact(display)
+    ):
         return (
             f'{readable_intro}, as reflected in the cited pleading language: '
             f'"{display}"{cite}.'
         )
     # Paraphrase path: when a verified clean claim was captured before scrub,
     # retain it as the grounded excerpt so evidence_phrases stay linkable.
-    if verified_claim and not displayed_quote_fails_readability_gate(verified_claim):
+    if (
+        verified_claim
+        and not displayed_quote_fails_readability_gate(verified_claim)
+        and _display_quote_is_grammatically_intact(verified_claim)
+    ):
         return (
             f'{paraphrase_intro}, as reflected in the cited pleading language: '
             f'"{verified_claim}"{cite}.'
@@ -2579,17 +2625,131 @@ def _format_relief_display_evidence(
     )
 
 
+def _verified_source_count_display_corpus(
+    row: Mapping[str, Any],
+    *,
+    category: Optional[str] = None,
+) -> str:
+    """
+    Prefer verified title/excerpt for display — never invent prose.
+
+    Count I / rescission prefers the verified heading title (inducement /
+    misrepresentation substance). Count II / no-defense prefers a bounded
+    substantive excerpt when present so duty-to-defend evidence tokens remain
+    linkable.
+    """
+    title = normalize_whitespace(row.get("title") or "")
+    excerpt = normalize_whitespace(row.get("substantive_excerpt") or "")
+    if category == "no_defense_or_indemnity":
+        if excerpt:
+            return excerpt
+        return title
+    if title:
+        return title
+    return excerpt
+
+
+def _display_quote_is_grammatically_intact(text: str) -> bool:
+    """True when a candidate display quote is a complete, intact span."""
+    raw = normalize_whitespace(text or "")
+    if not raw or displayed_quote_fails_readability_gate(raw):
+        return False
+    # Mid-clause window cuts (e.g. ``the Policies, Underwriters...``) are not
+    # intact quotations. Legitimate lowercase openers such as catch-all
+    # ``for such other and further relief`` remain allowed.
+    if _MID_CLAUSE_DISPLAY_FRAGMENT_RE.search(raw):
+        return False
+    return True
+
+
+def _source_count_row_for_relief_category(
+    source_counts: Optional[Sequence[Mapping[str, Any]]],
+    category: str,
+) -> Optional[Mapping[str, Any]]:
+    """Return the source-identified pleaded-count row for a relief category."""
+    ordinal_to_category = {
+        "I": "rescission_void_ab_initio",
+        "1": "rescission_void_ab_initio",
+        "II": "no_defense_or_indemnity",
+        "2": "no_defense_or_indemnity",
+    }
+    for row in source_counts or []:
+        if not isinstance(row, Mapping):
+            continue
+        ordinal = str(row.get("ordinal") or "").strip().upper()
+        if ordinal_to_category.get(ordinal) == category:
+            return row
+    return None
+
+
+def _support_preferring_source_count(
+    support: Mapping[str, Any],
+    source_count: Optional[Mapping[str, Any]],
+    *,
+    category: Optional[str] = None,
+) -> dict:
+    """
+    Prefer a source-identified count row's verified title/excerpt and page_id.
+
+    When the pleaded-count row carries verified substance and a page_id, those
+    values drive the Count cause-of-action paragraph instead of a sibling
+    WHEREFORE / prayer page excerpt. Structured relief support is otherwise
+    preserved as a fallback.
+    """
+    out = dict(support) if isinstance(support, Mapping) else {}
+    if not isinstance(source_count, Mapping):
+        return out
+    page_id = normalize_whitespace(source_count.get("page_id") or "")
+    corpus = _verified_source_count_display_corpus(
+        source_count, category=category
+    )
+    if page_id and corpus:
+        out["page_id"] = page_id
+        out["evidence_snippet"] = corpus
+        if source_count.get("page_number") is not None:
+            out["pdf_page"] = source_count.get("page_number")
+    elif page_id:
+        out["page_id"] = page_id
+    return out
+
+
 def _build_rescission_void_relief_paragraph(
     support: Mapping[str, Any],
     *,
     count_label: Optional[str] = None,
+    source_count: Optional[Mapping[str, Any]] = None,
 ) -> str:
-    lead = _rescission_void_lead_clause(support)
+    preferred = _support_preferring_source_count(
+        support,
+        source_count,
+        category="rescission_void_ab_initio",
+    )
+    lead = _rescission_void_lead_clause(preferred)
     if count_label:
         # Source-grounded count label only — never invent a cause title.
         lead = f"{lead} under {count_label}"
+    corpus = (
+        _verified_source_count_display_corpus(
+            source_count, category="rescission_void_ab_initio"
+        )
+        if isinstance(source_count, Mapping)
+        else ""
+    )
+    # Prefer verified Count I title/excerpt + its page_id. Quote only when the
+    # full verified corpus is a complete intact span; otherwise paraphrase.
+    if corpus and normalize_whitespace(preferred.get("page_id") or ""):
+        cite = _relief_page_citation(preferred)
+        if _display_quote_is_grammatically_intact(corpus):
+            return (
+                f'{lead}, as reflected in the cited pleading language: '
+                f'"{corpus}"{cite}.'
+            )
+        return (
+            f"{lead}, as reflected in the cited pleading on the "
+            f"originating source page{cite}."
+        )
     return _format_relief_display_evidence(
-        support,
+        preferred,
         readable_intro=lead,
         paraphrase_intro=lead,
         category="rescission_void_ab_initio",
@@ -2600,7 +2760,13 @@ def _build_no_defense_relief_paragraph(
     support: Mapping[str, Any],
     *,
     count_label: Optional[str] = None,
+    source_count: Optional[Mapping[str, Any]] = None,
 ) -> str:
+    preferred = _support_preferring_source_count(
+        support,
+        source_count,
+        category="no_defense_or_indemnity",
+    )
     # Presence phrasing for q2-no-defense-or-indemnity. When a clean excerpt is
     # available, the display quote carries production evidence tokens; when
     # selection is supported_needs_paraphrase (unreadable OCR / no clean
@@ -2627,7 +2793,7 @@ def _build_no_defense_relief_paragraph(
             "or indemnify Defendants"
         )
     return _format_relief_display_evidence(
-        support,
+        preferred,
         readable_intro=readable_intro,
         paraphrase_intro=paraphrase_intro,
         category="no_defense_or_indemnity",
@@ -2755,6 +2921,12 @@ def assemble_evidence_grounded_relief_paragraphs(
     count_labels = _pair_source_counts_with_relief_categories(
         source_counts or [], supported
     )
+    count_i_row = _source_count_row_for_relief_category(
+        source_counts, "rescission_void_ab_initio"
+    )
+    count_ii_row = _source_count_row_for_relief_category(
+        source_counts, "no_defense_or_indemnity"
+    )
 
     rescission = supported.get("rescission_void_ab_initio") or {}
     if rescission.get("supported"):
@@ -2762,6 +2934,7 @@ def assemble_evidence_grounded_relief_paragraphs(
             _build_rescission_void_relief_paragraph(
                 rescission,
                 count_label=count_labels.get("rescission_void_ab_initio"),
+                source_count=count_i_row,
             )
         )
 
@@ -2771,6 +2944,7 @@ def assemble_evidence_grounded_relief_paragraphs(
             _build_no_defense_relief_paragraph(
                 indemnity,
                 count_label=count_labels.get("no_defense_or_indemnity"),
+                source_count=count_ii_row,
             )
         )
 
@@ -3068,6 +3242,9 @@ def apply_evidence_grounded_relief_synthesis(
         para = _build_rescission_void_relief_paragraph(
             rescission,
             count_label=count_labels.get("rescission_void_ab_initio"),
+            source_count=_source_count_row_for_relief_category(
+                source_counts, "rescission_void_ab_initio"
+            ),
         )
         new_props.append(
             _relief_proposition(
@@ -3082,6 +3259,9 @@ def apply_evidence_grounded_relief_synthesis(
         para = _build_no_defense_relief_paragraph(
             indemnity,
             count_label=count_labels.get("no_defense_or_indemnity"),
+            source_count=_source_count_row_for_relief_category(
+                source_counts, "no_defense_or_indemnity"
+            ),
         )
         new_props.append(
             _relief_proposition(

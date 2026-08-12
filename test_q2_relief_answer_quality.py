@@ -795,13 +795,18 @@ class Q2Candidate175821ZOcrDumpRegressionTests(unittest.TestCase):
         self.assertIn("just and equitable", answer_l)
         self.assertNotIn("and/or", answer_l)
 
-        # Exact citation id preserved; prefer clean excerpts over paraphrase
-        # when the verified claim is readable after claim capture.
+        # Exact citation id preserved. Rescission from the OCR dump is
+        # paraphrased (no intact display quote); no-defense / catch-all retain
+        # clean cited pleading language when available.
         self.assertIn(f"page_id {page_id}", answer)
         self.assertIn("cited pleading language", answer_l)
         self.assertIn("just and equitable", answer)
         self.assertIn("no duty to defend or indemnify", answer_l)
-        self.assertNotIn("originating source page", answer_l)
+        self.assertIn("originating source page", answer_l)
+        self.assertNotIn(
+            "the Policies, Underwriters are entitled to void the Policies ab initio",
+            answer,
+        )
 
     def test_serializer_scrubs_175821z_pattern_with_json_md_parity(self) -> None:
         """Final serializer rejects embedded OCR dumps; JSON/MD stay aligned."""
@@ -2001,6 +2006,152 @@ class Q2RunGeneration31629603939VerifiedClaimRebuildTests(unittest.TestCase):
                     )
             self.assertIn("acceptance-contract", ctx.exception.blocker.lower())
             self.assertFalse(ctx.exception.details.get("finalized", True))
+
+
+# ---------------------------------------------------------------------------
+# Regression: Count I must use verified page-18 substance, not page-25 OCR cut
+# ---------------------------------------------------------------------------
+
+_Q2_COUNT_I_PAGE18_TITLE = (
+    "The Policies Should Be Declared Void Ab Initio As a Result of "
+    "Triborough's Material Misrepresentations, Made With Intent To Defraud "
+    "Underwriters Into Issuing The Policies"
+)
+
+_Q2_COUNT_I_MALFORMED_PAGE25_QUOTE = (
+    "the Policies, Underwriters are entitled to void the Policies ab initio"
+)
+
+_Q2_COUNT_I_PAGE25_OCR = (
+    "25\n\n"
+    "183. Upon information and belief, Tri borough has been licensed.\n"
+    "184. On the basis of the material misrepresentations and non-disclos ures "
+    "made by Triborough in their application to obtain the Policies, "
+    "Underwriters are entitled to void the Policies ab initio.\n"
+    "185. Underwriters have no adequate remedy at law. COUNT II Have No "
+    "Obligations to Provide Defense or Indemnification to Named Insured.\n"
+    "186. Declaring that there is no duty to defend or indemnify Defendants "
+    "under the Policies."
+)
+
+
+class Q2CountIPage18MarkdownCitationRegressionTests(unittest.TestCase):
+    """Count I renders verified title/substance + page-18 citation."""
+
+    def _source_counts(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "ordinal": "I",
+                "label": "Count I",
+                "observed_marker": "COUNT I",
+                "title": _Q2_COUNT_I_PAGE18_TITLE,
+                "substantive_excerpt": None,
+                "substance_phrases": [
+                    "void ab initio",
+                    "material misrepresentations",
+                    "intent to defraud",
+                ],
+                "page_id": "nyscef-001-page-0018",
+                "page_number": 18,
+            },
+            {
+                "ordinal": "II",
+                "label": "Count II",
+                "observed_marker": "COUNT II",
+                "title": "Have No Obligations to Provide Defense or Indemnification",
+                "substantive_excerpt": (
+                    "Declaring that there is no duty to defend or indemnify "
+                    "Defendants under the Policies."
+                ),
+                "substance_phrases": [
+                    "no duty to defend",
+                    "indemnify",
+                ],
+                "page_id": "nyscef-001-page-0025",
+                "page_number": 25,
+            },
+        ]
+
+    def _packet(self) -> dict[str, Any]:
+        return {
+            "question": _Q2_QUESTION,
+            "retrieval_hit_count": 2,
+            "retrieval_hits": [
+                _hit(
+                    page_id="nyscef-001-page-0025",
+                    excerpt=_Q2_COUNT_I_PAGE25_OCR,
+                    nyscef=1,
+                    pdf_page=25,
+                ),
+                _hit(
+                    page_id="nyscef-001-page-0026",
+                    excerpt=(
+                        "WHEREFORE for such other and further relief as the "
+                        "Court deems just and proper."
+                    ),
+                    nyscef=1,
+                    pdf_page=26,
+                ),
+            ],
+            "source_identified_pleaded_counts": self._source_counts(),
+        }
+
+    def test_gate_rejects_malformed_page25_count_i_fragment(self) -> None:
+        self.assertTrue(
+            de.displayed_quote_fails_readability_gate(
+                _Q2_COUNT_I_MALFORMED_PAGE25_QUOTE
+            )
+        )
+        self.assertIn(
+            "mid_clause_display_fragment",
+            de.readability_gate_reason_codes(_Q2_COUNT_I_MALFORMED_PAGE25_QUOTE),
+        )
+
+    def test_rendered_answer_prefers_count_i_page18_substance(self) -> None:
+        assembled = de.apply_evidence_grounded_relief_synthesis(
+            {
+                "proposed_answer": "Long prior draft synthesis.",
+                "propositions": [],
+                "audit": {},
+                "attorney_review": {
+                    "requires_attorney_review": True,
+                    "status": "pending_attorney_review",
+                },
+            },
+            self._packet(),
+        )
+        answer = assembled["proposed_answer"]
+        answer_l = answer.lower()
+
+        # Pleaded-not-adjudicated framing retained.
+        self.assertIn("pleaded requested relief", answer_l)
+        self.assertIn("not a judicial determination", answer_l)
+
+        # Count I: void-ab-initio + alleged misrep + intent to induce/defraud.
+        self.assertIn("Count I", answer)
+        self.assertIn("void ab initio", answer_l)
+        self.assertIn("alleged material misrepresentations", answer_l)
+        self.assertIn("alleged intent to induce/defraud issuance", answer_l)
+        self.assertIn("page_id nyscef-001-page-0018", answer)
+
+        # Count II separately identified and cited to its source page.
+        self.assertIn("Count II", answer)
+        self.assertIn("no defense or indemnity", answer_l)
+        self.assertIn("page_id nyscef-001-page-0025", answer)
+
+        # Catch-all remains on page 26.
+        self.assertIn("catch-all requested relief", answer_l)
+        self.assertIn("page_id nyscef-001-page-0026", answer)
+
+        # Malformed page-25 quotation eliminated.
+        self.assertNotIn(_Q2_COUNT_I_MALFORMED_PAGE25_QUOTE, answer)
+        self.assertNotIn("Tri borough", answer)
+        self.assertNotIn("non-disclos ures", answer)
+
+        # Pending attorney-review status preserved on synthesis handoff.
+        review = assembled.get("attorney_review") or {}
+        self.assertTrue(review.get("requires_attorney_review"))
+        self.assertEqual(review.get("status"), "pending_attorney_review")
 
 
 if __name__ == "__main__":
