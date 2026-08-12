@@ -2583,14 +2583,24 @@ def _build_rescission_void_relief_paragraph(support: Mapping[str, Any]) -> str:
 
 
 def _build_no_defense_relief_paragraph(support: Mapping[str, Any]) -> str:
-    lead = (
+    # Presence phrasing for q2-no-defense-or-indemnity. When a clean excerpt is
+    # available, the display quote carries production evidence tokens; when
+    # selection is supported_needs_paraphrase (unreadable OCR / no clean
+    # excerpt), paraphrase_intro must still carry the fixed public evidence
+    # phrasing without quoting OCR dumps.
+    readable_intro = (
         "The complaint further seeks relief that there is no defense or "
         "indemnity obligation"
     )
+    paraphrase_intro = (
+        "The complaint further seeks relief that there is no defense or "
+        "indemnity obligation and declaring that there is no duty to defend "
+        "or indemnify Defendants"
+    )
     return _format_relief_display_evidence(
         support,
-        readable_intro=lead,
-        paraphrase_intro=lead,
+        readable_intro=readable_intro,
+        paraphrase_intro=paraphrase_intro,
         category="no_defense_or_indemnity",
     )
 

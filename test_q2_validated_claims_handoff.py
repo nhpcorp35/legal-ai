@@ -753,6 +753,328 @@ class ParityAndFourCriteriaTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# 5b. Regression: run 31638756328 — exact validated supported_needs_paraphrase
+# claim for q2-no-defense-or-indemnity must survive generation via safe
+# paraphrase (production evidence phrasing) without quoting unreadable OCR.
+# ---------------------------------------------------------------------------
+
+_Q2_31638756328_PAGE_ID = "nyscef-001-page-0025"
+_Q2_31638756328_OCR_RESCISSION = (
+    "25\n\n"
+    "183. Upon information and belief, Tri borough has been licensed.\n"
+    "184. On the basis of the material misrepresentations and non-disclos ures "
+    "Underwriters are entitled to void the Policies ab initio and for "
+    "rescission of the same.\n"
+    "185. Underwriters have no adequate remedy at law."
+)
+_Q2_31638756328_CLEAN_CATCH = (
+    "for such other and further relief as the Court deems just and proper"
+)
+_Q2_31638756328_BANNED_OCR = (
+    "Tri borough",
+    "non-disclos ures",
+    "COUNT II",
+    "indemni fy",
+    "Def en dants",
+)
+
+
+class RetainValidatedNeedsParaphraseNoDefenseTests(unittest.TestCase):
+    """Exact q2_validated_structured_claims.v1 object → safe paraphrase."""
+
+    def _production_shaped_contract_cfg(self) -> dict:
+        """Live-shaped evidence phrases (duty clause) + presence stock phrasing."""
+        import acceptance_contract as ac
+
+        ident = _identity()
+        contract = ac.build_synthetic_contract(
+            contract_id="contract-31638756328-paraphrase",
+            version="1.0.0",
+            benchmark_id=ident["benchmark_id"],
+            question_id="Q2",
+            object_key=ident["object_key"],
+            required_criterion_ids=[
+                "q2-rescission-void-ab-initio",
+                "q2-no-defense-or-indemnity",
+                "q2-pleaded-relief-not-adjudication",
+                "q2-catch-all-relief",
+            ],
+            criteria=[
+                {
+                    "id": "q2-rescission-void-ab-initio",
+                    "presence_phrases": ["void ab initio"],
+                    "evidence_phrases": ["void ab initio"],
+                    "semantic_required_phrases": [],
+                    "semantic_forbidden_phrases": [],
+                    "fallback_text": "",
+                    "category": "relief",
+                },
+                {
+                    "id": "q2-no-defense-or-indemnity",
+                    "presence_phrases": ["no defense or indemnity"],
+                    "evidence_phrases": [
+                        "no duty to defend or indemnify Defendants"
+                    ],
+                    "semantic_required_phrases": [],
+                    "semantic_forbidden_phrases": [],
+                    "fallback_text": (
+                        "Fallback no defense or indemnity framing with "
+                        "no duty to defend or indemnify Defendants."
+                    ),
+                    "category": "relief",
+                },
+                {
+                    "id": "q2-pleaded-relief-not-adjudication",
+                    "presence_phrases": [
+                        "pleaded requested relief",
+                        "not a judicial determination",
+                    ],
+                    "evidence_phrases": [],
+                    "semantic_required_phrases": ["pleaded"],
+                    "semantic_forbidden_phrases": [
+                        "court has ruled",
+                        "established entitlement",
+                    ],
+                    "fallback_text": (
+                        "This answer describes pleaded requested relief in the "
+                        "complaint, not a judicial determination."
+                    ),
+                    "category": "relief",
+                },
+                {
+                    "id": "q2-catch-all-relief",
+                    "presence_phrases": ["catch-all requested relief"],
+                    "evidence_phrases": [_Q2_31638756328_CLEAN_CATCH],
+                    "semantic_required_phrases": [],
+                    "semantic_forbidden_phrases": [],
+                    "fallback_text": "",
+                    "category": "relief",
+                },
+            ],
+        )
+        raw = json.dumps(contract, sort_keys=True).encode("utf-8")
+        return {
+            "object_key": contract["object_key"],
+            "benchmark_id": ident["benchmark_id"],
+            "question_id": "Q2",
+            "content_sha256": contract["content_sha256"],
+            "raw_bytes": raw,
+            "_contract": contract,
+        }
+
+    def _quote_gap_answer(self) -> str:
+        # Rescission OCR dump + clean catch-all; no-defense absent from quotes
+        # (mirrors clean_excerpt_available=false / quote handoff gap).
+        return (
+            "This answer describes pleaded requested relief in the complaint, "
+            "not a judicial determination. The complaint requests a declaration "
+            "that coverage is void ab initio based on alleged material "
+            "misrepresentations and non-disclosures, as reflected in the cited "
+            f'pleading language: "{_Q2_31638756328_OCR_RESCISSION}" '
+            f"(page_id {_Q2_31638756328_PAGE_ID}). The complaint also includes "
+            "catch-all requested relief, as reflected in the cited pleading "
+            f'language: "{_Q2_31638756328_CLEAN_CATCH}" '
+            f"(page_id {_Q2_31638756328_PAGE_ID})."
+        )
+
+    def _validated_claims_doc(self, contract_cfg: dict) -> dict:
+        # Exact privacy-safe object: supported_needs_paraphrase, no snippets.
+        return GEN.build_validated_structured_claims(
+            benchmark_id=contract_cfg["benchmark_id"],
+            question_id="Q2",
+            acceptance_contract_object_key=contract_cfg["object_key"],
+            acceptance_contract_content_sha256=contract_cfg["content_sha256"],
+            claims=[
+                {
+                    "category": "rescission_void_ab_initio",
+                    "supported": True,
+                    "page_id": _Q2_31638756328_PAGE_ID,
+                    "nyscef_document_number": 1,
+                    "pdf_page": 25,
+                    "selection_reason_code": "supported_with_clean_excerpt",
+                },
+                {
+                    "category": "no_defense_or_indemnity",
+                    "supported": True,
+                    "page_id": _Q2_31638756328_PAGE_ID,
+                    "nyscef_document_number": 1,
+                    "pdf_page": 25,
+                    "selection_reason_code": "supported_needs_paraphrase",
+                },
+                {
+                    "category": "catch_all_relief",
+                    "supported": True,
+                    "page_id": _Q2_31638756328_PAGE_ID,
+                    "nyscef_document_number": 1,
+                    "pdf_page": 25,
+                    "selection_reason_code": "supported_with_clean_excerpt",
+                },
+            ],
+        )
+
+    def test_fixed_paraphrase_carries_presence_and_duty_evidence(self) -> None:
+        claim = {
+            "category": "no_defense_or_indemnity",
+            "supported": True,
+            "page_id": _Q2_31638756328_PAGE_ID,
+            "nyscef_document_number": 1,
+            "pdf_page": 25,
+            "evidence_snippet": "",
+            "selection_reason_code": "supported_needs_paraphrase",
+        }
+        para = de.render_fixed_paraphrase_for_supported_needs_paraphrase(claim)
+        self.assertIn("no defense or indemnity", para.lower())
+        self.assertIn("no duty to defend or indemnify Defendants", para)
+        self.assertIn(f"page_id {_Q2_31638756328_PAGE_ID}", para)
+        self.assertIn("originating source page", para.lower())
+        for banned in _Q2_31638756328_BANNED_OCR:
+            self.assertNotIn(banned, para)
+
+    def test_exact_validated_object_retains_no_defense_without_ocr_or_rebuild(
+        self,
+    ) -> None:
+        import acceptance_contract as ac
+
+        contract_cfg = self._production_shaped_contract_cfg()
+        doc = self._validated_claims_doc(contract_cfg)
+        exact_claims = GEN.verified_relief_claims_from_validated(doc)
+        no_def = next(
+            c for c in exact_claims if c["category"] == "no_defense_or_indemnity"
+        )
+        self.assertTrue(no_def["supported"])
+        self.assertEqual(
+            no_def["selection_reason_code"], "supported_needs_paraphrase"
+        )
+        self.assertEqual(no_def.get("evidence_snippet"), "")
+
+        gap = self._quote_gap_answer()
+        self.assertNotIn("no defense or indemnity", gap.lower())
+
+        loaded = ac.load_acceptance_contract_from_bytes(
+            contract_cfg["raw_bytes"],
+            object_key=contract_cfg["object_key"],
+            expected_identity=ac.ContractIdentity(
+                benchmark_id=contract_cfg["benchmark_id"],
+                question_id="Q2",
+            ),
+            expected_content_sha256=contract_cfg["content_sha256"],
+        )
+        self.assertTrue(loaded.ok and loaded.evaluation is not None)
+        view = loaded.evaluation
+
+        # Consume the exact validated rows — do not rebuild from a packet.
+        canonical, validation = GEN.finalize_canonical_answer_against_contract(
+            gap,
+            view,
+            verified_relief_claims=exact_claims,
+        )
+        self.assertTrue(validation.ok, validation.diagnostics)
+        by_id = {c.criterion_id: c for c in validation.criterion_results}
+        no_def_row = by_id["q2-no-defense-or-indemnity"]
+        self.assertEqual(no_def_row.presence, ac.PRESENCE_PRESENT)
+        self.assertEqual(no_def_row.evidence, ac.EVIDENCE_SUPPORTED)
+        self.assertEqual(no_def_row.result_code, ac.CRIT_PASS)
+        self.assertIn("no defense or indemnity", canonical.lower())
+        self.assertIn(
+            "no duty to defend or indemnify Defendants", canonical
+        )
+        self.assertIn(f"page_id {_Q2_31638756328_PAGE_ID}", canonical)
+        for banned in _Q2_31638756328_BANNED_OCR:
+            self.assertNotIn(banned, canonical)
+
+        # Full generation path: packet extract would fail closed; handoff wins.
+        replay = _replay()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            claims_path = root / "claims.json"
+            meta = PRE.write_validated_claims_artifact(doc, claims_path)
+            case_root = root / "case"
+            case_root.mkdir()
+            inventory = PRE.seed_minimal_case_root(case_root, replay)
+            out_root = root / "out"
+            out_root.mkdir()
+            reasoner = {
+                "status": de.STATUS_READY,
+                "proposed_answer": gap,
+                "propositions": [],
+                "supporting_evidence": [],
+                "contrary_evidence": [],
+                "unresolved_questions": [],
+                "documents_pages_reviewed": [],
+                "attorney_review": {"requires_attorney_review": True},
+                "audit": {
+                    "model": "synth",
+                    "provider": "synth",
+                    "verified_relief_claims": PRE._stale_audit_claims(replay),
+                },
+                "confidence": 0.5,
+            }
+            empty_packet = {
+                "question": "relief?",
+                "retrieval_hit_count": 0,
+                "retrieval_hits": [],
+            }
+            unsupported = {
+                "rescission_void_ab_initio": {"supported": False},
+                "no_defense_or_indemnity": {"supported": False},
+                "catch_all_relief": {"supported": False},
+            }
+            with mock.patch.object(
+                de, "answer_attorney_record_question", return_value=reasoner
+            ), mock.patch.object(
+                de, "build_evidence_packet", return_value=empty_packet
+            ), mock.patch.object(
+                de,
+                "extract_supported_complaint_relief",
+                return_value=unsupported,
+            ), mock.patch.object(
+                GEN,
+                "audit_serialized_model_input",
+                return_value={
+                    "audit": {"retrieval_hit_count": 0, "relief_intent": True},
+                    "evidence_packet": empty_packet,
+                },
+            ), mock.patch.object(
+                GEN, "run_production_retrieval", return_value={"results": []}
+            ):
+                result = GEN.run_generation(
+                    case_root=case_root,
+                    question_id="Q2",
+                    required_commit="c" * 40,
+                    candidate_output_root=out_root,
+                    authorization_acknowledgement=GEN.AUTHORIZATION_ACK,
+                    generation_only=True,
+                    inventory_path=inventory,
+                    skip_commit_check=True,
+                    acceptance_contract_config=contract_cfg,
+                    model_call=lambda _s, _u: {},
+                    validated_claims_path=claims_path,
+                    validated_claims_sha256=meta["validated_claims_sha256"],
+                )
+
+            self.assertTrue(result["ok"])
+            self.assertTrue(result.get("validated_claims_handoff_applied"))
+            # Authoritative audit list is the exact validated object (packet
+            # extract returns unsupported and must not win).
+            candidate = json.loads(
+                Path(result["files"]["Q2_candidate_answer.json"]).read_text(
+                    encoding="utf-8"
+                )
+            )
+            proposed = candidate["proposed_answer"]
+            audit_claims = (candidate.get("audit") or {}).get(
+                "verified_relief_claims"
+            ) or []
+            self.assertEqual(audit_claims, exact_claims)
+            self.assertIn("no defense or indemnity", proposed.lower())
+            self.assertIn(
+                "no duty to defend or indemnify Defendants", proposed
+            )
+            for banned in _Q2_31638756328_BANNED_OCR:
+                self.assertNotIn(banned, proposed)
+
+
+# ---------------------------------------------------------------------------
 # 6. No secret / private text leakage
 # ---------------------------------------------------------------------------
 
