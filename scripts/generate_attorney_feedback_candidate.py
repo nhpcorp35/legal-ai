@@ -735,40 +735,118 @@ def _collapse_inline_whitespace(text: str) -> str:
 
 
 _CITED_PLEADING_LANGUAGE_QUOTE_RE = re.compile(
-    r'as reflected in the cited pleading language:\s*"((?:[^"\\]|\\.)*)"',
+    r'as reflected in the cited pleading language:\s*"((?:[^"\\]|\\.)*)"'
+    r'(?P<cite>\s*\(\s*page_id\s+[^)]+\))?',
     flags=re.IGNORECASE | re.DOTALL,
 )
+
+
+def _relief_presence_flags(text: str) -> dict[str, bool]:
+    """Coarse presence of each relief category in attorney prose (not OCR dumps)."""
+    # Strip quoted spans so OCR dumps inside quotes do not count as retained prose.
+    stripped = _CITED_PLEADING_LANGUAGE_QUOTE_RE.sub(
+        "as reflected in the cited pleading language: \"\"",
+        str(text or ""),
+    )
+    low = stripped.lower()
+    return {
+        "rescission_void_ab_initio": bool(
+            re.search(r"\b(?:rescission|void ab initio)\b", low)
+        ),
+        "no_defense_or_indemnity": bool(
+            re.search(r"\bno defense or indemnity\b", low)
+        ),
+        "catch_all_relief": bool(
+            re.search(r"\bcatch-all requested relief\b", low)
+            or re.search(r"\bsuch other and further relief\b", low)
+            or re.search(r"\bjust and (?:equitable|proper)\b", low)
+        ),
+    }
 
 
 def scrub_unreadable_quoted_excerpts(proposed: str) -> str:
     """
     Final-serializer defense: drop raw OCR dumps from proposed-answer prose.
 
-    Replaces ``cited pleading language: "..."`` spans that fail the shared
-    readability gate with the concise originating-source paraphrase form while
-    preserving surrounding attorney prose and exact ``page_id`` citations.
+    When a ``cited pleading language: "..."`` span fails the shared readability
+    gate, run the evidence-selection handoff: retain verified citation/evidence
+    identity from the quote, prefer a category-scoped clean excerpt when one
+    exists, otherwise emit a concise originating-source paraphrase. Verified
+    sibling relief categories carried only inside the rejected quote (for
+    example no-defense/no-indemnification) are appended as clean-excerpt or
+    paraphrase paragraphs so OCR scrubbing cannot drop supported relief.
+    Never restores raw OCR. Fail-closed when the quote has no verified support.
     """
+    source = str(proposed or "")
+    extras: list[str] = []
 
     def _repl(match: re.Match[str]) -> str:
         quote = match.group(1)
+        cite = match.group("cite") or ""
         # Decode common escape artifacts before gating so multiline OCR dumps
         # embedded via literal ``\\n`` are still rejected.
         quote_text = _decode_literal_escape_artifacts(quote)
-        if de.displayed_quote_fails_readability_gate(quote_text):
-            return (
-                "as reflected in the cited pleading on the originating source page"
-            )
-        # Keep a clean quote compact (no retained folio newlines).
-        clean = de.prefer_clean_relief_display_excerpt(quote_text) or (
-            de.normalize_whitespace(quote_text)
+        page_id = None
+        cite_match = re.search(
+            r"page_id\s+([^)]+)", cite or "", flags=re.IGNORECASE
         )
-        if de.displayed_quote_fails_readability_gate(clean):
-            return (
-                "as reflected in the cited pleading on the originating source page"
-            )
-        return f'as reflected in the cited pleading language: "{clean}"'
+        if cite_match:
+            page_id = cite_match.group(1).strip()
 
-    return _CITED_PLEADING_LANGUAGE_QUOTE_RE.sub(_repl, str(proposed or ""))
+        lead_start = max(0, match.start() - 240)
+        lead_text = source[lead_start : match.start()]
+        lead_category = de.infer_relief_lead_category(lead_text)
+
+        if not de.displayed_quote_fails_readability_gate(quote_text):
+            clean = de.prefer_clean_relief_display_excerpt(
+                quote_text, category=lead_category
+            ) or de.normalize_whitespace(quote_text)
+            if de.displayed_quote_fails_readability_gate(clean):
+                handoff = de.handoff_rejected_ocr_relief_quote(
+                    quote_text,
+                    page_id=page_id,
+                    lead_category=lead_category,
+                    already_present=_relief_presence_flags(source),
+                )
+                extras.extend(handoff.get("extra_paragraphs") or [])
+                return handoff["display_clause"] + cite
+            return f'as reflected in the cited pleading language: "{clean}"' + cite
+
+        handoff = de.handoff_rejected_ocr_relief_quote(
+            quote_text,
+            page_id=page_id,
+            lead_category=lead_category,
+            already_present=_relief_presence_flags(source),
+        )
+        extras.extend(handoff.get("extra_paragraphs") or [])
+        return handoff["display_clause"] + cite
+
+    text = _CITED_PLEADING_LANGUAGE_QUOTE_RE.sub(_repl, source)
+    if not extras:
+        return text
+
+    # Append verified sibling relief paragraphs once, skipping categories the
+    # scrubbed prose already retains.
+    present = _relief_presence_flags(text)
+    to_append: list[str] = []
+    seen: set[str] = set()
+    for para in extras:
+        norm = de.normalize_whitespace(para)
+        if not norm or norm in seen:
+            continue
+        key = de.infer_relief_lead_category(norm)
+        if key and present.get(key):
+            continue
+        seen.add(norm)
+        to_append.append(norm)
+        if key:
+            present[key] = True
+    if not to_append:
+        return text
+    base = text.rstrip()
+    if base and base[-1] not in ".!?":
+        base += "."
+    return de.normalize_whitespace(base + " " + " ".join(to_append))
 
 
 def _split_overview_sentences(compact: str) -> list[str]:

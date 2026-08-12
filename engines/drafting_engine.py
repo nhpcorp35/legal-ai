@@ -36,8 +36,12 @@ catch-all relief propositions are emitted only when cited complaint excerpts
 support them, and the answer expressly distinguishes pleaded requested relief
 from a judicial determination. Final displayed prose is one concise organized
 statement (no duplicative synthesis tail); displayed quotes pass an OCR
-readability gate and cite only their originating page_id. Unsupported
-categories and unsupported ``rescission and/or`` gloss are never invented.
+readability gate and cite only their originating page_id. When an unreadable
+OCR display quote is rejected, verified citation/evidence identity is handed
+off to a clean excerpt or concise pleaded-relief paraphrase for the same
+supported categories (never raw OCR; fail-closed without verified evidence).
+Unsupported categories and unsupported ``rescission and/or`` gloss are never
+invented.
 
 Gold answers and attorney feedback are never loaded into generation.
 
@@ -1461,11 +1465,13 @@ _RELIEF_QUERY_PHRASES = (
 )
 
 _RESCISSION_VOID_RE = re.compile(
-    r"(?i)\b(?:rescission|rescind(?:s|ed|ing)?|void\s+ab\s+initio)\b"
+    r"(?i)\b(?:rescission|rescind(?:s|ed|ing)?|"
+    r"void(?:\s+[A-Za-z]+){0,4}\s+ab\s+initio)\b"
 )
 _NO_DEFENSE_INDEMNITY_RE = re.compile(
     r"(?i)\b(?:"
-    r"no\s+(?:duty|obligation)(?:\s+or\s+(?:duty|obligation))?\s+"
+    # Plural "obligations" appears in verified count/WHEREFORE headings.
+    r"no\s+(?:duty|obligations?)(?:\s+or\s+(?:duty|obligations?))?\s+"
     r"(?:whatsoever\s+)?to\s+(?:provide\s+(?:a\s+)?)?(?:defend|defense|indemnif\w*)|"
     r"no\s+duty\s+of\s+(?:defense|indemnif\w*)|"
     r"neither\s+(?:a\s+)?duty\s+to\s+defend\s+nor\s+(?:a\s+)?duty\s+to\s+indemnif\w*|"
@@ -1475,7 +1481,7 @@ _NO_DEFENSE_INDEMNITY_RE = re.compile(
     r"no\s+defense\s+or\s+indemnity|"
     r"not\s+(?:obligated|required|bound)\s+to\s+(?:defend|indemnify)|"
     r"(?:declaring|declaration)\s+that\s+(?:.{0,80}?\b)?(?:no|not|neither)\b.{0,80}?"
-    r"(?:(?:duty|obligation).{0,40}?)?(?:defend|defense|indemnif\w*)|"
+    r"(?:(?:duty|obligations?).{0,40}?)?(?:defend|defense|indemnif\w*)|"
     r"declaration\s+of\s+no\s+(?:coverage,\s*)?(?:defense|indemnif\w*)"
     r")"
 )
@@ -2070,28 +2076,65 @@ def displayed_quote_fails_readability_gate(text: str) -> bool:
     return False
 
 
-def prefer_clean_relief_display_excerpt(snippet: str, *, max_len: int = 220) -> str:
+_RELIEF_DISPLAY_EXCERPT_CORES: Dict[str, Tuple[str, ...]] = {
+    "rescission_void_ab_initio": (
+        r"void(?:\s+[A-Za-z]+){0,4}\s+ab\s+initio",
+        r"rescission",
+    ),
+    "no_defense_or_indemnity": (
+        r"no\s+(?:obligations?|duty)\s+to\s+(?:provide\s+(?:a\s+)?)?(?:defend|defense|indemnif\w*)",
+        r"no\s+defense\s+or\s+indemnif",
+        r"neither\s+(?:a\s+)?duty\s+to\s+defend",
+        r"duty\s+to\s+defend\s+or\s+indemnif",
+    ),
+    "catch_all_relief": (
+        r"such\s+other\s+and\s+further\s+relief",
+        r"any\s+other\s+relief",
+        r"just\s+and\s+(?:equitable|proper)",
+    ),
+}
+
+_ALL_RELIEF_DISPLAY_EXCERPT_CORES: Tuple[str, ...] = tuple(
+    core
+    for cores in _RELIEF_DISPLAY_EXCERPT_CORES.values()
+    for core in cores
+)
+
+
+def prefer_clean_relief_display_excerpt(
+    snippet: str,
+    *,
+    max_len: int = 220,
+    category: Optional[str] = None,
+) -> str:
     """
     Prefer a short clean clause from a longer evidence span for display quotes.
 
-    Returns "" when no readable short window exists (caller should paraphrase).
-    Never invents text — only slices the observed snippet.
+    When ``category`` is set, only cores for that relief category are considered
+    so a multi-relief OCR dump does not hand a no-defense clause to a
+    rescission lead (or vice versa). Returns "" when no readable short window
+    exists (caller should paraphrase). Never invents text — only slices the
+    observed snippet.
     """
     raw = normalize_whitespace(snippet or "")
     if not raw:
         return ""
-    if not displayed_quote_fails_readability_gate(raw) and len(raw) <= max_len:
+    cores: Tuple[str, ...]
+    if category and category in _RELIEF_DISPLAY_EXCERPT_CORES:
+        cores = _RELIEF_DISPLAY_EXCERPT_CORES[category]
+    else:
+        cores = _ALL_RELIEF_DISPLAY_EXCERPT_CORES
+    if (
+        not displayed_quote_fails_readability_gate(raw)
+        and len(raw) <= max_len
+        and any(re.search(core, raw, flags=re.IGNORECASE) for core in cores)
+    ):
         return raw
-
-    cores = (
-        r"void\s+ab\s+initio",
-        r"rescission",
-        r"no\s+(?:obligation|duty)\s+to\s+(?:defend|indemnify)",
-        r"no\s+defense\s+or\s+indemnif",
-        r"such\s+other\s+and\s+further\s+relief",
-        r"any\s+other\s+relief",
-        r"just\s+and\s+(?:equitable|proper)",
-    )
+    if not displayed_quote_fails_readability_gate(raw) and len(raw) <= max_len:
+        # Readable but off-category: keep only when no category filter applies.
+        if not category:
+            return raw
+        return ""
 
     # Prefer intact clauses / numbered-paragraph bodies over sliding windows.
     pieces = [
@@ -2117,7 +2160,177 @@ def prefer_clean_relief_display_excerpt(snippet: str, *, max_len: int = 220) -> 
         # Prefer the shortest sufficient clean clause.
         if not best or len(piece) < len(best):
             best = piece
+    if best:
+        return best
+
+    # Fallback: tight readable window around a category core when the enclosing
+    # clause still carries OCR damage (e.g. ``non-disclos ures`` nearby).
+    for core in cores:
+        for match in re.finditer(core, raw, flags=re.IGNORECASE):
+            left = max(0, match.start() - 40)
+            right = min(len(raw), match.end() + 40)
+            # Expand to nearest whitespace boundaries.
+            while left > 0 and raw[left - 1].isalnum():
+                left -= 1
+            while right < len(raw) and raw[right:right + 1].isalnum():
+                right += 1
+            window = normalize_whitespace(raw[left:right])
+            window = re.sub(
+                r"^(?:\d{1,4}\s+)?(?:\d{2,4}\.\s*)+", "", window
+            ).strip(" ,;:.-")
+            if len(window) < 18 or len(window) > max_len:
+                continue
+            if displayed_quote_fails_readability_gate(window):
+                continue
+            if not best or len(window) < len(best):
+                best = window
     return best
+
+
+def extract_verified_relief_support_from_text(
+    text: str,
+    *,
+    page_id: Optional[str] = None,
+    nyscef_document_number: Any = None,
+    pdf_page: Any = None,
+) -> Dict[str, dict]:
+    """
+    Derive relief-category support from one verified evidence blob.
+
+    Fail-closed: categories are marked supported only when the observed text
+    matches the shared relief patterns. Never invents case-specific language.
+    """
+    corpus = str(text or "")
+    categories = {
+        "rescission_void_ab_initio": _RESCISSION_VOID_RE,
+        "no_defense_or_indemnity": _NO_DEFENSE_INDEMNITY_RE,
+        "catch_all_relief": _CATCH_ALL_RELIEF_RE,
+    }
+    out: Dict[str, dict] = {}
+    for key, pattern in categories.items():
+        match = pattern.search(corpus)
+        if not match:
+            out[key] = {
+                "supported": False,
+                "evidence_snippet": "",
+                "page_id": page_id,
+                "nyscef_document_number": nyscef_document_number,
+                "pdf_page": pdf_page,
+            }
+            continue
+        out[key] = {
+            "supported": True,
+            "evidence_snippet": _relief_evidence_span(corpus, match),
+            "page_id": page_id,
+            "nyscef_document_number": nyscef_document_number,
+            "pdf_page": pdf_page,
+        }
+    return out
+
+
+def infer_relief_lead_category(lead_text: str) -> Optional[str]:
+    """Infer which relief category a display-lead clause is asserting."""
+    raw = normalize_whitespace(lead_text or "").lower()
+    if not raw:
+        return None
+    if "catch-all" in raw or "catch all" in raw:
+        return "catch_all_relief"
+    if "no defense or indemnity" in raw or "duty to defend" in raw:
+        return "no_defense_or_indemnity"
+    if (
+        "void ab initio" in raw
+        or "rescission" in raw
+        or "misrepresentation" in raw
+        or "non-disclosure" in raw
+    ):
+        return "rescission_void_ab_initio"
+    return None
+
+
+def handoff_rejected_ocr_relief_quote(
+    quote_text: str,
+    *,
+    page_id: Optional[str] = None,
+    lead_category: Optional[str] = None,
+    already_present: Optional[Mapping[str, bool]] = None,
+) -> Dict[str, Any]:
+    """
+    Evidence-selection handoff after an unreadable OCR display quote is rejected.
+
+    Retains verified citation/evidence identity from the quote body: prefers a
+    category-scoped clean excerpt when one exists, otherwise a concise
+    pleaded-relief paraphrase grounded in that same verified evidence. Never
+    restores raw OCR. Extra paragraphs are emitted only for other verified
+    categories that are not already present in the answer. Fail-closed when the
+    quote contains no verified relief evidence.
+    """
+    present = {
+        "rescission_void_ab_initio": False,
+        "no_defense_or_indemnity": False,
+        "catch_all_relief": False,
+    }
+    if isinstance(already_present, Mapping):
+        for key in present:
+            present[key] = bool(already_present.get(key))
+
+    verified = extract_verified_relief_support_from_text(
+        quote_text, page_id=page_id
+    )
+    builders = {
+        "rescission_void_ab_initio": _build_rescission_void_relief_paragraph,
+        "no_defense_or_indemnity": _build_no_defense_relief_paragraph,
+        "catch_all_relief": _build_catch_all_relief_paragraph,
+    }
+
+    display_clause = (
+        "as reflected in the cited pleading on the originating source page"
+    )
+    lead_key = lead_category if lead_category in builders else None
+    if lead_key and verified.get(lead_key, {}).get("supported"):
+        support = dict(verified[lead_key])
+        # Search the full verified quote body so clean clauses near (but outside)
+        # the tight match span remain selectable.
+        clean = prefer_clean_relief_display_excerpt(
+            quote_text,
+            category=lead_key,
+        )
+        # Citation is typically retained after the match by the serializer; keep
+        # the clause cite-free here so callers do not double-cite.
+        if clean and not displayed_quote_fails_readability_gate(clean):
+            display_clause = (
+                f'as reflected in the cited pleading language: "{clean}"'
+            )
+        else:
+            display_clause = (
+                "as reflected in the cited pleading on the originating source page"
+            )
+        present[lead_key] = True
+        _ = support  # page_id / identity retained on verified support + trailing cite
+    elif lead_key:
+        # Lead asserts a category the quote does not verify — fail closed to
+        # paraphrase form without inventing support.
+        present[lead_key] = present.get(lead_key, False)
+
+    extra_paragraphs: List[str] = []
+    for key, builder in builders.items():
+        meta = verified.get(key) or {}
+        if not meta.get("supported"):
+            continue
+        if present.get(key):
+            continue
+        # Ground display selection in the full verified quote while retaining
+        # citation identity from the match metadata.
+        display_support = dict(meta)
+        display_support["evidence_snippet"] = quote_text
+        extra_paragraphs.append(builder(display_support))
+        present[key] = True
+
+    return {
+        "display_clause": display_clause,
+        "extra_paragraphs": extra_paragraphs,
+        "verified": verified,
+        "present": present,
+    }
 
 
 def _relief_page_citation(support: Mapping[str, Any]) -> str:
@@ -2232,6 +2445,7 @@ def _format_relief_display_evidence(
     *,
     readable_intro: str,
     paraphrase_intro: str,
+    category: Optional[str] = None,
 ) -> str:
     """
     Format displayed evidence for one relief category.
@@ -2247,7 +2461,16 @@ def _format_relief_display_evidence(
     cite = _relief_page_citation(support)
     display = snippet
     if snippet and displayed_quote_fails_readability_gate(snippet):
-        display = prefer_clean_relief_display_excerpt(snippet)
+        display = prefer_clean_relief_display_excerpt(
+            snippet, category=category
+        )
+    elif snippet and category:
+        # Even readable long spans should stay category-scoped when possible.
+        scoped = prefer_clean_relief_display_excerpt(
+            snippet, category=category
+        )
+        if scoped:
+            display = scoped
     if display and not displayed_quote_fails_readability_gate(display):
         return (
             f'{readable_intro}, as reflected in the cited pleading language: '
@@ -2265,6 +2488,7 @@ def _build_rescission_void_relief_paragraph(support: Mapping[str, Any]) -> str:
         support,
         readable_intro=lead,
         paraphrase_intro=lead,
+        category="rescission_void_ab_initio",
     )
 
 
@@ -2277,6 +2501,7 @@ def _build_no_defense_relief_paragraph(support: Mapping[str, Any]) -> str:
         support,
         readable_intro=lead,
         paraphrase_intro=lead,
+        category="no_defense_or_indemnity",
     )
 
 
@@ -2286,6 +2511,7 @@ def _build_catch_all_relief_paragraph(support: Mapping[str, Any]) -> str:
         support,
         readable_intro=lead,
         paraphrase_intro=lead,
+        category="catch_all_relief",
     )
 
 

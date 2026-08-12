@@ -881,5 +881,148 @@ class Q2Candidate175821ZOcrDumpRegressionTests(unittest.TestCase):
                 self.assertNotIn(banned, md_proposed)
 
 
+# ---------------------------------------------------------------------------
+# Regression: production run 31626668919 — OCR scrub dropped no-defense
+# (criterion_fail_missing + fallback_skipped_unsupported). Synthetic only.
+# ---------------------------------------------------------------------------
+
+_Q2_31626668919_OCR_QUOTE = (
+    "25\n\n"
+    "183. Upon information and belief, Tri borough has been licensed with the "
+    "DOB under the names of various entities and/or individuals.\n"
+    "184. On the basis of the material misrepresentations and non-disclos ures "
+    "made by Triborough in their application to obtain the Policies, "
+    "Underwriters are entitled to void the Policies ab initio.\n"
+    "185. Underwriters have no adequate remedy at law. COUNT II Underwriters "
+    "Have No Obligations to Provide Defense or Indemnification to Triborough "
+    "or Any Other Entity, As the Policies Were Obtained as a Result of "
+    "Triborough's Material Misrepresentations And Are Void Ab Initio 186. "
+    "Declaring that there is no duty to defend or indemnify Defendants."
+)
+
+_Q2_31626668919_CLEAN_CATCH = (
+    "for such other and further relief as the Court deems just and proper"
+)
+
+
+class Q2Production31626668919OcrHandoffRegressionTests(unittest.TestCase):
+    """OCR quote rejection must hand off verified no-defense evidence."""
+
+    def _failed_shaped_answer(self) -> str:
+        # Production-shaped: void lead + OCR dump carrying verified no-defense
+        # evidence; no separate no-defense stock paragraph yet.
+        return (
+            "This answer describes pleaded requested relief in the complaint, "
+            "not a judicial determination. The complaint requests a declaration "
+            "that coverage is void ab initio based on alleged material "
+            "misrepresentations and non-disclosures, as reflected in the cited "
+            f'pleading language: "{_Q2_31626668919_OCR_QUOTE}" '
+            "(page_id nyscef-001-page-0025). The complaint also includes "
+            "catch-all requested relief, as reflected in the cited pleading "
+            f'language: "{_Q2_31626668919_CLEAN_CATCH}" '
+            "(page_id nyscef-001-page-0026)."
+        )
+
+    def _contract_view(self) -> ac.ContractEvaluationView:
+        contract = _q2_shaped_contract(
+            rescission_evidence="void the Policies ab initio",
+            no_defense_evidence="no duty to defend or indemnify Defendants",
+            catch_all_evidence=_Q2_31626668919_CLEAN_CATCH,
+        )
+        raw = json.dumps(contract, sort_keys=True).encode("utf-8")
+        loaded = ac.load_acceptance_contract_from_bytes(
+            raw,
+            object_key=contract["object_key"],
+            expected_identity=ac.ContractIdentity(
+                benchmark_id="synth-benchmark-q2-quality",
+                question_id="Q2",
+            ),
+            expected_content_sha256=contract["content_sha256"],
+        )
+        assert loaded.ok and loaded.evaluation is not None
+        return loaded.evaluation
+
+    def test_scrub_handoff_retains_no_defense_clean_excerpt_and_citation(
+        self,
+    ) -> None:
+        from engines import drafting_engine as de
+
+        self.assertTrue(
+            de.displayed_quote_fails_readability_gate(_Q2_31626668919_OCR_QUOTE)
+        )
+        verified = de.extract_verified_relief_support_from_text(
+            _Q2_31626668919_OCR_QUOTE,
+            page_id="nyscef-001-page-0025",
+        )
+        self.assertTrue(verified["no_defense_or_indemnity"]["supported"])
+        self.assertTrue(verified["rescission_void_ab_initio"]["supported"])
+
+        scrubbed = GEN.scrub_unreadable_quoted_excerpts(self._failed_shaped_answer())
+        scrubbed_l = scrubbed.lower()
+        for banned in ("Tri borough", "non-disclos ures", "COUNT II"):
+            self.assertNotIn(banned, scrubbed)
+        self.assertIn("no defense or indemnity", scrubbed_l)
+        self.assertIn(
+            "no duty to defend or indemnify Defendants",
+            scrubbed,
+        )
+        self.assertIn("page_id nyscef-001-page-0025", scrubbed)
+        self.assertIn("void ab initio", scrubbed_l)
+
+    def test_post_scrub_contract_avoids_missing_and_fallback_skipped_unsupported(
+        self,
+    ) -> None:
+        view = self._contract_view()
+        canonical = GEN.canonical_proposed_answer(self._failed_shaped_answer())
+        result = ac.validate_final_answer_against_contract(
+            canonical,
+            view,
+            apply_fallback=True,
+            apply_duplication_repair=True,
+        )
+        by_id = {c.criterion_id: c for c in result.criterion_results}
+        no_def = by_id[_Q2_CRIT_NO_DEFENSE]
+        self.assertEqual(no_def.result_code, ac.CRIT_PASS)
+        self.assertNotEqual(no_def.result_code, ac.CRIT_FAIL_MISSING)
+        self.assertNotIn(
+            f"fallback_skipped_unsupported:{_Q2_CRIT_NO_DEFENSE}",
+            result.diagnostics,
+        )
+        self.assertNotEqual(
+            (result.fallback_actions or {}).get(_Q2_CRIT_NO_DEFENSE),
+            ac.FALLBACK_SKIPPED_UNSUPPORTED,
+        )
+        self.assertIn("no defense or indemnity", result.final_answer.lower())
+        self.assertIn(
+            "no duty to defend or indemnify Defendants",
+            result.final_answer,
+        )
+        for banned in ("Tri borough", "non-disclos ures", "COUNT II"):
+            self.assertNotIn(banned, result.final_answer)
+
+    def test_handoff_fail_closed_without_verified_no_defense_evidence(self) -> None:
+        from engines import drafting_engine as de
+
+        ocr_no_indemnity = (
+            "25\n\n183. Tri borough licensed.\n"
+            "184. On the basis of material misrep resentations Underwriters "
+            "are entitled to void the Policies ab initio."
+        )
+        shaped = (
+            "This answer describes pleaded requested relief in the complaint, "
+            "not a judicial determination. The complaint requests a declaration "
+            "that coverage is void ab initio based on alleged material "
+            "misrepresentations and non-disclosures, as reflected in the cited "
+            f'pleading language: "{ocr_no_indemnity}" '
+            "(page_id nyscef-001-page-0099)."
+        )
+        verified = de.extract_verified_relief_support_from_text(ocr_no_indemnity)
+        self.assertFalse(verified["no_defense_or_indemnity"]["supported"])
+        scrubbed = GEN.scrub_unreadable_quoted_excerpts(shaped)
+        self.assertNotIn("no defense or indemnity", scrubbed.lower())
+        self.assertNotIn("Tri borough", scrubbed)
+        self.assertIn("page_id nyscef-001-page-0099", scrubbed)
+
+
 if __name__ == "__main__":
     unittest.main()
