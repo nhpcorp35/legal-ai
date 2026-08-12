@@ -1436,5 +1436,390 @@ class NoPrivateTextLeakageTests(unittest.TestCase):
             self.assertTrue(payload.get("ok"), payload)
 
 
+# ---------------------------------------------------------------------------
+# 7. Q2 cause-of-action completeness: Count I + Count II routing + omission gate
+# ---------------------------------------------------------------------------
+
+
+_Q2_COMPLETENESS_QUESTION = (
+    "What relief does the complaint request in the WHEREFORE / "
+    "requested-relief section?"
+)
+
+
+def _count_completeness_documents(*, include_count_i_page: bool = True) -> list:
+    pages = []
+    if include_count_i_page:
+        pages.append(
+            {
+                "nyscef_document_number": 1,
+                "page_number": 24,
+                "page_id": "nyscef-001-page-0024",
+                "text": (
+                    "COUNT I\n"
+                    "180. Plaintiff seeks rescission of the Policies and "
+                    "declares coverage void ab initio under the Policies.\n"
+                ),
+                "document_type": "complaint",
+                "document_classification": "complaint",
+                "source_filename": "synth_complaint.pdf",
+            }
+        )
+    pages.append(
+        {
+            "nyscef_document_number": 1,
+            "page_number": 25,
+            "page_id": "nyscef-001-page-0025",
+            "text": (
+                "25\n\n"
+                "183. Upon information and belief the Named Insured continues.\n"
+                "184. On the basis of the material misrepresentations the "
+                "Insurer is entitled to void the Policies ab initio and for "
+                "rescission of the same.\n"
+                "COUNT II Have No Obligations to Provide Defense\n"
+                "186. Declaring that there is no duty to defend or indemnify "
+                "Defendants under the Policies. OCR noise: indemni fy "
+                "Def en dants.\n"
+                "187. WHEREFORE the Insurer demands judgment for such other "
+                "and further relief as the Court deems just and proper."
+            ),
+            "document_type": "complaint",
+            "document_classification": "complaint",
+            "source_filename": "synth_complaint.pdf",
+        }
+    )
+    return [
+        {
+            "filename": "synth_complaint.pdf",
+            "nyscef_document_number": 1,
+            "type": "complaint",
+            "document_type": "complaint",
+            "pages": pages,
+        }
+    ]
+
+
+class Q2CauseOfActionCompletenessTests(unittest.TestCase):
+    """Count I omission fails/repairs; complete Count I+II passes."""
+
+    def test_missing_count_i_packet_routes_preceding_page_or_flags(self) -> None:
+        import complaint_structure as cs
+
+        documents = _count_completeness_documents(include_count_i_page=True)
+        pages = documents[0]["pages"]
+        structure_map = cs.build_complaint_structure_map({"pages": pages})
+        relief_ids = cs.collect_complaint_relief_page_ids(structure_map)
+        # WHEREFORE page only from structure; Count I arrives via lookback routing.
+        self.assertIn("nyscef-001-page-0025", relief_ids)
+        self.assertNotIn("nyscef-001-page-0024", relief_ids)
+        counts = cs.enumerate_source_identified_pleaded_counts(structure_map)
+        labels = [c["label"] for c in counts]
+        self.assertEqual(labels, ["Count I", "Count II"])
+
+        # Ordinary retrieval only saw page 25 (Count I heading omitted).
+        retrieval = {
+            "query": _Q2_COMPLETENESS_QUESTION,
+            "results": [
+                {
+                    "result_id": "hit-25",
+                    "page_id": "nyscef-001-page-0025",
+                    "nyscef_document_number": 1,
+                    "pdf_page": 25,
+                    "document_type": "complaint",
+                    "excerpt": pages[-1]["text"][:120],
+                    "page_text": pages[-1]["text"],
+                    "classifications": ["legal_position"],
+                    "score": 0.9,
+                }
+            ],
+            "complaint_structure_map": structure_map,
+        }
+        routed = de.route_complaint_relief_evidence(
+            retrieval,
+            question=_Q2_COMPLETENESS_QUESTION,
+            documents=documents,
+            complaint_structure_map=structure_map,
+        )
+        routed_ids = [h.get("page_id") for h in (routed.get("results") or [])]
+        self.assertIn("nyscef-001-page-0024", routed_ids)
+        self.assertIn("nyscef-001-page-0025", routed_ids)
+        routing = routed.get("complaint_relief_routing") or {}
+        self.assertIn(
+            "Count I",
+            routing.get("source_identified_pleaded_count_labels") or [],
+        )
+        self.assertIn(
+            "Count II",
+            routing.get("source_identified_pleaded_count_labels") or [],
+        )
+        self.assertTrue(routing.get("pleaded_count_completeness_ok"))
+
+    def test_complete_count_i_and_ii_synthesis_and_acceptance(self) -> None:
+        import acceptance_contract as ac
+        import complaint_structure as cs
+
+        documents = _count_completeness_documents(include_count_i_page=True)
+        pages = documents[0]["pages"]
+        structure_map = cs.build_complaint_structure_map({"pages": pages})
+        retrieval = {
+            "query": _Q2_COMPLETENESS_QUESTION,
+            "results": [],
+            "complaint_structure_map": structure_map,
+        }
+        packet = de.build_evidence_packet(
+            _Q2_COMPLETENESS_QUESTION,
+            retrieval,
+            complaint_structure_map=structure_map,
+            documents=documents,
+        )
+        self.assertTrue(packet.get("source_identified_pleaded_counts"))
+        assembled = de.apply_evidence_grounded_relief_synthesis(
+            {
+                "proposed_answer": "Draft omitting counts.",
+                "propositions": [],
+                "unresolved_questions": ["Count I title is unknown"],
+                "audit": {},
+            },
+            packet,
+        )
+        answer = assembled["proposed_answer"]
+        self.assertIn("Count I", answer)
+        self.assertIn("Count II", answer)
+        self.assertIn("void ab initio", answer.lower())
+        self.assertIn("no defense or indemnity", answer.lower())
+        self.assertIn("catch-all", answer.lower())
+        # Truncated / mashed OCR dumps must not appear as display quotes.
+        self.assertNotIn("indemni fy", answer)
+        self.assertNotIn("Def en dants", answer)
+        unresolved = assembled.get("unresolved_questions") or []
+        self.assertFalse(
+            any(
+                "count i" in str(q).lower() and "unknown" in str(q).lower()
+                for q in unresolved
+            )
+        )
+        audit = assembled.get("audit") or {}
+        audit_labels = [
+            r.get("label")
+            for r in (audit.get("source_identified_pleaded_counts") or [])
+        ]
+        self.assertEqual(audit_labels, ["Count I", "Count II"])
+
+        ident = _identity()
+        contract = ac.build_synthetic_contract(
+            contract_id="contract-q2-completeness",
+            version="1.0.2",
+            benchmark_id=ident["benchmark_id"],
+            question_id="Q2",
+            object_key=ident["object_key"],
+            required_criterion_ids=[
+                "q2-rescission-void-ab-initio",
+                "q2-no-defense-or-indemnity",
+                "q2-pleaded-relief-not-adjudication",
+                "q2-catch-all-relief",
+            ],
+            criteria=[
+                {
+                    "id": "q2-rescission-void-ab-initio",
+                    "presence_phrases": ["void ab initio"],
+                    "evidence_phrases": ["void ab initio"],
+                    "semantic_required_phrases": [],
+                    "semantic_forbidden_phrases": [],
+                    "fallback_text": "",
+                    "category": "relief",
+                },
+                {
+                    "id": "q2-no-defense-or-indemnity",
+                    "presence_phrases": ["no defense or indemnity"],
+                    "evidence_phrases": ["no defense or indemnity"],
+                    "semantic_required_phrases": [],
+                    "semantic_forbidden_phrases": [],
+                    "fallback_text": "",
+                    "category": "relief",
+                },
+                {
+                    "id": "q2-pleaded-relief-not-adjudication",
+                    "presence_phrases": [
+                        "pleaded requested relief",
+                        "not a judicial determination",
+                    ],
+                    "evidence_phrases": [],
+                    "semantic_required_phrases": ["pleaded"],
+                    "semantic_forbidden_phrases": ["court has ruled"],
+                    "fallback_text": (
+                        "This answer describes pleaded requested relief in the "
+                        "complaint, not a judicial determination."
+                    ),
+                    "category": "caveat",
+                },
+                {
+                    "id": "q2-catch-all-relief",
+                    "presence_phrases": ["catch-all requested relief"],
+                    "evidence_phrases": ["such other and further relief"],
+                    "semantic_required_phrases": [],
+                    "semantic_forbidden_phrases": [],
+                    "fallback_text": "",
+                    "category": "relief",
+                },
+            ],
+        )
+        loaded = ac.load_acceptance_contract_from_bytes(
+            json.dumps(contract, sort_keys=True).encode("utf-8"),
+            object_key=contract["object_key"],
+            expected_identity=ac.ContractIdentity(
+                benchmark_id=ident["benchmark_id"], question_id="Q2"
+            ),
+            expected_content_sha256=contract["content_sha256"],
+        )
+        self.assertTrue(loaded.ok)
+        source_counts = packet.get("source_identified_pleaded_counts") or []
+        validated = {
+            "schema_version": "q2_validated_structured_claims.v1",
+            "benchmark_id": ident["benchmark_id"],
+            "question_id": "Q2",
+            "acceptance_contract_object_key": ident["object_key"],
+            "acceptance_contract_content_sha256": contract["content_sha256"],
+            "claims": assembled["audit"]["verified_relief_claims"],
+            "source_identified_pleaded_counts": source_counts,
+        }
+        # Strip evidence snippets for validated shape (privacy-safe).
+        for row in validated["claims"]:
+            row["evidence_snippet"] = ""
+        result = ac.validate_final_answer_against_contract(
+            answer,
+            loaded.evaluation,
+            apply_fallback=True,
+            validated_claims=validated,
+            source_identified_counts=source_counts,
+        )
+        self.assertTrue(result.ok, result.as_safe_dict())
+        self.assertIn("Count I", result.final_answer)
+        self.assertIn("Count II", result.final_answer)
+
+    def test_omitted_count_i_fails_material_omission_without_repair(self) -> None:
+        import acceptance_contract as ac
+
+        ident = _identity()
+        contract = ac.build_synthetic_contract(
+            contract_id="contract-q2-omission",
+            version="1.0.2",
+            benchmark_id=ident["benchmark_id"],
+            question_id="Q2",
+            object_key=ident["object_key"],
+            required_criterion_ids=["q2-pleaded-relief-not-adjudication"],
+            criteria=[
+                {
+                    "id": "q2-pleaded-relief-not-adjudication",
+                    "presence_phrases": [
+                        "pleaded requested relief",
+                        "not a judicial determination",
+                    ],
+                    "evidence_phrases": [],
+                    "semantic_required_phrases": ["pleaded"],
+                    "semantic_forbidden_phrases": [],
+                    "fallback_text": (
+                        "This answer describes pleaded requested relief in the "
+                        "complaint, not a judicial determination."
+                    ),
+                    "category": "caveat",
+                }
+            ],
+        )
+        loaded = ac.load_acceptance_contract_from_bytes(
+            json.dumps(contract, sort_keys=True).encode("utf-8"),
+            object_key=contract["object_key"],
+            expected_identity=ac.ContractIdentity(
+                benchmark_id=ident["benchmark_id"], question_id="Q2"
+            ),
+            expected_content_sha256=contract["content_sha256"],
+        )
+        self.assertTrue(loaded.ok)
+        # Answer covers categories but omits source-identified Count I.
+        answer = (
+            "This answer describes pleaded requested relief in the complaint, "
+            "not a judicial determination. Count II seeks no defense or indemnity."
+        )
+        source_counts = [
+            {
+                "ordinal": "I",
+                "label": "Count I",
+                "observed_marker": "COUNT I",
+                "title": None,
+                "page_id": "nyscef-001-page-0024",
+            },
+            {
+                "ordinal": "II",
+                "label": "Count II",
+                "observed_marker": "COUNT II",
+                "title": None,
+                "page_id": "nyscef-001-page-0025",
+            },
+        ]
+        fail_closed = ac.validate_final_answer_against_contract(
+            answer,
+            loaded.evaluation,
+            apply_fallback=False,
+            source_identified_counts=source_counts,
+        )
+        self.assertFalse(fail_closed.ok)
+        self.assertTrue(
+            any(
+                "material_omission_source_count_missing:Count_I" in d
+                for d in fail_closed.diagnostics
+            ),
+            fail_closed.diagnostics,
+        )
+
+        repaired = ac.validate_final_answer_against_contract(
+            answer,
+            loaded.evaluation,
+            apply_fallback=True,
+            source_identified_counts=source_counts,
+        )
+        self.assertTrue(repaired.ok, repaired.as_safe_dict())
+        self.assertIn("Count I", repaired.final_answer)
+        self.assertTrue(
+            any(
+                "material_omission_source_count_repaired:Count_I" in d
+                for d in repaired.diagnostics
+            ),
+            repaired.diagnostics,
+        )
+
+    def test_existing_q2_relief_criteria_and_q1_unaffected(self) -> None:
+        """Regression: live-shaped Q2 packet without counts still validates."""
+        import acceptance_contract as ac
+        from acceptance_contract.validate import evaluate_q2_no_defense_or_indemnity
+
+        supported = de.extract_supported_complaint_relief(_live_packet())
+        self.assertTrue(supported["rescission_void_ab_initio"]["supported"])
+        self.assertTrue(supported["no_defense_or_indemnity"]["supported"])
+        self.assertTrue(supported["catch_all_relief"]["supported"])
+
+        # Shared no-defense evaluator still passes without Count labels.
+        claims = de.structured_verified_relief_claims_from_supported(supported)
+        for row in claims:
+            row["evidence_snippet"] = ""
+        validated = {
+            "schema_version": "q2_validated_structured_claims.v1",
+            "benchmark_id": _identity()["benchmark_id"],
+            "question_id": "Q2",
+            "acceptance_contract_object_key": _identity()["object_key"],
+            "acceptance_contract_content_sha256": "a" * 64,
+            "claims": claims,
+        }
+        para = de._build_no_defense_relief_paragraph(
+            supported["no_defense_or_indemnity"]
+        )
+        result = evaluate_q2_no_defense_or_indemnity(para, validated)
+        self.assertEqual(result.result_code, ac.CRIT_PASS)
+
+        # Q1 party-role detection must not treat relief routing as party-role.
+        self.assertFalse(
+            de.detect_party_role_question_intent(_Q2_COMPLETENESS_QUESTION)
+        )
+        self.assertTrue(de.detect_relief_question_intent(_Q2_COMPLETENESS_QUESTION))
+
+
 if __name__ == "__main__":
     unittest.main()

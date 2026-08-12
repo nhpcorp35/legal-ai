@@ -1575,14 +1575,18 @@ def _relief_hit_corpus(hit: Mapping[str, Any]) -> str:
         # When the excerpt is a contiguous slice of the page, keep the excerpt
         # (structure-backed WHEREFORE window). Otherwise prefer the longer page.
         if excerpt in page_text:
-            # Rebuilt-cache routing may emit a bounded WHEREFORE window that
-            # omits a trailing catch-all still present on the same page.
-            # Prefer full page text only in that narrow case — never invent.
-            if (
-                _CATCH_ALL_RELIEF_RE.search(page_text)
-                and not _CATCH_ALL_RELIEF_RE.search(excerpt)
-            ) or len(excerpt) >= _RELIEF_EXCERPT_MAX:
+            # Bounded WHEREFORE windows may omit same-page relief propositions
+            # that precede the prayer (Count II / no-defense) or a trailing
+            # catch-all. Prefer full page text only in those narrow cases.
+            if len(excerpt) >= _RELIEF_EXCERPT_MAX:
                 return page_text
+            for pattern in (
+                _CATCH_ALL_RELIEF_RE,
+                _NO_DEFENSE_INDEMNITY_RE,
+                _RESCISSION_VOID_RE,
+            ):
+                if pattern.search(page_text) and not pattern.search(excerpt):
+                    return page_text
             return excerpt
         return page_text if len(page_text) > len(excerpt) else excerpt
     return excerpt or page_text
@@ -2572,8 +2576,15 @@ def _format_relief_display_evidence(
     )
 
 
-def _build_rescission_void_relief_paragraph(support: Mapping[str, Any]) -> str:
+def _build_rescission_void_relief_paragraph(
+    support: Mapping[str, Any],
+    *,
+    count_label: Optional[str] = None,
+) -> str:
     lead = _rescission_void_lead_clause(support)
+    if count_label:
+        # Source-grounded count label only — never invent a cause title.
+        lead = f"{lead} under {count_label}"
     return _format_relief_display_evidence(
         support,
         readable_intro=lead,
@@ -2582,21 +2593,36 @@ def _build_rescission_void_relief_paragraph(support: Mapping[str, Any]) -> str:
     )
 
 
-def _build_no_defense_relief_paragraph(support: Mapping[str, Any]) -> str:
+def _build_no_defense_relief_paragraph(
+    support: Mapping[str, Any],
+    *,
+    count_label: Optional[str] = None,
+) -> str:
     # Presence phrasing for q2-no-defense-or-indemnity. When a clean excerpt is
     # available, the display quote carries production evidence tokens; when
     # selection is supported_needs_paraphrase (unreadable OCR / no clean
     # excerpt), paraphrase_intro must still carry the fixed public evidence
     # phrasing without quoting OCR dumps.
-    readable_intro = (
-        "The complaint further seeks relief that there is no defense or "
-        "indemnity obligation"
-    )
-    paraphrase_intro = (
-        "The complaint further seeks relief that there is no defense or "
-        "indemnity obligation and declaring that there is no duty to defend "
-        "or indemnify Defendants"
-    )
+    if count_label:
+        readable_intro = (
+            f"Under {count_label}, the complaint further seeks relief that "
+            "there is no defense or indemnity obligation"
+        )
+        paraphrase_intro = (
+            f"Under {count_label}, the complaint further seeks relief that "
+            "there is no defense or indemnity obligation and declaring that "
+            "there is no duty to defend or indemnify Defendants"
+        )
+    else:
+        readable_intro = (
+            "The complaint further seeks relief that there is no defense or "
+            "indemnity obligation"
+        )
+        paraphrase_intro = (
+            "The complaint further seeks relief that there is no defense or "
+            "indemnity obligation and declaring that there is no duty to defend "
+            "or indemnify Defendants"
+        )
     return _format_relief_display_evidence(
         support,
         readable_intro=readable_intro,
@@ -2615,15 +2641,102 @@ def _build_catch_all_relief_paragraph(support: Mapping[str, Any]) -> str:
     )
 
 
+def _pair_source_counts_with_relief_categories(
+    source_counts: Sequence[Mapping[str, Any]],
+    supported: Mapping[str, Any],
+) -> Dict[str, str]:
+    """
+    Pair source-identified pleaded counts with supported relief categories.
+
+    Uses observed ordinals only: Count I/1 → rescission_void_ab_initio when
+    supported; Count II/2 → no_defense_or_indemnity when supported. Never
+    invents titles or remaps Count II onto rescission merely because Count I
+    is absent from the packet.
+    """
+    pairing: Dict[str, str] = {}
+    ordinal_to_category = {
+        "I": "rescission_void_ab_initio",
+        "1": "rescission_void_ab_initio",
+        "II": "no_defense_or_indemnity",
+        "2": "no_defense_or_indemnity",
+    }
+    for row in source_counts or []:
+        if not isinstance(row, Mapping):
+            continue
+        ordinal = str(row.get("ordinal") or "").strip().upper()
+        label = normalize_whitespace(row.get("label") or "")
+        if not label or not ordinal:
+            continue
+        category = ordinal_to_category.get(ordinal)
+        if not category:
+            continue
+        meta = supported.get(category) or {}
+        if isinstance(meta, Mapping) and meta.get("supported"):
+            pairing[category] = label
+    return pairing
+
+
+def ensure_source_identified_count_labels_in_answer(
+    answer: str,
+    source_counts: Optional[Sequence[Mapping[str, Any]]],
+) -> tuple[str, list[str]]:
+    """
+    Bounded repair: append missing source-identified count labels.
+
+    Emits only observed labels (``Count I``, ``Count II``, …) — never titles.
+    Returns (answer, repaired_labels).
+    """
+    text = str(answer or "")
+    repaired: List[str] = []
+    if not source_counts:
+        return text, repaired
+    low = text.lower()
+    missing: List[str] = []
+    for row in source_counts:
+        if not isinstance(row, Mapping):
+            continue
+        label = normalize_whitespace(row.get("label") or "")
+        if not label:
+            continue
+        needle = label.lower()
+        # Word-boundary match so ``Count I`` does not hit inside ``Count II``.
+        if re.search(rf"(?<![a-z0-9]){re.escape(needle)}(?![a-z0-9])", low):
+            continue
+        missing.append(label)
+    if not missing:
+        return text, repaired
+    if len(missing) == 1:
+        clause = f" The complaint separately pleads {missing[0]}."
+    elif len(missing) == 2:
+        clause = (
+            f" The complaint separately pleads {missing[0]} and {missing[1]}."
+        )
+    else:
+        clause = (
+            " The complaint separately pleads "
+            + ", ".join(missing[:-1])
+            + f", and {missing[-1]}."
+        )
+    base = text.rstrip()
+    if base and base[-1] not in ".!?":
+        base += "."
+    repaired = list(missing)
+    return normalize_whitespace(base + clause), repaired
+
+
 def assemble_evidence_grounded_relief_paragraphs(
     supported: Mapping[str, Any],
+    *,
+    source_counts: Optional[Sequence[Mapping[str, Any]]] = None,
 ) -> List[str]:
     """
     Build one concise organized relief statement for supported categories.
 
     Includes the pleaded-versus-adjudicated caveat when any category is
     supported. Display quotes pass a readability gate; OCR-garbled excerpts
-    are paraphrased with page_id citations. Never invents unsupported relief.
+    are paraphrased with page_id citations. Source-identified pleaded counts
+    are enumerated separately from catch-all prayer relief. Never invents
+    unsupported relief or count titles.
     """
     paragraphs: List[str] = []
     any_supported = any(
@@ -2639,13 +2752,27 @@ def assemble_evidence_grounded_relief_paragraphs(
 
     paragraphs.append(_PLEADED_RELIEF_NOT_ADJUDICATION_PHRASE)
 
+    count_labels = _pair_source_counts_with_relief_categories(
+        source_counts or [], supported
+    )
+
     rescission = supported.get("rescission_void_ab_initio") or {}
     if rescission.get("supported"):
-        paragraphs.append(_build_rescission_void_relief_paragraph(rescission))
+        paragraphs.append(
+            _build_rescission_void_relief_paragraph(
+                rescission,
+                count_label=count_labels.get("rescission_void_ab_initio"),
+            )
+        )
 
     indemnity = supported.get("no_defense_or_indemnity") or {}
     if indemnity.get("supported"):
-        paragraphs.append(_build_no_defense_relief_paragraph(indemnity))
+        paragraphs.append(
+            _build_no_defense_relief_paragraph(
+                indemnity,
+                count_label=count_labels.get("no_defense_or_indemnity"),
+            )
+        )
 
     catch_all = supported.get("catch_all_relief") or {}
     if catch_all.get("supported"):
@@ -2843,13 +2970,36 @@ def apply_evidence_grounded_relief_synthesis(
     concise organized statement (categories + pleaded-not-adjudicated caveat)
     instead of appending a duplicative long synthesis tail onto a prior draft.
     Emits only source-backed categories; never invents unsupported relief.
-    Structured verified relief claims are attached on ``audit`` for final
-    serialization handoff independent of displayed quotes.
+    Source-identified pleaded counts are enumerated separately from prayer
+    catch-all relief. Structured verified relief claims are attached on
+    ``audit`` for final serialization handoff independent of displayed quotes.
     """
     if not isinstance(result, dict):
         return result
-    supported = extract_supported_complaint_relief(evidence_packet)
+    packet = evidence_packet or {}
+    supported = extract_supported_complaint_relief(packet)
     verified_claims = structured_verified_relief_claims_from_supported(supported)
+    source_counts = [
+        row
+        for row in (packet.get("source_identified_pleaded_counts") or [])
+        if isinstance(row, Mapping)
+    ]
+    if not source_counts:
+        # Derive from routed hit text when packet lacks an explicit enumeration.
+        import complaint_structure as cs  # noqa: WPS433
+
+        page_texts = [
+            {
+                "page_id": h.get("page_id"),
+                "page_number": h.get("pdf_page"),
+                "text": h.get("page_text") or h.get("excerpt") or "",
+            }
+            for h in (packet.get("retrieval_hits") or [])
+            if isinstance(h, dict)
+        ]
+        source_counts = cs.enumerate_source_identified_pleaded_counts(
+            None, page_texts=page_texts
+        )
     new_props: List[dict] = []
 
     any_supported = any(
@@ -2867,19 +3017,39 @@ def apply_evidence_grounded_relief_synthesis(
         if isinstance(meta, dict) and meta.get("supported")
     ]
 
+    safe_count_rows = [
+        {
+            "ordinal": r.get("ordinal"),
+            "label": r.get("label"),
+            "page_id": r.get("page_id"),
+            "title": None,
+        }
+        for r in source_counts
+    ]
+
     if not any_supported:
         result.setdefault("audit", {})
         if isinstance(result["audit"], dict):
             result["audit"]["relief_synthesis_applied"] = False
             result["audit"]["relief_supported_categories"] = supported_keys
             result["audit"]["verified_relief_claims"] = verified_claims
+            result["audit"]["source_identified_pleaded_counts"] = safe_count_rows
         return result
+
+    count_labels = _pair_source_counts_with_relief_categories(
+        source_counts, supported
+    )
 
     # Always emit one nonduplicative final prose block when support exists.
     # Prior draft text is discarded so a long model synthesis is not retained
     # as a duplicative tail.
-    paragraphs = assemble_evidence_grounded_relief_paragraphs(supported)
+    paragraphs = assemble_evidence_grounded_relief_paragraphs(
+        supported, source_counts=source_counts
+    )
     final_answer = normalize_whitespace(" ".join(paragraphs))
+    final_answer, repaired_labels = ensure_source_identified_count_labels_in_answer(
+        final_answer, source_counts
+    )
 
     new_props.append(
         {
@@ -2901,7 +3071,10 @@ def apply_evidence_grounded_relief_synthesis(
 
     rescission = supported.get("rescission_void_ab_initio") or {}
     if rescission.get("supported"):
-        para = _build_rescission_void_relief_paragraph(rescission)
+        para = _build_rescission_void_relief_paragraph(
+            rescission,
+            count_label=count_labels.get("rescission_void_ab_initio"),
+        )
         new_props.append(
             _relief_proposition(
                 proposition_id="relief-rescission-void-ab-initio",
@@ -2912,7 +3085,10 @@ def apply_evidence_grounded_relief_synthesis(
 
     indemnity = supported.get("no_defense_or_indemnity") or {}
     if indemnity.get("supported"):
-        para = _build_no_defense_relief_paragraph(indemnity)
+        para = _build_no_defense_relief_paragraph(
+            indemnity,
+            count_label=count_labels.get("no_defense_or_indemnity"),
+        )
         new_props.append(
             _relief_proposition(
                 proposition_id="relief-no-defense-or-indemnity",
@@ -2956,10 +3132,40 @@ def apply_evidence_grounded_relief_synthesis(
             props.append(prop)
             existing_ids.add(pid)
     out["propositions"] = props
+    # Drop unresolved "unknown" placeholders for source-identified counts once
+    # those counts are grounded in the synthesized answer.
+    unresolved = [
+        q
+        for q in (out.get("unresolved_questions") or [])
+        if isinstance(q, str)
+    ]
+    count_labels_low = {
+        normalize_whitespace(r.get("label") or "").lower()
+        for r in source_counts
+        if r.get("label")
+    }
+    if count_labels_low:
+        filtered_unresolved: List[str] = []
+        for q in unresolved:
+            q_low = q.lower()
+            drop = False
+            for label in count_labels_low:
+                if label and label in q_low and "unknown" in q_low:
+                    drop = True
+                    break
+            if not drop:
+                filtered_unresolved.append(q)
+        out["unresolved_questions"] = filtered_unresolved
     audit = dict(out.get("audit") or {})
     audit["relief_synthesis_applied"] = True
     audit["relief_supported_categories"] = supported_keys
     audit["verified_relief_claims"] = verified_claims
+    audit["source_identified_pleaded_counts"] = safe_count_rows
+    audit["pleaded_count_labels_repaired"] = repaired_labels
+    routing = packet.get("complaint_relief_routing") or {}
+    audit["pleaded_count_completeness_ok"] = bool(
+        routing.get("pleaded_count_completeness_ok", True)
+    ) and not bool(repaired_labels)
     out["audit"] = audit
     return out
 
@@ -3107,6 +3313,17 @@ def _page_carries_relief_proposition(text: str) -> bool:
     )
 
 
+_PLEADED_COUNT_HEADING_RE = re.compile(
+    r"(?i)\bCOUNT\s+(?:[IVXLC]{1,8}|\d{1,2})\b"
+)
+# Bounded lookback from WHEREFORE for preceding COUNT heading pages.
+_MAX_COUNT_HEADING_LOOKBACK_PAGES = 2
+
+
+def _page_has_pleaded_count_heading(text: str) -> bool:
+    return bool(_PLEADED_COUNT_HEADING_RE.search(text or ""))
+
+
 def _expand_relief_page_ids_with_adjacent_support(
     relief_page_ids: Sequence[str],
     page_lookup: Mapping[str, dict],
@@ -3116,8 +3333,9 @@ def _expand_relief_page_ids_with_adjacent_support(
     same-document complaint pages when they carry a relief proposition
     (e.g. no-defense before WHEREFORE; catch-all continuation after).
 
-    Does not broadly retrieve — at most one prior and one next page per
-    WHEREFORE / relief page.
+    Also includes up to ``_MAX_COUNT_HEADING_LOOKBACK_PAGES`` immediately
+    preceding pages that carry a pleaded COUNT heading so Count I is not
+    omitted when WHEREFORE begins mid-stream. Does not broadly retrieve.
     """
     by_doc_page: Dict[tuple, str] = {}
     for pid, entry in page_lookup.items():
@@ -3152,17 +3370,27 @@ def _expand_relief_page_ids_with_adjacent_support(
         entry = page_lookup.get(pid) or {}
         nyscef = entry.get("nyscef_document_number")
         pdf_page = entry.get("pdf_page")
-        prior_pid = _adjacent_support_pid(nyscef, pdf_page, -1)
-        if prior_pid:
-            prior_entry = page_lookup.get(prior_pid) or {}
-            prior_text = str(prior_entry.get("text") or "")
-            if _page_carries_relief_proposition(prior_text):
-                _take(prior_pid)
+        priors: List[str] = []
+        for delta in range(1, _MAX_COUNT_HEADING_LOOKBACK_PAGES + 1):
+            prior_pid = _adjacent_support_pid(nyscef, pdf_page, -delta)
+            if not prior_pid:
+                break
+            prior_text = str((page_lookup.get(prior_pid) or {}).get("text") or "")
+            has_count = _page_has_pleaded_count_heading(prior_text)
+            has_relief = _page_carries_relief_proposition(prior_text)
+            if has_count or (delta == 1 and has_relief):
+                priors.append(prior_pid)
+                # Continue further lookback only across COUNT heading pages.
+                if not has_count:
+                    break
+            else:
+                break
+        for prior_pid in reversed(priors):
+            _take(prior_pid)
         _take(pid)
         next_pid = _adjacent_support_pid(nyscef, pdf_page, 1)
         if next_pid:
-            next_entry = page_lookup.get(next_pid) or {}
-            next_text = str(next_entry.get("text") or "")
+            next_text = str((page_lookup.get(next_pid) or {}).get("text") or "")
             if _page_carries_relief_proposition(next_text):
                 _take(next_pid)
     return ordered
@@ -3185,10 +3413,11 @@ def route_complaint_relief_evidence(
     Ensure complaint WHEREFORE / requested-relief records reach synthesis.
 
     Selects the smallest structure-backed relief page set (WHEREFORE / prayer
-    sections), injects any missing cited pages from the document corpus, and
-    expands excerpts so relief language is not truncated by ordinary query
-    windows. Does not invent private pleading text. Non-relief questions are
-    returned unchanged.
+    sections), expands with bounded preceding COUNT heading pages when the
+    relief page begins mid-count, injects any missing cited pages from the
+    document corpus, and expands excerpts so relief language is not truncated
+    by ordinary query windows. Does not invent private pleading text.
+    Non-relief questions are returned unchanged.
     """
     base = dict(retrieval or {})
     if not detect_relief_question_intent(question):
@@ -3216,7 +3445,7 @@ def route_complaint_relief_evidence(
     else:
         # Structure often tags only the WHEREFORE heading page; include the
         # immediately prior/next same-doc pages when they carry relief
-        # propositions (no-defense before; catch-all continuation after).
+        # propositions or pleaded COUNT headings (Count I before WHEREFORE).
         relief_page_ids = _expand_relief_page_ids_with_adjacent_support(
             relief_page_ids, page_lookup
         )
@@ -3262,7 +3491,10 @@ def route_complaint_relief_evidence(
         if pid not in structure_page_id_set and not _page_looks_like_complaint_relief(
             page_text
         ):
-            continue
+            # COUNT heading pages included via adjacent expansion are still
+            # authoritative for cause-of-action completeness.
+            if not _page_has_pleaded_count_heading(page_text):
+                continue
         routed.append(_build_complaint_relief_hit_from_page(entry))
 
     # If structure/fallback found nothing injectable, keep ordinary retrieval
@@ -3289,9 +3521,69 @@ def route_complaint_relief_evidence(
             refreshed["complaint_relief_section_routed"] = True
             routed.append(refreshed)
 
+    page_texts_for_counts = [
+        {
+            "page_id": h.get("page_id"),
+            "page_number": h.get("pdf_page"),
+            "text": h.get("page_text") or h.get("excerpt") or "",
+        }
+        for h in routed
+        if isinstance(h, dict)
+    ]
+    # Prefer structure enumeration; fall back to routed page text.
+    source_counts = cs.enumerate_source_identified_pleaded_counts(
+        structure_payload, page_texts=page_texts_for_counts
+    )
+    # Fail-closed completeness signal: structure-identified count pages missing
+    # from the routed hit set require bounded re-retrieval / repair.
+    missing_count_page_ids: List[str] = []
+    routed_pids = {str(h.get("page_id") or "") for h in routed}
+    for row in source_counts:
+        pid = str(row.get("page_id") or "").strip()
+        if pid and pid not in routed_pids:
+            missing_count_page_ids.append(pid)
+    # Also enumerate from the full document corpus so omitted Count I pages
+    # surface even when structure was empty and lookback missed them.
+    corpus_page_texts = [
+        {
+            "page_id": entry.get("page_id"),
+            "page_number": entry.get("pdf_page"),
+            "text": entry.get("text") or "",
+        }
+        for entry in page_lookup.values()
+    ]
+    corpus_counts = cs.enumerate_source_identified_pleaded_counts(
+        None, page_texts=corpus_page_texts
+    )
+    if corpus_counts:
+        # Merge corpus-identified counts (deterministic, first-seen wins).
+        seen_ord = {str(r.get("ordinal") or "") for r in source_counts}
+        for row in corpus_counts:
+            ord_key = str(row.get("ordinal") or "")
+            if ord_key and ord_key not in seen_ord:
+                source_counts.append(row)
+                seen_ord.add(ord_key)
+            pid = str(row.get("page_id") or "").strip()
+            if not pid or pid in routed_pids:
+                continue
+            # Bounded repair: inject missing COUNT heading pages from corpus.
+            entry = page_lookup.get(pid)
+            if entry is not None and _page_has_pleaded_count_heading(
+                str(entry.get("text") or "")
+            ):
+                routed.append(_build_complaint_relief_hit_from_page(entry))
+                routed_pids.add(pid)
+
+    # Recompute missing after bounded corpus injection.
+    missing_count_page_ids = []
+    for row in source_counts:
+        pid = str(row.get("page_id") or "").strip()
+        if pid and pid not in routed_pids:
+            missing_count_page_ids.append(pid)
+
     out = dict(base)
     if routed:
-        # Smallest supported set: structure-backed relief pages only.
+        # Smallest supported set: structure-backed relief / count pages only.
         out["results"] = routed
         out["result_count"] = len(routed)
     out["complaint_relief_routing"] = {
@@ -3299,7 +3591,13 @@ def route_complaint_relief_evidence(
         "relief_page_ids": list(relief_page_ids),
         "routed_hit_count": len(routed),
         "structure_backed": bool(structure_context),
+        "source_identified_pleaded_count_labels": [
+            str(r.get("label") or "") for r in source_counts if r.get("label")
+        ],
+        "missing_count_page_ids": list(missing_count_page_ids),
+        "pleaded_count_completeness_ok": not bool(missing_count_page_ids),
     }
+    out["source_identified_pleaded_counts"] = source_counts
     if structure_context is not None:
         out["complaint_relief_structure_context"] = structure_context
     return out
@@ -4051,6 +4349,43 @@ def build_evidence_packet(
                 "reason": "complaint_structure_map_has_no_party_role_roadmap_sections",
             }
         packet["complaint_structure_status"] = status
+
+    if relief_intent and isinstance(retrieval, dict):
+        routing = retrieval.get("complaint_relief_routing")
+        if isinstance(routing, dict):
+            packet["complaint_relief_routing"] = {
+                "applied": bool(routing.get("applied")),
+                "routed_hit_count": routing.get("routed_hit_count"),
+                "structure_backed": bool(routing.get("structure_backed")),
+                "source_identified_pleaded_count_labels": list(
+                    routing.get("source_identified_pleaded_count_labels") or []
+                ),
+                "missing_count_page_ids": list(
+                    routing.get("missing_count_page_ids") or []
+                ),
+                "pleaded_count_completeness_ok": bool(
+                    routing.get("pleaded_count_completeness_ok", True)
+                ),
+            }
+        counts = retrieval.get("source_identified_pleaded_counts")
+        if isinstance(counts, list):
+            # Privacy-safe: labels/ordinals/page_ids only — no title invention.
+            packet["source_identified_pleaded_counts"] = [
+                {
+                    "ordinal": row.get("ordinal"),
+                    "label": row.get("label"),
+                    "observed_marker": row.get("observed_marker"),
+                    "title": None,
+                    "page_id": row.get("page_id"),
+                    "page_number": row.get("page_number"),
+                    "match_key": row.get("match_key"),
+                }
+                for row in counts
+                if isinstance(row, Mapping)
+            ]
+        relief_ctx = retrieval.get("complaint_relief_structure_context")
+        if isinstance(relief_ctx, dict):
+            packet["complaint_relief_structure_context"] = relief_ctx
 
     return packet
 

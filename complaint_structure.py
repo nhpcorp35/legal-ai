@@ -161,7 +161,7 @@ _PROCEDURAL_LAYOUT_MATCH_KEYS = frozenset(
     {"jurisdiction_and_venue", "jurisdiction", "venue"}
 )
 _CLAIMS_MATCH_KEYS = frozenset(
-    {"causes_of_action", "wherefore", "prayer_for_relief"}
+    {"causes_of_action", "wherefore", "prayer_for_relief", "pleaded_count"}
 )
 
 # Collapsed alphabetic forms for OCR that destroyed word boundaries
@@ -332,6 +332,21 @@ _OCR_LETTER_SPACED_RE = re.compile(
 _MIDLINE_RELIEF_HEADING_RE = re.compile(
     r"(?i)(?P<body>\bwherefore\b|\bprayer\s+for\s+relief\b)"
 )
+
+# Pleaded count headings (``COUNT I``, ``COUNT II``, ``Count 1``). Observed
+# ordinal only — never invents a cause-of-action title.
+_COUNT_ORDINAL_TOKEN = r"(?:[IVXLC]{1,8}|\d{1,2})"
+_COUNT_HEADING_LINE_RE = re.compile(
+    r"(?im)^\s*(?P<body>COUNT\s+(?P<ordinal>"
+    + _COUNT_ORDINAL_TOKEN
+    + r"))\s*"
+    + _HEADING_TRAILING_PUNCT
+    + r"\s*$"
+)
+_MIDLINE_COUNT_HEADING_RE = re.compile(
+    r"(?i)(?P<body>\bCOUNT\s+(?P<ordinal>" + _COUNT_ORDINAL_TOKEN + r")\b)"
+)
+_PLEADED_COUNT_MATCH_KEY = "pleaded_count"
 
 
 def document_id_for_nyscef(nyscef_document_number: int) -> str:
@@ -848,10 +863,20 @@ def _extract_headings_from_page(
         match = _HEADING_LINE_RE.match(healed_line)
         if not match:
             match = _NUMBERED_SECTION_HEADING_RE.match(healed_line)
-        if match:
-            body = match.group("body")
-            key = _match_key_for_heading_body(body)
-            observed = _collapse_ws(original_lines[idx]).rstrip(" :.-—–_•·").strip()
+        count_line = _COUNT_HEADING_LINE_RE.match(healed_line)
+        if match or count_line:
+            if count_line:
+                key = _PLEADED_COUNT_MATCH_KEY
+                # Bound marker to ``COUNT <ordinal>`` only — never absorb title OCR.
+                start, end = count_line.start("body"), count_line.end("body")
+                if 0 <= start < end <= len(original_lines[idx]):
+                    observed = _collapse_ws(original_lines[idx][start:end])
+                else:
+                    observed = _collapse_ws(count_line.group("body"))
+            else:
+                body = match.group("body")
+                key = _match_key_for_heading_body(body)
+                observed = _collapse_ws(original_lines[idx]).rstrip(" :.-—–_•·").strip()
             ocr_healed = _heal_ocr_letter_spacing(original_lines[idx])
             ambiguous = False
             ambiguity_note = None
@@ -892,8 +917,84 @@ def _extract_headings_from_page(
             )
             continue
 
-        # Numbered allegation lines are paragraph observations, not headings.
-        if _PARAGRAPH_MARKER_RE.match(healed_line):
+        # Numbered allegation lines are paragraph observations, not headings —
+        # except mid-line COUNT / WHEREFORE markers mashed into allegation prose.
+        is_paragraph_line = bool(_PARAGRAPH_MARKER_RE.match(healed_line))
+        if is_paragraph_line:
+            emitted_midline = False
+            for count_match in _MIDLINE_COUNT_HEADING_RE.finditer(healed_line):
+                body = count_match.group("body")
+                original_line = original_lines[idx]
+                start, end = count_match.start("body"), count_match.end("body")
+                if 0 <= start < end <= len(original_line):
+                    bounded = _collapse_ws(original_line[start:end])
+                else:
+                    bounded = _collapse_ws(body)
+                if not bounded:
+                    bounded = _collapse_ws(body)
+                headings.append(
+                    {
+                        "ambiguous": True,
+                        "ambiguity_note": (
+                            "mid_line_count_heading_after_paragraph_marker"
+                        ),
+                        "match_key": _PLEADED_COUNT_MATCH_KEY,
+                        "observed_marker": bounded,
+                        "page_id": prov["page_id"],
+                        "page_number": prov["page_number"],
+                        "line_index": idx,
+                    }
+                )
+                uncertainties.append(
+                    {
+                        "kind": "ambiguous_heading",
+                        "observed_marker": bounded,
+                        "page_id": prov["page_id"],
+                        "page_number": prov["page_number"],
+                        "detail": "mid_line_count_heading_after_paragraph_marker",
+                    }
+                )
+                emitted_midline = True
+                break
+            if not emitted_midline:
+                for relief_match in _MIDLINE_RELIEF_HEADING_RE.finditer(healed_line):
+                    body = relief_match.group("body")
+                    key = _match_key_for_heading_body(body)
+                    if key not in {"wherefore", "prayer_for_relief"}:
+                        continue
+                    original_line = original_lines[idx]
+                    start, end = relief_match.start("body"), relief_match.end("body")
+                    if 0 <= start < end <= len(original_line):
+                        bounded = _collapse_ws(original_line[start:end])
+                    else:
+                        bounded = _collapse_ws(body)
+                    if not bounded:
+                        bounded = _collapse_ws(body)
+                    headings.append(
+                        {
+                            "ambiguous": True,
+                            "ambiguity_note": (
+                                "mid_line_relief_heading_after_paragraph_marker"
+                            ),
+                            "match_key": key,
+                            "observed_marker": bounded,
+                            "page_id": prov["page_id"],
+                            "page_number": prov["page_number"],
+                            "line_index": idx,
+                        }
+                    )
+                    uncertainties.append(
+                        {
+                            "kind": "ambiguous_heading",
+                            "observed_marker": bounded,
+                            "page_id": prov["page_id"],
+                            "page_number": prov["page_number"],
+                            "detail": (
+                                "mid_line_relief_heading_after_paragraph_marker"
+                            ),
+                        }
+                    )
+                    break
             continue
 
         # Ambiguous: line looks like a known heading family but has trailing
@@ -948,6 +1049,8 @@ def _extract_headings_from_page(
         # prayer text (``26 WHEREFORE ...``), defeating line-start anchors.
         # Emit a bounded mid-line relief heading so structure-backed routing
         # still receives page provenance without inventing private prose.
+        # Also emit mid-line COUNT headings (``...at law. COUNT II ...``).
+        emitted_midline = False
         for relief_match in _MIDLINE_RELIEF_HEADING_RE.finditer(healed_line):
             body = relief_match.group("body")
             key = _match_key_for_heading_body(body)
@@ -984,8 +1087,46 @@ def _extract_headings_from_page(
                     "detail": ambiguity_note,
                 }
             )
+            emitted_midline = True
             # One relief heading per collapsed line is enough for page routing.
             break
+
+        for count_match in _MIDLINE_COUNT_HEADING_RE.finditer(healed_line):
+            body = count_match.group("body")
+            original_line = original_lines[idx]
+            start, end = count_match.start("body"), count_match.end("body")
+            if 0 <= start < end <= len(original_line):
+                bounded = _collapse_ws(original_line[start:end])
+            else:
+                bounded = _collapse_ws(body)
+            if not bounded:
+                bounded = _collapse_ws(body)
+            ambiguity_note = "mid_line_count_heading_on_collapsed_page"
+            headings.append(
+                {
+                    "ambiguous": True,
+                    "ambiguity_note": ambiguity_note,
+                    "match_key": _PLEADED_COUNT_MATCH_KEY,
+                    "observed_marker": bounded,
+                    "page_id": prov["page_id"],
+                    "page_number": prov["page_number"],
+                    "line_index": idx,
+                }
+            )
+            uncertainties.append(
+                {
+                    "kind": "ambiguous_heading",
+                    "observed_marker": bounded,
+                    "page_id": prov["page_id"],
+                    "page_number": prov["page_number"],
+                    "detail": ambiguity_note,
+                }
+            )
+            emitted_midline = True
+            break
+
+        if emitted_midline:
+            continue
 
     return headings, uncertainties
 
@@ -1350,6 +1491,11 @@ def sections_from_document_structure(
 
 # WHEREFORE / prayer-for-relief match keys used by complaint-relief routing.
 _RELIEF_MATCH_KEYS = frozenset({"wherefore", "prayer_for_relief"})
+# Relief structure context also surfaces pleaded-count / causes-of-action
+# sections so completeness validation can enumerate source-identified counts.
+_RELIEF_EVIDENCE_MATCH_KEYS = frozenset(
+    {"wherefore", "prayer_for_relief", "causes_of_action", "pleaded_count"}
+)
 
 COMPLAINT_RELIEF_STRUCTURE_NOTE = (
     "Complaint relief structure metadata identifies observed WHEREFORE / "
@@ -1396,6 +1542,8 @@ def collect_complaint_relief_page_ids(
     Return ordered unique page_ids for observed WHEREFORE / prayer sections.
 
     Uses structural match_key / kind labels only. Does not invent pages.
+    Preceding pleaded-count pages are attached by relief routing lookback
+    (drafting_engine), not by broadening this WHEREFORE page set.
     """
     ordered: list[str] = []
     seen: set[str] = set()
@@ -1413,23 +1561,122 @@ def collect_complaint_relief_page_ids(
     return ordered
 
 
+def enumerate_source_identified_pleaded_counts(
+    structure_map: Mapping[str, Any] | Sequence[Mapping[str, Any]] | None = None,
+    *,
+    page_texts: Optional[Sequence[Mapping[str, Any]]] = None,
+) -> list[dict[str, Any]]:
+    """
+    Enumerate source-grounded pleaded counts separately from prayer for relief.
+
+    Emits one row per distinct observed ``COUNT <ordinal>`` marker with page
+    provenance. Never invents titles — ``title`` is always null (titles from
+    mashed OCR headings are intentionally omitted). Deterministic order follows
+    first-seen ordinal appearance.
+    """
+    rows: list[dict[str, Any]] = []
+    seen_ordinals: set[str] = set()
+
+    def _take(
+        *,
+        ordinal: str,
+        observed_marker: str,
+        page_id: Any,
+        page_number: Any,
+    ) -> None:
+        ord_key = str(ordinal or "").strip().upper()
+        if not ord_key or ord_key in seen_ordinals:
+            return
+        marker = _collapse_ws(observed_marker or "") or f"COUNT {ord_key}"
+        # Canonical display label preserves Roman/arabic ordinal from source.
+        label = f"Count {ord_key}"
+        rows.append(
+            {
+                "ordinal": ord_key,
+                "label": label,
+                "observed_marker": marker,
+                "title": None,
+                "page_id": str(page_id).strip() if page_id else None,
+                "page_number": page_number,
+                "match_key": _PLEADED_COUNT_MATCH_KEY,
+            }
+        )
+        seen_ordinals.add(ord_key)
+
+    for smap in _iter_structure_documents(structure_map, require_current_schema=False):
+        for heading in smap.get("section_headings") or []:
+            if not isinstance(heading, dict):
+                continue
+            if (
+                str(heading.get("match_key") or "").strip().lower()
+                != _PLEADED_COUNT_MATCH_KEY
+            ):
+                continue
+            marker = str(heading.get("observed_marker") or "")
+            m = _MIDLINE_COUNT_HEADING_RE.search(marker) or _COUNT_HEADING_LINE_RE.match(
+                marker
+            )
+            if not m:
+                continue
+            _take(
+                ordinal=m.group("ordinal"),
+                observed_marker=marker,
+                page_id=heading.get("page_id"),
+                page_number=heading.get("page_number"),
+            )
+        for sec in sections_from_document_structure(smap):
+            if (
+                str(sec.get("match_key") or "").strip().lower()
+                != _PLEADED_COUNT_MATCH_KEY
+            ):
+                continue
+            marker = str(sec.get("heading") or sec.get("heading_normalized") or "")
+            m = _MIDLINE_COUNT_HEADING_RE.search(marker)
+            if not m:
+                continue
+            page_ids = list(sec.get("page_ids") or [])
+            page_numbers = list(sec.get("page_numbers") or [])
+            _take(
+                ordinal=m.group("ordinal"),
+                observed_marker=marker,
+                page_id=page_ids[0] if page_ids else None,
+                page_number=page_numbers[0] if page_numbers else None,
+            )
+
+    for entry in page_texts or []:
+        if not isinstance(entry, Mapping):
+            continue
+        text = str(entry.get("text") or entry.get("page_text") or "")
+        if not text:
+            continue
+        for m in _MIDLINE_COUNT_HEADING_RE.finditer(text):
+            _take(
+                ordinal=m.group("ordinal"),
+                observed_marker=m.group("body"),
+                page_id=entry.get("page_id"),
+                page_number=entry.get("page_number") or entry.get("pdf_page"),
+            )
+
+    return rows
+
+
 def select_complaint_relief_structure_context(
     structure_map: Mapping[str, Any] | Sequence[Mapping[str, Any]] | None,
 ) -> Optional[dict[str, Any]]:
     """
-    Build compact, source-cited WHEREFORE / prayer section metadata.
+    Build compact, source-cited WHEREFORE / prayer / pleaded-count metadata.
 
-    Emits only observed relief-section records with page provenance. Supplemental
-    routing signal for complaint-relief questions — never invents ranges or
-    pleading prose. Returns None when schema is stale/absent, controlling-
-    complaint selection failed, or no relief sections are available.
+    Emits observed relief-section and pleaded-count records with page provenance.
+    Supplemental routing signal for complaint-relief questions — never invents
+    ranges or pleading prose. Returns None when schema is stale/absent,
+    controlling-complaint selection failed, or no relief/count sections exist.
     """
     documents_out: list[dict[str, Any]] = []
     for smap in _iter_structure_documents(structure_map):
         selected: list[dict[str, Any]] = []
         for sec in sections_from_document_structure(smap):
             match_key = str(sec.get("match_key") or "").strip().lower()
-            if match_key not in _RELIEF_MATCH_KEYS:
+            if match_key not in _RELIEF_EVIDENCE_MATCH_KEYS:
                 continue
             compact = _compact_structure_section_for_roadmap(sec)
             if not compact:
@@ -1456,6 +1703,9 @@ def select_complaint_relief_structure_context(
         "note": COMPLAINT_RELIEF_STRUCTURE_NOTE,
         "schema_version": SCHEMA_VERSION,
         "documents": documents_out,
+        "source_identified_pleaded_counts": enumerate_source_identified_pleaded_counts(
+            structure_map
+        ),
     }
 
 

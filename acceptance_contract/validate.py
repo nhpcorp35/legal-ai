@@ -61,6 +61,11 @@ _INDEMNIFY_RE = re.compile(
 )
 _DEFENDANTS_RE = re.compile(r"\bdefendants?\b", re.IGNORECASE)
 
+# Material-omission diagnostics for source-identified pleaded counts.
+MATERIAL_OMISSION_COUNT_MISSING = "material_omission_source_count_missing"
+MATERIAL_OMISSION_COUNT_REPAIRED = "material_omission_source_count_repaired"
+SOURCE_IDENTIFIED_COUNTS_KEY = "source_identified_pleaded_counts"
+
 
 def _norm(text: str) -> str:
     return _WS_RE.sub(" ", (text or "").strip().lower())
@@ -308,6 +313,145 @@ def build_evaluation_view_from_document(
         criteria=parse_criterion_specs(document),
         structure_requirements=parse_structure_requirements(document),
     )
+
+
+def source_identified_counts_from_validated(
+    validated_claims: Optional[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return structured source-identified pleaded counts (no invented titles).
+
+    Reads optional ``source_identified_pleaded_counts`` on the validated claims
+    object. Each row must carry an ordinal/label; titles are ignored/nullified.
+    """
+    if not isinstance(validated_claims, Mapping):
+        return []
+    raw = validated_claims.get(SOURCE_IDENTIFIED_COUNTS_KEY)
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in raw:
+        if not isinstance(row, Mapping):
+            continue
+        ordinal = str(row.get("ordinal") or "").strip().upper()
+        label = str(row.get("label") or "").strip()
+        if not label and ordinal:
+            label = f"Count {ordinal}"
+        if not label:
+            continue
+        key = label.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(
+            {
+                "ordinal": ordinal or None,
+                "label": label,
+                "observed_marker": str(row.get("observed_marker") or label),
+                "title": None,
+                "page_id": str(row.get("page_id") or "").strip() or None,
+            }
+        )
+    return out
+
+
+def missing_source_identified_count_labels(
+    answer_text: str,
+    source_counts: Sequence[Mapping[str, Any]],
+) -> list[str]:
+    """Return source count labels absent from the answer (case-insensitive)."""
+    norm_answer = _norm(answer_text)
+    missing: list[str] = []
+    for row in source_counts or []:
+        if not isinstance(row, Mapping):
+            continue
+        label = str(row.get("label") or "").strip()
+        if not label:
+            continue
+        needle = _norm(label)
+        # Word-boundary match so ``Count I`` does not hit inside ``Count II``.
+        if not re.search(
+            rf"(?<![a-z0-9]){re.escape(needle)}(?![a-z0-9])",
+            norm_answer,
+        ):
+            missing.append(label)
+    return missing
+
+
+def apply_source_identified_count_omission_repair(
+    answer_text: str,
+    source_counts: Sequence[Mapping[str, Any]],
+) -> tuple[str, list[str]]:
+    """
+    Bounded repair for omitted source-identified pleaded counts.
+
+    Appends only observed count labels (never titles). Returns
+    ``(answer, repaired_labels)``.
+    """
+    missing = missing_source_identified_count_labels(answer_text, source_counts)
+    if not missing:
+        return answer_text or "", []
+    if len(missing) == 1:
+        clause = f" The complaint separately pleads {missing[0]}."
+    elif len(missing) == 2:
+        clause = (
+            f" The complaint separately pleads {missing[0]} and {missing[1]}."
+        )
+    else:
+        clause = (
+            " The complaint separately pleads "
+            + ", ".join(missing[:-1])
+            + f", and {missing[-1]}."
+        )
+    base = (answer_text or "").rstrip()
+    if base and base[-1] not in ".!?":
+        base += "."
+    return (base + clause).strip(), list(missing)
+
+
+def evaluate_material_omissions_for_source_counts(
+    answer_text: str,
+    *,
+    semantic_preservation: Mapping[str, Any],
+    source_counts: Sequence[Mapping[str, Any]],
+    apply_repair: bool = True,
+) -> tuple[str, bool, list[str]]:
+    """
+    Enforce ``forbid_material_omissions`` against structured source counts.
+
+    Shared (not Case-00-specific): operates only on source-identified count
+    labels/categories supplied by the caller. When omissions are found and
+    ``apply_repair`` is true, performs one bounded label repair; if labels are
+    still missing, fails closed.
+    Returns ``(answer_text, ok, diagnostics)``.
+    """
+    diagnostics: list[str] = []
+    text = answer_text or ""
+    if not bool(semantic_preservation.get("forbid_material_omissions")):
+        return text, True, diagnostics
+    if not source_counts:
+        return text, True, diagnostics
+
+    missing = missing_source_identified_count_labels(text, source_counts)
+    if not missing:
+        return text, True, diagnostics
+
+    if apply_repair:
+        text, repaired = apply_source_identified_count_omission_repair(
+            text, source_counts
+        )
+        for label in repaired:
+            # Safe label token only (Count I / Count II) — no private prose.
+            safe = re.sub(r"[^A-Za-z0-9 ]+", "", label).strip().replace(" ", "_")
+            diagnostics.append(f"{MATERIAL_OMISSION_COUNT_REPAIRED}:{safe}")
+        missing = missing_source_identified_count_labels(text, source_counts)
+        if not missing:
+            return text, True, diagnostics
+
+    for label in missing:
+        safe = re.sub(r"[^A-Za-z0-9 ]+", "", label).strip().replace(" ", "_")
+        diagnostics.append(f"{MATERIAL_OMISSION_COUNT_MISSING}:{safe}")
+    return text, False, diagnostics
 
 
 def q2_no_defense_claim_from_validated(
@@ -720,6 +864,7 @@ def validate_final_answer_against_contract(
     apply_fallback: bool = True,
     apply_duplication_repair: bool = True,
     validated_claims: Optional[Mapping[str, Any]] = None,
+    source_identified_counts: Optional[Sequence[Mapping[str, Any]]] = None,
 ) -> AcceptanceValidationResult:
     """Validate fully assembled final answer; optionally fallback + dedupe.
 
@@ -729,10 +874,25 @@ def validate_final_answer_against_contract(
     When ``validated_claims`` is the immutable ``q2_validated_structured_claims.v1``
     object, ``q2-no-defense-or-indemnity`` is evaluated by the shared semantic
     evaluator (not OCR-derived contract phrase matching).
+
+    When ``forbid_material_omissions`` is set, source-identified pleaded counts
+    (from ``source_identified_counts`` or ``validated_claims``) must appear in
+    the answer; missing counts trigger one bounded label repair or fail closed.
     """
     text = answer_text or ""
     fallback_actions: dict[str, str] = {}
     diagnostics: list[str] = []
+
+    counts = list(source_identified_counts or [])
+    if not counts:
+        counts = source_identified_counts_from_validated(validated_claims)
+    text, counts_ok, count_diags = evaluate_material_omissions_for_source_counts(
+        text,
+        semantic_preservation=view.semantic_preservation,
+        source_counts=counts,
+        apply_repair=apply_fallback,
+    )
+    diagnostics.extend(count_diags)
 
     by_id = view.criterion_by_id()
     missing_for_fallback: list[str] = []
@@ -783,6 +943,20 @@ def validate_final_answer_against_contract(
     )
     diagnostics.extend(dup_diags)
 
+    # Re-check count completeness after fallback/dedupe (fail closed).
+    text, counts_ok_final, count_diags_final = (
+        evaluate_material_omissions_for_source_counts(
+            text,
+            semantic_preservation=view.semantic_preservation,
+            source_counts=counts,
+            apply_repair=False,
+        )
+    )
+    for d in count_diags_final:
+        if d not in diagnostics:
+            diagnostics.append(d)
+    counts_ok = counts_ok and counts_ok_final
+
     results: list[CriterionResult] = []
     all_pass = True
     for cid in view.required_criterion_ids:
@@ -812,9 +986,11 @@ def validate_final_answer_against_contract(
 
     if dup_result == DUP_FAIL:
         all_pass = False
+    if not counts_ok:
+        all_pass = False
 
     return AcceptanceValidationResult(
-        ok=all_pass and dup_result != DUP_FAIL,
+        ok=all_pass and dup_result != DUP_FAIL and counts_ok,
         final_answer=text,
         criterion_results=results,
         fallback_actions=fallback_actions,
