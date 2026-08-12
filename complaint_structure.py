@@ -327,6 +327,12 @@ _OCR_LETTER_SPACED_RE = re.compile(
     r"\b(?:[A-Za-z](?:[ \t]+[A-Za-z]){2,})\b"
 )
 
+# Mid-line WHEREFORE / prayer markers on collapsed OCR pages (often after a
+# glued page-number chrome prefix such as ``26 WHEREFORE ...``).
+_MIDLINE_RELIEF_HEADING_RE = re.compile(
+    r"(?i)(?P<body>\bwherefore\b|\bprayer\s+for\s+relief\b)"
+)
+
 
 def document_id_for_nyscef(nyscef_document_number: int) -> str:
     return f"nyscef-{int(nyscef_document_number):03d}"
@@ -339,6 +345,34 @@ def is_current_structure_schema(payload: Any) -> bool:
         and payload.get("schema_version") == SCHEMA_VERSION
         and isinstance(payload.get("documents"), list)
     )
+
+
+def controlling_complaint_structure_is_empty(payload: Any) -> bool:
+    """
+    True when a selected controlling complaint has zero sections and headings.
+
+    Empty unavailable/ambiguous maps (no selected controlling complaint) are not
+    treated as silently-empty caches — only a selected document that contributes
+    no structure can fail closed at derived-cache validation.
+    """
+    if not is_current_structure_schema(payload):
+        return False
+    selection = payload.get("selection")
+    if not isinstance(selection, dict):
+        return False
+    if selection.get("status") != SELECTION_STATUS_SELECTED:
+        return False
+    documents = [
+        doc for doc in (payload.get("documents") or []) if isinstance(doc, dict)
+    ]
+    if not documents:
+        return True
+    for doc in documents:
+        sections = doc.get("sections") or []
+        headings = doc.get("section_headings") or []
+        if sections or headings:
+            return False
+    return True
 
 
 def _empty_selection(
@@ -908,6 +942,50 @@ def _extract_headings_from_page(
                         "detail": ambiguity_note,
                     }
                 )
+                continue
+
+        # Collapsed OCR pages often glue page-number chrome onto WHEREFORE /
+        # prayer text (``26 WHEREFORE ...``), defeating line-start anchors.
+        # Emit a bounded mid-line relief heading so structure-backed routing
+        # still receives page provenance without inventing private prose.
+        for relief_match in _MIDLINE_RELIEF_HEADING_RE.finditer(healed_line):
+            body = relief_match.group("body")
+            key = _match_key_for_heading_body(body)
+            if key not in {"wherefore", "prayer_for_relief"}:
+                continue
+            original_line = original_lines[idx]
+            # Prefer the exact original span when lengths align; otherwise keep
+            # the healed relief token as the observed marker.
+            start, end = relief_match.start("body"), relief_match.end("body")
+            if 0 <= start < end <= len(original_line):
+                bounded = _collapse_ws(original_line[start:end])
+            else:
+                bounded = _collapse_ws(body)
+            if not bounded:
+                bounded = _collapse_ws(body)
+            ambiguity_note = "mid_line_relief_heading_on_collapsed_page"
+            headings.append(
+                {
+                    "ambiguous": True,
+                    "ambiguity_note": ambiguity_note,
+                    "match_key": key,
+                    "observed_marker": bounded,
+                    "page_id": prov["page_id"],
+                    "page_number": prov["page_number"],
+                    "line_index": idx,
+                }
+            )
+            uncertainties.append(
+                {
+                    "kind": "ambiguous_heading",
+                    "observed_marker": bounded,
+                    "page_id": prov["page_id"],
+                    "page_number": prov["page_number"],
+                    "detail": ambiguity_note,
+                }
+            )
+            # One relief heading per collapsed line is enough for page routing.
+            break
 
     return headings, uncertainties
 

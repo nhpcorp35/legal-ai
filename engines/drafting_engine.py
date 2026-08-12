@@ -1486,15 +1486,18 @@ _CATCH_ALL_RELIEF_RE = re.compile(
 )
 
 # Concise pleaded-versus-adjudicated distinction (generic; not case-specific).
+# Must include the word "pleaded" for production semantic_required checks, while
+# retaining that requested relief is not a judicial determination.
 _PLEADED_RELIEF_NOT_ADJUDICATION_PHRASE = (
-    "This answer describes relief requested in the complaint, "
+    "This answer describes pleaded requested relief in the complaint, "
     "not a judicial determination."
 )
 _PLEADED_NOT_ADJUDICATED_RE = re.compile(
     r"(?i)\b(?:"
+    r"pleaded\s+(?:requested\s+)?relief|"
+    r"pleaded\s+requests\s+for\s+relief|"
     r"relief\s+requested\s+in\s+the\s+complaint|"
     r"requested\s+in\s+the\s+complaint|"
-    r"pleaded\s+(?:requested\s+)?relief|"
     r"not\s+a\s+judicial\s+determination|"
     r"not\s+an\s+adjudicat(?:ed|ion)\s+outcome|"
     r"not\s+(?:a\s+)?(?:court|judicial)\s+(?:finding|ruling|determination|order)"
@@ -2120,6 +2123,69 @@ def _fallback_relief_page_ids_from_documents(
     return ordered
 
 
+def _page_carries_relief_proposition(text: str) -> bool:
+    """True when page text matches any evidence-grounded relief category."""
+    raw = text or ""
+    if not raw.strip():
+        return False
+    return bool(
+        _RESCISSION_VOID_RE.search(raw)
+        or _NO_DEFENSE_INDEMNITY_RE.search(raw)
+        or _CATCH_ALL_RELIEF_RE.search(raw)
+    )
+
+
+def _expand_relief_page_ids_with_prior_support(
+    relief_page_ids: Sequence[str],
+    page_lookup: Mapping[str, dict],
+) -> list[str]:
+    """
+    Narrow adjacent-page rule: include the immediately prior same-document
+    complaint page when it carries a relief proposition (e.g. no-defense
+    language immediately before the WHEREFORE heading page).
+
+    Does not broadly retrieve — at most one prior page per WHEREFORE page.
+    """
+    by_doc_page: Dict[tuple, str] = {}
+    for pid, entry in page_lookup.items():
+        nyscef = entry.get("nyscef_document_number")
+        pdf_page = entry.get("pdf_page")
+        if nyscef is None or pdf_page is None:
+            continue
+        try:
+            by_doc_page[(int(nyscef), int(pdf_page))] = str(pid)
+        except (TypeError, ValueError):
+            continue
+
+    ordered: List[str] = []
+    seen: set[str] = set()
+
+    def _take(pid: str) -> None:
+        if not pid or pid in seen:
+            return
+        seen.add(pid)
+        ordered.append(pid)
+
+    for page_id in relief_page_ids:
+        pid = str(page_id)
+        entry = page_lookup.get(pid) or {}
+        nyscef = entry.get("nyscef_document_number")
+        pdf_page = entry.get("pdf_page")
+        prior_pid = None
+        try:
+            if nyscef is not None and pdf_page is not None:
+                prior_pid = by_doc_page.get((int(nyscef), int(pdf_page) - 1))
+        except (TypeError, ValueError):
+            prior_pid = None
+        if prior_pid:
+            prior_entry = page_lookup.get(prior_pid) or {}
+            prior_text = str(prior_entry.get("text") or "")
+            if _page_carries_relief_proposition(prior_text):
+                _take(prior_pid)
+        _take(pid)
+    return ordered
+
+
 def route_complaint_relief_evidence(
     retrieval: Optional[Mapping[str, Any]],
     *,
@@ -2150,10 +2216,22 @@ def route_complaint_relief_evidence(
 
     structure_relief_page_ids = cs.collect_complaint_relief_page_ids(structure_payload)
     structure_context = cs.select_complaint_relief_structure_context(structure_payload)
+    page_lookup = _iter_document_pages_for_relief(documents)
     relief_page_ids = list(structure_relief_page_ids)
     if not relief_page_ids:
+        # Empty structure: WHEREFORE-marked pages plus the immediately prior
+        # complaint page when it carries relief propositions (narrow rule).
         relief_page_ids = _fallback_relief_page_ids_from_documents(documents)
-    structure_page_id_set = {str(pid) for pid in structure_relief_page_ids}
+        relief_page_ids = _expand_relief_page_ids_with_prior_support(
+            relief_page_ids, page_lookup
+        )
+    else:
+        # Structure often tags only the WHEREFORE heading page; include the
+        # immediately prior same-doc page when it carries relief propositions.
+        relief_page_ids = _expand_relief_page_ids_with_prior_support(
+            relief_page_ids, page_lookup
+        )
+    structure_page_id_set = {str(pid) for pid in relief_page_ids}
 
     existing = [h for h in (base.get("results") or []) if isinstance(h, dict)]
     by_page = {
@@ -2161,7 +2239,6 @@ def route_complaint_relief_evidence(
         for h in existing
         if h.get("page_id")
     }
-    page_lookup = _iter_document_pages_for_relief(documents)
 
     routed: List[dict] = []
     seen: set[str] = set()

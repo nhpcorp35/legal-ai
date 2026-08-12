@@ -754,6 +754,12 @@ def validate_generator_inputs(
                 f"{paths['complaint_structure']} missing or stale "
                 f"complaint structure schema (require {cs.SCHEMA_VERSION})"
             )
+        elif cs.controlling_complaint_structure_is_empty(structure_map):
+            errors.append(
+                f"{paths['complaint_structure']} controlling complaint has "
+                "zero sections and zero headings "
+                "(empty complaint_structure_map.v2 cache cannot silently control)"
+            )
     except RebuildError as exc:
         errors.append(exc.message)
 

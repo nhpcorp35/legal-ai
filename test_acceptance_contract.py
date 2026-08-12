@@ -582,15 +582,18 @@ def _q2_shaped_contract() -> dict[str, Any]:
             {
                 "id": _Q2_CRIT_PLEADED,
                 "presence_phrases": [
-                    "relief requested in the complaint",
+                    "pleaded requested relief",
                     "not a judicial determination",
                 ],
                 "evidence_phrases": [],
-                "semantic_required_phrases": [],
-                "semantic_forbidden_phrases": ["court has ruled"],
+                "semantic_required_phrases": ["pleaded"],
+                "semantic_forbidden_phrases": [
+                    "court has ruled",
+                    "established entitlement",
+                ],
                 "fallback_text": (
-                    "This answer describes relief requested in the complaint, "
-                    "not a judicial determination."
+                    "This answer describes pleaded requested relief in the "
+                    "complaint, not a judicial determination."
                 ),
                 "category": "relief",
             },
@@ -628,7 +631,7 @@ def _q2_view() -> ac.ContractEvaluationView:
 
 def _q2_grounded_answer() -> str:
     return (
-        "This answer describes relief requested in the complaint, "
+        "This answer describes pleaded requested relief in the complaint, "
         "not a judicial determination. "
         "The complaint requests rescission and void ab initio treatment "
         "(synth wherefore void ab initio excerpt). "
@@ -660,7 +663,7 @@ class Q2ShapedReliefCriterionTests(unittest.TestCase):
         view = _q2_view()
         # Mentions relief concepts but omits cited evidence phrases.
         answer = (
-            "This answer describes relief requested in the complaint, "
+            "This answer describes pleaded requested relief in the complaint, "
             "not a judicial determination. "
             "Plaintiff seeks rescission and void ab initio treatment plus "
             "no defense or indemnity and such other and further relief."
@@ -713,12 +716,13 @@ class Q2ShapedReliefCriterionTests(unittest.TestCase):
             result.fallback_actions.get(_Q2_CRIT_PLEADED), ac.FALLBACK_INSERTED
         )
         self.assertIn("not a judicial determination", result.final_answer.lower())
+        self.assertIn("pleaded", result.final_answer.lower())
 
     def test_fallback_cannot_manufacture_unsupported_relief_claims(self) -> None:
         view = _q2_view()
         # Missing rescission entirely (no presence, no evidence) — must not insert.
         answer = (
-            "This answer describes relief requested in the complaint, "
+            "This answer describes pleaded requested relief in the complaint, "
             "not a judicial determination. "
             "It seeks no defense or indemnity "
             "(synth no duty to defend or indemnify excerpt). "
@@ -788,7 +792,8 @@ class Q2ReliefSynthesisAssemblyTests(unittest.TestCase):
         )
         answer = assembled["proposed_answer"].lower()
         self.assertIn("not a judicial determination", answer)
-        self.assertIn("relief requested in the complaint", answer)
+        self.assertIn("pleaded", answer)
+        self.assertIn("pleaded requested relief", answer)
         self.assertIn("void ab initio", answer)
         self.assertIn("rescission", answer)
         self.assertIn("no defense or indemnity", answer)
@@ -998,6 +1003,7 @@ class Q2ReliefRoutingProductionShapedTests(unittest.TestCase):
         )
         answer = assembled["proposed_answer"].lower()
         self.assertIn("not a judicial determination", answer)
+        self.assertIn("pleaded", answer)
         self.assertIn("void ab initio", answer)
         self.assertIn("no defense or indemnity", answer)
         self.assertIn("catch-all", answer)
@@ -1375,6 +1381,294 @@ class Q2EvidenceProvenanceLinkageTests(unittest.TestCase):
         self.assertNotIn("no defense or indemnity", answer)
         cats = set(assembled["audit"].get("relief_supported_categories") or [])
         self.assertNotIn("no_defense_or_indemnity", cats)
+
+
+class Q2EmptyStructurePriorPageRoutingTests(unittest.TestCase):
+    """
+    Production-shaped: empty structure map + WHEREFORE page with prior-page
+    no-defense support. Synthetic text only — mirrors collapsed-OCR caches
+    that lack WHEREFORE section provenance.
+    """
+
+    QUESTION = (
+        "What relief does the complaint request in the WHEREFORE / "
+        "requested-relief section?"
+    )
+
+    def _empty_selected_structure(self, nyscef: int = 980) -> dict:
+        import complaint_structure as cs
+
+        return {
+            "schema_version": cs.SCHEMA_VERSION,
+            "selection": {
+                "status": cs.SELECTION_STATUS_SELECTED,
+                "reason": None,
+                "controlling_nyscef_document_number": nyscef,
+                "candidate_nyscef_document_numbers": [nyscef],
+                "excluded_nyscef_document_numbers": [],
+            },
+            "documents": [
+                {
+                    "document_id": f"nyscef-{nyscef:03d}",
+                    "nyscef_document_number": nyscef,
+                    "source_pages": [
+                        {
+                            "page_id": f"nyscef-{nyscef}-page-0001",
+                            "page_number": 1,
+                            "nyscef_document_number": nyscef,
+                        },
+                        {
+                            "page_id": f"nyscef-{nyscef}-page-0002",
+                            "page_number": 2,
+                            "nyscef_document_number": nyscef,
+                        },
+                    ],
+                    "section_headings": [],
+                    "paragraph_numbers": [],
+                    "sections": [],
+                    "contiguous_ranges": [],
+                    "missing_paragraph_numbers": [],
+                    "noncontiguous_sequences": [],
+                    "uncertainties": [],
+                }
+            ],
+        }
+
+    def test_empty_structure_routes_wherefore_plus_prior_no_defense_page(self) -> None:
+        import complaint_structure as cs
+        from engines import drafting_engine as de
+
+        prior_page = (
+            "Count II further seeks a declaration that Plaintiff owes neither "
+            "a duty to defend nor a duty to indemnify the named defendants."
+        )
+        wherefore_page = (
+            "26 WHEREFORE Plaintiff demands judgment declaring coverage void "
+            "ab initio and for rescission, and awarding costs."
+        )
+        pages = [
+            {
+                "nyscef_document_number": 980,
+                "page_number": 1,
+                "page_id": "nyscef-980-page-0001",
+                "text": prior_page,
+                "document_type": "complaint",
+                "document_classification": "complaint",
+                "source_filename": "synth_complaint_980.pdf",
+            },
+            {
+                "nyscef_document_number": 980,
+                "page_number": 2,
+                "page_id": "nyscef-980-page-0002",
+                "text": wherefore_page,
+                "document_type": "complaint",
+                "document_classification": "complaint",
+                "source_filename": "synth_complaint_980.pdf",
+            },
+        ]
+        structure_map = self._empty_selected_structure(980)
+        self.assertTrue(cs.controlling_complaint_structure_is_empty(structure_map))
+        self.assertEqual(cs.collect_complaint_relief_page_ids(structure_map), [])
+
+        documents = [
+            {
+                "filename": "synth_complaint_980.pdf",
+                "nyscef_document_number": 980,
+                "type": "complaint",
+                "document_type": "complaint",
+                "pages": pages,
+            }
+        ]
+        retrieval = {
+            "query": self.QUESTION,
+            "results": [
+                {
+                    "result_id": "hit-noise",
+                    "page_id": "nyscef-980-page-0001",
+                    "nyscef_document_number": 980,
+                    "pdf_page": 1,
+                    "document_type": "complaint",
+                    "excerpt": "Count II further seeks a declaration.",
+                    "classifications": ["party_allegation"],
+                    "score": 0.3,
+                }
+            ],
+            "complaint_structure_map": structure_map,
+        }
+        routed = de.route_complaint_relief_evidence(
+            retrieval,
+            question=self.QUESTION,
+            documents=documents,
+            complaint_structure_map=structure_map,
+        )
+        page_ids = [h.get("page_id") for h in (routed.get("results") or [])]
+        # Narrow set only: prior support page + WHEREFORE page — not broad retrieval.
+        self.assertEqual(
+            page_ids,
+            ["nyscef-980-page-0001", "nyscef-980-page-0002"],
+        )
+
+        packet = de.build_evidence_packet(
+            self.QUESTION,
+            routed,
+            complaint_structure_map=structure_map,
+            documents=documents,
+        )
+        supported = de.extract_supported_complaint_relief(packet)
+        self.assertTrue(supported["no_defense_or_indemnity"]["supported"])
+        self.assertTrue(supported["rescission_void_ab_initio"]["supported"])
+
+        assembled = de.apply_evidence_grounded_relief_synthesis(
+            {
+                "proposed_answer": "Draft omitting grounded relief citations.",
+                "propositions": [],
+                "audit": {},
+            },
+            packet,
+        )
+        answer = assembled["proposed_answer"].lower()
+        self.assertIn("pleaded", answer)
+        self.assertIn("not a judicial determination", answer)
+        self.assertIn("no defense or indemnity", answer)
+        self.assertIn("neither a duty to defend nor a duty to indemnify", answer)
+
+    def test_collapsed_ocr_wherefore_populates_structure_relief_page_ids(self) -> None:
+        """Mid-line WHEREFORE after page chrome must yield relief page_ids."""
+        import complaint_structure as cs
+
+        pages = [
+            {
+                "nyscef_document_number": 981,
+                "page_number": 1,
+                "page_id": "nyscef-981-page-0001",
+                "text": (
+                    "1 Plaintiff Synthetic Carrier LLC brings this coverage action."
+                ),
+                "document_type": "complaint",
+                "document_classification": "complaint",
+                "source_filename": "synth_complaint_981.pdf",
+            },
+            {
+                "nyscef_document_number": 981,
+                "page_number": 2,
+                "page_id": "nyscef-981-page-0002",
+                # Collapsed OCR: page number glued onto WHEREFORE (no newlines).
+                "text": (
+                    "26 WHEREFORE Plaintiff demands judgment declaring the policy "
+                    "void ab initio and for rescission of the same."
+                ),
+                "document_type": "complaint",
+                "document_classification": "complaint",
+                "source_filename": "synth_complaint_981.pdf",
+            },
+        ]
+        structure_map = cs.build_complaint_structure_map({"pages": pages})
+        self.assertFalse(cs.controlling_complaint_structure_is_empty(structure_map))
+        relief_ids = cs.collect_complaint_relief_page_ids(structure_map)
+        self.assertEqual(relief_ids, ["nyscef-981-page-0002"])
+        doc = structure_map["documents"][0]
+        self.assertTrue(doc.get("section_headings"))
+        self.assertTrue(doc.get("sections"))
+        match_keys = [
+            str(sec.get("match_key") or "").lower()
+            for sec in (doc.get("sections") or [])
+        ]
+        self.assertIn("wherefore", match_keys)
+
+    def test_pleaded_semantic_requires_pleaded_token(self) -> None:
+        view = _q2_view()
+        # Presence-like language without the required "pleaded" semantic token.
+        answer = (
+            "This answer describes relief requested in the complaint, "
+            "not a judicial determination. "
+            "The complaint requests rescission and void ab initio "
+            "(synth wherefore void ab initio excerpt). "
+            "It seeks no defense or indemnity "
+            "(synth no duty to defend or indemnify excerpt). "
+            "It includes such other and further relief "
+            "(synth such other and further relief excerpt)."
+        )
+        result = ac.validate_final_answer_against_contract(
+            answer, view, apply_fallback=False
+        )
+        self.assertFalse(result.ok)
+        by_id = {c.criterion_id: c for c in result.criterion_results}
+        pleaded = by_id[_Q2_CRIT_PLEADED]
+        # Missing "pleaded requested relief" presence → absent, or semantic fail
+        # if presence somehow matches. Either way the criterion must not pass.
+        self.assertNotEqual(pleaded.result_code, ac.CRIT_PASS)
+
+    def test_rescission_unsupported_when_evidence_phrase_absent(self) -> None:
+        """Fail-closed: do not invent unsupported rescission evidence phrases."""
+        view = _q2_view()
+        # Presence ok for rescission; evidence phrase deliberately absent.
+        # Catch-all and no-defense remain evidence-linked; pleaded uses stock.
+        answer = (
+            "This answer describes pleaded requested relief in the complaint, "
+            "not a judicial determination. "
+            "The complaint requests rescission and void ab initio treatment. "
+            "It also seeks no defense or indemnity "
+            "(synth no duty to defend or indemnify excerpt). "
+            "The WHEREFORE includes such other and further relief "
+            "(synth such other and further relief excerpt)."
+        )
+        result = ac.validate_final_answer_against_contract(
+            answer, view, apply_fallback=True
+        )
+        self.assertFalse(result.ok)
+        by_id = {c.criterion_id: c for c in result.criterion_results}
+        self.assertEqual(
+            by_id[_Q2_CRIT_RESCISSION].result_code, ac.CRIT_FAIL_UNSUPPORTED
+        )
+        # Catch-all remains supported / unchanged.
+        self.assertEqual(by_id[_Q2_CRIT_CATCH_ALL].result_code, ac.CRIT_PASS)
+        self.assertEqual(by_id[_Q2_CRIT_NO_DEFENSE].result_code, ac.CRIT_PASS)
+        self.assertEqual(by_id[_Q2_CRIT_PLEADED].result_code, ac.CRIT_PASS)
+        # Must not invent judicial-rescission style phrasing.
+        self.assertNotIn("judicial rescission", result.final_answer.lower())
+        rescission_spec = view.criterion_by_id()[_Q2_CRIT_RESCISSION]
+        self.assertNotIn(rescission_spec.fallback_text.strip(), result.final_answer)
+
+    def test_catch_all_behavior_unchanged_when_supported(self) -> None:
+        from engines import drafting_engine as de
+
+        excerpt = (
+            "WHEREFORE Plaintiff demands such other and further relief as the "
+            "Court deems just and proper."
+        )
+        packet = {
+            "question": self.QUESTION,
+            "retrieval_hit_count": 1,
+            "retrieval_hits": [
+                {
+                    "result_id": "hit-catch-all-only",
+                    "page_id": "nyscef-982-page-0001",
+                    "nyscef_document_number": 982,
+                    "pdf_page": 1,
+                    "document_type": "complaint",
+                    "excerpt": excerpt,
+                    "classifications": ["legal_position"],
+                }
+            ],
+        }
+        supported = de.extract_supported_complaint_relief(packet)
+        self.assertTrue(supported["catch_all_relief"]["supported"])
+        self.assertFalse(supported["rescission_void_ab_initio"]["supported"])
+        self.assertFalse(supported["no_defense_or_indemnity"]["supported"])
+        assembled = de.apply_evidence_grounded_relief_synthesis(
+            {
+                "proposed_answer": "Partial draft.",
+                "propositions": [],
+                "audit": {},
+            },
+            packet,
+        )
+        answer = assembled["proposed_answer"].lower()
+        self.assertIn("catch-all", answer)
+        self.assertIn("such other and further relief", answer)
+        self.assertIn("pleaded", answer)
+        self.assertNotIn("no defense or indemnity", answer)
+        self.assertNotIn("void ab initio", answer)
 
 
 if __name__ == "__main__":
