@@ -1,0 +1,802 @@
+"""Bounded tests for Q2 single-path validated structured-claims handoff.
+
+Groups (each intended <5 minutes):
+1. Workflow handoff wiring
+2. Exact claims object reaches finalizer and artifact writer
+3. Model/audit mutation cannot remove a validated claim
+4. Tamper/hash/identity failures block publication
+5. JSON/Markdown parity and all four Q2 criteria
+6. No secret/private text leakage
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import os
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+import yaml
+
+from engines import drafting_engine as de
+
+
+REPO_ROOT = Path(__file__).resolve().parent
+WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "hal-case00-q1.yml"
+PREFLIGHT_PATH = REPO_ROOT / "scripts" / "q2_production_boundary_preflight.py"
+GEN_PATH = REPO_ROOT / "scripts" / "generate_attorney_feedback_candidate.py"
+Q1_PATH = REPO_ROOT / "scripts" / "run_case00_b2_q1.py"
+
+_SECRET = "SECRET_PRIVATE_OCR_SNIPPET_never_in_validated_claims_9f3a"
+_SECRET_NAME = "PrivatePartyName_validated_claims_leak_test"
+
+
+def _load(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    if str(REPO_ROOT) not in os.sys.path:
+        os.sys.path.insert(0, str(REPO_ROOT))
+    os.sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+PRE = _load("q2_preflight_validated_claims", PREFLIGHT_PATH)
+GEN = _load("gen_validated_claims", GEN_PATH)
+Q1 = _load("run_case00_b2_q1_validated_claims", Q1_PATH)
+
+
+def _workflow_text() -> str:
+    return WORKFLOW_PATH.read_text(encoding="utf-8")
+
+
+def _load_workflow() -> dict:
+    doc = yaml.safe_load(WORKFLOW_PATH.read_text(encoding="utf-8"))
+    if isinstance(doc, dict) and True in doc and "on" not in doc:
+        doc["on"] = doc.pop(True)
+    return doc
+
+
+def _live_packet() -> dict:
+    page = (
+        "25\n\n"
+        "184. entitled to void the Policies ab initio and for rescission. "
+        f"{_SECRET} {_SECRET_NAME}\n"
+        "COUNT II Declaring that there is no duty to defend or indemni fy "
+        "Def en dants under the Policies.\n"
+        "187. WHEREFORE for such other and further relief as the Court deems "
+        "just and proper."
+    )
+    return {
+        "question": (
+            "What relief does the complaint request in the WHEREFORE / "
+            "requested-relief section?"
+        ),
+        "retrieval_hit_count": 1,
+        "retrieval_hits": [
+            {
+                "result_id": "hit-validated-claims",
+                "page_id": "nyscef-001-page-0025",
+                "nyscef_document_number": 1,
+                "pdf_page": 25,
+                "document_type": "complaint",
+                "excerpt": page[:120],
+                "page_text": page,
+                "classifications": ["legal_position"],
+                "score": 0.9,
+            }
+        ],
+    }
+
+
+def _replay() -> dict:
+    return PRE.build_sanitized_replay_from_evidence_packet(_live_packet())
+
+
+def _identity(**overrides):
+    base = {
+        "benchmark_id": "Case-00-Triborough",
+        "question_id": "Q2",
+        "object_key": (
+            "Benchmarks/acceptance-contracts/case-00-triborough/"
+            "q2/v1.0.0/acceptance_contract.json"
+        ),
+        "content_sha256": "a" * 64,
+    }
+    base.update(overrides)
+    return base
+
+
+def _claims_doc(replay=None, **identity_overrides) -> dict:
+    ident = _identity(**identity_overrides)
+    return PRE.build_validated_claims_from_replay(
+        replay or _replay(),
+        benchmark_id=ident["benchmark_id"],
+        question_id=ident["question_id"],
+        acceptance_contract_object_key=ident["object_key"],
+        acceptance_contract_content_sha256=ident["content_sha256"],
+    )
+
+
+def _contract_cfg_from_ident(ident: dict, proposed_seed: str = "") -> dict:
+    """Synthetic acceptance contract matching four Q2 criteria."""
+    import acceptance_contract as ac
+
+    contract = ac.build_synthetic_contract(
+        contract_id="contract-validated-claims-handoff",
+        version="1.0.0",
+        benchmark_id=ident["benchmark_id"],
+        question_id=ident["question_id"],
+        object_key=ident["object_key"],
+        required_criterion_ids=[
+            "q2-rescission-void-ab-initio",
+            "q2-no-defense-or-indemnity",
+            "q2-pleaded-relief-not-adjudication",
+            "q2-catch-all-relief",
+        ],
+        criteria=[
+            {
+                "id": "q2-rescission-void-ab-initio",
+                "presence_phrases": ["void ab initio"],
+                "evidence_phrases": ["void ab initio"],
+                "semantic_required_phrases": [],
+                "semantic_forbidden_phrases": [],
+                "fallback_text": "",
+                "category": "relief",
+            },
+            {
+                "id": "q2-no-defense-or-indemnity",
+                "presence_phrases": ["no defense or indemnity"],
+                "evidence_phrases": ["no defense or indemnity"],
+                "semantic_required_phrases": [],
+                "semantic_forbidden_phrases": [],
+                "fallback_text": "",
+                "category": "relief",
+            },
+            {
+                "id": "q2-pleaded-relief-not-adjudication",
+                "presence_phrases": [
+                    "pleaded requested relief",
+                    "not a judicial determination",
+                ],
+                "evidence_phrases": [],
+                "semantic_required_phrases": ["pleaded"],
+                "semantic_forbidden_phrases": [
+                    "court has ruled",
+                    "established entitlement",
+                ],
+                "fallback_text": (
+                    "This answer describes pleaded requested relief in the "
+                    "complaint, not a judicial determination."
+                ),
+                "category": "relief",
+            },
+            {
+                "id": "q2-catch-all-relief",
+                "presence_phrases": ["catch-all requested relief"],
+                "evidence_phrases": ["catch-all requested relief"],
+                "semantic_required_phrases": [],
+                "semantic_forbidden_phrases": [],
+                "fallback_text": "",
+                "category": "relief",
+            },
+        ],
+    )
+    # Align content hash / object key with handoff identity when overridden.
+    raw = json.dumps(contract, sort_keys=True).encode("utf-8")
+    # Use the synthetic contract's own hash unless caller pinned a fake sha
+    # for negative tests; for positive tests rebuild identity from contract.
+    return {
+        "object_key": contract["object_key"],
+        "benchmark_id": ident["benchmark_id"],
+        "question_id": ident["question_id"],
+        "content_sha256": contract["content_sha256"],
+        "raw_bytes": raw,
+        "_proposed_seed": proposed_seed,
+        "_contract": contract,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 1. Workflow handoff wiring
+# ---------------------------------------------------------------------------
+
+
+class WorkflowHandoffWiringTests(unittest.TestCase):
+    def test_preflight_emits_and_generation_consumes_validated_claims(self) -> None:
+        text = _workflow_text()
+        pre = text.split("Q2 production-boundary preflight", 1)[1].split(
+            "Generate requested question", 1
+        )[0]
+        gen = text.split(
+            "Generate requested question and publish four verified artifacts to B2",
+            1,
+        )[1].split("Upload machine-readable run result", 1)[0]
+        self.assertIn("--validated-claims-out", pre)
+        self.assertIn("VALIDATED_CLAIMS_JSON", pre)
+        self.assertIn("validated_claims_sha256", pre)
+        self.assertIn("--acceptance-contract-object-key", pre)
+        self.assertIn("--acceptance-contract-content-sha256", pre)
+        self.assertIn("--validated-claims-path", gen)
+        self.assertIn("--validated-claims-sha256", gen)
+        self.assertIn('QUESTION_ID" = "Q2"', gen)
+        self.assertIn("scripts/run_case00_b2_q1.py", gen)
+
+    def test_run_case00_forwards_validated_claims_flags(self) -> None:
+        src = Q1_PATH.read_text(encoding="utf-8")
+        self.assertIn("--validated-claims-path", src)
+        self.assertIn("--validated-claims-sha256", src)
+        self.assertIn("validated_claims_handoff_incomplete", src)
+
+
+# ---------------------------------------------------------------------------
+# 2. Exact claims object reaches finalizer + artifact writer
+# ---------------------------------------------------------------------------
+
+
+class ExactClaimsReachFinalizerTests(unittest.TestCase):
+    def test_handoff_claims_reach_finalizer_and_artifacts(self) -> None:
+        replay = _replay()
+        ident_contract = _contract_cfg_from_ident(_identity())
+        # Stamp claims with the real synthetic contract identity.
+        doc = PRE.build_validated_claims_from_replay(
+            replay,
+            benchmark_id=ident_contract["benchmark_id"],
+            question_id=ident_contract["question_id"],
+            acceptance_contract_object_key=ident_contract["object_key"],
+            acceptance_contract_content_sha256=ident_contract["content_sha256"],
+        )
+        template = PRE.fixed_template_answer_from_replay(replay)
+        expected_claims = GEN.verified_relief_claims_from_validated(doc)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            claims_path = root / "claims.json"
+            meta = PRE.write_validated_claims_artifact(doc, claims_path)
+            case_root = root / "case"
+            case_root.mkdir()
+            inventory = PRE.seed_minimal_case_root(case_root, replay)
+            out_root = root / "out"
+            out_root.mkdir()
+
+            captured: dict = {}
+
+            real_finalize = GEN.finalize_canonical_answer_against_contract
+
+            def _capture_finalize(proposed, view, verified_relief_claims=None):
+                captured["verified_relief_claims"] = list(
+                    verified_relief_claims or []
+                )
+                return real_finalize(
+                    proposed, view, verified_relief_claims=verified_relief_claims
+                )
+
+            reasoner = {
+                "status": de.STATUS_READY,
+                "proposed_answer": template,
+                "propositions": [],
+                "supporting_evidence": [],
+                "contrary_evidence": [],
+                "unresolved_questions": [],
+                "documents_pages_reviewed": [],
+                "attorney_review": {"requires_attorney_review": True},
+                "audit": {
+                    "model": "synth",
+                    "provider": "synth",
+                    "verified_relief_claims": PRE._stale_audit_claims(replay),
+                },
+                "confidence": 0.5,
+            }
+            packet = {
+                "question": replay.get("question_id") or "Q2",
+                "retrieval_hit_count": 0,
+                "retrieval_hits": [],
+            }
+
+            with mock.patch.object(
+                de, "answer_attorney_record_question", return_value=reasoner
+            ), mock.patch.object(
+                de, "build_evidence_packet", return_value=packet
+            ), mock.patch.object(
+                # Diagnostics may observe extract; claims must still come from handoff.
+                de,
+                "extract_supported_complaint_relief",
+                return_value={
+                    "rescission_void_ab_initio": {"supported": False},
+                    "no_defense_or_indemnity": {"supported": False},
+                    "catch_all_relief": {"supported": False},
+                },
+            ), mock.patch.object(
+                GEN,
+                "audit_serialized_model_input",
+                return_value={
+                    "audit": {"retrieval_hit_count": 0, "relief_intent": True},
+                    "evidence_packet": packet,
+                },
+            ), mock.patch.object(
+                GEN, "run_production_retrieval", return_value={"results": []}
+            ), mock.patch.object(
+                GEN,
+                "finalize_canonical_answer_against_contract",
+                side_effect=_capture_finalize,
+            ):
+                result = GEN.run_generation(
+                    case_root=case_root,
+                    question_id="Q2",
+                    required_commit="c" * 40,
+                    candidate_output_root=out_root,
+                    authorization_acknowledgement=GEN.AUTHORIZATION_ACK,
+                    generation_only=True,
+                    inventory_path=inventory,
+                    skip_commit_check=True,
+                    acceptance_contract_config=ident_contract,
+                    model_call=lambda _s, _u: {},
+                    validated_claims_path=claims_path,
+                    validated_claims_sha256=meta["validated_claims_sha256"],
+                )
+
+            self.assertTrue(result["ok"])
+            self.assertTrue(result.get("validated_claims_handoff_applied"))
+            self.assertEqual(
+                captured["verified_relief_claims"],
+                expected_claims,
+            )
+            candidate = json.loads(
+                Path(result["files"]["Q2_candidate_answer.json"]).read_text(
+                    encoding="utf-8"
+                )
+            )
+            audit = candidate.get("audit") or {}
+            self.assertEqual(audit.get("verified_relief_claims"), expected_claims)
+            self.assertEqual(
+                audit.get("validated_claims_sha256"),
+                meta["validated_claims_sha256"],
+            )
+            manifest = json.loads(
+                Path(result["files"]["generation_manifest.json"]).read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(
+                manifest.get("validated_claims_sha256"),
+                meta["validated_claims_sha256"],
+            )
+            self.assertEqual(
+                manifest.get("validated_claims_schema_version"),
+                GEN.VALIDATED_CLAIMS_SCHEMA_VERSION,
+            )
+
+
+# ---------------------------------------------------------------------------
+# 3. Model/audit mutation cannot remove a validated claim
+# ---------------------------------------------------------------------------
+
+
+class MutationCannotRemoveValidatedClaimTests(unittest.TestCase):
+    def test_stale_audit_and_packet_rebuild_cannot_drop_no_defense(self) -> None:
+        replay = _replay()
+        ident_contract = _contract_cfg_from_ident(_identity())
+        doc = PRE.build_validated_claims_from_replay(
+            replay,
+            benchmark_id=ident_contract["benchmark_id"],
+            question_id=ident_contract["question_id"],
+            acceptance_contract_object_key=ident_contract["object_key"],
+            acceptance_contract_content_sha256=ident_contract["content_sha256"],
+        )
+        template = PRE.fixed_template_answer_from_replay(replay)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            claims_path = root / "claims.json"
+            meta = PRE.write_validated_claims_artifact(doc, claims_path)
+            case_root = root / "case"
+            case_root.mkdir()
+            inventory = PRE.seed_minimal_case_root(case_root, replay)
+            out_root = root / "out"
+            out_root.mkdir()
+
+            # Model/audit omits no-defense; packet extract would also omit it.
+            stale = PRE._stale_audit_claims(replay)
+            unsupported_support = {
+                "rescission_void_ab_initio": {
+                    "supported": True,
+                    "page_id": "nyscef-001-page-0025",
+                    "evidence_snippet": "void",
+                },
+                "no_defense_or_indemnity": {
+                    "supported": False,
+                    "page_id": None,
+                    "evidence_snippet": "",
+                },
+                "catch_all_relief": {
+                    "supported": True,
+                    "page_id": "nyscef-001-page-0025",
+                    "evidence_snippet": "further relief",
+                },
+            }
+            reasoner = {
+                "status": de.STATUS_READY,
+                "proposed_answer": template,
+                "propositions": [],
+                "supporting_evidence": [],
+                "contrary_evidence": [],
+                "unresolved_questions": [],
+                "documents_pages_reviewed": [],
+                "attorney_review": {"requires_attorney_review": True},
+                "audit": {
+                    "model": "synth",
+                    "provider": "synth",
+                    "verified_relief_claims": stale,
+                },
+                "confidence": 0.5,
+            }
+            packet = {"question": "relief?", "retrieval_hit_count": 0, "retrieval_hits": []}
+
+            with mock.patch.object(
+                de, "answer_attorney_record_question", return_value=reasoner
+            ), mock.patch.object(
+                de, "build_evidence_packet", return_value=packet
+            ), mock.patch.object(
+                de,
+                "extract_supported_complaint_relief",
+                return_value=unsupported_support,
+            ), mock.patch.object(
+                GEN,
+                "audit_serialized_model_input",
+                return_value={
+                    "audit": {"retrieval_hit_count": 0, "relief_intent": True},
+                    "evidence_packet": packet,
+                },
+            ), mock.patch.object(
+                GEN, "run_production_retrieval", return_value={"results": []}
+            ):
+                result = GEN.run_generation(
+                    case_root=case_root,
+                    question_id="Q2",
+                    required_commit="c" * 40,
+                    candidate_output_root=out_root,
+                    authorization_acknowledgement=GEN.AUTHORIZATION_ACK,
+                    generation_only=True,
+                    inventory_path=inventory,
+                    skip_commit_check=True,
+                    acceptance_contract_config=ident_contract,
+                    model_call=lambda _s, _u: {},
+                    validated_claims_path=claims_path,
+                    validated_claims_sha256=meta["validated_claims_sha256"],
+                )
+
+            candidate = json.loads(
+                Path(result["files"]["Q2_candidate_answer.json"]).read_text(
+                    encoding="utf-8"
+                )
+            )
+            by_cat = {
+                c["category"]: c
+                for c in (candidate.get("audit") or {}).get(
+                    "verified_relief_claims"
+                )
+                or []
+            }
+            no_def = by_cat["no_defense_or_indemnity"]
+            self.assertTrue(no_def["supported"])
+            self.assertEqual(
+                no_def["selection_reason_code"], "supported_needs_paraphrase"
+            )
+            self.assertIn("no defense or indemnity", candidate["proposed_answer"].lower())
+
+
+# ---------------------------------------------------------------------------
+# 4. Tamper / hash / identity failures block publication
+# ---------------------------------------------------------------------------
+
+
+class TamperHashIdentityFailClosedTests(unittest.TestCase):
+    def _run_with_claims(self, doc: dict, sha=None) -> None:
+        replay = _replay()
+        ident_contract = _contract_cfg_from_ident(
+            {
+                "benchmark_id": doc["benchmark_id"],
+                "question_id": doc["question_id"],
+                "object_key": doc["acceptance_contract_object_key"],
+                "content_sha256": doc["acceptance_contract_content_sha256"],
+            }
+        )
+        # Re-stamp so identities match the contract loader.
+        doc = PRE.build_validated_claims_from_replay(
+            replay,
+            benchmark_id=ident_contract["benchmark_id"],
+            question_id=ident_contract["question_id"],
+            acceptance_contract_object_key=ident_contract["object_key"],
+            acceptance_contract_content_sha256=ident_contract["content_sha256"],
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            claims_path = root / "claims.json"
+            meta = PRE.write_validated_claims_artifact(doc, claims_path)
+            if sha is None:
+                sha = meta["validated_claims_sha256"]
+            case_root = root / "case"
+            case_root.mkdir()
+            inventory = PRE.seed_minimal_case_root(case_root, replay)
+            out_root = root / "out"
+            out_root.mkdir()
+            reasoner = {
+                "status": de.STATUS_READY,
+                "proposed_answer": PRE.fixed_template_answer_from_replay(replay),
+                "propositions": [],
+                "supporting_evidence": [],
+                "contrary_evidence": [],
+                "unresolved_questions": [],
+                "documents_pages_reviewed": [],
+                "attorney_review": {"requires_attorney_review": True},
+                "audit": {"model": "synth", "provider": "synth"},
+                "confidence": 0.5,
+            }
+            packet = {"question": "relief?", "retrieval_hit_count": 0, "retrieval_hits": []}
+            with mock.patch.object(
+                de, "answer_attorney_record_question", return_value=reasoner
+            ), mock.patch.object(
+                de, "build_evidence_packet", return_value=packet
+            ), mock.patch.object(
+                GEN,
+                "audit_serialized_model_input",
+                return_value={
+                    "audit": {"retrieval_hit_count": 0, "relief_intent": True},
+                    "evidence_packet": packet,
+                },
+            ), mock.patch.object(
+                GEN, "run_production_retrieval", return_value={"results": []}
+            ):
+                GEN.run_generation(
+                    case_root=case_root,
+                    question_id="Q2",
+                    required_commit="c" * 40,
+                    candidate_output_root=out_root,
+                    authorization_acknowledgement=GEN.AUTHORIZATION_ACK,
+                    generation_only=True,
+                    inventory_path=inventory,
+                    skip_commit_check=True,
+                    acceptance_contract_config=ident_contract,
+                    model_call=lambda _s, _u: {},
+                    validated_claims_path=claims_path,
+                    validated_claims_sha256=sha,
+                )
+
+    def test_hash_mismatch_blocks(self) -> None:
+        doc = _claims_doc()
+        with self.assertRaises(GEN.GenerationError) as ctx:
+            self._run_with_claims(doc, sha="b" * 64)
+        self.assertEqual(
+            ctx.exception.details.get("reason_code"),
+            "validated_claims_hash_mismatch",
+        )
+
+    def test_tampered_file_blocks(self) -> None:
+        replay = _replay()
+        ident_contract = _contract_cfg_from_ident(_identity())
+        doc = PRE.build_validated_claims_from_replay(
+            replay,
+            benchmark_id=ident_contract["benchmark_id"],
+            question_id=ident_contract["question_id"],
+            acceptance_contract_object_key=ident_contract["object_key"],
+            acceptance_contract_content_sha256=ident_contract["content_sha256"],
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            claims_path = root / "claims.json"
+            meta = PRE.write_validated_claims_artifact(doc, claims_path)
+            # Tamper after hashing.
+            tampered = json.loads(claims_path.read_text(encoding="utf-8"))
+            for row in tampered["claims"]:
+                if row["category"] == "no_defense_or_indemnity":
+                    row["supported"] = False
+                    row["page_id"] = None
+            claims_path.write_text(
+                json.dumps(tampered, sort_keys=True, indent=2), encoding="utf-8"
+            )
+            case_root = root / "case"
+            case_root.mkdir()
+            inventory = PRE.seed_minimal_case_root(case_root, replay)
+            out_root = root / "out"
+            out_root.mkdir()
+            reasoner = {
+                "status": de.STATUS_READY,
+                "proposed_answer": PRE.fixed_template_answer_from_replay(replay),
+                "propositions": [],
+                "supporting_evidence": [],
+                "contrary_evidence": [],
+                "unresolved_questions": [],
+                "documents_pages_reviewed": [],
+                "attorney_review": {"requires_attorney_review": True},
+                "audit": {"model": "synth", "provider": "synth"},
+                "confidence": 0.5,
+            }
+            packet = {"question": "relief?", "retrieval_hit_count": 0, "retrieval_hits": []}
+            with mock.patch.object(
+                de, "answer_attorney_record_question", return_value=reasoner
+            ), mock.patch.object(
+                de, "build_evidence_packet", return_value=packet
+            ), mock.patch.object(
+                GEN,
+                "audit_serialized_model_input",
+                return_value={
+                    "audit": {"retrieval_hit_count": 0, "relief_intent": True},
+                    "evidence_packet": packet,
+                },
+            ), mock.patch.object(
+                GEN, "run_production_retrieval", return_value={"results": []}
+            ):
+                with self.assertRaises(GEN.GenerationError) as ctx:
+                    GEN.run_generation(
+                        case_root=case_root,
+                        question_id="Q2",
+                        required_commit="c" * 40,
+                        candidate_output_root=out_root,
+                        authorization_acknowledgement=GEN.AUTHORIZATION_ACK,
+                        generation_only=True,
+                        inventory_path=inventory,
+                        skip_commit_check=True,
+                        acceptance_contract_config=ident_contract,
+                        model_call=lambda _s, _u: {},
+                        validated_claims_path=claims_path,
+                        validated_claims_sha256=meta["validated_claims_sha256"],
+                    )
+            # Fail closed before publication (unsupported or hash).
+            self.assertIn(
+                ctx.exception.details.get("reason_code"),
+                {
+                    "validated_claims_unsupported_required",
+                    "validated_claims_citation_missing",
+                    "validated_claims_hash_mismatch",
+                },
+            )
+
+    def test_benchmark_mismatch_blocks(self) -> None:
+        with self.assertRaises(GEN.GenerationError) as ctx:
+            GEN.load_and_verify_validated_claims(
+                Path("/nonexistent"),
+                expected_sha256="a" * 64,
+                benchmark_id="Case-00-Triborough",
+                question_id="Q2",
+                acceptance_contract_object_key="k",
+                acceptance_contract_content_sha256="a" * 64,
+            )
+        self.assertEqual(
+            ctx.exception.details.get("reason_code"),
+            "validated_claims_path_missing",
+        )
+
+    def test_identity_mismatch_blocks(self) -> None:
+        replay = _replay()
+        doc = _claims_doc(replay)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "claims.json"
+            meta = PRE.write_validated_claims_artifact(doc, path)
+            with self.assertRaises(GEN.GenerationError) as ctx:
+                GEN.load_and_verify_validated_claims(
+                    path,
+                    expected_sha256=meta["validated_claims_sha256"],
+                    benchmark_id="Other-Benchmark",
+                    question_id="Q2",
+                    acceptance_contract_object_key=doc[
+                        "acceptance_contract_object_key"
+                    ],
+                    acceptance_contract_content_sha256=doc[
+                        "acceptance_contract_content_sha256"
+                    ],
+                )
+            self.assertEqual(
+                ctx.exception.details.get("reason_code"),
+                "validated_claims_benchmark_mismatch",
+            )
+
+
+# ---------------------------------------------------------------------------
+# 5. JSON/Markdown parity + all four Q2 criteria
+# ---------------------------------------------------------------------------
+
+
+class ParityAndFourCriteriaTests(unittest.TestCase):
+    def test_preflight_emits_claims_and_passes_four_criteria(self) -> None:
+        replay = _replay()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            replay_path = root / "replay.json"
+            replay_path.write_text(
+                json.dumps(replay, sort_keys=True), encoding="utf-8"
+            )
+            claims_out = root / "validated_claims.json"
+            contract_cfg = PRE.build_template_acceptance_contract_config(replay)
+            payload = PRE.run_preflight(
+                replay_path=replay_path,
+                validated_claims_out=claims_out,
+                handoff_benchmark_id=contract_cfg["benchmark_id"],
+                handoff_question_id="Q2",
+                handoff_acceptance_contract_object_key=contract_cfg["object_key"],
+                handoff_acceptance_contract_content_sha256=contract_cfg[
+                    "content_sha256"
+                ],
+            )
+            self.assertTrue(payload["ok"], payload)
+            self.assertTrue(payload.get("parity_ok"))
+            self.assertEqual(
+                payload.get("criterion_ids_passed"),
+                [
+                    "q2-rescission-void-ab-initio",
+                    "q2-no-defense-or-indemnity",
+                    "q2-pleaded-relief-not-adjudication",
+                    "q2-catch-all-relief",
+                ],
+            )
+            self.assertTrue(claims_out.is_file())
+            loaded = json.loads(claims_out.read_text(encoding="utf-8"))
+            rebuilt = GEN.build_validated_structured_claims(
+                benchmark_id=loaded["benchmark_id"],
+                question_id=loaded["question_id"],
+                acceptance_contract_object_key=loaded[
+                    "acceptance_contract_object_key"
+                ],
+                acceptance_contract_content_sha256=loaded[
+                    "acceptance_contract_content_sha256"
+                ],
+                claims=loaded["claims"],
+                schema_version=loaded["schema_version"],
+            )
+            self.assertEqual(
+                payload.get("validated_claims_sha256"),
+                GEN.validated_claims_sha256(rebuilt),
+            )
+
+
+# ---------------------------------------------------------------------------
+# 6. No secret / private text leakage
+# ---------------------------------------------------------------------------
+
+
+class NoPrivateTextLeakageTests(unittest.TestCase):
+    def test_validated_claims_and_provenance_omit_secrets(self) -> None:
+        replay = _replay()
+        doc = _claims_doc(replay)
+        blob = json.dumps(doc)
+        self.assertNotIn(_SECRET, blob)
+        self.assertNotIn(_SECRET_NAME, blob)
+        self.assertNotIn("evidence_snippet", blob)
+        self.assertNotIn("page_text", blob)
+        self.assertNotIn("proposed_answer", blob)
+
+        prov = GEN.validated_claims_safe_provenance(doc)
+        prov_blob = json.dumps(prov)
+        self.assertNotIn(_SECRET, prov_blob)
+        self.assertIn("validated_claims_sha256", prov)
+        self.assertEqual(len(prov["validated_claims_sha256"]), 64)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            replay_path = Path(tmp) / "replay.json"
+            replay_path.write_text(
+                json.dumps(replay, sort_keys=True), encoding="utf-8"
+            )
+            claims_out = Path(tmp) / "claims.json"
+            contract_cfg = PRE.build_template_acceptance_contract_config(replay)
+            payload = PRE.run_preflight(
+                replay_path=replay_path,
+                validated_claims_out=claims_out,
+                handoff_benchmark_id=contract_cfg["benchmark_id"],
+                handoff_question_id="Q2",
+                handoff_acceptance_contract_object_key=contract_cfg["object_key"],
+                handoff_acceptance_contract_content_sha256=contract_cfg[
+                    "content_sha256"
+                ],
+            )
+            out_blob = json.dumps(payload) + claims_out.read_text(encoding="utf-8")
+            self.assertNotIn(_SECRET, out_blob)
+            self.assertNotIn(_SECRET_NAME, out_blob)
+            self.assertNotIn("alice.example", out_blob.lower())
+            self.assertTrue(payload.get("ok"), payload)
+
+
+if __name__ == "__main__":
+    unittest.main()

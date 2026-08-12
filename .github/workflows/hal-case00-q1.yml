@@ -377,12 +377,43 @@ jobs:
         shell: bash
         run: |
           set +e
+          VALIDATED_CLAIMS_JSON="$RUNNER_TEMP/q2-validated-structured-claims.json"
+          echo "VALIDATED_CLAIMS_JSON=$VALIDATED_CLAIMS_JSON" >> "$GITHUB_ENV"
           python scripts/q2_production_boundary_preflight.py \
             --replay "$REPLAY_JSON" \
+            --validated-claims-out "$VALIDATED_CLAIMS_JSON" \
+            --question-id Q2 \
+            --acceptance-contract-object-key "${{ steps.acceptance-contract.outputs.object_key }}" \
+            --acceptance-contract-content-sha256 "${{ steps.acceptance-contract.outputs.content_sha256 }}" \
+            --acceptance-contract-benchmark-id "${{ steps.acceptance-contract.outputs.benchmark_id }}" \
             | tee "$RESULT_JSON"
           status=${PIPESTATUS[0]}
           if [ "$status" -eq 0 ]; then
+            sha="$(python - <<'PY'
+          import json, os
+          path = os.environ["RESULT_JSON"]
+          with open(path, encoding="utf-8") as fh:
+              # RESULT_JSON may contain multiple tee lines; take last JSON object.
+              last = None
+              for line in fh:
+                  line = line.strip()
+                  if not line:
+                      continue
+                  try:
+                      last = json.loads(line)
+                  except json.JSONDecodeError:
+                      continue
+          if not isinstance(last, dict) or not last.get("ok"):
+              raise SystemExit("preflight result missing ok validated claims")
+          sha = str(last.get("validated_claims_sha256") or "").strip().lower()
+          if len(sha) != 64:
+              raise SystemExit("preflight result missing validated_claims_sha256")
+          print(sha)
+          PY
+            )"
             echo "ok=true" >> "$GITHUB_OUTPUT"
+            echo "validated_claims_sha256=$sha" >> "$GITHUB_OUTPUT"
+            echo "validated_claims_path=$VALIDATED_CLAIMS_JSON" >> "$GITHUB_OUTPUT"
           else
             echo "ok=false" >> "$GITHUB_OUTPUT"
           fi
@@ -395,18 +426,27 @@ jobs:
         shell: bash
         run: |
           set +e
-          python scripts/run_case00_b2_q1.py \
-            --case-root "$CASE_ROOT" \
-            --question-id "$QUESTION_ID" \
-            --required-commit "$REQUIRED_COMMIT" \
-            --candidate-output-root "$CANDIDATE_ROOT" \
-            --authorization-confirmed \
-            --generation-only \
-            --reuse-derived \
-            --acceptance-contract-object-key "${{ steps.acceptance-contract.outputs.object_key }}" \
-            --acceptance-contract-content-sha256 "${{ steps.acceptance-contract.outputs.content_sha256 }}" \
-            --acceptance-contract-benchmark-id "${{ steps.acceptance-contract.outputs.benchmark_id }}" \
-            | tee "$RESULT_JSON"
+          gen_args=(
+            python scripts/run_case00_b2_q1.py
+            --case-root "$CASE_ROOT"
+            --question-id "$QUESTION_ID"
+            --required-commit "$REQUIRED_COMMIT"
+            --candidate-output-root "$CANDIDATE_ROOT"
+            --authorization-confirmed
+            --generation-only
+            --reuse-derived
+            --acceptance-contract-object-key "${{ steps.acceptance-contract.outputs.object_key }}"
+            --acceptance-contract-content-sha256 "${{ steps.acceptance-contract.outputs.content_sha256 }}"
+            --acceptance-contract-benchmark-id "${{ steps.acceptance-contract.outputs.benchmark_id }}"
+          )
+          # Same-job single-path handoff: only when generating Q2 itself.
+          if [ "$QUESTION_ID" = "Q2" ]; then
+            gen_args+=(
+              --validated-claims-path "${{ steps.q2-preflight.outputs.validated_claims_path }}"
+              --validated-claims-sha256 "${{ steps.q2-preflight.outputs.validated_claims_sha256 }}"
+            )
+          fi
+          "${gen_args[@]}" | tee "$RESULT_JSON"
           status=${PIPESTATUS[0]}
           echo "exit_code=$status" >> "$GITHUB_OUTPUT"
           exit "$status"

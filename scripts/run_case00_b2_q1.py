@@ -1183,6 +1183,22 @@ def main(argv: Optional[list[str]] = None) -> int:
             f"(or set {ACCEPTANCE_CONTRACT_BENCHMARK_ID_ENV})."
         ),
     )
+    parser.add_argument(
+        "--validated-claims-path",
+        default=None,
+        help=(
+            "Optional privacy-safe validated structured-claims JSON emitted by "
+            "Q2 production-boundary preflight in the same job."
+        ),
+    )
+    parser.add_argument(
+        "--validated-claims-sha256",
+        default=None,
+        help=(
+            "Expected SHA-256 of the canonical validated claims JSON. Required "
+            "when --validated-claims-path is set."
+        ),
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -1244,30 +1260,55 @@ def main(argv: Optional[list[str]] = None) -> int:
         )
         return rebuild.returncode or 1
 
+    generation_argv = [
+        sys.executable,
+        str(generator_script),
+        "--case-root",
+        args.case_root,
+        "--question-id",
+        acceptance["question_id"],
+        "--required-commit",
+        args.required_commit,
+        "--candidate-output-root",
+        args.candidate_output_root,
+        "--authorize-private-evidence-transmission",
+        AUTHORIZATION_ACKNOWLEDGEMENT,
+        "--generation-only",
+        "--repo-root",
+        str(repo_root),
+        "--acceptance-contract-object-key",
+        acceptance["object_key"],
+        "--acceptance-contract-content-sha256",
+        acceptance["content_sha256"],
+        "--acceptance-contract-benchmark-id",
+        acceptance["benchmark_id"],
+    ]
+    claims_path = (args.validated_claims_path or "").strip()
+    claims_sha = (args.validated_claims_sha256 or "").strip()
+    if claims_path or claims_sha:
+        if not claims_path or not claims_sha:
+            _emit(
+                {
+                    "ok": False,
+                    "phase": "validated_claims",
+                    "blocker": "validated_claims_handoff_incomplete",
+                    "reason_code": "validated_claims_handoff_incomplete",
+                    "has_path": bool(claims_path),
+                    "has_sha256": bool(claims_sha),
+                }
+            )
+            return 1
+        generation_argv.extend(
+            [
+                "--validated-claims-path",
+                claims_path,
+                "--validated-claims-sha256",
+                claims_sha,
+            ]
+        )
+
     generation = _run(
-        [
-            sys.executable,
-            str(generator_script),
-            "--case-root",
-            args.case_root,
-            "--question-id",
-            acceptance["question_id"],
-            "--required-commit",
-            args.required_commit,
-            "--candidate-output-root",
-            args.candidate_output_root,
-            "--authorize-private-evidence-transmission",
-            AUTHORIZATION_ACKNOWLEDGEMENT,
-            "--generation-only",
-            "--repo-root",
-            str(repo_root),
-            "--acceptance-contract-object-key",
-            acceptance["object_key"],
-            "--acceptance-contract-content-sha256",
-            acceptance["content_sha256"],
-            "--acceptance-contract-benchmark-id",
-            acceptance["benchmark_id"],
-        ],
+        generation_argv,
         repo_root,
     )
     if generation.returncode != 0:

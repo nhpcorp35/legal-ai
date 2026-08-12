@@ -2,13 +2,13 @@
 """Q2 production-boundary CI preflight (privacy-safe, live-derived replay).
 
 Derives a sanitized replay from the same restored evidence packet / relief
-synthesis path used by live generation, then exercises verified-claim rebuild,
-canonical finalization, acceptance validation, and JSON/Markdown parity using
-only that replay plus fixed category templates.
-
-Mocks only external model / storage / network boundaries. Emits privacy-safe
-machine-readable reason codes only; never private B2 payloads or source text.
-The committed hand-built fixture is demoted and cannot satisfy the workflow gate.
+synthesis path used by live generation, then validates the boundary using one
+privacy-safe validated structured-claims artifact (canonical JSON + SHA-256).
+That artifact is the single claims object for preflight generation and the
+same-job production handoff. Mocks only external model / storage / network
+boundaries. Emits privacy-safe machine-readable reason codes only; never
+private B2 payloads or source text. The committed hand-built fixture is
+demoted and cannot satisfy the workflow gate.
 """
 
 from __future__ import annotations
@@ -38,6 +38,7 @@ PREFLIGHT_SCHEMA_VERSION = "q2_production_boundary_preflight_result.v1"
 REPLAY_SCHEMA_VERSION = q2diag.PREFLIGHT_REPLAY_SCHEMA_VERSION
 PHASE = "q2_production_boundary_preflight"
 DEMOTED_FIXTURE_SCHEMA = "q2_production_boundary_preflight_fixture.v1"
+VALIDATED_CLAIMS_SCHEMA_VERSION = gen.VALIDATED_CLAIMS_SCHEMA_VERSION
 
 _CRIT_RESCISSION = "q2-rescission-void-ab-initio"
 _CRIT_NO_DEFENSE = "q2-no-defense-or-indemnity"
@@ -267,6 +268,95 @@ def support_mapping_from_replay(replay: Mapping[str, Any]) -> dict[str, Any]:
             "evidence_snippet": snippet,
         }
     return supported
+
+
+def privacy_safe_claim_rows_from_replay(
+    replay: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Build privacy-safe structured claim rows (no evidence snippets)."""
+    categories = _relief_categories(replay)
+    rows: list[dict[str, Any]] = []
+    for key in _RELIEF_CATEGORIES:
+        row = categories.get(key) or {}
+        page_id = str(row.get("page_id") or "").strip() or None
+        reason = str(row.get("selection_reason_code") or "").strip()
+        rows.append(
+            {
+                "category": key,
+                "supported": bool(row.get("supported")),
+                "page_id": page_id,
+                "nyscef_document_number": row.get("nyscef_document_number") or 1,
+                "pdf_page": row.get("pdf_page") or 25,
+                "selection_reason_code": reason,
+            }
+        )
+    return rows
+
+
+def build_validated_claims_from_replay(
+    replay: Mapping[str, Any],
+    *,
+    benchmark_id: str,
+    question_id: str,
+    acceptance_contract_object_key: str,
+    acceptance_contract_content_sha256: str,
+) -> dict[str, Any]:
+    """Emit one privacy-safe validated claims object for handoff."""
+    doc = gen.build_validated_structured_claims(
+        benchmark_id=benchmark_id,
+        question_id=question_id,
+        acceptance_contract_object_key=acceptance_contract_object_key,
+        acceptance_contract_content_sha256=acceptance_contract_content_sha256,
+        claims=privacy_safe_claim_rows_from_replay(replay),
+    )
+    try:
+        gen.assert_validated_structured_claims_shape(doc)
+    except gen.GenerationError as exc:
+        raise PreflightError(
+            str(exc.details.get("reason_code") or "validated_claims_shape_failed"),
+            stage="validated_claims_emit",
+            details={
+                k: v
+                for k, v in exc.details.items()
+                if isinstance(v, (str, int, float, bool, type(None)))
+            },
+        ) from exc
+    return doc
+
+
+def write_validated_claims_artifact(
+    doc: Mapping[str, Any],
+    path: Path,
+) -> dict[str, Any]:
+    """Write canonical validated claims JSON; return path + SHA metadata."""
+    canonical = gen.build_validated_structured_claims(
+        benchmark_id=str(doc.get("benchmark_id") or ""),
+        question_id=str(doc.get("question_id") or ""),
+        acceptance_contract_object_key=str(
+            doc.get("acceptance_contract_object_key") or ""
+        ),
+        acceptance_contract_content_sha256=str(
+            doc.get("acceptance_contract_content_sha256") or ""
+        ),
+        claims=list(doc.get("claims") or []),
+        schema_version=str(doc.get("schema_version") or VALIDATED_CLAIMS_SCHEMA_VERSION),
+    )
+    digest = gen.validated_claims_sha256(canonical)
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # Pretty file for operators; integrity always uses canonical bytes.
+    path.write_text(
+        json.dumps(canonical, sort_keys=True, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    # Re-load via the same verifier path generation uses (canonical rebuild).
+    return {
+        "validated_claims_path": str(path.resolve()),
+        "validated_claims_sha256": digest,
+        "validated_claims_schema_version": VALIDATED_CLAIMS_SCHEMA_VERSION,
+        "validated_claims_benchmark_id": canonical["benchmark_id"],
+        "validated_claims_question_id": canonical["question_id"],
+    }
 
 
 def fixed_template_answer_from_replay(replay: Mapping[str, Any]) -> str:
@@ -673,6 +763,11 @@ def run_preflight(
     *,
     replay_path: Path,
     candidate_output_root: Optional[Path] = None,
+    validated_claims_out: Optional[Path] = None,
+    handoff_benchmark_id: Optional[str] = None,
+    handoff_question_id: Optional[str] = None,
+    handoff_acceptance_contract_object_key: Optional[str] = None,
+    handoff_acceptance_contract_content_sha256: Optional[str] = None,
 ) -> dict[str, Any]:
     """Execute Q2 production-boundary preflight from a live sanitized replay."""
     stage = "replay_load"
@@ -684,7 +779,8 @@ def run_preflight(
         stage = "fixed_templates"
         template_answer = fixed_template_answer_from_replay(replay)
         support = support_mapping_from_replay(replay)
-        # Placeholder packet so run_generation takes the evidence rebuild path.
+        # Placeholder packet so diagnostics still observe relief intent; claims
+        # themselves come from the validated handoff object (not rebuild).
         packet = {
             "question": (
                 "What relief does the complaint request in the WHEREFORE / "
@@ -705,9 +801,70 @@ def run_preflight(
             out_root.mkdir(parents=True, exist_ok=True)
             inventory = seed_minimal_case_root(case_root, replay)
             contract_cfg = build_template_acceptance_contract_config(replay)
+
+            stage = "validated_claims_emit"
+            # Single-path object used by this preflight generation call.
+            internal_claims = build_validated_claims_from_replay(
+                replay,
+                benchmark_id=str(contract_cfg["benchmark_id"]),
+                question_id=str(contract_cfg["question_id"]),
+                acceptance_contract_object_key=str(contract_cfg["object_key"]),
+                acceptance_contract_content_sha256=str(
+                    contract_cfg["content_sha256"]
+                ),
+            )
+            internal_claims_path = root / "validated_claims_internal.json"
+            internal_meta = write_validated_claims_artifact(
+                internal_claims, internal_claims_path
+            )
+
+            handoff_meta: dict[str, Any] = {}
+            if validated_claims_out is not None:
+                # Production handoff stamped with the live acceptance-contract
+                # identity that generation will verify against. Question is
+                # always Q2 — this artifact is the Q2 relief claims object.
+                bench = str(
+                    handoff_benchmark_id
+                    or contract_cfg["benchmark_id"]
+                ).strip()
+                qid = "Q2"
+                obj_key = str(
+                    handoff_acceptance_contract_object_key
+                    or contract_cfg["object_key"]
+                ).strip()
+                obj_sha = str(
+                    handoff_acceptance_contract_content_sha256
+                    or contract_cfg["content_sha256"]
+                ).strip()
+                if not (bench and qid and obj_key and obj_sha):
+                    raise PreflightError(
+                        "validated_claims_handoff_identity_missing",
+                        stage="validated_claims_emit",
+                    )
+                if (
+                    handoff_question_id is not None
+                    and str(handoff_question_id).strip()
+                    and str(handoff_question_id).strip() != "Q2"
+                ):
+                    raise PreflightError(
+                        "validated_claims_handoff_question_not_q2",
+                        stage="validated_claims_emit",
+                        details={"question_id": str(handoff_question_id)},
+                    )
+                handoff_doc = build_validated_claims_from_replay(
+                    replay,
+                    benchmark_id=bench,
+                    question_id=qid,
+                    acceptance_contract_object_key=obj_key,
+                    acceptance_contract_content_sha256=obj_sha,
+                )
+                handoff_meta = write_validated_claims_artifact(
+                    handoff_doc, Path(validated_claims_out)
+                )
+
             reasoner = {
                 "status": de.STATUS_READY,
-                # Start from templates; claim rebuild must preserve no-defense.
+                # Start from templates; validated handoff preserves no-defense.
                 "proposed_answer": template_answer,
                 "propositions": [],
                 "supporting_evidence": [],
@@ -718,6 +875,7 @@ def run_preflight(
                 "audit": {
                     "model": "synth-preflight-live-replay",
                     "provider": "synth-preflight-live-replay",
+                    # Stale audit must not win when validated handoff is supplied.
                     "verified_relief_claims": _stale_audit_claims(replay),
                 },
                 "confidence": 0.5,
@@ -729,6 +887,8 @@ def run_preflight(
             ), mock.patch.object(
                 de, "build_evidence_packet", return_value=packet
             ), mock.patch.object(
+                # If handoff is ignored, a rebuild would still pass — but the
+                # handoff path must not invoke extract/rebuild for claims.
                 de, "extract_supported_complaint_relief", return_value=support
             ), mock.patch.object(
                 gen,
@@ -751,6 +911,12 @@ def run_preflight(
                     skip_commit_check=True,
                     acceptance_contract_config=contract_cfg,
                     model_call=lambda _s, _u: {},
+                    validated_claims_path=Path(
+                        internal_meta["validated_claims_path"]
+                    ),
+                    validated_claims_sha256=str(
+                        internal_meta["validated_claims_sha256"]
+                    ),
                 )
 
             stage = "boundary_assertions"
@@ -758,7 +924,7 @@ def run_preflight(
                 replay=replay, result=result
             )
 
-        return {
+        payload = {
             "ok": True,
             "phase": PHASE,
             "schema_version": PREFLIGHT_SCHEMA_VERSION,
@@ -766,8 +932,27 @@ def run_preflight(
             "replay_schema_version": REPLAY_SCHEMA_VERSION,
             "question_id": "Q2",
             "finalized": True,
+            "validated_claims_schema_version": VALIDATED_CLAIMS_SCHEMA_VERSION,
+            "validated_claims_sha256": internal_meta["validated_claims_sha256"],
+            "validated_claims_handoff_applied": True,
             **assertion_meta,
         }
+        if handoff_meta:
+            payload.update(
+                {
+                    "validated_claims_path": handoff_meta["validated_claims_path"],
+                    "validated_claims_sha256": handoff_meta[
+                        "validated_claims_sha256"
+                    ],
+                    "validated_claims_benchmark_id": handoff_meta[
+                        "validated_claims_benchmark_id"
+                    ],
+                    "validated_claims_question_id": handoff_meta[
+                        "validated_claims_question_id"
+                    ],
+                }
+            )
+        return payload
     except PreflightError as exc:
         return {
             "ok": False,
@@ -783,12 +968,17 @@ def run_preflight(
             "finalized": False,
         }
     except gen.GenerationError as exc:
+        reason = (
+            str(exc.details.get("reason_code") or "")
+            if isinstance(exc.details, dict)
+            else ""
+        )
         return {
             "ok": False,
             "phase": PHASE,
             "schema_version": PREFLIGHT_SCHEMA_VERSION,
             "stage": stage,
-            "reason_code": "generation_entrypoint_failed",
+            "reason_code": reason or "generation_entrypoint_failed",
             "details": {
                 "blocker_kind": "GenerationError",
                 "finalized": bool(exc.details.get("finalized"))
@@ -847,6 +1037,39 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="Optional ephemeral output root for candidate artifacts.",
+    )
+    parser.add_argument(
+        "--validated-claims-out",
+        type=Path,
+        default=None,
+        help=(
+            "Write privacy-safe validated structured-claims JSON for the "
+            "same-job generation handoff."
+        ),
+    )
+    parser.add_argument(
+        "--acceptance-contract-object-key",
+        default=None,
+        help=(
+            "Production acceptance-contract object key stamped into the "
+            "validated claims handoff artifact."
+        ),
+    )
+    parser.add_argument(
+        "--acceptance-contract-content-sha256",
+        default=None,
+        help=(
+            "Production acceptance-contract content SHA-256 stamped into the "
+            "validated claims handoff artifact."
+        ),
+    )
+    parser.add_argument(
+        "--acceptance-contract-benchmark-id",
+        default=None,
+        help=(
+            "Production benchmark identity stamped into the validated claims "
+            "handoff artifact."
+        ),
     )
     parser.add_argument(
         "--fixture",
@@ -952,6 +1175,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     payload = run_preflight(
         replay_path=Path(replay_path),
         candidate_output_root=args.candidate_output_root,
+        validated_claims_out=args.validated_claims_out,
+        handoff_benchmark_id=args.acceptance_contract_benchmark_id,
+        handoff_question_id=str(args.question_id or "Q2"),
+        handoff_acceptance_contract_object_key=args.acceptance_contract_object_key,
+        handoff_acceptance_contract_content_sha256=(
+            args.acceptance_contract_content_sha256
+        ),
     )
     _emit(payload)
     return 0 if payload.get("ok") else 1

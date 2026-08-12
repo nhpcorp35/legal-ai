@@ -53,6 +53,18 @@ ACCEPTANCE_CONTRACT_ENV_NAMES = (
     ACCEPTANCE_CONTRACT_BENCHMARK_ID_ENV,
 )
 
+# Privacy-safe Q2 validated structured-claims handoff (preflight → generation).
+VALIDATED_CLAIMS_SCHEMA_VERSION = "q2_validated_structured_claims.v1"
+VALIDATED_CLAIMS_PATH_ENV = "Q2_VALIDATED_CLAIMS_PATH"
+VALIDATED_CLAIMS_SHA256_ENV = "Q2_VALIDATED_CLAIMS_SHA256"
+_VALIDATED_RELIEF_CATEGORIES = (
+    "rescission_void_ab_initio",
+    "no_defense_or_indemnity",
+    "catch_all_relief",
+)
+_SAFE_PAGE_OR_REASON_RE = re.compile(r"^[A-Za-z0-9_.:-]+$")
+_SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
+
 # Trusted Railway deployment metadata (present when .git is stripped at runtime).
 RAILWAY_GIT_COMMIT_SHA = "RAILWAY_GIT_COMMIT_SHA"
 RAILWAY_GIT_REPO_OWNER = "RAILWAY_GIT_REPO_OWNER"
@@ -110,6 +122,282 @@ def _canonical_json_bytes(obj: Any) -> bytes:
 
 def _sha256_bytes(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
+
+
+def canonical_validated_claims_bytes(doc: Mapping[str, Any]) -> bytes:
+    """Deterministic canonical JSON bytes for validated structured claims."""
+    return _canonical_json_bytes(doc)
+
+
+def validated_claims_sha256(doc: Mapping[str, Any]) -> str:
+    """SHA-256 hex digest of canonical validated structured claims JSON."""
+    return _sha256_bytes(canonical_validated_claims_bytes(doc))
+
+
+def build_validated_structured_claims(
+    *,
+    benchmark_id: str,
+    question_id: str,
+    acceptance_contract_object_key: str,
+    acceptance_contract_content_sha256: str,
+    claims: Sequence[Mapping[str, Any]],
+    schema_version: str = VALIDATED_CLAIMS_SCHEMA_VERSION,
+) -> dict[str, Any]:
+    """Assemble a privacy-safe validated claims object (no private source text)."""
+    normalized: list[dict[str, Any]] = []
+    for raw in claims:
+        if not isinstance(raw, Mapping):
+            raise GenerationError(
+                "validated_claims_malformed_claim_row",
+                reason_code="validated_claims_malformed_claim_row",
+                finalized=False,
+            )
+        category = str(raw.get("category") or "").strip()
+        page_id = str(raw.get("page_id") or "").strip() or None
+        reason = str(raw.get("selection_reason_code") or "").strip()
+        # Explicitly omit evidence_snippet / free text — privacy-safe handoff only.
+        row: dict[str, Any] = {
+            "category": category,
+            "supported": bool(raw.get("supported")),
+            "page_id": page_id,
+            "nyscef_document_number": raw.get("nyscef_document_number"),
+            "pdf_page": raw.get("pdf_page"),
+            "selection_reason_code": reason,
+        }
+        normalized.append(row)
+    return {
+        "schema_version": str(schema_version),
+        "benchmark_id": str(benchmark_id or "").strip(),
+        "question_id": str(question_id or "").strip(),
+        "acceptance_contract_object_key": str(
+            acceptance_contract_object_key or ""
+        ).strip(),
+        "acceptance_contract_content_sha256": str(
+            acceptance_contract_content_sha256 or ""
+        )
+        .strip()
+        .lower(),
+        "claims": normalized,
+    }
+
+
+def verified_relief_claims_from_validated(
+    doc: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Map validated handoff claims into finalizer/audit claim rows."""
+    out: list[dict[str, Any]] = []
+    for raw in doc.get("claims") or []:
+        if not isinstance(raw, Mapping):
+            continue
+        out.append(
+            {
+                "category": str(raw.get("category") or ""),
+                "supported": bool(raw.get("supported")),
+                "page_id": str(raw.get("page_id") or "").strip() or None,
+                "nyscef_document_number": raw.get("nyscef_document_number"),
+                "pdf_page": raw.get("pdf_page"),
+                # Empty by design: handoff never carries private OCR snippets.
+                "evidence_snippet": "",
+                "selection_reason_code": str(
+                    raw.get("selection_reason_code") or ""
+                ).strip(),
+            }
+        )
+    return out
+
+
+def validated_claims_safe_provenance(doc: Mapping[str, Any]) -> dict[str, Any]:
+    """Privacy-safe schema/hash/identity record for manifest/audit (no claim text)."""
+    return {
+        "validated_claims_schema_version": str(doc.get("schema_version") or ""),
+        "validated_claims_sha256": validated_claims_sha256(doc),
+        "validated_claims_benchmark_id": str(doc.get("benchmark_id") or ""),
+        "validated_claims_question_id": str(doc.get("question_id") or ""),
+        "validated_claims_acceptance_contract_object_key": str(
+            doc.get("acceptance_contract_object_key") or ""
+        ),
+        "validated_claims_acceptance_contract_content_sha256": str(
+            doc.get("acceptance_contract_content_sha256") or ""
+        ),
+        "validated_claims_category_count": len(list(doc.get("claims") or [])),
+    }
+
+
+def _fail_validated_claims(reason_code: str, **details: Any) -> None:
+    raise GenerationError(
+        f"Validated structured claims rejected: {reason_code}",
+        reason_code=reason_code,
+        finalized=False,
+        **details,
+    )
+
+
+def assert_validated_structured_claims_shape(doc: Mapping[str, Any]) -> None:
+    """Fail closed on malformed / duplicate / unsupported / citation-less claims."""
+    if not isinstance(doc, Mapping):
+        _fail_validated_claims("validated_claims_not_object")
+    schema = str(doc.get("schema_version") or "")
+    if schema != VALIDATED_CLAIMS_SCHEMA_VERSION:
+        _fail_validated_claims(
+            "validated_claims_schema_mismatch",
+            schema_version=schema,
+        )
+    for field in (
+        "benchmark_id",
+        "question_id",
+        "acceptance_contract_object_key",
+        "acceptance_contract_content_sha256",
+    ):
+        if not str(doc.get(field) or "").strip():
+            _fail_validated_claims(
+                "validated_claims_identity_missing",
+                field=field,
+            )
+    contract_sha = str(doc.get("acceptance_contract_content_sha256") or "").strip()
+    if not _SHA256_HEX_RE.fullmatch(contract_sha.lower()):
+        _fail_validated_claims("validated_claims_contract_sha_malformed")
+
+    claims = doc.get("claims")
+    if not isinstance(claims, list) or not claims:
+        _fail_validated_claims("validated_claims_missing")
+
+    seen: set[str] = set()
+    by_cat: dict[str, Mapping[str, Any]] = {}
+    for raw in claims:
+        if not isinstance(raw, Mapping):
+            _fail_validated_claims("validated_claims_malformed_claim_row")
+        category = str(raw.get("category") or "").strip()
+        if category not in _VALIDATED_RELIEF_CATEGORIES:
+            _fail_validated_claims(
+                "validated_claims_unknown_category",
+                category=category,
+            )
+        if category in seen:
+            _fail_validated_claims(
+                "validated_claims_duplicate_category",
+                category=category,
+            )
+        seen.add(category)
+        by_cat[category] = raw
+        if not bool(raw.get("supported")):
+            _fail_validated_claims(
+                "validated_claims_unsupported_required",
+                category=category,
+            )
+        page_id = str(raw.get("page_id") or "").strip()
+        if not page_id or not _SAFE_PAGE_OR_REASON_RE.fullmatch(page_id):
+            _fail_validated_claims(
+                "validated_claims_citation_missing",
+                category=category,
+            )
+        reason = str(raw.get("selection_reason_code") or "").strip()
+        if not reason or not _SAFE_PAGE_OR_REASON_RE.fullmatch(reason):
+            _fail_validated_claims(
+                "validated_claims_reason_missing",
+                category=category,
+            )
+        # Reject private free-text fields if a caller smuggles them in.
+        for banned in ("evidence_snippet", "page_text", "excerpt", "proposed_answer"):
+            if banned in raw and str(raw.get(banned) or "").strip():
+                _fail_validated_claims(
+                    "validated_claims_private_text_rejected",
+                    field=banned,
+                    category=category,
+                )
+
+    for required in _VALIDATED_RELIEF_CATEGORIES:
+        if required not in by_cat:
+            _fail_validated_claims(
+                "validated_claims_required_category_missing",
+                category=required,
+            )
+
+
+def load_and_verify_validated_claims(
+    path: Path,
+    *,
+    expected_sha256: str,
+    benchmark_id: str,
+    question_id: str,
+    acceptance_contract_object_key: str,
+    acceptance_contract_content_sha256: str,
+) -> dict[str, Any]:
+    """Load validated claims, verify canonical hash + identities, fail closed."""
+    expected = str(expected_sha256 or "").strip().lower()
+    if not expected or not _SHA256_HEX_RE.fullmatch(expected):
+        _fail_validated_claims("validated_claims_expected_sha_malformed")
+    claims_path = Path(path)
+    if not claims_path.is_file():
+        _fail_validated_claims(
+            "validated_claims_path_missing",
+            path_kind="validated_claims",
+        )
+    try:
+        raw = json.loads(claims_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        _fail_validated_claims("validated_claims_unreadable")
+    if not isinstance(raw, dict):
+        _fail_validated_claims("validated_claims_not_object")
+
+    assert_validated_structured_claims_shape(raw)
+    # Re-canonicalize so key order / whitespace cannot bypass integrity.
+    canonical_doc = build_validated_structured_claims(
+        benchmark_id=str(raw.get("benchmark_id") or ""),
+        question_id=str(raw.get("question_id") or ""),
+        acceptance_contract_object_key=str(
+            raw.get("acceptance_contract_object_key") or ""
+        ),
+        acceptance_contract_content_sha256=str(
+            raw.get("acceptance_contract_content_sha256") or ""
+        ),
+        claims=list(raw.get("claims") or []),
+        schema_version=str(raw.get("schema_version") or ""),
+    )
+    actual_sha = validated_claims_sha256(canonical_doc)
+    if actual_sha != expected:
+        _fail_validated_claims(
+            "validated_claims_hash_mismatch",
+            expected_sha256_prefix=expected[:12],
+            actual_sha256_prefix=actual_sha[:12],
+        )
+
+    if str(canonical_doc.get("benchmark_id") or "") != str(benchmark_id or "").strip():
+        _fail_validated_claims("validated_claims_benchmark_mismatch")
+    if str(canonical_doc.get("question_id") or "") != str(question_id or "").strip():
+        _fail_validated_claims("validated_claims_question_mismatch")
+    if str(canonical_doc.get("acceptance_contract_object_key") or "") != str(
+        acceptance_contract_object_key or ""
+    ).strip():
+        _fail_validated_claims("validated_claims_contract_key_mismatch")
+    if str(canonical_doc.get("acceptance_contract_content_sha256") or "").lower() != str(
+        acceptance_contract_content_sha256 or ""
+    ).strip().lower():
+        _fail_validated_claims("validated_claims_contract_sha_mismatch")
+
+    return canonical_doc
+
+
+def resolve_validated_claims_handoff_args(
+    *,
+    path: Optional[str] = None,
+    sha256: Optional[str] = None,
+    env: Optional[Mapping[str, str]] = None,
+) -> tuple[Optional[Path], Optional[str]]:
+    """Resolve optional validated-claims path + expected SHA (both or neither)."""
+    environ = env if env is not None else os.environ
+    resolved_path = (path or str(environ.get(VALIDATED_CLAIMS_PATH_ENV) or "")).strip()
+    resolved_sha = (
+        sha256 or str(environ.get(VALIDATED_CLAIMS_SHA256_ENV) or "")
+    ).strip()
+    if not resolved_path and not resolved_sha:
+        return None, None
+    if not resolved_path or not resolved_sha:
+        _fail_validated_claims(
+            "validated_claims_handoff_incomplete",
+            has_path=bool(resolved_path),
+            has_sha256=bool(resolved_sha),
+        )
+    return Path(resolved_path), resolved_sha.lower()
 
 
 def _normalize_ref_names(ref_name: str) -> tuple[str, set[str]]:
@@ -1515,6 +1803,8 @@ def run_generation(
     skip_commit_check: bool = False,
     top_k: int = 30,
     acceptance_contract_config: Optional[dict] = None,
+    validated_claims_path: Optional[Path] = None,
+    validated_claims_sha256: Optional[str] = None,
 ) -> dict:
     """Run generation-only candidate creation. Returns machine-readable result."""
     if authorization_acknowledgement != AUTHORIZATION_ACK:
@@ -1551,6 +1841,31 @@ def run_generation(
             acceptance_contract_load_status=load_status,
             acceptance_contract_error_code=load_error,
             acceptance_contract=acceptance_provenance.get("acceptance_contract"),
+        )
+
+    # Optional single-path Q2 validated claims handoff from preflight.
+    handoff_path, handoff_sha = resolve_validated_claims_handoff_args(
+        path=str(validated_claims_path) if validated_claims_path else None,
+        sha256=validated_claims_sha256,
+    )
+    validated_claims_doc: Optional[dict[str, Any]] = None
+    validated_claims_provenance: Optional[dict[str, Any]] = None
+    if handoff_path is not None:
+        if not acceptance_contract_config:
+            _fail_validated_claims("validated_claims_requires_acceptance_contract")
+        cfg = acceptance_contract_config
+        validated_claims_doc = load_and_verify_validated_claims(
+            handoff_path,
+            expected_sha256=str(handoff_sha or ""),
+            benchmark_id=str(cfg.get("benchmark_id") or ""),
+            question_id=str(cfg.get("question_id") or question_id),
+            acceptance_contract_object_key=str(cfg.get("object_key") or ""),
+            acceptance_contract_content_sha256=str(cfg.get("content_sha256") or ""),
+        )
+        if str(validated_claims_doc.get("question_id") or "") != str(question_id):
+            _fail_validated_claims("validated_claims_question_mismatch")
+        validated_claims_provenance = validated_claims_safe_provenance(
+            validated_claims_doc
         )
 
     inputs = load_permitted_case_inputs(
@@ -1713,10 +2028,14 @@ def run_generation(
     if contract_view is not None:
         proposed = str(reasoner_result.get("proposed_answer") or "")
         reasoner_audit_pre = reasoner_result.get("audit") or {}
-        # When an evidence packet is present, always rebuild verified relief
-        # claims from it. Never retain a stale/incomplete audit list that can
-        # omit paraphrase-needed categories (e.g. supported_needs_paraphrase).
-        if evidence_packet is not None:
+        if validated_claims_doc is not None:
+            # Single-path handoff: use the exact preflight-validated claims.
+            # Do not rebuild or overwrite from evidence_packet / model audit.
+            verified_claims = verified_relief_claims_from_validated(
+                validated_claims_doc
+            )
+        elif evidence_packet is not None:
+            # Backward-compatible path (no validated handoff supplied).
             verified_claims = de.structured_verified_relief_claims_from_supported(
                 de.extract_supported_complaint_relief(evidence_packet)
             )
@@ -1751,6 +2070,8 @@ def run_generation(
             }
             if q2_diagnostics is not None:
                 err_kwargs[DIAGNOSTIC_RESULT_KEY] = q2_diagnostics
+            if validated_claims_provenance is not None:
+                err_kwargs.update(validated_claims_provenance)
             raise GenerationError(
                 "Acceptance-contract validation failed; candidate not finalized",
                 **err_kwargs,
@@ -1760,9 +2081,12 @@ def run_generation(
         reasoner_audit = dict(reasoner_result.get("audit") or {})
         reasoner_audit["acceptance_contract_validation_ok"] = True
         reasoner_audit["acceptance_contract_canonical_validated"] = True
-        # Authoritative rebuilt list must win before artifact serialization.
+        # Authoritative claims list must win before artifact serialization.
         if verified_claims is not None:
             reasoner_audit["verified_relief_claims"] = verified_claims
+        if validated_claims_provenance is not None:
+            reasoner_audit.update(validated_claims_provenance)
+            reasoner_audit["validated_claims_handoff_applied"] = True
         reasoner_result["audit"] = reasoner_audit
 
     out_root = Path(candidate_output_root)
@@ -1771,6 +2095,10 @@ def run_generation(
     out_dir = out_root / f"{question_id.lower()}-candidate-{stamp}"
     if out_dir.exists():
         out_dir = out_root / f"{question_id.lower()}-candidate-{stamp}.{_sha256_bytes(stamp.encode())[:8]}"
+
+    if validated_claims_provenance is not None:
+        acceptance_provenance = dict(acceptance_provenance or {})
+        acceptance_provenance.update(validated_claims_provenance)
 
     written = write_candidate_artifacts(
         out_dir,
@@ -1797,6 +2125,9 @@ def run_generation(
         "model_input_audit": inspection["audit"],
         "acceptance_contract": acceptance_provenance.get("acceptance_contract"),
     }
+    if validated_claims_provenance is not None:
+        result_payload.update(validated_claims_provenance)
+        result_payload["validated_claims_handoff_applied"] = True
     if q2_diagnostics is not None:
         # Retained on the machine-readable run result (GHA artifact, 7 days);
         # never uploaded to canonical B2 candidate objects.
@@ -1895,6 +2226,25 @@ def build_parser() -> argparse.ArgumentParser:
             "offline). Never commit private benchmark contracts."
         ),
     )
+    p.add_argument(
+        "--validated-claims-path",
+        type=Path,
+        default=None,
+        help=(
+            "Optional privacy-safe validated structured-claims JSON from Q2 "
+            f"preflight (or set {VALIDATED_CLAIMS_PATH_ENV}). When set, "
+            "generation verifies the canonical SHA and uses that exact claims "
+            "collection instead of rebuilding from evidence_packet."
+        ),
+    )
+    p.add_argument(
+        "--validated-claims-sha256",
+        default=None,
+        help=(
+            "Expected SHA-256 of the canonical validated claims JSON (or set "
+            f"{VALIDATED_CLAIMS_SHA256_ENV}). Required with --validated-claims-path."
+        ),
+    )
     return p
 
 
@@ -1919,6 +2269,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             repo_root=args.repo_root,
             inventory_path=args.inventory_path,
             acceptance_contract_config=acceptance_config,
+            validated_claims_path=args.validated_claims_path,
+            validated_claims_sha256=args.validated_claims_sha256,
         )
     except GenerationError as exc:
         payload = {
