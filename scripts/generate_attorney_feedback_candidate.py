@@ -1713,15 +1713,16 @@ def run_generation(
     if contract_view is not None:
         proposed = str(reasoner_result.get("proposed_answer") or "")
         reasoner_audit_pre = reasoner_result.get("audit") or {}
-        verified_claims = reasoner_audit_pre.get("verified_relief_claims")
-        if not isinstance(verified_claims, list):
-            # Rebuild from the same evidence packet synthesis consumed when
-            # audit lacks structured claims (older reasoner payloads).
-            if evidence_packet is not None:
-                verified_claims = de.structured_verified_relief_claims_from_supported(
-                    de.extract_supported_complaint_relief(evidence_packet)
-                )
-            else:
+        # When an evidence packet is present, always rebuild verified relief
+        # claims from it. Never retain a stale/incomplete audit list that can
+        # omit paraphrase-needed categories (e.g. supported_needs_paraphrase).
+        if evidence_packet is not None:
+            verified_claims = de.structured_verified_relief_claims_from_supported(
+                de.extract_supported_complaint_relief(evidence_packet)
+            )
+        else:
+            verified_claims = reasoner_audit_pre.get("verified_relief_claims")
+            if not isinstance(verified_claims, list):
                 verified_claims = None
         canonical, validation = finalize_canonical_answer_against_contract(
             proposed,
@@ -1759,9 +1760,8 @@ def run_generation(
         reasoner_audit = dict(reasoner_result.get("audit") or {})
         reasoner_audit["acceptance_contract_validation_ok"] = True
         reasoner_audit["acceptance_contract_canonical_validated"] = True
-        if verified_claims is not None and not isinstance(
-            reasoner_audit.get("verified_relief_claims"), list
-        ):
+        # Authoritative rebuilt list must win before artifact serialization.
+        if verified_claims is not None:
             reasoner_audit["verified_relief_claims"] = verified_claims
         reasoner_result["audit"] = reasoner_audit
 

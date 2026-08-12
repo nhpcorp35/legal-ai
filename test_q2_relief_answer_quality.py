@@ -11,8 +11,11 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 import acceptance_contract as ac
+import matter_builder as mb
+from engines import drafting_engine as de
 
 
 def _load_gen_cli():
@@ -1655,6 +1658,349 @@ class Q2Production31629603939StructuredClaimHandoffTests(unittest.TestCase):
                 ),
                 "",
             )
+
+
+# ---------------------------------------------------------------------------
+# E2E: run_generation must rebuild verified_relief_claims from evidence_packet
+# whenever present (never retain a stale audit list), pass them through
+# finalize_canonical_answer_against_contract, overwrite reasoner audit before
+# write_candidate_artifacts, and fail closed when support is absent.
+# Synthetic record matches diagnostic run 31629603939.
+# ---------------------------------------------------------------------------
+
+
+def _q2_minimal_case(root: Path) -> Path:
+    """Minimal permitted corpus for Q2 run_generation (no gold/private text)."""
+    nyscef = 1
+    page = mb.build_page_record(
+        25,
+        _Q2_31629603939_PAGE_TEXT,
+        "native",
+        nyscef_document_number=nyscef,
+    )
+    page.update(
+        {
+            "nyscef_document_number": nyscef,
+            "pdf_page_number": 25,
+            "page_id": _Q2_31629603939_PAGE_ID,
+            "source_filename": f"nyscef_doc_no_{nyscef}_complaint.pdf",
+            "source_path": f"/tmp/synthetic/nyscef_doc_no_{nyscef}_complaint.pdf",
+        }
+    )
+    (root / "derived" / "page-extraction").mkdir(parents=True)
+    (root / "derived" / "exhibit-segmentation").mkdir(parents=True)
+    (root / "derived" / "case-map").mkdir(parents=True)
+    (root / "derived" / "question-text").mkdir(parents=True)
+    (root / "derived" / "page-extraction" / "canonical_page_records.json").write_text(
+        json.dumps({"pages": [page]}, indent=2) + "\n", encoding="utf-8"
+    )
+    (root / "derived" / "exhibit-segmentation" / "filing_exhibit_map.json").write_text(
+        json.dumps(
+            {
+                "filings": [
+                    {
+                        "nyscef_document_number": nyscef,
+                        "segments": [],
+                        "uncertain_boundaries": [],
+                    }
+                ]
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (root / "derived" / "case-map" / "case_map.json").write_text(
+        json.dumps({"case_map": mb.empty_case_map()}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    (root / "derived" / "question-text" / "questions.json").write_text(
+        json.dumps({"Q2": _Q2_QUESTION}, indent=2) + "\n", encoding="utf-8"
+    )
+    inv = root / "inventory.json"
+    inv.write_text(
+        json.dumps(
+            {
+                "filings": [
+                    {
+                        "nyscef_document_number": nyscef,
+                        "filename": f"nyscef_doc_no_{nyscef}_complaint.pdf",
+                        "ingest_canonical": True,
+                        "sha256": "b" * 64,
+                    }
+                ]
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return inv
+
+
+class Q2RunGeneration31629603939VerifiedClaimRebuildTests(unittest.TestCase):
+    """Real run_generation path rebuilds stale audit claims from the packet."""
+
+    def _packet(self) -> dict[str, Any]:
+        return {
+            "question": _Q2_QUESTION,
+            "retrieval_hit_count": 1,
+            "retrieval_hits": [
+                {
+                    "result_id": "hit-synth-31629603939",
+                    "page_id": _Q2_31629603939_PAGE_ID,
+                    "nyscef_document_number": 1,
+                    "pdf_page": 25,
+                    "document_type": "complaint",
+                    "excerpt": _Q2_31629603939_EXCERPT,
+                    "page_text": _Q2_31629603939_PAGE_TEXT,
+                    "classifications": ["legal_position"],
+                    "score": 0.91,
+                }
+            ],
+        }
+
+    def _quote_gap_answer(self) -> str:
+        return (
+            "This answer describes pleaded requested relief in the complaint, "
+            "not a judicial determination. The complaint requests a declaration "
+            "that coverage is void ab initio based on alleged material "
+            "misrepresentations and non-disclosures, as reflected in the cited "
+            f'pleading language: "{_Q2_31629603939_OCR_RESCISSION_QUOTE}" '
+            f"(page_id {_Q2_31629603939_PAGE_ID}). The complaint also includes "
+            "catch-all requested relief, as reflected in the cited pleading "
+            f'language: "{_Q2_31629603939_CLEAN_CATCH}" '
+            f"(page_id {_Q2_31629603939_PAGE_ID})."
+        )
+
+    def _stale_audit_claims(self) -> list[dict[str, Any]]:
+        # Stale list is present but marks no-defense unsupported — without
+        # packet rebuild, finalize would fail-closed and omit the paraphrase.
+        return [
+            {
+                "category": "rescission_void_ab_initio",
+                "supported": True,
+                "page_id": _Q2_31629603939_PAGE_ID,
+                "nyscef_document_number": 1,
+                "pdf_page": 25,
+                "evidence_snippet": "void the Policies ab initio",
+                "selection_reason_code": "supported_clean_excerpt",
+            },
+            {
+                "category": "no_defense_or_indemnity",
+                "supported": False,
+                "page_id": None,
+                "nyscef_document_number": 1,
+                "pdf_page": 25,
+                "evidence_snippet": "",
+                "selection_reason_code": "unsupported",
+            },
+            {
+                "category": "catch_all_relief",
+                "supported": True,
+                "page_id": _Q2_31629603939_PAGE_ID,
+                "nyscef_document_number": 1,
+                "pdf_page": 25,
+                "evidence_snippet": _Q2_31629603939_CLEAN_CATCH,
+                "selection_reason_code": "supported_clean_excerpt",
+            },
+        ]
+
+    def _contract_config(self) -> dict[str, Any]:
+        contract = _q2_shaped_contract(
+            rescission_evidence="void the Policies ab initio",
+            no_defense_evidence="no defense or indemnity",
+            catch_all_evidence=_Q2_31629603939_CLEAN_CATCH,
+        )
+        return {
+            "object_key": contract["object_key"],
+            "benchmark_id": "synth-benchmark-q2-quality",
+            "question_id": "Q2",
+            "content_sha256": contract["content_sha256"],
+            "raw_bytes": json.dumps(contract, sort_keys=True).encode("utf-8"),
+        }
+
+    def _ready_reasoner(self, *, claims: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "status": de.STATUS_READY,
+            "proposed_answer": self._quote_gap_answer(),
+            "propositions": [],
+            "supporting_evidence": [],
+            "contrary_evidence": [],
+            "unresolved_questions": [],
+            "documents_pages_reviewed": [],
+            "attorney_review": {"requires_attorney_review": True},
+            "audit": {
+                "model": "synth",
+                "provider": "synth",
+                "verified_relief_claims": claims,
+            },
+            "confidence": 0.5,
+        }
+
+    def test_run_generation_rebuilds_verified_claims_end_to_end(self) -> None:
+        packet = self._packet()
+        stale = self._stale_audit_claims()
+        # Prove packet supports paraphrase while stale audit does not.
+        supported = de.extract_supported_complaint_relief(packet)
+        rebuilt = de.structured_verified_relief_claims_from_supported(supported)
+        by_rebuilt = {c["category"]: c for c in rebuilt}
+        self.assertTrue(by_rebuilt["no_defense_or_indemnity"]["supported"])
+        self.assertEqual(
+            by_rebuilt["no_defense_or_indemnity"]["selection_reason_code"],
+            "supported_needs_paraphrase",
+        )
+        self.assertFalse(
+            next(c for c in stale if c["category"] == "no_defense_or_indemnity")[
+                "supported"
+            ]
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            case_root = root / "case"
+            case_root.mkdir()
+            out_root = root / "out"
+            out_root.mkdir()
+            inventory = _q2_minimal_case(case_root)
+            reasoner = self._ready_reasoner(claims=stale)
+
+            with mock.patch.object(
+                de, "answer_attorney_record_question", return_value=reasoner
+            ), mock.patch.object(
+                de, "build_evidence_packet", return_value=packet
+            ), mock.patch.object(
+                GEN,
+                "audit_serialized_model_input",
+                return_value={
+                    "audit": {"retrieval_hit_count": 1, "relief_intent": True},
+                    "evidence_packet": packet,
+                },
+            ):
+                result = GEN.run_generation(
+                    case_root=case_root,
+                    question_id="Q2",
+                    required_commit="c" * 40,
+                    candidate_output_root=out_root,
+                    authorization_acknowledgement=GEN.AUTHORIZATION_ACK,
+                    generation_only=True,
+                    inventory_path=inventory,
+                    skip_commit_check=True,
+                    acceptance_contract_config=self._contract_config(),
+                    model_call=lambda _s, _u: {},
+                )
+
+            self.assertTrue(result["ok"])
+            self.assertTrue(result["finalized"])
+            files = result["files"]
+            candidate = json.loads(
+                Path(files["Q2_candidate_answer.json"]).read_text(encoding="utf-8")
+            )
+            markdown = Path(files["Q2_candidate_answer.md"]).read_text(
+                encoding="utf-8"
+            )
+            proposed = candidate["proposed_answer"]
+            marker = "## Proposed answer\n\n"
+            start = markdown.index(marker) + len(marker)
+            end = markdown.index("\n## Review limitation", start)
+            md_proposed = markdown[start:end].strip("\n")
+            self.assertEqual(proposed, md_proposed)
+            self.assertEqual(
+                GEN.normalize_proposed_answer_whitespace(proposed),
+                GEN.normalize_proposed_answer_whitespace(md_proposed),
+            )
+
+            # Four acceptance criteria + concise pleaded paraphrase + citation.
+            view = Q2Production31629603939StructuredClaimHandoffTests()._contract_view()
+            validation = ac.validate_final_answer_against_contract(
+                proposed,
+                view,
+                apply_fallback=False,
+                apply_duplication_repair=False,
+            )
+            self.assertTrue(validation.ok)
+            by_id = {c.criterion_id: c for c in validation.criterion_results}
+            for crit_id in (
+                _Q2_CRIT_RESCISSION,
+                _Q2_CRIT_NO_DEFENSE,
+                _Q2_CRIT_PLEADED,
+                _Q2_CRIT_CATCH_ALL,
+            ):
+                row = by_id[crit_id]
+                self.assertEqual(row.result_code, ac.CRIT_PASS, msg=crit_id)
+            self.assertIn("no defense or indemnity", proposed.lower())
+            self.assertIn(f"page_id {_Q2_31629603939_PAGE_ID}", proposed)
+            self.assertIn("originating source page", proposed.lower())
+            for banned in _Q2_31629603939_BANNED_OCR:
+                self.assertNotIn(banned, proposed)
+            self.assertLess(len(proposed), 1600)
+            self.assertNotIn(_Q2_31629603939_PAGE_TEXT, proposed)
+
+            # Audit overwritten with authoritative rebuilt list before write.
+            audit_claims = (candidate.get("audit") or {}).get(
+                "verified_relief_claims"
+            ) or []
+            by_audit = {c["category"]: c for c in audit_claims}
+            self.assertTrue(by_audit["no_defense_or_indemnity"]["supported"])
+            self.assertEqual(
+                by_audit["no_defense_or_indemnity"]["selection_reason_code"],
+                "supported_needs_paraphrase",
+            )
+
+            # Unsupported evidence remains fail-closed via the same path.
+            unsupported_packet = {
+                "question": _Q2_QUESTION,
+                "retrieval_hit_count": 1,
+                "retrieval_hits": [
+                    {
+                        "result_id": "hit-unsupported",
+                        "page_id": _Q2_31629603939_PAGE_ID,
+                        "nyscef_document_number": 1,
+                        "pdf_page": 25,
+                        "document_type": "complaint",
+                        "excerpt": _Q2_31629603939_EXCERPT,
+                        "page_text": (
+                            "25\n\n"
+                            "184. Underwriters are entitled to void the Policies "
+                            "ab initio and for rescission of the same.\n"
+                            "187. WHEREFORE for such other and further relief as "
+                            "the Court deems just and proper."
+                        ),
+                        "classifications": ["legal_position"],
+                        "score": 0.5,
+                    }
+                ],
+            }
+            unsupported_reasoner = self._ready_reasoner(claims=stale)
+            with mock.patch.object(
+                de,
+                "answer_attorney_record_question",
+                return_value=unsupported_reasoner,
+            ), mock.patch.object(
+                de, "build_evidence_packet", return_value=unsupported_packet
+            ), mock.patch.object(
+                GEN,
+                "audit_serialized_model_input",
+                return_value={
+                    "audit": {"retrieval_hit_count": 1, "relief_intent": True},
+                    "evidence_packet": unsupported_packet,
+                },
+            ):
+                with self.assertRaises(GEN.GenerationError) as ctx:
+                    GEN.run_generation(
+                        case_root=case_root,
+                        question_id="Q2",
+                        required_commit="c" * 40,
+                        candidate_output_root=out_root / "unsupported",
+                        authorization_acknowledgement=GEN.AUTHORIZATION_ACK,
+                        generation_only=True,
+                        inventory_path=inventory,
+                        skip_commit_check=True,
+                        acceptance_contract_config=self._contract_config(),
+                        model_call=lambda _s, _u: {},
+                    )
+            self.assertIn("acceptance-contract", ctx.exception.blocker.lower())
+            self.assertFalse(ctx.exception.details.get("finalized", True))
 
 
 if __name__ == "__main__":
