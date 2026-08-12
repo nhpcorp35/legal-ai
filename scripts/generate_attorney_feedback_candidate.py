@@ -815,6 +815,102 @@ def canonical_proposed_answer(proposed: str) -> str:
     return _format_proposed_answer_markdown(proposed)
 
 
+def _criterion_dimension_satisfied(result: ac.CriterionResult) -> dict[str, bool]:
+    """Map which acceptance dimensions were already satisfied for a criterion."""
+    return {
+        "presence": result.presence == ac.PRESENCE_PRESENT,
+        "evidence": result.evidence == ac.EVIDENCE_SUPPORTED,
+        "semantic": result.semantic
+        in {ac.SEMANTIC_PRESERVED, ac.SEMANTIC_NOT_APPLICABLE},
+        "pass": result.result_code == ac.CRIT_PASS,
+    }
+
+
+def presentation_rewrite_lost_satisfied_criteria(
+    before: ac.AcceptanceValidationResult,
+    after: ac.AcceptanceValidationResult,
+) -> list[str]:
+    """Return criterion ids whose previously satisfied dimensions were lost.
+
+    Compares safe result codes only — never criterion prose or private phrases.
+    """
+    after_by_id = {c.criterion_id: c for c in after.criterion_results}
+    lost: list[str] = []
+    for prior in before.criterion_results:
+        dims = _criterion_dimension_satisfied(prior)
+        if not any(dims.values()):
+            continue
+        post = after_by_id.get(prior.criterion_id)
+        if post is None:
+            lost.append(prior.criterion_id)
+            continue
+        post_dims = _criterion_dimension_satisfied(post)
+        if dims["pass"] and not post_dims["pass"]:
+            lost.append(prior.criterion_id)
+            continue
+        if dims["presence"] and not post_dims["presence"]:
+            lost.append(prior.criterion_id)
+            continue
+        if dims["evidence"] and not post_dims["evidence"]:
+            lost.append(prior.criterion_id)
+            continue
+        if (
+            prior.semantic == ac.SEMANTIC_PRESERVED
+            and post.semantic != ac.SEMANTIC_PRESERVED
+        ):
+            lost.append(prior.criterion_id)
+    return lost
+
+
+def finalize_canonical_answer_against_contract(
+    proposed_answer: str,
+    contract_view: ac.ContractEvaluationView,
+    *,
+    canonicalize: Optional[Callable[[str], str]] = None,
+) -> tuple[str, ac.AcceptanceValidationResult]:
+    """Repair, canonicalize for presentation, then validate the exact final string.
+
+    Order is intentional:
+    1. Contract fallback + duplication repair on the assembled answer
+    2. Presentation cleanup (Markdown canonicalization / whitespace)
+    3. Re-validate the exact canonical string with no further mutation
+    4. Fail closed if any previously satisfied presence/evidence/semantic
+       criterion was lost to the presentation rewrite
+
+    JSON and Markdown serializers must both consume the returned canonical
+    string.
+    """
+    canonicalize_fn = canonicalize or canonical_proposed_answer
+    repaired = ac.validate_final_answer_against_contract(
+        proposed_answer or "",
+        contract_view,
+        apply_fallback=True,
+        apply_duplication_repair=True,
+    )
+    if not repaired.ok:
+        return repaired.final_answer, repaired
+
+    canonical = canonicalize_fn(repaired.final_answer)
+    final = ac.validate_final_answer_against_contract(
+        canonical,
+        contract_view,
+        apply_fallback=False,
+        apply_duplication_repair=False,
+    )
+    lost = presentation_rewrite_lost_satisfied_criteria(repaired, final)
+    if lost:
+        final.ok = False
+        # Safe ids only — never private phrases or fallback prose.
+        for cid in lost:
+            final.diagnostics.append(f"presentation_rewrite_lost_criterion:{cid}")
+    elif not final.ok:
+        final.diagnostics.append("canonical_acceptance_validation_failed")
+    # Always return the canonical presentation string as the candidate body,
+    # even on failure, so audits inspect the same text JSON/Markdown would emit.
+    final.final_answer = canonical
+    return canonical, final
+
+
 def write_candidate_artifacts(
     out_dir: Path,
     *,
@@ -1388,14 +1484,15 @@ def run_generation(
             provider_calls=provider_calls,
         )
 
-    # Final acceptance-contract validation after synthesis / repair / fallback.
+    # Final acceptance-contract validation after synthesis / repair / cleanup /
+    # Markdown canonicalization. The exact canonical string is what JSON and
+    # Markdown both serialize; fail closed if presentation rewriting drops any
+    # previously satisfied presence/evidence/semantic criterion.
     if contract_view is not None:
         proposed = str(reasoner_result.get("proposed_answer") or "")
-        validation = ac.validate_final_answer_against_contract(
+        canonical, validation = finalize_canonical_answer_against_contract(
             proposed,
             contract_view,
-            apply_fallback=True,
-            apply_duplication_repair=True,
         )
         acceptance_provenance = ac.safe_provenance_record(
             load_status=load_status,
@@ -1409,9 +1506,10 @@ def run_generation(
                 finalized=False,
             )
         reasoner_result = dict(reasoner_result)
-        reasoner_result["proposed_answer"] = validation.final_answer
+        reasoner_result["proposed_answer"] = canonical
         reasoner_audit = dict(reasoner_result.get("audit") or {})
         reasoner_audit["acceptance_contract_validation_ok"] = True
+        reasoner_audit["acceptance_contract_canonical_validated"] = True
         reasoner_result["audit"] = reasoner_audit
 
     out_root = Path(candidate_output_root)

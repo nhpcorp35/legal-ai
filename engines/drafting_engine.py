@@ -1823,8 +1823,13 @@ _OCR_RELIEF_DISPLAY_JOIN_WORDS = frozenset(
         "indemnity",
         "initio",
         "judgment",
+        "alleged",
+        "disclosures",
         "material",
+        "misrepresentation",
         "misrepresentations",
+        "nondisclosure",
+        "nondisclosures",
         "obligation",
         "policy",
         "proper",
@@ -1894,12 +1899,60 @@ def _snippet_mentions_void_ab_initio(snippet: str) -> bool:
     return bool(re.search(r"(?i)\bvoid\s+ab\s+initio\b", snippet or ""))
 
 
+_MATERIAL_MISREP_RE = re.compile(
+    r"(?i)\bmaterial\s+misrepresentations?\b|\bmisrepresentations?\b"
+)
+_NON_DISCLOSURE_RE = re.compile(r"(?i)\bnon[\s-]*dis[\s-]*closures?\b")
+
+
+def _snippet_mentions_material_misrepresentation(snippet: str) -> bool:
+    return bool(_MATERIAL_MISREP_RE.search(snippet or ""))
+
+
+def _snippet_mentions_non_disclosure(snippet: str) -> bool:
+    return bool(_NON_DISCLOSURE_RE.search(snippet or ""))
+
+
+def _rescission_alleged_basis_clause(support: Mapping[str, Any]) -> str:
+    """
+    Source-grounded pleaded basis for rescission / void-ab-initio relief.
+
+    When the cited snippet supports misrepresentation or non-disclosure language,
+    retain that substance in concise prose as *alleged* (pleading posture only —
+    never an adjudicated finding). Returns "" when the source does not ground
+    either concept.
+    """
+    snippet = str(support.get("evidence_snippet") or "")
+    probe = heal_ocr_intra_word_spaces(
+        snippet, join_words=_OCR_RELIEF_DISPLAY_JOIN_WORDS
+    )
+    has_misrep = _snippet_mentions_material_misrepresentation(
+        snippet
+    ) or _snippet_mentions_material_misrepresentation(probe)
+    has_nondisc = _snippet_mentions_non_disclosure(
+        snippet
+    ) or _snippet_mentions_non_disclosure(probe)
+    if not has_misrep and not has_nondisc:
+        return ""
+    # Keep "alleged material misrepresentations" exact for semantic contracts;
+    # pair with non-disclosures only when that concept is also source-backed.
+    if has_misrep and has_nondisc:
+        return (
+            " based on alleged material misrepresentations and non-disclosures"
+        )
+    if has_misrep:
+        return " based on alleged material misrepresentations"
+    return " based on alleged non-disclosures"
+
+
 def _rescission_void_lead_clause(support: Mapping[str, Any]) -> str:
     """
     Source-backed lead for rescission / void-ab-initio relief.
 
     Never emits unsupported ``rescission and/or`` gloss — only phrases present
-    in the cited snippet (OCR-healed probe allowed for detection only).
+    in the cited snippet (OCR-healed probe allowed for detection only). When the
+    source grounds misrepresentation / non-disclosure theories, the concise lead
+    retains that pleaded basis as alleged (not adjudicated).
     """
     snippet = str(support.get("evidence_snippet") or "")
     probe = heal_ocr_intra_word_spaces(
@@ -1911,21 +1964,24 @@ def _rescission_void_lead_clause(support: Mapping[str, Any]) -> str:
     has_void = _snippet_mentions_void_ab_initio(snippet) or _snippet_mentions_void_ab_initio(
         probe
     )
+    basis = _rescission_alleged_basis_clause(support)
     if has_rescission and has_void:
         return (
             "The complaint requests rescission and a declaration that coverage "
-            "is void ab initio"
+            f"is void ab initio{basis}"
         )
     if has_void:
         return (
-            "The complaint requests a declaration that coverage is void ab initio"
+            "The complaint requests a declaration that coverage is void ab "
+            f"initio{basis}"
         )
     if has_rescission:
-        return "The complaint requests rescission"
+        return f"The complaint requests rescission{basis}"
     # Category matched on corpus elsewhere; fail closed to void-ab-initio
     # phrasing without inventing a rescission gloss.
     return (
-        "The complaint requests a declaration that coverage is void ab initio"
+        "The complaint requests a declaration that coverage is void ab "
+        f"initio{basis}"
     )
 
 
