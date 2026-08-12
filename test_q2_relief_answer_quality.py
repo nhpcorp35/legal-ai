@@ -712,5 +712,174 @@ class Q2V102SemanticRetentionAndCanonicalGateTests(unittest.TestCase):
         self.assertEqual(assembled["proposed_answer"], draft)
 
 
+# ---------------------------------------------------------------------------
+# Regression: q2-candidate-20260812T175821Z OCR-dump pattern (synthetic)
+# ---------------------------------------------------------------------------
+
+_Q2_175821Z_OCR_DUMP = (
+    "25\n\n"
+    "183. Upon information and belief, Tri borough has been licensed with the "
+    "DOB under the names of various entities and/or individuals.\n"
+    "184. On the basis of the material misrepresentations and non-disclos ures "
+    "made by Triborough in their application to obtain the Policies, "
+    "Underwriters are entitled to void the Policies ab initio.\n"
+    "185. Underwriters have no adequate remedy at law. COUNT II Underwriters "
+    "Have No Obligations to Provide Defense or Indemnification to Triborough "
+    "or Any Other Entity, As the Policies Were Obtained as a Result of "
+    "Triborough's Material Misrepresentations And Are Void Ab Initio 186."
+)
+
+_Q2_175821Z_CLEAN_CATCH = (
+    "and C. For any other relief that this Court deems just and equitable."
+)
+
+_Q2_175821Z_NO_DEFENSE = (
+    "Declaring that there is no duty to defend or indemnify Defendants."
+)
+
+
+class Q2Candidate175821ZOcrDumpRegressionTests(unittest.TestCase):
+    """Synthetic fixture modeled on verified failed artifact pattern."""
+
+    def test_gate_rejects_175821z_ocr_dump_markers(self) -> None:
+        from engines import drafting_engine as de
+
+        self.assertTrue(de.displayed_quote_fails_readability_gate(_Q2_175821Z_OCR_DUMP))
+        self.assertTrue(de.displayed_quote_fails_readability_gate("Tri borough"))
+        self.assertTrue(de.displayed_quote_fails_readability_gate("non-disclos ures"))
+        self.assertTrue(
+            de.displayed_quote_fails_readability_gate("25 183. Upon information")
+        )
+        self.assertFalse(
+            de.displayed_quote_fails_readability_gate(_Q2_175821Z_CLEAN_CATCH)
+        )
+
+    def test_synthesis_paraphrases_dump_retains_q2_semantics_and_citations(
+        self,
+    ) -> None:
+        page_id = "nyscef-001-page-0025"
+        corpus = (
+            f"{_Q2_175821Z_OCR_DUMP} {_Q2_175821Z_NO_DEFENSE} "
+            f"{_Q2_175821Z_CLEAN_CATCH}"
+        )
+        assembled = _assemble(
+            _packet([_hit(page_id=page_id, excerpt=corpus, pdf_page=25)])
+        )
+        answer = assembled["proposed_answer"]
+        answer_l = answer.lower()
+
+        # No raw OCR dump markers in final prose.
+        for banned in (
+            "Tri borough",
+            "non-disclos ures",
+            "COUNT II",
+            "186.",
+            "183.",
+            "184.",
+            "\n25",
+            '"25',
+        ):
+            self.assertNotIn(banned, answer)
+
+        # Q2 acceptance semantics retained.
+        self.assertIn("alleged material misrepresentations", answer_l)
+        self.assertIn("non-disclosures", answer_l)
+        self.assertIn("void ab initio", answer_l)
+        self.assertIn("no defense or indemnity", answer_l)
+        self.assertIn("pleaded requested relief", answer_l)
+        self.assertIn("not a judicial determination", answer_l)
+        self.assertIn("catch-all requested relief", answer_l)
+        self.assertIn("just and equitable", answer_l)
+        self.assertNotIn("and/or", answer_l)
+
+        # Exact citation id preserved; prefer clean catch-all excerpt when present.
+        self.assertIn(f"page_id {page_id}", answer)
+        self.assertIn("originating source page", answer_l)
+        self.assertIn("just and equitable", answer)
+
+    def test_serializer_scrubs_175821z_pattern_with_json_md_parity(self) -> None:
+        """Final serializer rejects embedded OCR dumps; JSON/MD stay aligned."""
+        failed_shaped = (
+            "This answer describes pleaded requested relief in the complaint, "
+            "not a judicial determination. The complaint requests a declaration "
+            "that coverage is void ab initio based on alleged material "
+            "misrepresentations and non-disclosures, as reflected in the cited "
+            f'pleading language: "{_Q2_175821Z_OCR_DUMP}" '
+            "(page_id nyscef-001-page-0025). The complaint further seeks relief "
+            "that there is no defense or indemnity obligation, as reflected in "
+            "the cited pleading on the originating source page "
+            "(page_id nyscef-001-page-0025). The complaint also includes "
+            "catch-all requested relief, as reflected in the cited pleading "
+            f'language: "{_Q2_175821Z_CLEAN_CATCH}" '
+            "(page_id nyscef-001-page-0026)."
+        )
+        canonical = GEN.canonical_proposed_answer(failed_shaped)
+        for banned in (
+            "Tri borough",
+            "non-disclos ures",
+            "COUNT II",
+            "186.",
+            "183.",
+        ):
+            self.assertNotIn(banned, canonical)
+        self.assertIn("originating source page", canonical.lower())
+        self.assertIn("page_id nyscef-001-page-0025", canonical)
+        self.assertIn("page_id nyscef-001-page-0026", canonical)
+        self.assertIn("alleged material misrepresentations", canonical.lower())
+        self.assertIn("non-disclosures", canonical.lower())
+        self.assertIn("just and equitable", canonical.lower())
+        # Clean catch-all excerpt retained; OCR dump quote removed.
+        self.assertIn("just and equitable", canonical)
+        self.assertNotIn("Tri borough", canonical)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp) / "cand-175821z"
+            files = GEN.write_candidate_artifacts(
+                out_dir,
+                question_id="Q2",
+                question_text=_Q2_QUESTION,
+                required_commit="b" * 40,
+                reasoner_result={
+                    "status": "READY",
+                    "proposed_answer": canonical,
+                    "propositions": [],
+                    "supporting_evidence": [],
+                    "contrary_evidence": [],
+                    "unresolved_questions": [],
+                    "documents_pages_reviewed": [],
+                    "attorney_review": {"requires_attorney_review": True},
+                    "audit": {"model": "synth", "provider": "synth"},
+                    "confidence": 0.5,
+                },
+                model_input_audit={"retrieval_hit_count": 1},
+                commit_info={
+                    "checkout_commit": "b" * 40,
+                    "origin_main_commit": "b" * 40,
+                },
+                completeness={"ok": True},
+            )
+            candidate = json.loads(
+                Path(files["Q2_candidate_answer.json"]).read_text(encoding="utf-8")
+            )
+            markdown = Path(files["Q2_candidate_answer.md"]).read_text(
+                encoding="utf-8"
+            )
+            marker = "## Proposed answer\n\n"
+            start = markdown.index(marker) + len(marker)
+            end = markdown.index("\n## Review limitation", start)
+            md_proposed = markdown[start:end].strip("\n")
+            self.assertEqual(candidate["proposed_answer"], canonical)
+            self.assertEqual(md_proposed, canonical)
+            self.assertEqual(
+                GEN.normalize_proposed_answer_whitespace(
+                    candidate["proposed_answer"]
+                ),
+                GEN.normalize_proposed_answer_whitespace(md_proposed),
+            )
+            for banned in ("Tri borough", "non-disclos ures", "COUNT II", "186."):
+                self.assertNotIn(banned, candidate["proposed_answer"])
+                self.assertNotIn(banned, md_proposed)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -734,12 +734,90 @@ def _collapse_inline_whitespace(text: str) -> str:
     return " ".join(str(text or "").split())
 
 
+_CITED_PLEADING_LANGUAGE_QUOTE_RE = re.compile(
+    r'as reflected in the cited pleading language:\s*"((?:[^"\\]|\\.)*)"',
+    flags=re.IGNORECASE | re.DOTALL,
+)
+
+
+def scrub_unreadable_quoted_excerpts(proposed: str) -> str:
+    """
+    Final-serializer defense: drop raw OCR dumps from proposed-answer prose.
+
+    Replaces ``cited pleading language: "..."`` spans that fail the shared
+    readability gate with the concise originating-source paraphrase form while
+    preserving surrounding attorney prose and exact ``page_id`` citations.
+    """
+
+    def _repl(match: re.Match[str]) -> str:
+        quote = match.group(1)
+        # Decode common escape artifacts before gating so multiline OCR dumps
+        # embedded via literal ``\\n`` are still rejected.
+        quote_text = _decode_literal_escape_artifacts(quote)
+        if de.displayed_quote_fails_readability_gate(quote_text):
+            return (
+                "as reflected in the cited pleading on the originating source page"
+            )
+        # Keep a clean quote compact (no retained folio newlines).
+        clean = de.prefer_clean_relief_display_excerpt(quote_text) or (
+            de.normalize_whitespace(quote_text)
+        )
+        if de.displayed_quote_fails_readability_gate(clean):
+            return (
+                "as reflected in the cited pleading on the originating source page"
+            )
+        return f'as reflected in the cited pleading language: "{clean}"'
+
+    return _CITED_PLEADING_LANGUAGE_QUOTE_RE.sub(_repl, str(proposed or ""))
+
+
+def _split_overview_sentences(compact: str) -> list[str]:
+    """Split prose into sentences without breaking quoted excerpt spans."""
+    parts: list[str] = []
+    buf: list[str] = []
+    in_quote = False
+    i = 0
+    length = len(compact)
+    while i < length:
+        ch = compact[i]
+        if ch == '"':
+            in_quote = not in_quote
+            buf.append(ch)
+            i += 1
+            continue
+        if (
+            not in_quote
+            and ch in ".!?"
+            and i + 1 < length
+            and compact[i + 1].isspace()
+        ):
+            j = i + 1
+            while j < length and compact[j].isspace():
+                j += 1
+            if j < length and compact[j].isupper():
+                buf.append(ch)
+                part = "".join(buf).strip()
+                if part:
+                    parts.append(part)
+                buf = []
+                i = j
+                continue
+        buf.append(ch)
+        i += 1
+    tail = "".join(buf).strip()
+    if tail:
+        parts.append(tail)
+    return parts
+
+
 def _format_proposed_answer_markdown(proposed: str) -> str:
     """Turn compact bullet/numbered prose into scannable Markdown lists.
 
     Preserves list substance; does not inject literal escape artifacts.
     """
-    text = _decode_literal_escape_artifacts(proposed).strip()
+    text = scrub_unreadable_quoted_excerpts(
+        _decode_literal_escape_artifacts(proposed)
+    ).strip()
     if not text:
         return ""
 
@@ -795,11 +873,7 @@ def _format_proposed_answer_markdown(proposed: str) -> str:
                 return overview + "\n\n" + body
             return body
 
-    parts = [
-        part.strip()
-        for part in re.split(r"(?<=[.!?])\s+(?=[A-Z])", compact)
-        if part.strip()
-    ]
+    parts = _split_overview_sentences(compact)
     if len(parts) <= 2:
         return compact
     overview, *items = parts
@@ -810,7 +884,8 @@ def canonical_proposed_answer(proposed: str) -> str:
     """Single canonical proposed-answer string for JSON and Markdown serializers.
 
     Both artifact channels derive from this representation so substance matches
-    after ``normalize_proposed_answer_whitespace``.
+    after ``normalize_proposed_answer_whitespace``. Final serialization also
+    rejects raw OCR dump quotes via ``scrub_unreadable_quoted_excerpts``.
     """
     return _format_proposed_answer_markdown(proposed)
 

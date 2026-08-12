@@ -1844,19 +1844,208 @@ _OCR_RELIEF_DISPLAY_JOIN_WORDS = frozenset(
 
 # Single-letter runs that are almost never legitimate legal prose.
 _OCR_SINGLE_LETTER_RUN_RE = re.compile(r"(?i)(?:\b[a-z]\s+){2,}[a-z]\b")
+# Leading folio / page numeral before numbered pleading or prose (e.g. ``25 183.``).
+_OCR_LEADING_PAGE_NUMERAL_RE = re.compile(
+    r"(?i)^(?:page\s*)?\d{1,4}(?:\s*/\s*\d{1,4})?\s+(?:\d{1,4}\.|¶|[A-Z])"
+)
+# Isolated page-numeral token retained inside a quote body.
+_OCR_ISOLATED_PAGE_NUMERAL_RE = re.compile(
+    r"(?i)(?:^|[\s\"'])\d{1,4}(?:\s*/\s*\d{1,4})?(?=\s+(?:\d{1,4}\.|¶))"
+)
+# Hyphenated stem candidates for OCR suffix splits (``non-disclos ures``).
+_OCR_HYPHEN_STEM_SPLIT_RE = re.compile(
+    r"(?i)\b([a-z]{2,}(?:-[a-z]{2,})+)\s+([a-z]{2,5})\b"
+)
+_OCR_HYPHEN_FOLLOWER_ALLOWLIST = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "as",
+        "at",
+        "by",
+        "for",
+        "from",
+        "in",
+        "into",
+        "made",
+        "of",
+        "on",
+        "or",
+        "than",
+        "that",
+        "the",
+        "this",
+        "to",
+        "under",
+        "with",
+    }
+)
+_OCR_COMPLETED_SUFFIX_RE = re.compile(
+    r"(?i)(?:ures?|tions?|ings?|ments?|nesses?|ables?|ibles?|ences?|ances?)$"
+)
+# Short Titlecase token glued by OCR to a lowercase continuation (``Tri borough``).
+_OCR_TITLECASE_SPLIT_RE = re.compile(r"\b([A-Z][a-z]{1,3})\s+([a-z]{4,})\b")
+_OCR_TITLECASE_SPLIT_ALLOWLIST = frozenset(
+    {
+        "a",
+        "also",
+        "amid",
+        "an",
+        "and",
+        "any",
+        "are",
+        "as",
+        "at",
+        "be",
+        "both",
+        "but",
+        "by",
+        "can",
+        "case",
+        "each",
+        "even",
+        "for",
+        "from",
+        "had",
+        "has",
+        "have",
+        "her",
+        "here",
+        "him",
+        "his",
+        "how",
+        "into",
+        "is",
+        "it",
+        "its",
+        "just",
+        "may",
+        "more",
+        "most",
+        "much",
+        "near",
+        "no",
+        "nor",
+        "not",
+        "of",
+        "on",
+        "only",
+        "or",
+        "our",
+        "out",
+        "over",
+        "own",
+        "per",
+        "she",
+        "so",
+        "some",
+        "such",
+        "than",
+        "that",
+        "the",
+        "their",
+        "them",
+        "then",
+        "there",
+        "these",
+        "they",
+        "this",
+        "those",
+        "to",
+        "under",
+        "until",
+        "upon",
+        "was",
+        "we",
+        "were",
+        "what",
+        "when",
+        "where",
+        "which",
+        "who",
+        "whom",
+        "whose",
+        "why",
+        "will",
+        "with",
+        "would",
+        "yet",
+        "your",
+    }
+)
+# Multiple numbered pleading paragraphs dumped into one display quote.
+_OCR_NUMBERED_PLEADING_PARA_RE = re.compile(r"(?:^|\s)\d{2,4}\.\s+[A-Z]")
+# Count / cause heading mashed into body as an ALL-CAPS / Title-Case run
+# (e.g. ``...at law. COUNT II Underwriters Have No Obligations...``). Legitimate
+# prose such as ``Count II further seeks`` (lowercase continuation) is allowed.
+_OCR_MASHED_COUNT_HEADING_RE = re.compile(
+    r"(?i)\bCOUNT\s+[IVXLC\d]+\s+(?:[A-Z][a-z]+\s+){3,}[A-Z][a-z]+"
+)
+# Truncated paragraph tail (quote ends on a bare pleading number).
+_OCR_TRUNCATED_PARA_TAIL_RE = re.compile(r"(?i)\b\d{1,4}\.\s*$")
+# Paragraph number glued mid-sentence after prose (``Initio 186. Declaring``).
+_OCR_GLUED_PARA_NUMBER_RE = re.compile(r"(?i)[a-z]\s+\d{2,4}\.\s+[A-Z]")
+
+
+def _has_hyphen_stem_ocr_split(raw: str) -> bool:
+    """True when a hyphenated token is OCR-split from its alphabetic suffix."""
+    for match in _OCR_HYPHEN_STEM_SPLIT_RE.finditer(raw or ""):
+        stem = match.group(1)
+        cont = match.group(2).lower()
+        if cont in _OCR_HYPHEN_FOLLOWER_ALLOWLIST:
+            continue
+        last = stem.split("-")[-1].lower()
+        joined = f"{last}{cont}"
+        if len(joined) < len(last) + 2:
+            continue
+        # ``disclos`` + ``ures`` → ``disclosures`` completes a common suffix
+        # that the truncated stem lacked.
+        if _OCR_COMPLETED_SUFFIX_RE.search(joined) and not _OCR_COMPLETED_SUFFIX_RE.search(
+            last
+        ):
+            return True
+    return False
 
 
 def displayed_quote_fails_readability_gate(text: str) -> bool:
     """
     Deterministic readability gate for displayed quotes/excerpts.
 
-    Rejects obvious OCR mid-word fragmentation. Does not mutate structured
-    internal evidence — callers decide whether to paraphrase for display.
+    Rejects OCR mid-word fragmentation, isolated page numerals, hyphen/titlecase
+    OCR splits, multi-paragraph pleading dumps, mashed count headings, and
+    truncated paragraph tails. Does not mutate structured internal evidence —
+    callers decide whether to paraphrase for display.
     """
-    raw = normalize_whitespace(text or "")
+    # Preserve newline structure long enough to catch isolated folio lines, then
+    # also evaluate the whitespace-normalized form used in final prose.
+    original = str(text or "")
+    if not original.strip():
+        return False
+    if re.search(r"(?m)^(?:page\s*)?\d{1,4}\s*$", original):
+        return True
+    raw = normalize_whitespace(original)
     if not raw:
         return False
     if _OCR_SINGLE_LETTER_RUN_RE.search(raw):
+        return True
+    if _OCR_LEADING_PAGE_NUMERAL_RE.search(raw):
+        return True
+    if _OCR_ISOLATED_PAGE_NUMERAL_RE.search(raw):
+        return True
+    if _has_hyphen_stem_ocr_split(raw):
+        return True
+    for match in _OCR_TITLECASE_SPLIT_RE.finditer(raw):
+        head = match.group(1).lower()
+        if head not in _OCR_TITLECASE_SPLIT_ALLOWLIST:
+            return True
+    if len(_OCR_NUMBERED_PLEADING_PARA_RE.findall(raw)) >= 2:
+        return True
+    if _OCR_MASHED_COUNT_HEADING_RE.search(raw):
+        return True
+    if _OCR_TRUNCATED_PARA_TAIL_RE.search(raw):
+        return True
+    if _OCR_GLUED_PARA_NUMBER_RE.search(raw):
         return True
     healed = heal_ocr_intra_word_spaces(
         raw, join_words=_OCR_RELIEF_DISPLAY_JOIN_WORDS
@@ -1881,6 +2070,56 @@ def displayed_quote_fails_readability_gate(text: str) -> bool:
     return False
 
 
+def prefer_clean_relief_display_excerpt(snippet: str, *, max_len: int = 220) -> str:
+    """
+    Prefer a short clean clause from a longer evidence span for display quotes.
+
+    Returns "" when no readable short window exists (caller should paraphrase).
+    Never invents text — only slices the observed snippet.
+    """
+    raw = normalize_whitespace(snippet or "")
+    if not raw:
+        return ""
+    if not displayed_quote_fails_readability_gate(raw) and len(raw) <= max_len:
+        return raw
+
+    cores = (
+        r"void\s+ab\s+initio",
+        r"rescission",
+        r"no\s+(?:obligation|duty)\s+to\s+(?:defend|indemnify)",
+        r"no\s+defense\s+or\s+indemnif",
+        r"such\s+other\s+and\s+further\s+relief",
+        r"any\s+other\s+relief",
+        r"just\s+and\s+(?:equitable|proper)",
+    )
+
+    # Prefer intact clauses / numbered-paragraph bodies over sliding windows.
+    pieces = [
+        normalize_whitespace(part)
+        for part in re.split(r"(?:(?<=[.;])\s+|\s*(?=\d{2,4}\.\s)|(?<=\n)\s*)", raw)
+        if normalize_whitespace(part)
+    ]
+    # Drop leading folio / paragraph-number markers from each piece.
+    cleaned_pieces: List[str] = []
+    for piece in pieces:
+        piece = re.sub(r"^(?:\d{1,4}\s+)?(?:\d{2,4}\.\s*)+", "", piece).strip()
+        if piece:
+            cleaned_pieces.append(piece)
+
+    best = ""
+    for piece in cleaned_pieces:
+        if len(piece) > max_len or len(piece) < 24:
+            continue
+        if displayed_quote_fails_readability_gate(piece):
+            continue
+        if not any(re.search(core, piece, flags=re.IGNORECASE) for core in cores):
+            continue
+        # Prefer the shortest sufficient clean clause.
+        if not best or len(piece) < len(best):
+            best = piece
+    return best
+
+
 def _relief_page_citation(support: Mapping[str, Any]) -> str:
     """Cite only the originating page_id for a displayed relief excerpt."""
     page_id = normalize_whitespace(support.get("page_id") or "")
@@ -1902,7 +2141,10 @@ def _snippet_mentions_void_ab_initio(snippet: str) -> bool:
 _MATERIAL_MISREP_RE = re.compile(
     r"(?i)\bmaterial\s+misrepresentations?\b|\bmisrepresentations?\b"
 )
-_NON_DISCLOSURE_RE = re.compile(r"(?i)\bnon[\s-]*dis[\s-]*closures?\b")
+# Tolerate OCR mid-token splits such as ``non-disclos ures``.
+_NON_DISCLOSURE_RE = re.compile(
+    r"(?i)\bnon[\s-]*dis[\s-]*clos[\s-]*ures?\b"
+)
 
 
 def _snippet_mentions_material_misrepresentation(snippet: str) -> bool:
@@ -1994,19 +2236,27 @@ def _format_relief_display_evidence(
     """
     Format displayed evidence for one relief category.
 
-    Readable quotes keep the source snippet and cite only that category's
-    originating page_id. OCR-garbled quotes are not displayed — a concise
-    source-grounded paraphrase plus page citation is used instead. Structured
-    ``evidence_snippet`` on ``support`` is left unchanged.
+    Readable quotes keep a clean source snippet and cite only that category's
+    originating page_id. Raw OCR dumps, page-numeral lines, OCR-split tokens,
+    mashed headings, and truncated tails are not displayed — prefer a shorter
+    clean excerpt when one exists; otherwise use a concise source-grounded
+    paraphrase plus page citation. Structured ``evidence_snippet`` on
+    ``support`` is left unchanged.
     """
     snippet = normalize_whitespace(support.get("evidence_snippet") or "")
     cite = _relief_page_citation(support)
-    if snippet and not displayed_quote_fails_readability_gate(snippet):
+    display = snippet
+    if snippet and displayed_quote_fails_readability_gate(snippet):
+        display = prefer_clean_relief_display_excerpt(snippet)
+    if display and not displayed_quote_fails_readability_gate(display):
         return (
             f'{readable_intro}, as reflected in the cited pleading language: '
-            f'"{snippet}"{cite}.'
+            f'"{display}"{cite}.'
         )
-    return f"{paraphrase_intro}, as reflected in the cited pleading on the originating source page{cite}."
+    return (
+        f"{paraphrase_intro}, as reflected in the cited pleading on the "
+        f"originating source page{cite}."
+    )
 
 
 def _build_rescission_void_relief_paragraph(support: Mapping[str, Any]) -> str:
