@@ -40,8 +40,12 @@ readability gate and cite only their originating page_id. When an unreadable
 OCR display quote is rejected, verified citation/evidence identity is handed
 off to a clean excerpt or concise pleaded-relief paraphrase for the same
 supported categories (never raw OCR; fail-closed without verified evidence).
-Unsupported categories and unsupported ``rescission and/or`` gloss are never
-invented.
+Structured verified relief claims are also passed from synthesis to final
+serialization independently of displayed quote objects: categories with
+``supported_needs_paraphrase`` render a fixed concise cited paraphrase only
+when ``supported=true`` and a safe page_id citation is present (deduped by
+category+citation). Unsupported categories and unsupported
+``rescission and/or`` gloss are never invented.
 
 Gold answers and attorney feedback are never loaded into generation.
 
@@ -2639,6 +2643,185 @@ def assemble_evidence_grounded_relief_paragraphs(
     return paragraphs
 
 
+_STRUCTURED_RELIEF_CATEGORY_KEYS: Tuple[str, ...] = (
+    "rescission_void_ab_initio",
+    "no_defense_or_indemnity",
+    "catch_all_relief",
+)
+
+# Strip displayed quote bodies so OCR dumps do not count as retained prose
+# when checking category presence for structured-claim merge.
+_STRUCTURED_RELIEF_QUOTE_STRIP_RE = re.compile(
+    r'as reflected in the cited pleading language:\s*"((?:[^"\\]|\\.)*)"'
+    r'(?P<cite>\s*\(\s*page_id\s+[^)]+\))?',
+    flags=re.IGNORECASE | re.DOTALL,
+)
+
+
+def relief_selection_reason_code(
+    category: str,
+    support: Mapping[str, Any],
+) -> str:
+    """
+    Classify how a supported relief category should be displayed.
+
+    Mirrors production diagnostic selection labels without emitting source text.
+    """
+    if not support.get("supported"):
+        return "unsupported"
+    snippet = str(support.get("evidence_snippet") or "")
+    gate_codes = list(readability_gate_reason_codes(snippet)) if snippet else []
+    clean = (
+        prefer_clean_relief_display_excerpt(snippet, category=category)
+        if snippet
+        else ""
+    )
+    if str(clean).strip():
+        return "supported_with_clean_excerpt"
+    if gate_codes:
+        return "supported_needs_paraphrase"
+    return "supported_readable_snippet"
+
+
+def structured_verified_relief_claims_from_supported(
+    supported: Optional[Mapping[str, Any]],
+) -> List[dict]:
+    """
+    Build structured verified relief claims for final-serializer handoff.
+
+    Independent of displayed quote objects. Unsupported categories remain
+    fail-closed (``supported=false``); callers must not invent display prose
+    for them.
+    """
+    packet = supported or {}
+    claims: List[dict] = []
+    for key in _STRUCTURED_RELIEF_CATEGORY_KEYS:
+        meta = packet.get(key) or {}
+        if not isinstance(meta, Mapping):
+            meta = {}
+        page_id = normalize_whitespace(meta.get("page_id") or "") or None
+        claims.append(
+            {
+                "category": key,
+                "supported": bool(meta.get("supported")),
+                "page_id": page_id,
+                "nyscef_document_number": meta.get("nyscef_document_number"),
+                "pdf_page": meta.get("pdf_page"),
+                "evidence_snippet": meta.get("evidence_snippet") or "",
+                "selection_reason_code": relief_selection_reason_code(key, meta),
+            }
+        )
+    return claims
+
+
+def relief_category_presence_flags(text: str) -> Dict[str, bool]:
+    """Coarse presence of each relief category in attorney prose (not OCR dumps)."""
+    stripped = _STRUCTURED_RELIEF_QUOTE_STRIP_RE.sub(
+        'as reflected in the cited pleading language: ""',
+        str(text or ""),
+    )
+    low = stripped.lower()
+    return {
+        "rescission_void_ab_initio": bool(
+            re.search(r"\b(?:rescission|void ab initio)\b", low)
+        ),
+        "no_defense_or_indemnity": bool(
+            re.search(r"\bno defense or indemnity\b", low)
+        ),
+        "catch_all_relief": bool(
+            re.search(r"\bcatch-all requested relief\b", low)
+            or re.search(r"\bsuch other and further relief\b", low)
+            or re.search(r"\bjust and (?:equitable|proper)\b", low)
+        ),
+    }
+
+
+def render_fixed_paraphrase_for_supported_needs_paraphrase(
+    claim: Mapping[str, Any],
+) -> str:
+    """
+    Fixed concise pleaded/requested-relief paraphrase for one structured claim.
+
+    Emits only when ``supported=true``, ``selection_reason_code`` is
+    ``supported_needs_paraphrase``, and a safe page_id citation identity is
+    present. Otherwise returns "" (fail closed).
+    """
+    if not isinstance(claim, Mapping):
+        return ""
+    if not claim.get("supported"):
+        return ""
+    if claim.get("selection_reason_code") != "supported_needs_paraphrase":
+        return ""
+    page_id = normalize_whitespace(claim.get("page_id") or "")
+    if not page_id:
+        return ""
+    category = str(claim.get("category") or "")
+    builders = {
+        "rescission_void_ab_initio": _build_rescission_void_relief_paragraph,
+        "no_defense_or_indemnity": _build_no_defense_relief_paragraph,
+        "catch_all_relief": _build_catch_all_relief_paragraph,
+    }
+    builder = builders.get(category)
+    if builder is None:
+        return ""
+    support = {
+        "supported": True,
+        "page_id": page_id,
+        "nyscef_document_number": claim.get("nyscef_document_number"),
+        "pdf_page": claim.get("pdf_page"),
+        "evidence_snippet": claim.get("evidence_snippet") or "",
+    }
+    return normalize_whitespace(builder(support))
+
+
+def merge_structured_verified_relief_claims_into_answer(
+    answer: str,
+    claims: Optional[Sequence[Mapping[str, Any]]] = None,
+) -> str:
+    """
+    Ensure structured verified relief claims survive final serialization.
+
+    Independent of displayed quote iteration: for each
+    ``supported_needs_paraphrase`` claim with citation identity, append the
+    fixed concise paraphrase when that category is not already present.
+    Deduplicates by category+citation. Never invents unsupported categories.
+    """
+    text = str(answer or "")
+    if not claims:
+        return text
+
+    present = relief_category_presence_flags(text)
+    seen_category_citation: set = set()
+    to_append: List[str] = []
+    for claim in claims:
+        if not isinstance(claim, Mapping):
+            continue
+        category = str(claim.get("category") or "")
+        if category not in _STRUCTURED_RELIEF_CATEGORY_KEYS:
+            continue
+        page_id = normalize_whitespace(claim.get("page_id") or "")
+        dedupe_key = (category, page_id)
+        if dedupe_key in seen_category_citation:
+            continue
+        if present.get(category):
+            # Category already retained in prose; record citation dedupe key.
+            seen_category_citation.add(dedupe_key)
+            continue
+        para = render_fixed_paraphrase_for_supported_needs_paraphrase(claim)
+        if not para:
+            continue
+        seen_category_citation.add(dedupe_key)
+        present[category] = True
+        to_append.append(para)
+
+    if not to_append:
+        return text
+    base = text.rstrip()
+    if base and base[-1] not in ".!?":
+        base += "."
+    return normalize_whitespace(base + " " + " ".join(to_append))
+
+
 def apply_evidence_grounded_relief_synthesis(
     result: dict,
     evidence_packet: Optional[Mapping[str, Any]],
@@ -2650,10 +2833,13 @@ def apply_evidence_grounded_relief_synthesis(
     concise organized statement (categories + pleaded-not-adjudicated caveat)
     instead of appending a duplicative long synthesis tail onto a prior draft.
     Emits only source-backed categories; never invents unsupported relief.
+    Structured verified relief claims are attached on ``audit`` for final
+    serialization handoff independent of displayed quotes.
     """
     if not isinstance(result, dict):
         return result
     supported = extract_supported_complaint_relief(evidence_packet)
+    verified_claims = structured_verified_relief_claims_from_supported(supported)
     new_props: List[dict] = []
 
     any_supported = any(
@@ -2676,6 +2862,7 @@ def apply_evidence_grounded_relief_synthesis(
         if isinstance(result["audit"], dict):
             result["audit"]["relief_synthesis_applied"] = False
             result["audit"]["relief_supported_categories"] = supported_keys
+            result["audit"]["verified_relief_claims"] = verified_claims
         return result
 
     # Always emit one nonduplicative final prose block when support exists.
@@ -2762,6 +2949,7 @@ def apply_evidence_grounded_relief_synthesis(
     audit = dict(out.get("audit") or {})
     audit["relief_synthesis_applied"] = True
     audit["relief_supported_categories"] = supported_keys
+    audit["verified_relief_claims"] = verified_claims
     out["audit"] = audit
     return out
 

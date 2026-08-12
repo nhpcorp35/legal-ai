@@ -22,7 +22,7 @@ import sys
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional, Sequence
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -768,7 +768,11 @@ def _relief_presence_flags(text: str) -> dict[str, bool]:
     }
 
 
-def scrub_unreadable_quoted_excerpts(proposed: str) -> str:
+def scrub_unreadable_quoted_excerpts(
+    proposed: str,
+    *,
+    verified_relief_claims: Optional[Sequence[Mapping[str, Any]]] = None,
+) -> str:
     """
     Final-serializer defense: drop raw OCR dumps from proposed-answer prose.
 
@@ -779,6 +783,9 @@ def scrub_unreadable_quoted_excerpts(proposed: str) -> str:
     sibling relief categories carried only inside the rejected quote (for
     example no-defense/no-indemnification) are appended as clean-excerpt or
     paraphrase paragraphs so OCR scrubbing cannot drop supported relief.
+    Structured verified relief claims from synthesis are then merged
+    independently of displayed quote objects (``supported_needs_paraphrase``
+    only, requiring supported=true and page_id; deduped by category+citation).
     Never restores raw OCR. Fail-closed when the quote has no verified support.
     """
     source = str(proposed or "")
@@ -826,31 +833,33 @@ def scrub_unreadable_quoted_excerpts(proposed: str) -> str:
         return handoff["display_clause"] + cite
 
     text = _CITED_PLEADING_LANGUAGE_QUOTE_RE.sub(_repl, source)
-    if not extras:
-        return text
+    if extras:
+        # Append verified sibling relief paragraphs once, skipping categories the
+        # scrubbed prose already retains.
+        present = _relief_presence_flags(text)
+        to_append: list[str] = []
+        seen: set[str] = set()
+        for para in extras:
+            norm = de.normalize_whitespace(para)
+            if not norm or norm in seen:
+                continue
+            key = de.infer_relief_lead_category(norm)
+            if key and present.get(key):
+                continue
+            seen.add(norm)
+            to_append.append(norm)
+            if key:
+                present[key] = True
+        if to_append:
+            base = text.rstrip()
+            if base and base[-1] not in ".!?":
+                base += "."
+            text = de.normalize_whitespace(base + " " + " ".join(to_append))
 
-    # Append verified sibling relief paragraphs once, skipping categories the
-    # scrubbed prose already retains.
-    present = _relief_presence_flags(text)
-    to_append: list[str] = []
-    seen: set[str] = set()
-    for para in extras:
-        norm = de.normalize_whitespace(para)
-        if not norm or norm in seen:
-            continue
-        key = de.infer_relief_lead_category(norm)
-        if key and present.get(key):
-            continue
-        seen.add(norm)
-        to_append.append(norm)
-        if key:
-            present[key] = True
-    if not to_append:
-        return text
-    base = text.rstrip()
-    if base and base[-1] not in ".!?":
-        base += "."
-    return de.normalize_whitespace(base + " " + " ".join(to_append))
+    # Structured synthesis claims → final serialization, independent of quotes.
+    return de.merge_structured_verified_relief_claims_into_answer(
+        text, verified_relief_claims
+    )
 
 
 def _split_overview_sentences(compact: str) -> list[str]:
@@ -892,13 +901,18 @@ def _split_overview_sentences(compact: str) -> list[str]:
     return parts
 
 
-def _format_proposed_answer_markdown(proposed: str) -> str:
+def _format_proposed_answer_markdown(
+    proposed: str,
+    *,
+    verified_relief_claims: Optional[Sequence[Mapping[str, Any]]] = None,
+) -> str:
     """Turn compact bullet/numbered prose into scannable Markdown lists.
 
     Preserves list substance; does not inject literal escape artifacts.
     """
     text = scrub_unreadable_quoted_excerpts(
-        _decode_literal_escape_artifacts(proposed)
+        _decode_literal_escape_artifacts(proposed),
+        verified_relief_claims=verified_relief_claims,
     ).strip()
     if not text:
         return ""
@@ -962,14 +976,22 @@ def _format_proposed_answer_markdown(proposed: str) -> str:
     return overview + "\n\n" + "\n".join(f"- {item}" for item in items)
 
 
-def canonical_proposed_answer(proposed: str) -> str:
+def canonical_proposed_answer(
+    proposed: str,
+    *,
+    verified_relief_claims: Optional[Sequence[Mapping[str, Any]]] = None,
+) -> str:
     """Single canonical proposed-answer string for JSON and Markdown serializers.
 
     Both artifact channels derive from this representation so substance matches
     after ``normalize_proposed_answer_whitespace``. Final serialization also
-    rejects raw OCR dump quotes via ``scrub_unreadable_quoted_excerpts``.
+    rejects raw OCR dump quotes via ``scrub_unreadable_quoted_excerpts`` and
+    merges structured verified relief claims from synthesis independently of
+    displayed quote objects.
     """
-    return _format_proposed_answer_markdown(proposed)
+    return _format_proposed_answer_markdown(
+        proposed, verified_relief_claims=verified_relief_claims
+    )
 
 
 def _criterion_dimension_satisfied(result: ac.CriterionResult) -> dict[str, bool]:
@@ -1024,6 +1046,7 @@ def finalize_canonical_answer_against_contract(
     contract_view: ac.ContractEvaluationView,
     *,
     canonicalize: Optional[Callable[[str], str]] = None,
+    verified_relief_claims: Optional[Sequence[Mapping[str, Any]]] = None,
 ) -> tuple[str, ac.AcceptanceValidationResult]:
     """Repair, canonicalize for presentation, then validate the exact final string.
 
@@ -1035,11 +1058,24 @@ def finalize_canonical_answer_against_contract(
        criterion was lost to the presentation rewrite
 
     JSON and Markdown serializers must both consume the returned canonical
-    string.
+    string. Optional ``verified_relief_claims`` from synthesis are merged
+    during canonicalization independently of displayed quotes.
     """
-    canonicalize_fn = canonicalize or canonical_proposed_answer
+    if canonicalize is not None:
+        canonicalize_fn = canonicalize
+    elif verified_relief_claims is not None:
+        canonicalize_fn = lambda text: canonical_proposed_answer(
+            text, verified_relief_claims=verified_relief_claims
+        )
+    else:
+        canonicalize_fn = canonical_proposed_answer
+    # Merge structured synthesis claims before the first contract pass so
+    # quote-only handoff gaps cannot trip fail-closed unsupported fallback.
+    proposed_for_contract = de.merge_structured_verified_relief_claims_into_answer(
+        proposed_answer or "", verified_relief_claims
+    )
     repaired = ac.validate_final_answer_against_contract(
-        proposed_answer or "",
+        proposed_for_contract,
         contract_view,
         apply_fallback=True,
         apply_duplication_repair=True,
@@ -1084,8 +1120,14 @@ def write_candidate_artifacts(
     out_dir.mkdir(parents=True, exist_ok=False)
     generated_at = _utc_now()
     # One canonical string feeds JSON proposed_answer and Markdown body alike.
-    proposed = canonical_proposed_answer(reasoner_result.get("proposed_answer") or "")
     reasoner_audit = reasoner_result.get("audit") or {}
+    verified_claims = reasoner_audit.get("verified_relief_claims")
+    if not isinstance(verified_claims, list):
+        verified_claims = None
+    proposed = canonical_proposed_answer(
+        reasoner_result.get("proposed_answer") or "",
+        verified_relief_claims=verified_claims,
+    )
     model_name = reasoner_audit.get("model") or "unknown"
     provider = reasoner_audit.get("provider") or "unknown"
     provenance_reason = reasoner_audit.get("model_provenance_reason") or (
@@ -1670,9 +1712,21 @@ def run_generation(
     # previously satisfied presence/evidence/semantic criterion.
     if contract_view is not None:
         proposed = str(reasoner_result.get("proposed_answer") or "")
+        reasoner_audit_pre = reasoner_result.get("audit") or {}
+        verified_claims = reasoner_audit_pre.get("verified_relief_claims")
+        if not isinstance(verified_claims, list):
+            # Rebuild from the same evidence packet synthesis consumed when
+            # audit lacks structured claims (older reasoner payloads).
+            if evidence_packet is not None:
+                verified_claims = de.structured_verified_relief_claims_from_supported(
+                    de.extract_supported_complaint_relief(evidence_packet)
+                )
+            else:
+                verified_claims = None
         canonical, validation = finalize_canonical_answer_against_contract(
             proposed,
             contract_view,
+            verified_relief_claims=verified_claims,
         )
         if q2_diagnostics is not None:
             q2_diagnostics = build_q2_production_evidence_diagnostics(
@@ -1705,6 +1759,10 @@ def run_generation(
         reasoner_audit = dict(reasoner_result.get("audit") or {})
         reasoner_audit["acceptance_contract_validation_ok"] = True
         reasoner_audit["acceptance_contract_canonical_validated"] = True
+        if verified_claims is not None and not isinstance(
+            reasoner_audit.get("verified_relief_claims"), list
+        ):
+            reasoner_audit["verified_relief_claims"] = verified_claims
         reasoner_result["audit"] = reasoner_audit
 
     out_root = Path(candidate_output_root)
