@@ -1343,5 +1343,319 @@ class Q2Production31627595953CacheShapeHandoffTests(unittest.TestCase):
             )
 
 
+# ---------------------------------------------------------------------------
+# Regression: production diagnostic run 31629603939 at 97a08ee — synthesis
+# marks no_defense supported=true on page_id nyscef-001-page-0025 with
+# clean_excerpt_available=false / selection_reason_code
+# supported_needs_paraphrase; displayed quote handoff lacks that category;
+# structured verified_relief_claims restore a concise cited pleaded
+# no-defense/no-indemnification paraphrase (never raw OCR).
+# ---------------------------------------------------------------------------
+
+_Q2_31629603939_PAGE_ID = "nyscef-001-page-0025"
+
+# Privacy-safe folio: rescission + catch-all remain excerptable; no-defense is
+# mashed into a COUNT heading / glued para / OCR splits so clean excerpt is
+# unavailable and selection_reason_code becomes supported_needs_paraphrase.
+_Q2_31629603939_PAGE_TEXT = (
+    "25\n\n"
+    "184. On the basis of the material misrepresentations Underwriters are "
+    "entitled to void the Policies ab initio and for rescission of the same.\n"
+    "COUNT II Have No Obligations to Provide Defense or Indemnification "
+    "to Tri borough or Any Other Entity Void Ab Initio 186. Declaring that "
+    "there is no duty to defend or indemni fy Def en dants under the Policies.\n"
+    "187. WHEREFORE Underwriters demand judgment for such other and further "
+    "relief as the Court deems just and proper."
+)
+
+_Q2_31629603939_EXCERPT = (
+    "184. On the basis of the material misrepresentations Underwriters are "
+    "entitled to void the Policies ab initio and for rescission of the same."
+)
+
+# Displayed quote body mirrors production handoff gap: rescission OCR dump
+# without recoverable no-defense language (quote scrub alone cannot restore it).
+_Q2_31629603939_OCR_RESCISSION_QUOTE = (
+    "25\n\n"
+    "183. Upon information and belief, Tri borough has been licensed.\n"
+    "184. On the basis of the material misrepresentations and non-disclos ures "
+    "Underwriters are entitled to void the Policies ab initio and for "
+    "rescission of the same.\n"
+    "185. Underwriters have no adequate remedy at law."
+)
+
+_Q2_31629603939_CLEAN_CATCH = (
+    "for such other and further relief as the Court deems just and proper"
+)
+
+_Q2_31629603939_BANNED_OCR = (
+    "Tri borough",
+    "non-disclos ures",
+    "COUNT II",
+    "indemni fy",
+    "Def en dants",
+)
+
+
+class Q2Production31629603939StructuredClaimHandoffTests(unittest.TestCase):
+    """structured verified_relief_claims restore paraphrase when quotes lack it."""
+
+    def _packet(self) -> dict[str, Any]:
+        return {
+            "question": _Q2_QUESTION,
+            "retrieval_hit_count": 1,
+            "retrieval_hits": [
+                {
+                    "result_id": "hit-synth-31629603939",
+                    "page_id": _Q2_31629603939_PAGE_ID,
+                    "nyscef_document_number": 1,
+                    "pdf_page": 25,
+                    "document_type": "complaint",
+                    "excerpt": _Q2_31629603939_EXCERPT,
+                    "page_text": _Q2_31629603939_PAGE_TEXT,
+                    "classifications": ["legal_position"],
+                    "score": 0.91,
+                }
+            ],
+        }
+
+    def _quote_gap_answer(self) -> str:
+        return (
+            "This answer describes pleaded requested relief in the complaint, "
+            "not a judicial determination. The complaint requests a declaration "
+            "that coverage is void ab initio based on alleged material "
+            "misrepresentations and non-disclosures, as reflected in the cited "
+            f'pleading language: "{_Q2_31629603939_OCR_RESCISSION_QUOTE}" '
+            f"(page_id {_Q2_31629603939_PAGE_ID}). The complaint also includes "
+            "catch-all requested relief, as reflected in the cited pleading "
+            f'language: "{_Q2_31629603939_CLEAN_CATCH}" '
+            f"(page_id {_Q2_31629603939_PAGE_ID})."
+        )
+
+    def _contract_view(self) -> ac.ContractEvaluationView:
+        # Evidence for no-defense is the pleaded paraphrase language retained
+        # when clean_excerpt_available=false (never the OCR duty clause).
+        contract = _q2_shaped_contract(
+            rescission_evidence="void the Policies ab initio",
+            no_defense_evidence="no defense or indemnity",
+            catch_all_evidence=_Q2_31629603939_CLEAN_CATCH,
+        )
+        raw = json.dumps(contract, sort_keys=True).encode("utf-8")
+        loaded = ac.load_acceptance_contract_from_bytes(
+            raw,
+            object_key=contract["object_key"],
+            expected_identity=ac.ContractIdentity(
+                benchmark_id="synth-benchmark-q2-quality",
+                question_id="Q2",
+            ),
+            expected_content_sha256=contract["content_sha256"],
+        )
+        assert loaded.ok and loaded.evaluation is not None
+        return loaded.evaluation
+
+    def test_synthesis_marks_no_defense_supported_needs_paraphrase(self) -> None:
+        from engines import drafting_engine as de
+        from engines import q2_production_evidence_diagnostics as q2diag
+
+        packet = self._packet()
+        supported = de.extract_supported_complaint_relief(packet)
+        no_def = supported["no_defense_or_indemnity"]
+        self.assertTrue(no_def["supported"])
+        self.assertEqual(no_def["page_id"], _Q2_31629603939_PAGE_ID)
+        self.assertTrue(de.readability_gate_reason_codes(no_def["evidence_snippet"]))
+        clean = de.prefer_clean_relief_display_excerpt(
+            no_def["evidence_snippet"],
+            category="no_defense_or_indemnity",
+        )
+        self.assertEqual(clean, "")
+        self.assertEqual(
+            de.relief_selection_reason_code("no_defense_or_indemnity", no_def),
+            "supported_needs_paraphrase",
+        )
+
+        assembled = de.apply_evidence_grounded_relief_synthesis(
+            {"proposed_answer": "Draft.", "propositions": [], "audit": {}},
+            packet,
+        )
+        claims = assembled["audit"].get("verified_relief_claims") or []
+        by_cat = {c["category"]: c for c in claims}
+        claim = by_cat["no_defense_or_indemnity"]
+        self.assertTrue(claim["supported"])
+        self.assertEqual(claim["page_id"], _Q2_31629603939_PAGE_ID)
+        self.assertEqual(
+            claim["selection_reason_code"], "supported_needs_paraphrase"
+        )
+
+        relief = q2diag.diagnose_relief_synthesis(packet, assembled)
+        diag_no_def = relief["categories"]["no_defense_or_indemnity"]
+        self.assertTrue(diag_no_def["supported"])
+        self.assertEqual(diag_no_def["page_id"], _Q2_31629603939_PAGE_ID)
+        self.assertFalse(diag_no_def["clean_excerpt_available"])
+        self.assertEqual(
+            diag_no_def["selection_reason_code"], "supported_needs_paraphrase"
+        )
+
+    def test_quote_handoff_lacks_no_defense_until_structured_claims_merge(
+        self,
+    ) -> None:
+        from engines import drafting_engine as de
+
+        gap = self._quote_gap_answer()
+        quote_verified = de.extract_verified_relief_support_from_text(
+            _Q2_31629603939_OCR_RESCISSION_QUOTE,
+            page_id=_Q2_31629603939_PAGE_ID,
+        )
+        self.assertFalse(quote_verified["no_defense_or_indemnity"]["supported"])
+        self.assertTrue(quote_verified["rescission_void_ab_initio"]["supported"])
+
+        scrubbed_gap = GEN.scrub_unreadable_quoted_excerpts(gap)
+        self.assertNotIn("no defense or indemnity", scrubbed_gap.lower())
+        for banned in _Q2_31629603939_BANNED_OCR:
+            self.assertNotIn(banned, scrubbed_gap)
+
+        packet = self._packet()
+        assembled = de.apply_evidence_grounded_relief_synthesis(
+            {"proposed_answer": "Draft.", "propositions": [], "audit": {}},
+            packet,
+        )
+        claims = assembled["audit"]["verified_relief_claims"]
+        restored = GEN.scrub_unreadable_quoted_excerpts(
+            gap, verified_relief_claims=claims
+        )
+        self.assertIn("no defense or indemnity", restored.lower())
+        self.assertIn(f"page_id {_Q2_31629603939_PAGE_ID}", restored)
+        self.assertIn("originating source page", restored.lower())
+        for banned in _Q2_31629603939_BANNED_OCR:
+            self.assertNotIn(banned, restored)
+        # Concise paraphrase — not a long OCR dump.
+        self.assertLess(len(restored), 1600)
+        self.assertNotIn(_Q2_31629603939_PAGE_TEXT, restored)
+
+    def test_four_criteria_pass_with_parity_and_fail_closed_unsupported(
+        self,
+    ) -> None:
+        from engines import drafting_engine as de
+
+        packet = self._packet()
+        assembled = de.apply_evidence_grounded_relief_synthesis(
+            {"proposed_answer": "Draft.", "propositions": [], "audit": {}},
+            packet,
+        )
+        claims = assembled["audit"]["verified_relief_claims"]
+        # Start from the quote-gap answer so restoration depends on structured
+        # claims (production handoff path), not synthesis-only prose.
+        restored = GEN.scrub_unreadable_quoted_excerpts(
+            self._quote_gap_answer(), verified_relief_claims=claims
+        )
+        view = self._contract_view()
+        canonical, validation = GEN.finalize_canonical_answer_against_contract(
+            restored,
+            view,
+            verified_relief_claims=claims,
+        )
+        self.assertTrue(validation.ok)
+        by_id = {c.criterion_id: c for c in validation.criterion_results}
+        for crit_id in (
+            _Q2_CRIT_RESCISSION,
+            _Q2_CRIT_NO_DEFENSE,
+            _Q2_CRIT_PLEADED,
+            _Q2_CRIT_CATCH_ALL,
+        ):
+            row = by_id[crit_id]
+            self.assertEqual(row.result_code, ac.CRIT_PASS, msg=crit_id)
+            self.assertEqual(row.presence, ac.PRESENCE_PRESENT, msg=crit_id)
+            self.assertEqual(
+                row.evidence, ac.EVIDENCE_SUPPORTED, msg=crit_id
+            )
+        self.assertIn("no defense or indemnity", canonical.lower())
+        self.assertIn(f"page_id {_Q2_31629603939_PAGE_ID}", canonical)
+        for banned in _Q2_31629603939_BANNED_OCR:
+            self.assertNotIn(banned, canonical)
+        self.assertLess(len(canonical), 1600)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp) / "cand"
+            files = GEN.write_candidate_artifacts(
+                out_dir,
+                question_id="Q2",
+                question_text=_Q2_QUESTION,
+                required_commit="c" * 40,
+                reasoner_result={
+                    "status": "READY",
+                    "proposed_answer": canonical,
+                    "propositions": assembled.get("propositions") or [],
+                    "supporting_evidence": [],
+                    "contrary_evidence": [],
+                    "unresolved_questions": [],
+                    "documents_pages_reviewed": [],
+                    "attorney_review": {"requires_attorney_review": True},
+                    "audit": {
+                        "model": "synth",
+                        "provider": "synth",
+                        "verified_relief_claims": claims,
+                    },
+                    "confidence": 0.5,
+                },
+                model_input_audit={"retrieval_hit_count": 1},
+                commit_info={
+                    "checkout_commit": "c" * 40,
+                    "origin_main_commit": "c" * 40,
+                },
+                completeness={"ok": True},
+            )
+            candidate = json.loads(
+                Path(files["Q2_candidate_answer.json"]).read_text(
+                    encoding="utf-8"
+                )
+            )
+            markdown = Path(files["Q2_candidate_answer.md"]).read_text(
+                encoding="utf-8"
+            )
+            marker = "## Proposed answer\n\n"
+            start = markdown.index(marker) + len(marker)
+            end = markdown.index("\n## Review limitation", start)
+            md_proposed = markdown[start:end].strip("\n")
+            self.assertEqual(candidate["proposed_answer"], canonical)
+            self.assertEqual(md_proposed, canonical)
+            self.assertEqual(
+                GEN.normalize_proposed_answer_whitespace(
+                    candidate["proposed_answer"]
+                ),
+                GEN.normalize_proposed_answer_whitespace(md_proposed),
+            )
+
+        # Unsupported / missing-page structured claims stay fail-closed.
+        gap = self._quote_gap_answer()
+        unsupported_claim = {
+            "category": "no_defense_or_indemnity",
+            "supported": False,
+            "page_id": _Q2_31629603939_PAGE_ID,
+            "nyscef_document_number": 1,
+            "pdf_page": 25,
+            "evidence_snippet": "",
+            "selection_reason_code": "unsupported",
+        }
+        missing_page_claim = {
+            "category": "no_defense_or_indemnity",
+            "supported": True,
+            "page_id": None,
+            "nyscef_document_number": 1,
+            "pdf_page": 25,
+            "evidence_snippet": "mashed OCR no duty clause",
+            "selection_reason_code": "supported_needs_paraphrase",
+        }
+        for bad_claims in ([unsupported_claim], [missing_page_claim]):
+            scrubbed = GEN.scrub_unreadable_quoted_excerpts(
+                gap, verified_relief_claims=bad_claims
+            )
+            self.assertNotIn("no defense or indemnity", scrubbed.lower())
+            self.assertEqual(
+                de.render_fixed_paraphrase_for_supported_needs_paraphrase(
+                    bad_claims[0]
+                ),
+                "",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
