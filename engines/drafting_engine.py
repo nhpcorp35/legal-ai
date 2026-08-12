@@ -34,7 +34,10 @@ WHEREFORE / requested-relief questions receive deterministic evidence-grounded
 relief synthesis: rescission/void-ab-initio, no-defense-or-indemnity, and
 catch-all relief propositions are emitted only when cited complaint excerpts
 support them, and the answer expressly distinguishes pleaded requested relief
-from a judicial determination. Unsupported categories are never invented.
+from a judicial determination. Final displayed prose is one concise organized
+statement (no duplicative synthesis tail); displayed quotes pass an OCR
+readability gate and cite only their originating page_id. Unsupported
+categories and unsupported ``rescission and/or`` gloss are never invented.
 
 Gold answers and attorney feedback are never loaded into generation.
 
@@ -1794,6 +1797,8 @@ def _relief_proposition(
         "nyscef_document_number": support.get("nyscef_document_number"),
         "page_id": support.get("page_id"),
         "pdf_page": support.get("pdf_page"),
+        # Structured internal evidence keeps the raw snippet even when display
+        # prose paraphrases OCR-garbled quotations.
         "source_excerpt": support.get("evidence_snippet") or "",
         "confidence": 0.7,
         "rationale": (
@@ -1804,14 +1809,189 @@ def _relief_proposition(
     }
 
 
+# Relief-domain vocabulary for detecting OCR mid-word joins in displayed quotes.
+_OCR_RELIEF_DISPLAY_JOIN_WORDS = frozenset(
+    set(_OCR_CITATION_JOIN_WORDS)
+    | {
+        "coverage",
+        "declaring",
+        "declaration",
+        "defend",
+        "defense",
+        "further",
+        "indemnify",
+        "indemnity",
+        "initio",
+        "judgment",
+        "material",
+        "misrepresentations",
+        "obligation",
+        "policy",
+        "proper",
+        "relief",
+        "rescind",
+        "rescinded",
+        "rescission",
+        "whatsoever",
+        "wherefore",
+    }
+)
+
+# Single-letter runs that are almost never legitimate legal prose.
+_OCR_SINGLE_LETTER_RUN_RE = re.compile(r"(?i)(?:\b[a-z]\s+){2,}[a-z]\b")
+
+
+def displayed_quote_fails_readability_gate(text: str) -> bool:
+    """
+    Deterministic readability gate for displayed quotes/excerpts.
+
+    Rejects obvious OCR mid-word fragmentation. Does not mutate structured
+    internal evidence — callers decide whether to paraphrase for display.
+    """
+    raw = normalize_whitespace(text or "")
+    if not raw:
+        return False
+    if _OCR_SINGLE_LETTER_RUN_RE.search(raw):
+        return True
+    healed = heal_ocr_intra_word_spaces(
+        raw, join_words=_OCR_RELIEF_DISPLAY_JOIN_WORDS
+    )
+    if normalize_whitespace(healed).lower() != raw.lower():
+        return True
+    # Multi-fragment mid-word splits (e.g. ``Def en dants`` → defendants) that
+    # pairwise vocabulary healing may miss when the join needs 3+ tokens.
+    tokens = re.findall(r"[A-Za-z]+", raw)
+    vocab = _OCR_RELIEF_DISPLAY_JOIN_WORDS
+    for i, start in enumerate(tokens):
+        acc = start.lower()
+        saw_short = len(start) <= 3
+        for j in range(i + 1, min(i + 6, len(tokens))):
+            part = tokens[j]
+            if len(part) > 5:
+                break
+            acc += part.lower()
+            saw_short = saw_short or len(part) <= 3
+            if j > i and saw_short and acc in vocab:
+                return True
+    return False
+
+
+def _relief_page_citation(support: Mapping[str, Any]) -> str:
+    """Cite only the originating page_id for a displayed relief excerpt."""
+    page_id = normalize_whitespace(support.get("page_id") or "")
+    if not page_id:
+        return ""
+    return f" (page_id {page_id})"
+
+
+def _snippet_mentions_rescission(snippet: str) -> bool:
+    return bool(
+        re.search(r"(?i)\b(?:rescission|rescind(?:s|ed|ing)?)\b", snippet or "")
+    )
+
+
+def _snippet_mentions_void_ab_initio(snippet: str) -> bool:
+    return bool(re.search(r"(?i)\bvoid\s+ab\s+initio\b", snippet or ""))
+
+
+def _rescission_void_lead_clause(support: Mapping[str, Any]) -> str:
+    """
+    Source-backed lead for rescission / void-ab-initio relief.
+
+    Never emits unsupported ``rescission and/or`` gloss — only phrases present
+    in the cited snippet (OCR-healed probe allowed for detection only).
+    """
+    snippet = str(support.get("evidence_snippet") or "")
+    probe = heal_ocr_intra_word_spaces(
+        snippet, join_words=_OCR_RELIEF_DISPLAY_JOIN_WORDS
+    )
+    has_rescission = _snippet_mentions_rescission(snippet) or _snippet_mentions_rescission(
+        probe
+    )
+    has_void = _snippet_mentions_void_ab_initio(snippet) or _snippet_mentions_void_ab_initio(
+        probe
+    )
+    if has_rescission and has_void:
+        return (
+            "The complaint requests rescission and a declaration that coverage "
+            "is void ab initio"
+        )
+    if has_void:
+        return (
+            "The complaint requests a declaration that coverage is void ab initio"
+        )
+    if has_rescission:
+        return "The complaint requests rescission"
+    # Category matched on corpus elsewhere; fail closed to void-ab-initio
+    # phrasing without inventing a rescission gloss.
+    return (
+        "The complaint requests a declaration that coverage is void ab initio"
+    )
+
+
+def _format_relief_display_evidence(
+    support: Mapping[str, Any],
+    *,
+    readable_intro: str,
+    paraphrase_intro: str,
+) -> str:
+    """
+    Format displayed evidence for one relief category.
+
+    Readable quotes keep the source snippet and cite only that category's
+    originating page_id. OCR-garbled quotes are not displayed — a concise
+    source-grounded paraphrase plus page citation is used instead. Structured
+    ``evidence_snippet`` on ``support`` is left unchanged.
+    """
+    snippet = normalize_whitespace(support.get("evidence_snippet") or "")
+    cite = _relief_page_citation(support)
+    if snippet and not displayed_quote_fails_readability_gate(snippet):
+        return (
+            f'{readable_intro}, as reflected in the cited pleading language: '
+            f'"{snippet}"{cite}.'
+        )
+    return f"{paraphrase_intro}, as reflected in the cited pleading on the originating source page{cite}."
+
+
+def _build_rescission_void_relief_paragraph(support: Mapping[str, Any]) -> str:
+    lead = _rescission_void_lead_clause(support)
+    return _format_relief_display_evidence(
+        support,
+        readable_intro=lead,
+        paraphrase_intro=lead,
+    )
+
+
+def _build_no_defense_relief_paragraph(support: Mapping[str, Any]) -> str:
+    lead = (
+        "The complaint further seeks relief that there is no defense or "
+        "indemnity obligation"
+    )
+    return _format_relief_display_evidence(
+        support,
+        readable_intro=lead,
+        paraphrase_intro=lead,
+    )
+
+
+def _build_catch_all_relief_paragraph(support: Mapping[str, Any]) -> str:
+    lead = "The complaint also includes catch-all requested relief"
+    return _format_relief_display_evidence(
+        support,
+        readable_intro=lead,
+        paraphrase_intro=lead,
+    )
+
+
 def assemble_evidence_grounded_relief_paragraphs(
     supported: Mapping[str, Any],
 ) -> List[str]:
     """
-    Build concise relief paragraphs only for categories with complaint support.
+    Build one concise organized relief statement for supported categories.
 
-    Each paragraph embeds the supporting complaint snippet. Includes an explicit
-    pleaded-versus-adjudicated distinction when any relief category is supported.
+    Includes the pleaded-versus-adjudicated caveat when any category is
+    supported. Display quotes pass a readability gate; OCR-garbled excerpts
+    are paraphrased with page_id citations. Never invents unsupported relief.
     """
     paragraphs: List[str] = []
     any_supported = any(
@@ -1829,29 +2009,15 @@ def assemble_evidence_grounded_relief_paragraphs(
 
     rescission = supported.get("rescission_void_ab_initio") or {}
     if rescission.get("supported"):
-        snippet = rescission.get("evidence_snippet") or ""
-        paragraphs.append(
-            "The complaint requests rescission and/or a declaration that coverage "
-            f"is void ab initio, as reflected in the cited pleading language: "
-            f'"{snippet}".'
-        )
+        paragraphs.append(_build_rescission_void_relief_paragraph(rescission))
 
     indemnity = supported.get("no_defense_or_indemnity") or {}
     if indemnity.get("supported"):
-        snippet = indemnity.get("evidence_snippet") or ""
-        paragraphs.append(
-            "The complaint further seeks relief that there is no defense or "
-            f"indemnity obligation, as reflected in the cited pleading language: "
-            f'"{snippet}".'
-        )
+        paragraphs.append(_build_no_defense_relief_paragraph(indemnity))
 
     catch_all = supported.get("catch_all_relief") or {}
     if catch_all.get("supported"):
-        snippet = catch_all.get("evidence_snippet") or ""
-        paragraphs.append(
-            "The complaint also includes catch-all requested relief, as reflected "
-            f'in the cited pleading language: "{snippet}".'
-        )
+        paragraphs.append(_build_catch_all_relief_paragraph(catch_all))
     return paragraphs
 
 
@@ -1862,14 +2028,14 @@ def apply_evidence_grounded_relief_synthesis(
     """
     Ensure relief answers ground required propositions in cited complaint support.
 
-    Adds only categories supported by complaint excerpts. Adds the pleaded-versus-
-    adjudicated distinction when support exists. Does not invent unsupported relief.
+    When any relief category is supported, replaces the displayed answer with one
+    concise organized statement (categories + pleaded-not-adjudicated caveat)
+    instead of appending a duplicative long synthesis tail onto a prior draft.
+    Emits only source-backed categories; never invents unsupported relief.
     """
     if not isinstance(result, dict):
         return result
     supported = extract_supported_complaint_relief(evidence_packet)
-    answer = normalize_whitespace(result.get("proposed_answer") or "")
-    additions: List[str] = []
     new_props: List[dict] = []
 
     any_supported = any(
@@ -1881,39 +2047,46 @@ def apply_evidence_grounded_relief_synthesis(
         )
     )
 
-    if any_supported and not _draft_has_pleaded_relief_not_adjudication(answer):
-        additions.append(_PLEADED_RELIEF_NOT_ADJUDICATION_PHRASE)
-        new_props.append(
-            {
-                "proposition_id": "relief-pleaded-not-adjudication",
-                "text": _PLEADED_RELIEF_NOT_ADJUDICATION_PHRASE,
-                "classification": "inference",
-                "nyscef_document_number": None,
-                "page_id": None,
-                "pdf_page": None,
-                "source_excerpt": "",
-                "confidence": 0.9,
-                "rationale": (
-                    "Explicit distinction that the answer reports pleaded requested "
-                    "relief, not an adjudicated outcome."
-                ),
-                "polarity": "supporting",
-            }
-        )
+    supported_keys = [
+        key
+        for key, meta in supported.items()
+        if isinstance(meta, dict) and meta.get("supported")
+    ]
+
+    if not any_supported:
+        result.setdefault("audit", {})
+        if isinstance(result["audit"], dict):
+            result["audit"]["relief_synthesis_applied"] = False
+            result["audit"]["relief_supported_categories"] = supported_keys
+        return result
+
+    # Always emit one nonduplicative final prose block when support exists.
+    # Prior draft text is discarded so a long model synthesis is not retained
+    # as a duplicative tail.
+    paragraphs = assemble_evidence_grounded_relief_paragraphs(supported)
+    final_answer = normalize_whitespace(" ".join(paragraphs))
+
+    new_props.append(
+        {
+            "proposition_id": "relief-pleaded-not-adjudication",
+            "text": _PLEADED_RELIEF_NOT_ADJUDICATION_PHRASE,
+            "classification": "inference",
+            "nyscef_document_number": None,
+            "page_id": None,
+            "pdf_page": None,
+            "source_excerpt": "",
+            "confidence": 0.9,
+            "rationale": (
+                "Explicit distinction that the answer reports pleaded requested "
+                "relief, not an adjudicated outcome."
+            ),
+            "polarity": "supporting",
+        }
+    )
 
     rescission = supported.get("rescission_void_ab_initio") or {}
-    if _relief_category_needs_synthesis(
-        answer,
-        rescission,
-        has_presence=_draft_has_rescission_void_relief(answer),
-    ):
-        snippet = rescission.get("evidence_snippet") or ""
-        para = (
-            "The complaint requests rescission and/or a declaration that coverage "
-            f"is void ab initio, as reflected in the cited pleading language: "
-            f'"{snippet}".'
-        )
-        additions.append(para)
+    if rescission.get("supported"):
+        para = _build_rescission_void_relief_paragraph(rescission)
         new_props.append(
             _relief_proposition(
                 proposition_id="relief-rescission-void-ab-initio",
@@ -1923,18 +2096,8 @@ def apply_evidence_grounded_relief_synthesis(
         )
 
     indemnity = supported.get("no_defense_or_indemnity") or {}
-    if _relief_category_needs_synthesis(
-        answer,
-        indemnity,
-        has_presence=_draft_has_no_defense_or_indemnity_relief(answer),
-    ):
-        snippet = indemnity.get("evidence_snippet") or ""
-        para = (
-            "The complaint further seeks relief that there is no defense or "
-            f"indemnity obligation, as reflected in the cited pleading language: "
-            f'"{snippet}".'
-        )
-        additions.append(para)
+    if indemnity.get("supported"):
+        para = _build_no_defense_relief_paragraph(indemnity)
         new_props.append(
             _relief_proposition(
                 proposition_id="relief-no-defense-or-indemnity",
@@ -1944,17 +2107,8 @@ def apply_evidence_grounded_relief_synthesis(
         )
 
     catch_all = supported.get("catch_all_relief") or {}
-    if _relief_category_needs_synthesis(
-        answer,
-        catch_all,
-        has_presence=_draft_has_catch_all_relief(answer),
-    ):
-        snippet = catch_all.get("evidence_snippet") or ""
-        para = (
-            "The complaint also includes catch-all requested relief, as reflected "
-            f'in the cited pleading language: "{snippet}".'
-        )
-        additions.append(para)
+    if catch_all.get("supported"):
+        para = _build_catch_all_relief_paragraph(catch_all)
         new_props.append(
             _relief_proposition(
                 proposition_id="relief-catch-all",
@@ -1963,25 +2117,21 @@ def apply_evidence_grounded_relief_synthesis(
             )
         )
 
-    if not additions and not new_props:
-        result.setdefault("audit", {})
-        if isinstance(result["audit"], dict):
-            result["audit"]["relief_synthesis_applied"] = False
-            result["audit"]["relief_supported_categories"] = [
-                key
-                for key, meta in supported.items()
-                if isinstance(meta, dict) and meta.get("supported")
-            ]
-        return result
-
     out = dict(result)
-    merged_answer = answer
-    if additions:
-        if merged_answer and not merged_answer.endswith((" ", "\n")):
-            merged_answer = merged_answer.rstrip() + " "
-        merged_answer = (merged_answer + " ".join(additions)).strip()
-    out["proposed_answer"] = merged_answer
+    out["proposed_answer"] = final_answer
     props = [p for p in (out.get("propositions") or []) if isinstance(p, dict)]
+    # Prefer freshly built relief propositions; drop stale relief-* ids first.
+    relief_ids = {
+        "relief-pleaded-not-adjudication",
+        "relief-rescission-void-ab-initio",
+        "relief-no-defense-or-indemnity",
+        "relief-catch-all",
+    }
+    props = [
+        p
+        for p in props
+        if normalize_whitespace(p.get("proposition_id")) not in relief_ids
+    ]
     existing_ids = {
         normalize_whitespace(p.get("proposition_id")) for p in props
     }
@@ -1993,11 +2143,7 @@ def apply_evidence_grounded_relief_synthesis(
     out["propositions"] = props
     audit = dict(out.get("audit") or {})
     audit["relief_synthesis_applied"] = True
-    audit["relief_supported_categories"] = [
-        key
-        for key, meta in supported.items()
-        if isinstance(meta, dict) and meta.get("supported")
-    ]
+    audit["relief_supported_categories"] = supported_keys
     out["audit"] = audit
     return out
 
