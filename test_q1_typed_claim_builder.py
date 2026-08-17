@@ -110,11 +110,27 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
                         ],
                     },
                 ],
+                "role_vocabulary_counts": {
+                    "substantive_role_terms": {
+                        "named_insured": 1,
+                        "insured": 1,
+                    },
+                    "related_action_cues": {"related_action": 1},
+                    "procedural_role_terms": {
+                        "plaintiff": 1,
+                        "defendant": 1,
+                        "third_party_plaintiff": 1,
+                    },
+                },
             },
         )
         serialized_diagnostics = repr(diagnostics)
         self.assertNotIn("Synthetic Underwriters", serialized_diagnostics)
         self.assertNotIn("Synthetic Contractor", serialized_diagnostics)
+        self.assertNotIn("synthetic-page-1", serialized_diagnostics)
+        self.assertNotIn(
+            "Synthetic Contractor is the named insured", serialized_diagnostics
+        )
         self.assertNotIn("named insured", serialized_diagnostics)
         self.assertNotIn("third-party plaintiff", serialized_diagnostics)
         rendered = CLI.render_q1_validated_party_claims(claims)
