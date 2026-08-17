@@ -731,6 +731,7 @@ def evaluate_criterion(
     *,
     semantic_preservation: Mapping[str, Any],
     validated_claims: Optional[Mapping[str, Any]] = None,
+    validated_evidence_text: Optional[str] = None,
 ) -> CriterionResult:
     # Single shared path for Q2 no-defense when validated claims are the
     # support authority — do not fall back to OCR-derived phrase matching.
@@ -767,7 +768,14 @@ def evaluate_criterion(
 
     evidence_ok = True
     if spec.evidence_phrases:
-        evidence_ok = _all_phrases_present(norm, spec.evidence_phrases)
+        evidence_norm = _norm(
+            answer_text
+            if validated_evidence_text is None
+            else validated_evidence_text
+        )
+        evidence_ok = _all_phrases_present(
+            evidence_norm, spec.evidence_phrases
+        )
     evidence = EVIDENCE_SUPPORTED if evidence_ok else EVIDENCE_UNSUPPORTED
     if not evidence_ok:
         return CriterionResult(
@@ -845,6 +853,7 @@ def criterion_evidence_already_supported(
     spec: CriterionEvalSpec,
     *,
     validated_claims: Optional[Mapping[str, Any]] = None,
+    validated_evidence_text: Optional[str] = None,
 ) -> bool:
     """True when the answer already contains every required evidence phrase.
 
@@ -867,7 +876,14 @@ def criterion_evidence_already_supported(
         )
     if not spec.evidence_phrases:
         return True
-    return _all_phrases_present(_norm(answer_text), spec.evidence_phrases)
+    evidence_text = (
+        answer_text
+        if validated_evidence_text is None
+        else validated_evidence_text
+    )
+    return _all_phrases_present(
+        _norm(evidence_text), spec.evidence_phrases
+    )
 
 
 def apply_idempotent_contract_fallback(
@@ -876,6 +892,7 @@ def apply_idempotent_contract_fallback(
     *,
     missing_ids: Optional[Sequence[str]] = None,
     validated_claims: Optional[Mapping[str, Any]] = None,
+    validated_evidence_text: Optional[str] = None,
 ) -> tuple[str, dict[str, str]]:
     """Append genuinely missing fallback content at most once per criterion.
 
@@ -908,7 +925,10 @@ def apply_idempotent_contract_fallback(
             continue
         # Do not insert fallback that would manufacture unsupported evidence.
         if not criterion_evidence_already_supported(
-            out, spec, validated_claims=validated_claims
+            out,
+            spec,
+            validated_claims=validated_claims,
+            validated_evidence_text=validated_evidence_text,
         ):
             actions[cid] = FALLBACK_SKIPPED_UNSUPPORTED
             continue
@@ -995,6 +1015,7 @@ def validate_final_answer_against_contract(
     apply_fallback: bool = True,
     apply_duplication_repair: bool = True,
     validated_claims: Optional[Mapping[str, Any]] = None,
+    validated_evidence_text: Optional[str] = None,
     source_identified_counts: Optional[Sequence[Mapping[str, Any]]] = None,
 ) -> AcceptanceValidationResult:
     """Validate fully assembled final answer; optionally fallback + dedupe.
@@ -1039,6 +1060,7 @@ def validate_final_answer_against_contract(
             spec,
             semantic_preservation=view.semantic_preservation,
             validated_claims=validated_claims,
+            validated_evidence_text=validated_evidence_text,
         )
         if trial.result_code == CRIT_FAIL_MISSING:
             missing_for_fallback.append(cid)
@@ -1049,6 +1071,7 @@ def validate_final_answer_against_contract(
             view,
             missing_ids=missing_for_fallback,
             validated_claims=validated_claims,
+            validated_evidence_text=validated_evidence_text,
         )
         for cid, action in fallback_actions.items():
             if action == FALLBACK_SKIPPED_UNSUPPORTED:
@@ -1059,6 +1082,7 @@ def validate_final_answer_against_contract(
             view,
             missing_ids=missing_for_fallback,
             validated_claims=validated_claims,
+            validated_evidence_text=validated_evidence_text,
         )
         for cid, action in second.items():
             if action == FALLBACK_INSERTED:
@@ -1112,6 +1136,7 @@ def validate_final_answer_against_contract(
             spec,
             semantic_preservation=view.semantic_preservation,
             validated_claims=validated_claims,
+            validated_evidence_text=validated_evidence_text,
         )
         results.append(result)
         if result.result_code != CRIT_PASS:

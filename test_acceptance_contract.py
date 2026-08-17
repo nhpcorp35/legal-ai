@@ -1965,5 +1965,55 @@ class Q2EmptyStructurePriorPageRoutingTests(unittest.TestCase):
         self.assertTrue(assembled["audit"].get("relief_synthesis_applied"))
 
 
+class ValidatedEvidenceBindingRegressionTests(unittest.TestCase):
+    def test_validated_proposition_evidence_authorizes_missing_fallback(self) -> None:
+        view = _load_view()
+        spec = view.criteria[0]
+        evidence = " ".join(spec.evidence_phrases)
+        out, actions = ac.apply_idempotent_contract_fallback(
+            "Unrelated attorney-facing preamble.",
+            view,
+            missing_ids=[spec.id],
+            validated_evidence_text=evidence,
+        )
+        self.assertEqual(actions[spec.id], ac.FALLBACK_INSERTED)
+        self.assertIn(spec.fallback_text.strip(), out)
+
+    def test_explicit_validated_evidence_channel_cannot_be_bypassed_by_answer(self) -> None:
+        view = _load_view()
+        spec = view.criteria[0]
+        answer = " ".join(spec.evidence_phrases)
+        out, actions = ac.apply_idempotent_contract_fallback(
+            answer,
+            view,
+            missing_ids=[spec.id],
+            validated_evidence_text="validated proposition without required support",
+        )
+        self.assertEqual(actions[spec.id], ac.FALLBACK_SKIPPED_UNSUPPORTED)
+        self.assertNotIn(spec.fallback_text.strip(), out)
+
+    def test_final_validation_uses_same_validated_evidence_on_both_passes(self) -> None:
+        view = _load_view()
+        answer = _answer_covering(view)
+        evidence = " ".join(
+            phrase
+            for spec in view.criteria
+            for phrase in spec.evidence_phrases
+        )
+        result = ac.validate_final_answer_against_contract(
+            answer,
+            view,
+            apply_fallback=False,
+            validated_evidence_text=evidence,
+        )
+        self.assertTrue(result.ok)
+        self.assertTrue(
+            all(
+                row.evidence == ac.EVIDENCE_SUPPORTED
+                for row in result.criterion_results
+            )
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

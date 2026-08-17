@@ -1329,6 +1329,32 @@ def presentation_rewrite_lost_satisfied_criteria(
     return lost
 
 
+def validated_acceptance_evidence_text(reasoner_result: Mapping[str, Any]) -> str:
+    """Serialize only retained validated propositions for contract evidence checks."""
+    rows: list[str] = []
+    for proposition in reasoner_result.get("propositions") or []:
+        if not isinstance(proposition, Mapping):
+            continue
+        text_value = normalize_proposed_answer_whitespace(
+            str(proposition.get("text") or "")
+        )
+        excerpt = normalize_proposed_answer_whitespace(
+            str(
+                proposition.get("source_excerpt")
+                or proposition.get("excerpt")
+                or ""
+            )
+        )
+        page_id = str(proposition.get("page_id") or "").strip()
+        if text_value:
+            rows.append(text_value)
+        if excerpt:
+            rows.append(excerpt)
+        if page_id:
+            rows.append(f"page_id {page_id}")
+    return "\n".join(rows)
+
+
 def finalize_canonical_answer_against_contract(
     proposed_answer: str,
     contract_view: ac.ContractEvaluationView,
@@ -1336,6 +1362,7 @@ def finalize_canonical_answer_against_contract(
     canonicalize: Optional[Callable[[str], str]] = None,
     verified_relief_claims: Optional[Sequence[Mapping[str, Any]]] = None,
     validated_claims: Optional[Mapping[str, Any]] = None,
+    validated_evidence_text: Optional[str] = None,
 ) -> tuple[str, ac.AcceptanceValidationResult]:
     """Repair, canonicalize for presentation, then validate the exact final string.
 
@@ -1373,6 +1400,7 @@ def finalize_canonical_answer_against_contract(
         apply_fallback=True,
         apply_duplication_repair=True,
         validated_claims=validated_claims,
+        validated_evidence_text=validated_evidence_text,
     )
     if not repaired.ok:
         return repaired.final_answer, repaired
@@ -1384,6 +1412,7 @@ def finalize_canonical_answer_against_contract(
         apply_fallback=False,
         apply_duplication_repair=False,
         validated_claims=validated_claims,
+        validated_evidence_text=validated_evidence_text,
     )
     lost = presentation_rewrite_lost_satisfied_criteria(repaired, final)
     if lost:
@@ -2050,11 +2079,15 @@ def run_generation(
             verified_claims = reasoner_audit_pre.get("verified_relief_claims")
             if not isinstance(verified_claims, list):
                 verified_claims = None
+        validated_evidence = validated_acceptance_evidence_text(
+            reasoner_result
+        )
         canonical, validation = finalize_canonical_answer_against_contract(
             proposed,
             contract_view,
             verified_relief_claims=verified_claims,
             validated_claims=validated_claims_doc,
+            validated_evidence_text=validated_evidence,
         )
         if q2_diagnostics is not None:
             q2_diagnostics = build_q2_production_evidence_diagnostics(
