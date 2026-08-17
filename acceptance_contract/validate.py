@@ -53,6 +53,13 @@ _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+|\n+")
 Q2_NO_DEFENSE_CRITERION_ID = "q2-no-defense-or-indemnity"
 Q2_NO_DEFENSE_CATEGORY = "no_defense_or_indemnity"
 Q2_VALIDATED_CLAIMS_SCHEMA_VERSION = "q2_validated_structured_claims.v1"
+Q1_VALIDATED_PARTY_CLAIMS_SCHEMA_VERSION = "q1_validated_party_claims.v1"
+Q1_STRUCTURED_CRITERION_IDS = frozenset({
+    "Q1_C1_PLAINTIFF_ROLE", "Q1_C2_DEFENDANT_SIDE_PARTIES",
+    "Q1_C3_SPECIFIC_DEFENDANT_ROLE_DESIGNATIONS",
+    "Q1_C4_LIMITED_SUBSTANTIVE_ROLE_INFORMATION",
+    "Q1_C5_DUAL_ROLES_IN_RELATED_ACTION", "Q1_C6_INCOMPLETE_PARTY_ROSTER",
+})
 
 _NO_DUTY_RE = re.compile(r"\bno\b(?:\s+\w+){0,3}\s+duty\b", re.IGNORECASE)
 _DEFEND_RE = re.compile(r"\bdefend(?:s|ed|ing)?\b", re.IGNORECASE)
@@ -743,6 +750,92 @@ def evaluate_q2_no_defense_or_indemnity(
     )
 
 
+def _q1_role_values(party: Mapping[str, Any], field: str) -> set[str]:
+    raw = party.get(field)
+    values = raw if isinstance(raw, list) else [raw]
+    return {_norm(value) for value in values if isinstance(value, str) and _norm(value)}
+
+
+def q1_party_claims_are_valid(claims: Optional[Mapping[str, Any]]) -> bool:
+    """Fail closed unless the typed Q1 handoff has the exact bounded shape."""
+    if not isinstance(claims, Mapping):
+        return False
+    if claims.get("schema_version") != Q1_VALIDATED_PARTY_CLAIMS_SCHEMA_VERSION:
+        return False
+    parties = claims.get("parties")
+    if not isinstance(parties, list):
+        return False
+    if claims.get("roster_completeness") not in {"complete", "incomplete", "not_established"}:
+        return False
+    for party in parties:
+        if not isinstance(party, Mapping) or not _norm(str(party.get("identity") or "")):
+            return False
+        if any(
+            not isinstance(party.get(field), list)
+            or any(not isinstance(value, str) for value in party.get(field) or [])
+            for field in ("procedural_roles", "related_action_roles")
+        ):
+            return False
+        if any(
+            not isinstance(party.get(field, ""), str)
+            for field in ("pleaded_role_basis", "substantive_role")
+        ):
+            return False
+    return True
+
+
+def evaluate_q1_structured_criterion(
+    spec: CriterionEvalSpec,
+    claims: Mapping[str, Any],
+    *,
+    phrase_coverage: Optional[Mapping[str, Any]] = None,
+) -> CriterionResult:
+    """Evaluate Case-00 Q1 criteria from typed validated claims, not prose."""
+    parties = [p for p in claims.get("parties") or [] if isinstance(p, Mapping)]
+    current = [(p, _q1_role_values(p, "procedural_roles")) for p in parties]
+    related = {
+        _norm(str(p.get("identity") or "")): _q1_role_values(p, "related_action_roles")
+        for p in parties
+    }
+    satisfied = False
+    diagnostic = "q1_structured_claim_missing"
+    if spec.id == "Q1_C1_PLAINTIFF_ROLE":
+        satisfied = any(any("plaintiff" in r for r in roles) for _p, roles in current)
+        diagnostic = "q1_structured_plaintiff_role"
+    elif spec.id == "Q1_C2_DEFENDANT_SIDE_PARTIES":
+        satisfied = any(any("defendant" in r for r in roles) for _p, roles in current)
+        diagnostic = "q1_structured_defendant_parties"
+    elif spec.id == "Q1_C3_SPECIFIC_DEFENDANT_ROLE_DESIGNATIONS":
+        satisfied = any(
+            any("defendant" in r for r in roles)
+            and (bool(_norm(str(p.get("pleaded_role_basis") or ""))) or len(roles) > 1)
+            for p, roles in current
+        )
+        diagnostic = "q1_structured_defendant_designations"
+    elif spec.id == "Q1_C4_LIMITED_SUBSTANTIVE_ROLE_INFORMATION":
+        satisfied = any(bool(_norm(str(p.get("substantive_role") or ""))) for p in parties)
+        diagnostic = "q1_structured_substantive_roles"
+    elif spec.id == "Q1_C5_DUAL_ROLES_IN_RELATED_ACTION":
+        satisfied = any(
+            bool(roles) and bool(related.get(_norm(str(p.get("identity") or ""))))
+            for p, roles in current
+        )
+        diagnostic = "q1_structured_related_action_roles"
+    elif spec.id == "Q1_C6_INCOMPLETE_PARTY_ROSTER":
+        satisfied = claims.get("roster_completeness") in {"incomplete", "not_established"}
+        diagnostic = "q1_structured_roster_completeness"
+    coverage = dict(phrase_coverage or {})
+    return CriterionResult(
+        criterion_id=spec.id,
+        presence=PRESENCE_PRESENT if satisfied else PRESENCE_ABSENT,
+        evidence=EVIDENCE_SUPPORTED if satisfied else EVIDENCE_UNSUPPORTED,
+        semantic=SEMANTIC_PRESERVED if satisfied else SEMANTIC_NOT_APPLICABLE,
+        result_code=CRIT_PASS if satisfied else CRIT_FAIL_MISSING,
+        diagnostics=(diagnostic,),
+        phrase_coverage=coverage,
+    )
+
+
 def evaluate_criterion(
     answer_text: str,
     spec: CriterionEvalSpec,
@@ -778,6 +871,11 @@ def evaluate_criterion(
             norm, spec.semantic_forbidden_phrases
         ),
     }
+    if spec.id in Q1_STRUCTURED_CRITERION_IDS and q1_party_claims_are_valid(validated_claims):
+        assert validated_claims is not None
+        return evaluate_q1_structured_criterion(
+            spec, validated_claims, phrase_coverage=phrase_coverage
+        )
     present = _all_phrases_present(norm, spec.presence_phrases) if spec.presence_phrases else (
         bool(_norm(spec.fallback_text)) and _contains_phrase(norm, spec.fallback_text)
         if spec.fallback_text
