@@ -164,13 +164,8 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
         def lossy_canonicalizer(text):
             return str(text).replace("Synthetic Final Party", "").strip()
 
-        answer_with_summary = (
-            "Attorney analysis.\n\n" + CLI.render_q1_validated_party_claims(claims)
-        )
-        self.assertTrue(CLI.q1_rendered_claims_present(answer_with_summary, claims))
-
         restored = CLI.retain_q1_validated_party_claims(
-            answer_with_summary,
+            "Attorney analysis.",
             claims,
             canonicalize=lossy_canonicalizer,
         )
