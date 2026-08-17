@@ -3608,5 +3608,25 @@ class PartyRoleDiscreteProtectionAndJurisdictionTests(unittest.TestCase):
         self.assertFalse(de.hit_is_material_for_party_role_question(noise))
 
 
+class PartyRoleRepairPromptRetentionRegressionTests(unittest.TestCase):
+    def test_repair_requires_each_party_value_in_proposed_answer(self) -> None:
+        prompt = de.build_party_role_repair_prompt(
+            question="Who are the parties?",
+            evidence_packet={"retrieval_hits": []},
+            current_draft={"proposed_answer": "Synthetic incomplete answer."},
+            missing_attributes=[
+                {
+                    "party": "SYNTHETIC PERSON",
+                    "category": "residence_or_ppb",
+                    "value": "is a resident of Example County",
+                }
+            ],
+        )
+        self.assertIn("proposed_answer must name that party", prompt)
+        self.assertIn("preserve the listed value verbatim in the same sentence", prompt)
+        self.assertIn("SYNTHETIC PERSON", prompt)
+        self.assertIn("is a resident of Example County", prompt)
+
+
 if __name__ == "__main__":
     unittest.main()
