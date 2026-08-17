@@ -1426,6 +1426,12 @@ def build_q1_validated_party_claims(
     """Build typed Q1 claims only from deterministic inventory and evidence."""
     audit = reasoner_result.get("audit")
     expected = audit.get("party_role_expected_attributes") or [] if isinstance(audit, Mapping) else []
+    expected_identities = [
+        normalize_proposed_answer_whitespace(str(item.get("identity") or ""))
+        for item in expected
+        if isinstance(item, Mapping)
+        and normalize_proposed_answer_whitespace(str(item.get("identity") or ""))
+    ]
     # The exact serialized pre-draft packet is deterministic and bounded. Do
     # not mine model-produced proposed_answer or propositions for typed claims.
     packet = evidence_packet if isinstance(evidence_packet, Mapping) else {}
@@ -1476,6 +1482,41 @@ def build_q1_validated_party_claims(
                     if value and value not in substantive_roles:
                         substantive_roles.append(value)
                         evidence_field_categories.add("substantive_role")
+                # Permit a substantive designation in the immediately adjacent
+                # sentence only when the identity sentence names no other
+                # inventoried party and the adjacent sentence names none. This
+                # supports pronoun/continuation drafting without assigning a
+                # nearby party's role across caption or roster sentences.
+                current_has_other_identity = any(
+                    other.lower() != identity.lower()
+                    and re.search(re.escape(other), sentence, re.IGNORECASE)
+                    for other in expected_identities
+                )
+                if (
+                    not current_has_other_identity
+                    and sentence_index + 1 < len(group)
+                ):
+                    adjacent_sentence = group[sentence_index + 1]
+                    adjacent_has_identity = any(
+                        re.search(
+                            re.escape(other),
+                            adjacent_sentence,
+                            re.IGNORECASE,
+                        )
+                        for other in expected_identities
+                    )
+                    if not adjacent_has_identity:
+                        for matched in _Q1_SUBSTANTIVE_ROLE_RE.findall(
+                            adjacent_sentence
+                        ):
+                            value = normalize_proposed_answer_whitespace(
+                                matched
+                            ).lower()
+                            if value and value not in substantive_roles:
+                                substantive_roles.append(value)
+                                evidence_field_categories.add(
+                                    "substantive_role"
+                                )
                 # Related-action clauses often follow the identity sentence
                 # with a pronoun. Permit only the immediately adjacent sentence
                 # in the same retrieval hit, and still require an explicit
