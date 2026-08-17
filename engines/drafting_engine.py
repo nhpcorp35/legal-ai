@@ -214,6 +214,25 @@ _PARTY_ROLE_BEARING_RE = re.compile(
     r")"
 )
 
+# Coverage signals used only to order already-material packet hits. They do
+# not create evidence or bypass the party-role materiality gate.
+_PARTY_ROLE_SUBSTANTIVE_COVERAGE_RE = re.compile(
+    r"(?i)\b(?:"
+    r"insurer|underwriter|named\s+insured|additional\s+insured|"
+    r"owner|contractor|tenant|landlord|broker"
+    r")\b"
+)
+
+_PARTY_ROLE_RELATED_ACTION_COVERAGE_RE = re.compile(
+    r"(?i)\b(?:underlying|related|separate|third[\s-]+party)\s+"
+    r"(?:action|case|litigation)\b[\s\S]{0,400}\b"
+    r"(?:plaintiffs?|defendants?|petitioners?|respondents?)\b|"
+    r"\b(?:plaintiffs?|defendants?|petitioners?|respondents?)\b"
+    r"[\s\S]{0,400}\b(?:underlying|related|separate|third[\s-]+party)\s+"
+    r"(?:action|case|litigation)\b"
+)
+
+
 _PARTY_IDENTITY_ESTABLISHING_RE = re.compile(
     r"(?i)\b(?:"
     r"(?:plaintiffs?|defendants?|petitioners?|respondents?|appellants?|appellees?)"
@@ -4223,7 +4242,8 @@ def apply_party_role_packet_budget(
     Deterministic selection:
     1. Deduplicate redundant pages/propositions (stable first-seen order).
     2. Always retain controlling initiating/operative caption, intro, and PARTIES pages.
-    3. Then retain only page-text-demonstrated change/qualification/conflict evidence.
+    3. Then retain explicit substantive/related-action coverage and page-text-
+       demonstrated change/qualification/conflict evidence.
     4. Never truncate party names or role paragraphs — omit whole non-protected
        hits when the budget would otherwise be exceeded.
     """
@@ -4244,8 +4264,18 @@ def apply_party_role_packet_budget(
     for hit in deduped:
         if hit.get("controlling_party_role_pleading"):
             protected.append(hit)
-        elif _hit_is_necessary_party_role_exception(hit):
-            qualifying.append(hit)
+        else:
+            text = _hit_page_materiality_text(hit)
+            has_role_coverage = bool(
+                _PARTY_ROLE_SUBSTANTIVE_COVERAGE_RE.search(text)
+                or _PARTY_ROLE_RELATED_ACTION_COVERAGE_RE.search(text)
+            )
+            if _hit_is_necessary_party_role_exception(hit) or (
+                has_role_coverage and hit_is_material_for_party_role_question(hit)
+            ):
+                # Explicit coverage cues may enter only through the existing
+                # materiality gate; repetitive identity hits remain excluded.
+                qualifying.append(hit)
 
     # If the protected group itself creates character pressure, deterministically
     # remove only nonresponsive prose from each page.  Complete role-bearing
@@ -4256,8 +4286,19 @@ def apply_party_role_packet_budget(
     ) > max_chars:
         protected = [_compress_protected_party_role_hit(hit) for hit in protected]
 
+    def _coverage_priority(item: dict) -> int:
+        text = _hit_page_materiality_text(item)
+        if _PARTY_ROLE_RELATED_ACTION_COVERAGE_RE.search(text):
+            return 0
+        if _PARTY_ROLE_SUBSTANTIVE_COVERAGE_RE.search(text):
+            return 1
+        if _hit_is_necessary_party_role_exception(item):
+            return 2
+        return 3
+
     def _sort_key(item: dict):
         return (
+            _coverage_priority(item),
             -(float(item.get("score") or 0.0)),
             item.get("nyscef_document_number") is None,
             item.get("nyscef_document_number")
@@ -4304,6 +4345,16 @@ def apply_party_role_packet_budget(
         "serialized_chars": chars,
         "protected_hit_count": sum(
             1 for hit in selected if hit.get("controlling_party_role_pleading")
+        ),
+        "role_coverage_hit_count": sum(
+            1
+            for hit in selected
+            if _PARTY_ROLE_SUBSTANTIVE_COVERAGE_RE.search(
+                _hit_page_materiality_text(hit)
+            )
+            or _PARTY_ROLE_RELATED_ACTION_COVERAGE_RE.search(
+                _hit_page_materiality_text(hit)
+            )
         ),
     }
     return selected, meta
