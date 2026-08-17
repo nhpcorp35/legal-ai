@@ -1011,6 +1011,46 @@ class PartyRoleDeterministicProceduralBearingFallbackTests(unittest.TestCase):
         )
 
 
+    def test_resolve_patch_fills_missing_rescission_effect(self):
+        packet = _packet(FULL_SYNTHETIC_COMPLAINT)
+        expected = de.extract_party_role_expected_attributes(packet)
+        synthesis = de.extract_party_role_expected_synthesis(packet, expected)
+        self.assertIn(
+            "rescission_effect",
+            {item["category"] for item in synthesis},
+        )
+        audit = {}
+
+        parsed = de.resolve_party_role_synthesis_patch(
+            {"synthesis_patch": {}},
+            allowed_categories=["rescission_effect"],
+            original_answer=_notice_and_rescission_prefix(expected),
+            expected_synthesis=synthesis,
+            audit_out=audit,
+        )
+
+        self.assertIsNotNone(parsed)
+        self.assertEqual(set(parsed), {"rescission_effect"})
+        self.assertEqual(
+            parsed["rescission_effect"],
+            de.deterministic_party_role_rescission_effect_paragraph(synthesis),
+        )
+        self.assertTrue(
+            audit.get("party_role_deterministic_rescission_effect_fallback")
+        )
+        self.assertEqual(
+            de.find_missing_party_role_synthesis(
+                {"proposed_answer": parsed["rescission_effect"]},
+                [
+                    item
+                    for item in synthesis
+                    if item["category"] == "rescission_effect"
+                ],
+            ),
+            [],
+        )
+
+
 class PartyRoleSynthesisPatchSchemaAndLifecycleTests(unittest.TestCase):
     def test_omitted_category_fails_closed_with_audit_reason(self):
         packet = _packet(FULL_SYNTHETIC_COMPLAINT)
