@@ -1329,6 +1329,69 @@ def presentation_rewrite_lost_satisfied_criteria(
     return lost
 
 
+_Q1_RELATED_ACTION_CUE_RE = re.compile(
+    r"(?i)\\b(?:underlying|related|separate|third[ -]party)\\s+(?:action|case|litigation)\\b"
+)
+_Q1_RELATED_ROLE_RE = re.compile(
+    r"(?i)\\b(?:third[ -]party plaintiff|third[ -]party defendant|"
+    r"respondent on appeal|appellant|plaintiff|defendant)\\b"
+)
+
+
+def build_q1_validated_party_claims(
+    reasoner_result: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Build typed Q1 claims from deterministic inventory and retained propositions."""
+    audit = reasoner_result.get("audit")
+    expected = audit.get("party_role_expected_attributes") or [] if isinstance(audit, Mapping) else []
+    corpus = "\\n".join(
+        " ".join((str(p.get("text") or ""), str(p.get("source_excerpt") or p.get("excerpt") or "")))
+        for p in reasoner_result.get("propositions") or [] if isinstance(p, Mapping)
+    )
+    related_context = bool(_Q1_RELATED_ACTION_CUE_RE.search(corpus))
+    parties: list[dict[str, Any]] = []
+    for raw in expected:
+        if not isinstance(raw, Mapping):
+            continue
+        identity = normalize_proposed_answer_whitespace(str(raw.get("identity") or ""))
+        if not identity:
+            continue
+        role = normalize_proposed_answer_whitespace(str(raw.get("procedural_role") or ""))
+        basis = normalize_proposed_answer_whitespace(str(raw.get("pleaded_role_basis") or ""))
+        related_roles: list[str] = []
+        if related_context:
+            for sentence in re.split(r"(?<=[.!?])\\s+|\\n+", corpus):
+                if not re.search(re.escape(identity), sentence, re.IGNORECASE):
+                    continue
+                for matched in _Q1_RELATED_ROLE_RE.findall(sentence):
+                    value = normalize_proposed_answer_whitespace(matched).lower()
+                    if value and value not in related_roles:
+                        related_roles.append(value)
+        parties.append({
+            "identity": identity,
+            "procedural_roles": [role] if role else [],
+            "pleaded_role_basis": basis,
+            "substantive_role": basis,
+            "entity_type": normalize_proposed_answer_whitespace(str(raw.get("entity_type") or "")),
+            "residence_or_ppb": normalize_proposed_answer_whitespace(str(raw.get("residence_or_ppb") or "")),
+            "related_action_roles": related_roles,
+        })
+    scope = reasoner_result.get("review_scope")
+    completeness = str(scope.get("completeness") or "").strip().lower() if isinstance(scope, Mapping) else ""
+    claims = {
+        "schema_version": ac.Q1_VALIDATED_PARTY_CLAIMS_SCHEMA_VERSION,
+        "parties": parties,
+        "roster_completeness": "complete" if completeness in {"complete", "established"} else "not_established",
+    }
+    if not ac.q1_party_claims_are_valid(claims):
+        raise GenerationError(
+            "Typed Q1 validated party claims failed shape validation",
+            reason_code="q1_validated_party_claims_invalid",
+            finalized=False,
+        )
+    return claims
+
+
 def validated_acceptance_evidence_text(reasoner_result: Mapping[str, Any]) -> str:
     """Serialize retained, post-validation evidence for contract checks.
 
