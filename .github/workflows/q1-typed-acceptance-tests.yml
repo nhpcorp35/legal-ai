@@ -5,12 +5,14 @@ on:
     paths:
       - "acceptance_contract/**"
       - "engines/drafting_engine.py"
+      - "matter_builder.py"
       - "scripts/generate_attorney_feedback_candidate.py"
       - "test_acceptance_contract.py"
       - "test_q1_typed_acceptance_claims.py"
       - "test_q1_typed_claim_builder.py"
       - "test_party_role_procedural_synthesis.py"
       - "test_party_role_packet_coverage.py"
+      - "test_party_role_retrieval.py"
       - ".github/workflows/q1-typed-acceptance-tests.yml"
   workflow_dispatch:
 
@@ -30,4 +32,4 @@ jobs:
         run: python -m pip install --disable-pip-version-check jsonschema openai boto3
       - name: Run typed Q1 and acceptance tests
         run: |
-          python -m unittest             test_q1_typed_acceptance_claims.py             test_q1_typed_claim_builder.py             test_acceptance_contract.py             test_party_role_procedural_synthesis.py             test_party_role_packet_coverage.py             -v
+          python -m unittest             test_q1_typed_acceptance_claims.py             test_q1_typed_claim_builder.py             test_acceptance_contract.py             test_party_role_procedural_synthesis.py             test_party_role_packet_coverage.py             test_party_role_retrieval.py             -v
