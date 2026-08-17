@@ -697,5 +697,29 @@ class ProposedAnswerSerializerParityTests(unittest.TestCase):
         self.assertIn("\n- DSSR is a notice defendant.", sentence_formatted)
 
 
+class ValidatedAcceptanceEvidenceSerializationTests(unittest.TestCase):
+    def test_only_retained_propositions_feed_acceptance_evidence(self) -> None:
+        reasoner = {
+            "propositions": [
+                {
+                    "text": "Synthetic validated proposition.",
+                    "source_excerpt": "Synthetic cited source excerpt.",
+                    "page_id": "synthetic-page-7",
+                },
+                "not-a-proposition",
+            ],
+            "supporting_evidence": [
+                {"excerpt": "RAW_RETRIEVAL_MUST_NOT_ENTER"}
+            ],
+            "audit": {"private": "AUDIT_MUST_NOT_ENTER"},
+        }
+        serialized = gen.validated_acceptance_evidence_text(reasoner)
+        self.assertIn("Synthetic validated proposition.", serialized)
+        self.assertIn("Synthetic cited source excerpt.", serialized)
+        self.assertIn("page_id synthetic-page-7", serialized)
+        self.assertNotIn("RAW_RETRIEVAL_MUST_NOT_ENTER", serialized)
+        self.assertNotIn("AUDIT_MUST_NOT_ENTER", serialized)
+
+
 if __name__ == "__main__":
     unittest.main()
