@@ -23,8 +23,8 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
             "propositions": [
                 {
                     "text": (
-                        "Synthetic Contractor is a defendant here and a "
-                        "third-party plaintiff in the related action."
+                        "Synthetic Contractor is the named insured, a defendant "
+                        "here, and a third-party plaintiff in the related action."
                     ),
                     "source_excerpt": "Synthetic Contractor third-party plaintiff.",
                 }
@@ -64,6 +64,10 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
             by_name["Synthetic Contractor"]["substantive_role"],
             "named insured",
         )
+        rendered = CLI.render_q1_validated_party_claims(claims)
+        self.assertIn("Validated party/role summary:", rendered)
+        self.assertIn("related-action role: third-party plaintiff", rendered)
+        self.assertIn("does not establish that this is a complete party roster", rendered)
 
     def test_empty_inventory_is_valid_and_fails_closed_at_criteria(self):
         claims = CLI.build_q1_validated_party_claims(
