@@ -1421,6 +1421,51 @@ def q1_role_vocabulary_counts(
     }
 
 
+def q1_substantive_role_sentence_distances(
+    identity: str,
+    sentence_groups: Sequence[Sequence[str]],
+    expected_identities: Sequence[str],
+) -> dict[str, int]:
+    """Return privacy-safe minimum sentence distances to fixed role terms."""
+    minimums: dict[str, int] = {}
+    patterns = _Q1_ROLE_VOCABULARY_PATTERNS["substantive_role_terms"]
+    for group in sentence_groups:
+        identity_positions = [
+            index
+            for index, sentence in enumerate(group)
+            if re.search(re.escape(identity), sentence, re.IGNORECASE)
+        ]
+        if not identity_positions:
+            continue
+        masked_sentences = []
+        for sentence in group:
+            masked = sentence
+            for known_identity in expected_identities:
+                masked = re.sub(
+                    re.escape(known_identity),
+                    " ",
+                    masked,
+                    flags=re.IGNORECASE,
+                )
+            masked_sentences.append(masked)
+        for label, pattern in patterns.items():
+            role_positions = [
+                index
+                for index, sentence in enumerate(masked_sentences)
+                if re.search(pattern, sentence, re.IGNORECASE)
+            ]
+            if not role_positions:
+                continue
+            distance = min(
+                abs(identity_index - role_index)
+                for identity_index in identity_positions
+                for role_index in role_positions
+            )
+            if label not in minimums or distance < minimums[label]:
+                minimums[label] = distance
+    return minimums
+
+
 def build_q1_validated_party_claims(
     reasoner_result: Mapping[str, Any],
     *,
@@ -1564,6 +1609,13 @@ def build_q1_validated_party_claims(
             "party_index": party_index,
             "evidence_sentence_match_count": evidence_sentence_match_count,
             "evidence_field_categories": sorted(evidence_field_categories),
+            "substantive_role_term_min_sentence_distance": (
+                q1_substantive_role_sentence_distances(
+                    identity,
+                    sentence_groups,
+                    expected_identities,
+                )
+            ),
         })
     if diagnostics_out is not None:
         diagnostics_out.clear()
