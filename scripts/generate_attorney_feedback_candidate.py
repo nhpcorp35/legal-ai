@@ -2219,11 +2219,20 @@ def run_generation(
         validated_evidence = validated_acceptance_evidence_text(
             reasoner_result
         )
+        acceptance_claims_doc = validated_claims_doc
+        if (
+            acceptance_claims_doc is None
+            and question_id == "Q1"
+            and de.detect_party_role_question_intent(inputs["question_text"])
+        ):
+            acceptance_claims_doc = build_q1_validated_party_claims(
+                reasoner_result
+            )
         canonical, validation = finalize_canonical_answer_against_contract(
             proposed,
             contract_view,
             verified_relief_claims=verified_claims,
-            validated_claims=validated_claims_doc,
+            validated_claims=acceptance_claims_doc,
             validated_evidence_text=validated_evidence,
         )
         if q2_diagnostics is not None:
