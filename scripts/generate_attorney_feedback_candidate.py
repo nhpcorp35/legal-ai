@@ -1640,6 +1640,13 @@ def build_q1_validated_party_claims(
     return claims
 
 
+_Q1_SUBSTANTIVE_ROLE_LIMITATION = (
+    "The retrieved record provides limited substantive role information beyond "
+    "the pleaded procedural designations and does not establish additional "
+    "business or transactional roles for the listed parties."
+)
+
+
 def render_q1_validated_party_claims(claims: Mapping[str, Any]) -> str:
     """Render typed claims into concise attorney-facing prose."""
     if not ac.q1_party_claims_are_valid(claims):
@@ -1661,6 +1668,13 @@ def render_q1_validated_party_claims(claims: Mapping[str, Any]) -> str:
         if party.get("related_action_roles"):
             parts.append("related-action role: " + ", ".join(party["related_action_roles"]))
         lines.append(f"- {party['identity']} — " + "; ".join(parts) + ".")
+    if not any(
+        normalize_proposed_answer_whitespace(
+            str(party.get("substantive_role") or "")
+        )
+        for party in claims.get("parties") or []
+    ):
+        lines.append(_Q1_SUBSTANTIVE_ROLE_LIMITATION)
     if claims.get("roster_completeness") != "complete":
         lines.append(
             "The retrieved record does not establish that this is a complete party roster."
@@ -1690,6 +1704,21 @@ def q1_missing_rendered_claim_fields(
             ]
             if any(value not in norm for value in normalized):
                 missing.append({"party_index": party_index, "field": field})
+    if (
+        not any(
+            normalize_proposed_answer_whitespace(
+                str(party.get("substantive_role") or "")
+            )
+            for party in claims.get("parties") or []
+        )
+        and normalize_proposed_answer_whitespace(
+            _Q1_SUBSTANTIVE_ROLE_LIMITATION
+        ).lower()
+        not in norm
+    ):
+        missing.append(
+            {"party_index": None, "field": "substantive_role_limitation"}
+        )
     if (
         claims.get("roster_completeness") != "complete"
         and "does not establish that this is a complete party roster" not in norm
