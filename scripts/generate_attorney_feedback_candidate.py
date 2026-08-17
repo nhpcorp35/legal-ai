@@ -1529,7 +1529,7 @@ def retain_q1_validated_party_claims(
     # after presentation canonicalization so a lossy formatter cannot rewrite
     # or remove an identity that the final retention check requires.
     summary = render_q1_validated_party_claims(claims)
-    return f"{canonicalized_answer.rstrip()}\\n\\n{summary}".strip()
+    return f"{canonicalized_answer.rstrip()}\n\n{summary}".strip()
 
 
 def validated_acceptance_evidence_text(reasoner_result: Mapping[str, Any]) -> str:
