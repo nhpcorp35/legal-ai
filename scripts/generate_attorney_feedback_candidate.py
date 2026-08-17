@@ -1439,6 +1439,33 @@ def render_q1_validated_party_claims(claims: Mapping[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def q1_rendered_claims_present(
+    answer_text: str, claims: Mapping[str, Any]
+) -> bool:
+    """True only when every typed claim rendered into the final answer."""
+    norm = normalize_proposed_answer_whitespace(answer_text).lower()
+    for party in claims.get("parties") or []:
+        required = [
+            str(party.get("identity") or ""),
+            *(party.get("procedural_roles") or []),
+            str(party.get("pleaded_role_basis") or ""),
+            str(party.get("substantive_role") or ""),
+            *(party.get("related_action_roles") or []),
+        ]
+        if any(
+            normalize_proposed_answer_whitespace(value).lower() not in norm
+            for value in required
+            if normalize_proposed_answer_whitespace(value)
+        ):
+            return False
+    if (
+        claims.get("roster_completeness") != "complete"
+        and "does not establish that this is a complete party roster" not in norm
+    ):
+        return False
+    return True
+
+
 def validated_acceptance_evidence_text(reasoner_result: Mapping[str, Any]) -> str:
     """Serialize retained, post-validation evidence for contract checks.
 
@@ -2289,6 +2316,19 @@ def run_generation(
             validated_claims=acceptance_claims_doc,
             validated_evidence_text=validated_evidence,
         )
+        if (
+            isinstance(acceptance_claims_doc, Mapping)
+            and acceptance_claims_doc.get("schema_version")
+            == ac.Q1_VALIDATED_PARTY_CLAIMS_SCHEMA_VERSION
+            and not q1_rendered_claims_present(
+                canonical, acceptance_claims_doc
+            )
+        ):
+            raise GenerationError(
+                "Canonical Q1 answer dropped typed party claims",
+                reason_code="q1_typed_claim_rendering_lost",
+                finalized=False,
+            )
         if q2_diagnostics is not None:
             q2_diagnostics = build_q2_production_evidence_diagnostics(
                 evidence_packet=evidence_packet,
