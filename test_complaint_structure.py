@@ -821,5 +821,81 @@ class RebuildIntegrationStructureTests(unittest.TestCase):
         self.assertTrue(page.get("document_classification"))
 
 
+class ContractRoadmapScopeRegressionTests(unittest.TestCase):
+    def test_answer_packet_ranges_do_not_pollute_complaint_roadmap(self) -> None:
+        complaint = {
+            "note": "synthetic complaint roadmap",
+            "schema_version": cs.SCHEMA_VERSION,
+            "documents": [
+                {
+                    "document_id": "synthetic-complaint",
+                    "nyscef_document_number": 700,
+                    "sections": [
+                        {
+                            "heading": "PARTIES",
+                            "kind": "parties",
+                            "paragraph_numbers": [10, 11],
+                            "paragraph_range": {
+                                "start": 10,
+                                "end": 11,
+                                "contiguous": True,
+                            },
+                        }
+                    ],
+                }
+            ],
+        }
+        answer_contract = {
+            "required_kinds": ["answer_text", "supporting_evidence", "limitations"],
+            "required_categories": ["attorney_packet"],
+            "required_ranges": [
+                {"kind": "answer_text", "heading": "answer text", "start": 0, "end": 1},
+                {
+                    "kind": "supporting_evidence",
+                    "heading": "supporting evidence",
+                    "start": 0,
+                    "end": 10,
+                },
+                {"kind": "limitations", "heading": "limitations", "start": 0, "end": 5},
+            ],
+        }
+
+        merged = cs.merge_contract_structure_requirements(
+            complaint,
+            answer_contract,
+        )
+
+        self.assertIsNotNone(merged)
+        assert merged is not None
+        sections = merged["documents"][0]["sections"]
+        self.assertEqual([section["kind"] for section in sections], ["parties"])
+        self.assertEqual(merged["contract_required_kinds"], [])
+        self.assertEqual(
+            merged["contract_required_categories"],
+            ["attorney_packet"],
+        )
+
+    def test_complaint_scoped_contract_range_is_retained(self) -> None:
+        merged = cs.merge_contract_structure_requirements(
+            None,
+            {
+                "required_kinds": ["factual_layout"],
+                "required_ranges": [
+                    {
+                        "kind": "factual_layout",
+                        "heading": "FACTUAL BACKGROUND",
+                        "start": 20,
+                        "end": 22,
+                    }
+                ],
+            },
+        )
+        self.assertIsNotNone(merged)
+        assert merged is not None
+        section = merged["documents"][0]["sections"][0]
+        self.assertEqual(section["kind"], "factual_layout")
+        self.assertEqual(section["paragraph_numbers"], [20, 21, 22])
+
+
 if __name__ == "__main__":
     unittest.main()
