@@ -1508,6 +1508,27 @@ def q1_rendered_claims_present(
     return not q1_missing_rendered_claim_fields(answer_text, claims)
 
 
+def record_q1_retention_stage(
+    diagnostics_out: Optional[dict[str, Any]],
+    *,
+    stage: str,
+    answer_text: str,
+    claims: Mapping[str, Any],
+) -> None:
+    """Record privacy-safe typed-claim presence at one rendering stage."""
+    if diagnostics_out is None:
+        return
+    stages = diagnostics_out.setdefault("stages", [])
+    stages.append(
+        {
+            "stage": stage,
+            "missing_typed_claim_fields": q1_missing_rendered_claim_fields(
+                answer_text, claims
+            ),
+        }
+    )
+
+
 def retain_q1_validated_party_claims(
     answer_text: str,
     claims: Mapping[str, Any],
@@ -1642,6 +1663,7 @@ def finalize_canonical_answer_against_contract(
     verified_relief_claims: Optional[Sequence[Mapping[str, Any]]] = None,
     validated_claims: Optional[Mapping[str, Any]] = None,
     validated_evidence_text: Optional[str] = None,
+    q1_retention_diagnostics_out: Optional[dict[str, Any]] = None,
 ) -> tuple[str, ac.AcceptanceValidationResult]:
     """Repair, canonicalize for presentation, then validate the exact final string.
 
@@ -1668,11 +1690,28 @@ def finalize_canonical_answer_against_contract(
         )
     else:
         canonicalize_fn = canonical_proposed_answer
+    is_q1_claims = (
+        isinstance(validated_claims, Mapping)
+        and validated_claims.get("schema_version")
+        == ac.Q1_VALIDATED_PARTY_CLAIMS_SCHEMA_VERSION
+    )
+    if q1_retention_diagnostics_out is not None:
+        q1_retention_diagnostics_out.clear()
+        q1_retention_diagnostics_out["schema_version"] = (
+            "q1_retention_diagnostics.v1"
+        )
     # Merge structured synthesis claims before the first contract pass so
     # quote-only handoff gaps cannot trip fail-closed unsupported fallback.
     proposed_for_contract = de.merge_structured_verified_relief_claims_into_answer(
         proposed_answer or "", verified_relief_claims
     )
+    if is_q1_claims:
+        record_q1_retention_stage(
+            q1_retention_diagnostics_out,
+            stage="pre_contract",
+            answer_text=proposed_for_contract,
+            claims=validated_claims,
+        )
     repaired = ac.validate_final_answer_against_contract(
         proposed_for_contract,
         contract_view,
@@ -1681,19 +1720,34 @@ def finalize_canonical_answer_against_contract(
         validated_claims=validated_claims,
         validated_evidence_text=validated_evidence_text,
     )
+    if is_q1_claims:
+        record_q1_retention_stage(
+            q1_retention_diagnostics_out,
+            stage="post_contract_repair",
+            answer_text=repaired.final_answer,
+            claims=validated_claims,
+        )
     if not repaired.ok:
         return repaired.final_answer, repaired
 
     canonical = canonicalize_fn(repaired.final_answer)
-    if (
-        isinstance(validated_claims, Mapping)
-        and validated_claims.get("schema_version")
-        == ac.Q1_VALIDATED_PARTY_CLAIMS_SCHEMA_VERSION
-    ):
+    if is_q1_claims:
+        record_q1_retention_stage(
+            q1_retention_diagnostics_out,
+            stage="post_canonicalization",
+            answer_text=canonical,
+            claims=validated_claims,
+        )
         canonical = retain_q1_validated_party_claims(
             canonical,
             validated_claims,
             canonicalize=canonicalize_fn,
+        )
+        record_q1_retention_stage(
+            q1_retention_diagnostics_out,
+            stage="post_retention",
+            answer_text=canonical,
+            claims=validated_claims,
         )
     final = ac.validate_final_answer_against_contract(
         canonical,
@@ -1714,6 +1768,13 @@ def finalize_canonical_answer_against_contract(
     # Always return the canonical presentation string as the candidate body,
     # even on failure, so audits inspect the same text JSON/Markdown would emit.
     final.final_answer = canonical
+    if is_q1_claims:
+        record_q1_retention_stage(
+            q1_retention_diagnostics_out,
+            stage="final_validation",
+            answer_text=final.final_answer,
+            claims=validated_claims,
+        )
     return canonical, final
 
 
@@ -2391,12 +2452,20 @@ def run_generation(
                 normalize_proposed_answer_whitespace(proposed).lower()
             ):
                 proposed = f"{proposed.rstrip()}\n\n{typed_summary}".strip()
+        q1_retention_diagnostics: Optional[dict[str, Any]] = (
+            {} if (
+                isinstance(acceptance_claims_doc, Mapping)
+                and acceptance_claims_doc.get("schema_version")
+                == ac.Q1_VALIDATED_PARTY_CLAIMS_SCHEMA_VERSION
+            ) else None
+        )
         canonical, validation = finalize_canonical_answer_against_contract(
             proposed,
             contract_view,
             verified_relief_claims=verified_claims,
             validated_claims=acceptance_claims_doc,
             validated_evidence_text=validated_evidence,
+            q1_retention_diagnostics_out=q1_retention_diagnostics,
         )
         if (
             isinstance(acceptance_claims_doc, Mapping)
@@ -2412,6 +2481,7 @@ def run_generation(
                     reason_code="q1_typed_claim_rendering_lost",
                     missing_typed_claim_fields=missing_typed_claim_fields,
                     q1_claim_extraction_diagnostics=q1_claim_extraction_diagnostics,
+                    q1_retention_diagnostics=q1_retention_diagnostics,
                     finalized=False,
                 )
         if q2_diagnostics is not None:
