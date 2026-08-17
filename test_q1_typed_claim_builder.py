@@ -183,6 +183,12 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
                         "Synthetic Alpha is the owner."
                     )
                 },
+                {
+                    "excerpt": (
+                        "Synthetic Beta appears alone. "
+                        "The contractor performed unrelated work."
+                    )
+                },
             ]
         }
 
