@@ -2,8 +2,8 @@
 
 import importlib.util
 import unittest
-from unittest import mock
 from pathlib import Path
+from unittest import mock
 
 
 def load_cli():
@@ -261,11 +261,13 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
         self.assertEqual(by_stage["pre_contract"], [])
         self.assertEqual(
             by_stage["post_contract_repair"],
-            [{"party_index": 0, "field": "identity"},
-             {"party_index": 0, "field": "procedural_roles"},
-             {"party_index": 0, "field": "pleaded_role_basis"},
-             {"party_index": 0, "field": "substantive_role"},
-             {"party_index": 0, "field": "related_action_roles"}],
+            [
+                {"party_index": 0, "field": "identity"},
+                {"party_index": 0, "field": "procedural_roles"},
+                {"party_index": 0, "field": "pleaded_role_basis"},
+                {"party_index": 0, "field": "substantive_role"},
+                {"party_index": 0, "field": "related_action_roles"},
+            ],
         )
         self.assertEqual(by_stage["post_retention"], [])
         self.assertEqual(by_stage["final_validation"], [])
