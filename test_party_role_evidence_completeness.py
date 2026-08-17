@@ -3780,7 +3780,7 @@ class PartyRolePacketCoverageRegressionTests(unittest.TestCase):
 
         hits = [
             hit(1, "Alpha LLC, Plaintiff, -against- Beta Inc., Defendant.", 30.0),
-            hit(2, "PARTIES\\nPlaintiff Alpha LLC. Defendant Beta Inc.", 29.0),
+            hit(2, "PARTIES\nPlaintiff Alpha LLC. Defendant Beta Inc.", 29.0),
         ]
         hits.extend(
             hit(
