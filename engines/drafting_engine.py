@@ -9420,6 +9420,10 @@ def answer_attorney_record_question(
                 return fail
         validated["audit"]["party_role_provider_calls"] = provider_calls
         validated["audit"]["party_role_repair_attempted"] = repair_attempted
+        # Stable, deterministic evidence inventory used by the internal
+        # acceptance boundary. These values were extracted from the exact
+        # serialized evidence packet before drafting; no raw page text is kept.
+        validated["audit"]["party_role_expected_attributes"] = list(expected)
         validated["audit"]["party_role_expected_synthesis"] = list(expected_synthesis)
     elif detect_relief_question_intent(question_text):
         # Deterministic evidence-grounded relief assembly: only categories
