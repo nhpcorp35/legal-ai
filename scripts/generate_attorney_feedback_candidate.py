@@ -902,13 +902,57 @@ def run_production_retrieval(
     top_k: int = 30,
 ) -> dict:
     prepared = mb.prepare_documents_for_canonical_retrieval(documents)
-    return mb.retrieve_canonical_records(
+    primary = mb.retrieve_canonical_records(
         prepared,
         question_text,
         case_map=case_map,
         top_k=top_k,
         build_case_map_if_missing=False,
     )
+    if not de.detect_party_role_question_intent(question_text):
+        return primary
+
+    supplemental_query = (
+        "Action No. 1 Action No. 2 plaintiff defendant related action "
+        "party roles"
+    )
+    supplemental = mb.retrieve_canonical_records(
+        prepared,
+        supplemental_query,
+        case_map=case_map,
+        top_k=min(10, top_k),
+        build_case_map_if_missing=False,
+    )
+    merged = []
+    seen = set()
+    primary_count = 0
+    supplemental_added = 0
+    for source, rows in (
+        ("primary", primary.get("results") or []),
+        ("supplemental", supplemental.get("results") or []),
+    ):
+        for row in rows:
+            if not isinstance(row, Mapping):
+                continue
+            key = str(row.get("page_id") or row.get("result_id") or "")
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            merged.append(dict(row))
+            if source == "primary":
+                primary_count += 1
+            else:
+                supplemental_added += 1
+    result = dict(primary)
+    result["results"] = merged
+    result["result_count"] = len(merged)
+    result["party_role_supplemental_retrieval"] = {
+        "query_kind": "numbered_related_action_roles",
+        "max_hits": min(10, top_k),
+        "primary_result_count": primary_count,
+        "supplemental_added_count": supplemental_added,
+    }
+    return result
 
 
 def audit_serialized_model_input(
