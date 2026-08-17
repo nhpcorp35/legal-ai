@@ -24,7 +24,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install bounded test dependencies
-        run: python -m pip install --disable-pip-version-check jsonschema openai
+        run: python -m pip install --disable-pip-version-check jsonschema openai boto3
       - name: Run typed Q1 and acceptance tests
         run: |
           python -m unittest             test_q1_typed_acceptance_claims.py             test_q1_typed_claim_builder.py             test_acceptance_contract.py             -v
