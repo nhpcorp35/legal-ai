@@ -214,6 +214,25 @@ _PARTY_ROLE_BEARING_RE = re.compile(
     r")"
 )
 
+# Coverage signals used only to order already-material packet hits. They do
+# not create evidence or bypass the party-role materiality gate.
+_PARTY_ROLE_SUBSTANTIVE_COVERAGE_RE = re.compile(
+    r"(?i)\\b(?:"
+    r"named\\s+insured|additional\\s+insured|insured|insurer|underwriter|"
+    r"owner|contractor|subcontractor|tenant|landlord|broker|agent"
+    r")\\b"
+)
+
+_PARTY_ROLE_RELATED_ACTION_COVERAGE_RE = re.compile(
+    r"(?i)\\b(?:underlying|related|separate|third[\\s-]+party)\\s+"
+    r"(?:action|case|litigation|proceeding)\\b[\\s\\S]{0,400}\\b"
+    r"(?:plaintiffs?|defendants?|petitioners?|respondents?|claimants?)\\b|"
+    r"\\b(?:plaintiffs?|defendants?|petitioners?|respondents?|claimants?)\\b"
+    r"[\\s\\S]{0,400}\\b(?:underlying|related|separate|third[\\s-]+party)\\s+"
+    r"(?:action|case|litigation|proceeding)\\b"
+)
+
+
 _PARTY_IDENTITY_ESTABLISHING_RE = re.compile(
     r"(?i)\b(?:"
     r"(?:plaintiffs?|defendants?|petitioners?|respondents?|appellants?|appellees?)"
@@ -4244,7 +4263,12 @@ def apply_party_role_packet_budget(
     for hit in deduped:
         if hit.get("controlling_party_role_pleading"):
             protected.append(hit)
-        elif _hit_is_necessary_party_role_exception(hit):
+        elif (
+            _hit_is_necessary_party_role_exception(hit)
+            or hit_is_material_for_party_role_question(hit)
+        ):
+            # The caller normally supplies materiality-filtered hits, but keep
+            # this public helper fail-closed when invoked directly.
             qualifying.append(hit)
 
     # If the protected group itself creates character pressure, deterministically
@@ -4256,8 +4280,19 @@ def apply_party_role_packet_budget(
     ) > max_chars:
         protected = [_compress_protected_party_role_hit(hit) for hit in protected]
 
+    def _coverage_priority(item: dict) -> int:
+        text = _hit_page_materiality_text(item)
+        if _PARTY_ROLE_RELATED_ACTION_COVERAGE_RE.search(text):
+            return 0
+        if _PARTY_ROLE_SUBSTANTIVE_COVERAGE_RE.search(text):
+            return 1
+        if _hit_is_necessary_party_role_exception(item):
+            return 2
+        return 3
+
     def _sort_key(item: dict):
         return (
+            _coverage_priority(item),
             -(float(item.get("score") or 0.0)),
             item.get("nyscef_document_number") is None,
             item.get("nyscef_document_number")
@@ -4304,6 +4339,16 @@ def apply_party_role_packet_budget(
         "serialized_chars": chars,
         "protected_hit_count": sum(
             1 for hit in selected if hit.get("controlling_party_role_pleading")
+        ),
+        "role_coverage_hit_count": sum(
+            1
+            for hit in selected
+            if _PARTY_ROLE_SUBSTANTIVE_COVERAGE_RE.search(
+                _hit_page_materiality_text(hit)
+            )
+            or _PARTY_ROLE_RELATED_ACTION_COVERAGE_RE.search(
+                _hit_page_materiality_text(hit)
+            )
         ),
     }
     return selected, meta
