@@ -724,6 +724,20 @@ class ValidatedAcceptanceEvidenceSerializationTests(unittest.TestCase):
         reasoner = {
             "propositions": [],
             "audit": {
+                "party_role_expected_attributes": [
+                    {
+                        "identity": "Stable Plaintiff LLC",
+                        "procedural_role": "plaintiff",
+                        "entity_type": "limited liability company",
+                    }
+                ],
+                "party_role_expected_synthesis": [
+                    {
+                        "category": "procedural_bearing",
+                        "value": "Stable validated procedural qualification.",
+                        "parties": ["Stable Plaintiff LLC"],
+                    }
+                ],
                 "party_role_deterministic_attribute_fallbacks": [
                     {
                         "party": "Synthetic Plaintiff LLC",
@@ -751,6 +765,15 @@ class ValidatedAcceptanceEvidenceSerializationTests(unittest.TestCase):
             "unresolved_questions": ["UNRESOLVED_MUST_NOT_ENTER"],
         }
         serialized = CLI.validated_acceptance_evidence_text(reasoner)
+        self.assertIn("identity Stable Plaintiff LLC", serialized)
+        self.assertIn("procedural_role plaintiff", serialized)
+        self.assertIn(
+            "procedural_bearing Stable validated procedural qualification.",
+            serialized,
+        )
+        self.assertIn(
+            "procedural_bearing party Stable Plaintiff LLC", serialized
+        )
         self.assertIn(
             "Synthetic Plaintiff LLC procedural_role plaintiff", serialized
         )
