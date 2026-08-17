@@ -830,7 +830,11 @@ def evaluate_q1_structured_criterion(
             for p, roles in current
             if any("defendant" in r for r in roles)
         ]
-        satisfied = bool(defendants) and all(
+        # The criterion asks whether specific evidence-supported
+        # designations are reported; caption-only defendants must not make the
+        # entire criterion impossible. At least one designated defendant is
+        # sufficient, while an all-caption-only set still fails closed.
+        satisfied = any(
             bool(_norm(str(p.get("pleaded_role_basis") or "")))
             or len(roles) > 1
             for p, roles in defendants

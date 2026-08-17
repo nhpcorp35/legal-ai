@@ -91,6 +91,34 @@ class Q1TypedPartyClaimsTests(unittest.TestCase):
                 result = self.evaluate(criterion_id, claims)
                 self.assertEqual(result.result_code, ac.CRIT_FAIL_MISSING)
 
+    def test_c3_allows_caption_only_defendant_when_another_is_designated(self):
+        claims = self.claims()
+        claims["parties"].append(
+            {
+                "identity": "Synthetic Caption Defendant",
+                "procedural_roles": ["defendant"],
+                "pleaded_role_basis": "",
+                "substantive_role": "",
+                "related_action_roles": [],
+            }
+        )
+        result = self.evaluate(
+            "Q1_C3_SPECIFIC_DEFENDANT_ROLE_DESIGNATIONS",
+            claims,
+        )
+        self.assertEqual(result.result_code, ac.CRIT_PASS)
+
+    def test_c3_fails_when_all_defendants_are_caption_only(self):
+        claims = self.claims()
+        for party in claims["parties"]:
+            if "defendant" in party["procedural_roles"]:
+                party["pleaded_role_basis"] = ""
+        result = self.evaluate(
+            "Q1_C3_SPECIFIC_DEFENDANT_ROLE_DESIGNATIONS",
+            claims,
+        )
+        self.assertEqual(result.result_code, ac.CRIT_FAIL_MISSING)
+
     def test_malformed_claims_cannot_bypass_phrase_gate(self):
         claims = self.claims()
         claims["schema_version"] = "wrong"
