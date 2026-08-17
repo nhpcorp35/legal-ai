@@ -145,6 +145,74 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
             )
         )
 
+    def test_associates_adjacent_role_without_cross_party_leakage(self):
+        result = {
+            "review_scope": {"completeness": "not_established"},
+            "audit": {
+                "party_role_expected_attributes": [
+                    {
+                        "identity": "Synthetic Alpha",
+                        "procedural_role": "defendant",
+                        "pleaded_role_basis": "",
+                    },
+                    {
+                        "identity": "Synthetic Beta",
+                        "procedural_role": "defendant",
+                        "pleaded_role_basis": "",
+                    },
+                ]
+            },
+        }
+        evidence_packet = {
+            "retrieval_hits": [
+                {
+                    "excerpt": (
+                        "Synthetic Alpha appears in this action. "
+                        "It is the named insured."
+                    )
+                },
+                {
+                    "excerpt": (
+                        "Synthetic Alpha and Synthetic Beta are defendants. "
+                        "The contractor performed the work."
+                    )
+                },
+                {
+                    "excerpt": (
+                        "Synthetic Beta appears. "
+                        "Synthetic Alpha is the owner."
+                    )
+                },
+                {
+                    "excerpt": (
+                        "Synthetic Beta appears alone. "
+                        "The contractor performed unrelated work."
+                    )
+                },
+            ]
+        }
+
+        claims = CLI.build_q1_validated_party_claims(
+            result,
+            evidence_packet=evidence_packet,
+        )
+        by_name = {party["identity"]: party for party in claims["parties"]}
+
+        self.assertEqual(
+            by_name["Synthetic Alpha"]["substantive_role"],
+            "named insured; owner",
+        )
+        self.assertEqual(
+            by_name["Synthetic Alpha"]["pleaded_role_basis"],
+            "named insured; owner",
+        )
+        self.assertEqual(by_name["Synthetic Beta"]["substantive_role"], "")
+        self.assertEqual(by_name["Synthetic Beta"]["pleaded_role_basis"], "")
+        self.assertNotIn(
+            "contractor",
+            by_name["Synthetic Alpha"]["substantive_role"],
+        )
+
     def test_restores_typed_summary_after_contract_repair_drops_it(self):
         claims = {
             "schema_version": "q1_validated_party_claims.v1",
