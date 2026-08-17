@@ -839,8 +839,8 @@ def evaluate_criterion(
                 evidence=evidence,
                 semantic=semantic,
                 result_code=CRIT_FAIL_SEMANTIC,
+                diagnostics=["semantic_preservation_failed"],
                 phrase_coverage=phrase_coverage,
-            diagnostics=["semantic_preservation_failed"],
             )
 
     return CriterionResult(
