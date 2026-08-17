@@ -1342,6 +1342,10 @@ _Q1_SUBSTANTIVE_ROLE_RE = re.compile(
     r"(?i)\b(?:insurer|underwriter|named insured|additional insured|"
     r"owner|contractor|tenant|landlord|broker)\b"
 )
+_Q1_ADJACENT_ROLE_CONTINUATION_RE = re.compile(
+    r"(?i)^(?:it|they|he|she|this\s+(?:party|entity|company)|"
+    r"that\s+(?:party|entity|company))\b"
+)
 
 # Privacy boundary: labels and patterns are fixed in source. Diagnostics report
 # only nonzero integer counts for these known legal terms; they never emit
@@ -1505,7 +1509,12 @@ def build_q1_validated_party_claims(
                         )
                         for other in expected_identities
                     )
-                    if not adjacent_has_identity:
+                    if (
+                        not adjacent_has_identity
+                        and _Q1_ADJACENT_ROLE_CONTINUATION_RE.search(
+                            adjacent_sentence
+                        )
+                    ):
                         for matched in _Q1_SUBSTANTIVE_ROLE_RE.findall(
                             adjacent_sentence
                         ):
