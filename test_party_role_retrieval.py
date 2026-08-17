@@ -178,9 +178,9 @@ class PartyRoleRetrievalTests(unittest.TestCase):
                 105,
                 "complaint",
                 [
-                    "SUPREME COURT\\nAlpha Holdings LLC, Plaintiff, -against- Beta Inc., Defendant.",
-                    "PARTIES\\nPlaintiff Alpha Holdings LLC. Defendant Beta Inc.",
-                    "FACTUAL BACKGROUND\\nBeta Inc. acted as the contractor and insurance broker.",
+                    "SUPREME COURT\nAlpha Holdings LLC, Plaintiff, -against- Beta Inc., Defendant.",
+                    "PARTIES\nPlaintiff Alpha Holdings LLC. Defendant Beta Inc.",
+                    "FACTUAL BACKGROUND\nBeta Inc. acted as the contractor and insurance broker.",
                     "In the related action, Beta Inc. was the plaintiff. In this action it is a defendant.",
                 ],
                 filename="nyscef_doc_no_105_complaint.pdf",
