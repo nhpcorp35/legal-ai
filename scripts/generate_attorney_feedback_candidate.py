@@ -1343,6 +1343,79 @@ _Q1_SUBSTANTIVE_ROLE_RE = re.compile(
     r"owner|contractor|tenant|landlord|broker)\b"
 )
 
+# Privacy boundary: labels and patterns are fixed in source. Diagnostics report
+# only nonzero integer counts for these known legal terms; they never emit
+# matched text or evidence identifiers.
+_Q1_ROLE_VOCABULARY_PATTERNS = {
+    "substantive_role_terms": {
+        "insurer": r"\binsurer\b",
+        "underwriter": r"\bunderwriter\b",
+        "named_insured": r"\bnamed insured\b",
+        "additional_insured": r"\badditional insured\b",
+        "insured": r"\binsured\b",
+        "insurance_carrier": r"\binsurance carrier\b",
+        "owner": r"\bowner\b",
+        "property_owner": r"\bproperty owner\b",
+        "contractor": r"\bcontractor\b",
+        "general_contractor": r"\bgeneral contractor\b",
+        "subcontractor": r"\bsubcontractor\b",
+        "tenant": r"\btenant\b",
+        "landlord": r"\blandlord\b",
+        "lessor": r"\blessor\b",
+        "lessee": r"\blessee\b",
+        "broker": r"\bbroker\b",
+        "agent": r"\bagent\b",
+        "managing_agent": r"\bmanaging agent\b",
+        "manager": r"\bmanager\b",
+        "property_manager": r"\bproperty manager\b",
+        "operator": r"\boperator\b",
+        "developer": r"\bdeveloper\b",
+        "employer": r"\bemployer\b",
+        "employee": r"\bemployee\b",
+        "seller": r"\bseller\b",
+        "purchaser": r"\bpurchaser\b",
+    },
+    "related_action_cues": {
+        "underlying_action": r"\bunderlying action\b",
+        "underlying_case": r"\bunderlying case\b",
+        "underlying_litigation": r"\bunderlying litigation\b",
+        "related_action": r"\brelated action\b",
+        "related_case": r"\brelated case\b",
+        "related_litigation": r"\brelated litigation\b",
+        "separate_action": r"\bseparate action\b",
+        "separate_case": r"\bseparate case\b",
+        "separate_litigation": r"\bseparate litigation\b",
+        "third_party_action": r"\bthird[ -]party action\b",
+    },
+    "procedural_role_terms": {
+        "plaintiff": r"\bplaintiff\b",
+        "defendant": r"\bdefendant\b",
+        "third_party_plaintiff": r"\bthird[ -]party plaintiff\b",
+        "third_party_defendant": r"\bthird[ -]party defendant\b",
+        "appellant": r"\bappellant\b",
+        "respondent_on_appeal": r"\brespondent on appeal\b",
+    },
+}
+
+
+def q1_role_vocabulary_counts(
+    evidence_packet: Mapping[str, Any],
+) -> dict[str, dict[str, int]]:
+    """Count only fixed legal-role vocabulary in bounded evidence excerpts."""
+    evidence_text = "\n".join(
+        str(hit.get("excerpt") or "")
+        for hit in evidence_packet.get("retrieval_hits") or []
+        if isinstance(hit, Mapping)
+    )
+    return {
+        category: {
+            label: len(re.findall(pattern, evidence_text, flags=re.IGNORECASE))
+            for label, pattern in patterns.items()
+            if re.search(pattern, evidence_text, flags=re.IGNORECASE)
+        }
+        for category, patterns in _Q1_ROLE_VOCABULARY_PATTERNS.items()
+    }
+
 
 def build_q1_validated_party_claims(
     reasoner_result: Mapping[str, Any],
@@ -1447,6 +1520,7 @@ def build_q1_validated_party_claims(
         diagnostics_out.update({
             "party_count": len(parties),
             "parties": diagnostic_rows,
+            "role_vocabulary_counts": q1_role_vocabulary_counts(packet),
         })
     scope = reasoner_result.get("review_scope")
     completeness = str(scope.get("completeness") or "").strip().lower() if isinstance(scope, Mapping) else ""
