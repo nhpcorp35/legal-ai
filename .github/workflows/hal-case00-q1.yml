@@ -352,6 +352,7 @@ jobs:
 
       - name: Derive Q2 sanitized live-replay from restored evidence
         id: q2-replay
+        if: ${{ env.QUESTION_ID == 'Q2' }}
         shell: bash
         run: |
           set +e
@@ -373,7 +374,7 @@ jobs:
 
       - name: Q2 production-boundary preflight
         id: q2-preflight
-        if: ${{ success() && steps.q2-replay.outputs.ok == 'true' }}
+        if: ${{ env.QUESTION_ID == 'Q2' && success() && steps.q2-replay.outputs.ok == 'true' }}
         shell: bash
         run: |
           set +e
@@ -422,7 +423,7 @@ jobs:
 
       - name: Generate requested question and publish four verified artifacts to B2
         id: case00
-        if: ${{ success() && steps.q2-replay.outputs.ok == 'true' && steps.q2-preflight.outputs.ok == 'true' }}
+        if: ${{ success() && (env.QUESTION_ID != 'Q2' || (steps.q2-replay.outputs.ok == 'true' && steps.q2-preflight.outputs.ok == 'true')) }}
         shell: bash
         run: |
           set +e
