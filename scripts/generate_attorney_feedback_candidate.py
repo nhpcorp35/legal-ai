@@ -1362,6 +1362,45 @@ def validated_acceptance_evidence_text(reasoner_result: Mapping[str, Any]) -> st
 
     audit = reasoner_result.get("audit")
     if isinstance(audit, Mapping):
+        # Stable evidence-derived inventories exist on every completed
+        # party-role run, independent of whether model repair was needed.
+        for item in audit.get("party_role_expected_attributes") or []:
+            if not isinstance(item, Mapping):
+                continue
+            for field in (
+                "identity",
+                "procedural_role",
+                "entity_type",
+                "residence_or_ppb",
+                "pleaded_role_basis",
+            ):
+                value = normalize_proposed_answer_whitespace(
+                    str(item.get(field) or "")
+                )
+                if value:
+                    rows.append(f"{field} {value}")
+        for item in audit.get("party_role_expected_synthesis") or []:
+            if not isinstance(item, Mapping):
+                continue
+            category = normalize_proposed_answer_whitespace(
+                str(item.get("category") or "")
+            )
+            value = normalize_proposed_answer_whitespace(
+                str(item.get("value") or "")
+            )
+            if category and value:
+                rows.append(f"{category} {value}")
+            for party in item.get("parties") or []:
+                party_value = normalize_proposed_answer_whitespace(str(party))
+                if party_value:
+                    rows.append(f"{category} party {party_value}")
+            for heading in item.get("section_headings") or []:
+                heading_value = normalize_proposed_answer_whitespace(str(heading))
+                if heading_value:
+                    rows.append(f"{category} section {heading_value}")
+            for number in item.get("paragraph_numbers") or []:
+                if isinstance(number, int):
+                    rows.append(f"{category} paragraph {number}")
         for item in audit.get("party_role_deterministic_attribute_fallbacks") or []:
             if not isinstance(item, Mapping):
                 continue
