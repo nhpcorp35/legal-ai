@@ -5952,6 +5952,7 @@ _PARTY_ROLE_SYNTHESIS_CATEGORIES = frozenset(
         "notice_defendant_explanation",
         "rescission_effect",
         "complaint_roadmap",
+        "rescission_effect",
     }
 )
 _PARTY_ROLE_SYNTHESIS_MERGE_ORDER = (
@@ -6126,6 +6127,7 @@ _PARTY_ROLE_DETERMINISTIC_FALLBACK_AUDIT_KEYS = (
     "party_role_deterministic_procedural_bearing_fallback",
     "party_role_deterministic_notice_defendant_explanation_fallback",
     "party_role_deterministic_complaint_roadmap_fallback",
+    "party_role_deterministic_rescission_effect_fallback",
 )
 _PARTY_ROLE_NO_WRONGDOING_RE = re.compile(
     r"(?i)\b(?:"
@@ -6624,6 +6626,37 @@ def _notice_defendant_section_needs_deterministic_fill(
     )
 
 
+def deterministic_party_role_rescission_effect_paragraph(
+    expected_synthesis: Optional[Sequence[dict]] = None,
+) -> str:
+    """Return generic allegation-framed prose only when the criterion exists."""
+    criterion = _synthesis_criterion_for_category(
+        expected_synthesis or [], "rescission_effect"
+    )
+    if not isinstance(criterion, dict):
+        return ""
+    return (
+        "The complaint requests rescission or void-ab-initio treatment, which "
+        "could negatively affect notice defendants' asserted rights; this "
+        "describes pleaded relief, not an adjudication."
+    )
+
+
+def _rescission_effect_section_needs_deterministic_fill(
+    section: Any,
+    *,
+    expected_synthesis: Optional[Sequence[dict]] = None,
+) -> bool:
+    if not isinstance(section, str) or not normalize_whitespace(section):
+        return True
+    criterion = _synthesis_criterion_for_category(
+        expected_synthesis or [], "rescission_effect"
+    )
+    return not _synthesis_section_satisfies(
+        normalize_whitespace(section), "rescission_effect", criterion
+    )
+
+
 def deterministic_party_role_complaint_roadmap_paragraph(
     expected_synthesis: Optional[Sequence[dict]] = None,
 ) -> str:
@@ -6727,6 +6760,20 @@ def _apply_deterministic_synthesis_fills(
             )
         )
         filled.append("notice_defendant_explanation")
+    if (
+        "rescission_effect" in allowed_set
+        and "rescission_effect" in _PARTY_ROLE_DETERMINISTIC_SYNTHESIS_CATEGORIES
+        and _rescission_effect_section_needs_deterministic_fill(
+            candidate.get("rescission_effect"),
+            expected_synthesis=expected_synthesis,
+        )
+    ):
+        paragraph = deterministic_party_role_rescission_effect_paragraph(
+            expected_synthesis
+        )
+        if paragraph:
+            candidate["rescission_effect"] = paragraph
+            filled.append("rescission_effect")
     if (
         "complaint_roadmap" in allowed_set
         and "complaint_roadmap" in _PARTY_ROLE_DETERMINISTIC_SYNTHESIS_CATEGORIES
@@ -7020,6 +7067,37 @@ def apply_deterministic_party_role_synthesis_fallbacks(
         if merged_notice is None:
             return None
         draft = merged_notice
+    if "rescission_effect" in remaining:
+        paragraph = deterministic_party_role_rescission_effect_paragraph(
+            expected_synthesis
+        )
+        if not paragraph:
+            return None
+        _ensure_synthesis_lifecycle_categories(audit_out, ["rescission_effect"])
+        if audit_out is not None:
+            _lifecycle_set_state(
+                audit_out["party_role_synthesis_category_lifecycle"],
+                ["rescission_effect"],
+                "requested",
+                True,
+            )
+            _lifecycle_set_state(
+                audit_out["party_role_synthesis_category_lifecycle"],
+                ["rescission_effect"],
+                "parsed",
+                True,
+            )
+        merged_rescission = merge_party_role_synthesis_patch(
+            draft,
+            {"rescission_effect": paragraph},
+            expected_synthesis=expected_synthesis,
+            audit_out=audit_out,
+        )
+        if merged_rescission is None:
+            return None
+        draft = merged_rescission
+        if audit_out is not None:
+            audit_out["party_role_deterministic_rescission_effect_fallback"] = True
     if "complaint_roadmap" in remaining:
         paragraph = deterministic_party_role_complaint_roadmap_paragraph(
             expected_synthesis
