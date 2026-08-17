@@ -2014,6 +2014,41 @@ class ValidatedEvidenceBindingRegressionTests(unittest.TestCase):
             )
         )
 
+    def test_phrase_coverage_reports_indices_without_contract_prose(self) -> None:
+        spec = ac.CriterionEvalSpec(
+            id="synthetic-diagnostic",
+            presence_phrases=("presence-token-one", "presence-token-two"),
+            evidence_phrases=("evidence-token-one", "evidence-token-two"),
+            semantic_required_phrases=(),
+            semantic_forbidden_phrases=(),
+            fallback_text="",
+        )
+        result = ac.evaluate_criterion(
+            "presence-token-one",
+            spec,
+            semantic_preservation={},
+            validated_evidence_text="evidence-token-one",
+        )
+        self.assertEqual(
+            result.phrase_coverage["presence"],
+            {
+                "phrase_count": 2,
+                "matched_indices": [1],
+                "missing_indices": [2],
+            },
+        )
+        self.assertEqual(
+            result.phrase_coverage["evidence"],
+            {
+                "phrase_count": 2,
+                "matched_indices": [1],
+                "missing_indices": [2],
+            },
+        )
+        safe = json.dumps(result.as_safe_dict(), sort_keys=True)
+        self.assertNotIn("presence-token", safe)
+        self.assertNotIn("evidence-token", safe)
+
 
 if __name__ == "__main__":
     unittest.main()
