@@ -218,18 +218,18 @@ _PARTY_ROLE_BEARING_RE = re.compile(
 # not create evidence or bypass the party-role materiality gate.
 _PARTY_ROLE_SUBSTANTIVE_COVERAGE_RE = re.compile(
     r"(?i)\b(?:"
-    r"named\s+insured|additional\s+insured|insured|insurer|underwriter|"
-    r"owner|contractor|subcontractor|tenant|landlord|broker|agent"
+    r"insurer|underwriter|named\s+insured|additional\s+insured|"
+    r"owner|contractor|tenant|landlord|broker"
     r")\b"
 )
 
 _PARTY_ROLE_RELATED_ACTION_COVERAGE_RE = re.compile(
     r"(?i)\b(?:underlying|related|separate|third[\s-]+party)\s+"
-    r"(?:action|case|litigation|proceeding)\b[\s\S]{0,400}\b"
-    r"(?:plaintiffs?|defendants?|petitioners?|respondents?|claimants?)\b|"
-    r"\b(?:plaintiffs?|defendants?|petitioners?|respondents?|claimants?)\b"
+    r"(?:action|case|litigation)\b[\s\S]{0,400}\b"
+    r"(?:plaintiffs?|defendants?|petitioners?|respondents?)\b|"
+    r"\b(?:plaintiffs?|defendants?|petitioners?|respondents?)\b"
     r"[\s\S]{0,400}\b(?:underlying|related|separate|third[\s-]+party)\s+"
-    r"(?:action|case|litigation|proceeding)\b"
+    r"(?:action|case|litigation)\b"
 )
 
 
