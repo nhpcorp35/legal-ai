@@ -3741,5 +3741,25 @@ class DeterministicPartyAttributeRetentionRegressionTests(unittest.TestCase):
         self.assertEqual(merged, current)
 
 
+class DeterministicRescissionEffectFallbackRegressionTests(unittest.TestCase):
+    def test_fallback_requires_existing_evidence_derived_criterion(self) -> None:
+        expected = [{"category": "rescission_effect"}]
+        paragraph = de.deterministic_party_role_rescission_effect_paragraph(expected)
+        self.assertIn("complaint requests rescission or void-ab-initio", paragraph)
+        self.assertIn("could negatively affect", paragraph)
+        self.assertIn("not an adjudication", paragraph)
+        self.assertEqual(
+            de.find_missing_party_role_synthesis(
+                {"proposed_answer": paragraph},
+                expected,
+            ),
+            [],
+        )
+        self.assertEqual(
+            de.deterministic_party_role_rescission_effect_paragraph([]),
+            "",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
