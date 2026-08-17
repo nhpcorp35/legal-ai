@@ -19,6 +19,75 @@ CLI = load_cli()
 
 
 class Q1TypedClaimBuilderTests(unittest.TestCase):
+    def test_party_role_retrieval_merges_bounded_numbered_action_pass(self):
+        primary_hit = {"page_id": "page-primary", "result_id": "primary"}
+        duplicate_hit = {"page_id": "page-primary", "result_id": "duplicate"}
+        dual_action_hit = {"page_id": "page-dual", "result_id": "dual"}
+
+        with mock.patch.object(
+            CLI.mb,
+            "prepare_documents_for_canonical_retrieval",
+            return_value=[{"prepared": True}],
+        ), mock.patch.object(
+            CLI.mb,
+            "retrieve_canonical_records",
+            side_effect=[
+                {"query": "primary", "results": [primary_hit], "result_count": 1},
+                {
+                    "query": "supplemental",
+                    "results": [duplicate_hit, dual_action_hit],
+                    "result_count": 2,
+                },
+            ],
+        ) as retrieve:
+            result = CLI.run_production_retrieval(
+                [{"document": True}],
+                {"case_map": True},
+                "Who are the parties and what are their roles?",
+                top_k=30,
+            )
+
+        self.assertEqual(retrieve.call_count, 2)
+        self.assertEqual(
+            retrieve.call_args_list[1].args[1],
+            "Action No. 1 Action No. 2 plaintiff defendant related action "
+            "party roles",
+        )
+        self.assertEqual(retrieve.call_args_list[1].kwargs["top_k"], 10)
+        self.assertEqual(
+            [row["page_id"] for row in result["results"]],
+            ["page-primary", "page-dual"],
+        )
+        self.assertEqual(
+            result["party_role_supplemental_retrieval"],
+            {
+                "query_kind": "numbered_related_action_roles",
+                "max_hits": 10,
+                "primary_result_count": 1,
+                "supplemental_added_count": 1,
+            },
+        )
+
+    def test_non_party_role_retrieval_remains_single_pass(self):
+        with mock.patch.object(
+            CLI.mb,
+            "prepare_documents_for_canonical_retrieval",
+            return_value=[],
+        ), mock.patch.object(
+            CLI.mb,
+            "retrieve_canonical_records",
+            return_value={"results": [], "result_count": 0},
+        ) as retrieve:
+            result = CLI.run_production_retrieval(
+                [],
+                {},
+                "What relief does the complaint request?",
+                top_k=30,
+            )
+
+        self.assertEqual(retrieve.call_count, 1)
+        self.assertNotIn("party_role_supplemental_retrieval", result)
+
     def test_builds_party_roles_related_roles_and_incomplete_scope(self):
         result = {
             "propositions": [
