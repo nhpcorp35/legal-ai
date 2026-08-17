@@ -1330,11 +1330,11 @@ def presentation_rewrite_lost_satisfied_criteria(
 
 
 _Q1_RELATED_ACTION_CUE_RE = re.compile(
-    r"(?i)\\b(?:underlying|related|separate|third[ -]party)\\s+(?:action|case|litigation)\\b"
+    r"(?i)\b(?:underlying|related|separate|third[ -]party)\s+(?:action|case|litigation)\b"
 )
 _Q1_RELATED_ROLE_RE = re.compile(
-    r"(?i)\\b(?:third[ -]party plaintiff|third[ -]party defendant|"
-    r"respondent on appeal|appellant|plaintiff|defendant)\\b"
+    r"(?i)\b(?:third[ -]party plaintiff|third[ -]party defendant|"
+    r"respondent on appeal|appellant|plaintiff|defendant)\b"
 )
 
 
@@ -1344,7 +1344,7 @@ def build_q1_validated_party_claims(
     """Build typed Q1 claims from deterministic inventory and retained propositions."""
     audit = reasoner_result.get("audit")
     expected = audit.get("party_role_expected_attributes") or [] if isinstance(audit, Mapping) else []
-    corpus = "\\n".join(
+    corpus = "\n".join(
         " ".join((str(p.get("text") or ""), str(p.get("source_excerpt") or p.get("excerpt") or "")))
         for p in reasoner_result.get("propositions") or [] if isinstance(p, Mapping)
     )
@@ -1360,7 +1360,7 @@ def build_q1_validated_party_claims(
         basis = normalize_proposed_answer_whitespace(str(raw.get("pleaded_role_basis") or ""))
         related_roles: list[str] = []
         if related_context:
-            for sentence in re.split(r"(?<=[.!?])\\s+|\\n+", corpus):
+            for sentence in re.split(r"(?<=[.!?])\s+|\n+", corpus):
                 if not re.search(re.escape(identity), sentence, re.IGNORECASE):
                     continue
                 for matched in _Q1_RELATED_ROLE_RE.findall(sentence):
