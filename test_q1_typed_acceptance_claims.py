@@ -35,6 +35,13 @@ class Q1TypedPartyClaimsTests(unittest.TestCase):
                     "substantive_role": "named insured",
                     "related_action_roles": ["third-party plaintiff"],
                 },
+                {
+                    "identity": "Synthetic Caption Defendant",
+                    "procedural_roles": ["defendant"],
+                    "pleaded_role_basis": "",
+                    "substantive_role": "",
+                    "related_action_roles": [],
+                },
             ],
         }
 
@@ -76,12 +83,18 @@ class Q1TypedPartyClaimsTests(unittest.TestCase):
             if criterion_id == "Q1_C1_PLAINTIFF_ROLE":
                 claims["parties"][0]["procedural_roles"] = []
             elif criterion_id == "Q1_C2_DEFENDANT_SIDE_PARTIES":
-                claims["parties"][1]["procedural_roles"] = []
+                for party in claims["parties"]:
+                    party["procedural_roles"] = [
+                        role
+                        for role in party["procedural_roles"]
+                        if "defendant" not in role
+                    ]
             elif criterion_id == "Q1_C3_SPECIFIC_DEFENDANT_ROLE_DESIGNATIONS":
                 claims["parties"][1]["pleaded_role_basis"] = ""
             elif criterion_id == "Q1_C4_LIMITED_SUBSTANTIVE_ROLE_INFORMATION":
                 for party in claims["parties"]:
-                    party["substantive_role"] = ""
+                    if "defendant" in party["procedural_roles"]:
+                        party["substantive_role"] = "named insured"
             elif criterion_id == "Q1_C5_DUAL_ROLES_IN_RELATED_ACTION":
                 for party in claims["parties"]:
                     party["related_action_roles"] = []
