@@ -53,8 +53,11 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
                 }
             ]
         }
+        diagnostics = {}
         claims = CLI.build_q1_validated_party_claims(
-            result, evidence_packet=evidence_packet
+            result,
+            evidence_packet=evidence_packet,
+            diagnostics_out=diagnostics,
         )
         self.assertEqual(
             claims["schema_version"],
@@ -81,6 +84,33 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
         self.assertNotIn(
             "landlord", by_name["Synthetic Contractor"]["substantive_role"]
         )
+        self.assertEqual(
+            diagnostics,
+            {
+                "party_count": 2,
+                "parties": [
+                    {
+                        "party_index": 0,
+                        "evidence_sentence_match_count": 0,
+                        "evidence_field_categories": [],
+                    },
+                    {
+                        "party_index": 1,
+                        "evidence_sentence_match_count": 1,
+                        "evidence_field_categories": [
+                            "identity",
+                            "related_action_roles",
+                            "substantive_role",
+                        ],
+                    },
+                ],
+            },
+        )
+        serialized_diagnostics = repr(diagnostics)
+        self.assertNotIn("Synthetic Underwriters", serialized_diagnostics)
+        self.assertNotIn("Synthetic Contractor", serialized_diagnostics)
+        self.assertNotIn("named insured", serialized_diagnostics)
+        self.assertNotIn("third-party plaintiff", serialized_diagnostics)
         rendered = CLI.render_q1_validated_party_claims(claims)
         self.assertIn("Validated party/role summary:", rendered)
         self.assertIn("related-action role: third-party plaintiff", rendered)

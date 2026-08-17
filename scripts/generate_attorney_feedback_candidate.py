@@ -1348,6 +1348,7 @@ def build_q1_validated_party_claims(
     reasoner_result: Mapping[str, Any],
     *,
     evidence_packet: Optional[Mapping[str, Any]] = None,
+    diagnostics_out: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     """Build typed Q1 claims only from deterministic inventory and evidence."""
     audit = reasoner_result.get("audit")
@@ -1366,6 +1367,7 @@ def build_q1_validated_party_claims(
         if normalize_proposed_answer_whitespace(sentence)
     ]
     parties: list[dict[str, Any]] = []
+    diagnostic_rows: list[dict[str, Any]] = []
     for raw in expected:
         if not isinstance(raw, Mapping):
             continue
@@ -1376,9 +1378,13 @@ def build_q1_validated_party_claims(
         basis = normalize_proposed_answer_whitespace(str(raw.get("pleaded_role_basis") or ""))
         related_roles: list[str] = []
         substantive_roles: list[str] = []
+        evidence_sentence_match_count = 0
+        evidence_field_categories: set[str] = set()
         for sentence in sentences:
             if not re.search(re.escape(identity), sentence, re.IGNORECASE):
                 continue
+            evidence_sentence_match_count += 1
+            evidence_field_categories.add("identity")
             role_probe = re.sub(
                 re.escape(identity), " ", sentence, flags=re.IGNORECASE
             )
@@ -1386,17 +1392,21 @@ def build_q1_validated_party_claims(
                 value = normalize_proposed_answer_whitespace(matched).lower()
                 if value and value not in substantive_roles:
                     substantive_roles.append(value)
+                    evidence_field_categories.add("substantive_role")
             if not _Q1_RELATED_ACTION_CUE_RE.search(sentence):
                 continue
             for matched in _Q1_RELATED_ROLE_RE.findall(sentence):
                 value = normalize_proposed_answer_whitespace(matched).lower()
                 if value and value != role.lower() and value not in related_roles:
                     related_roles.append(value)
+                    evidence_field_categories.add("related_action_roles")
         # A bounded substantive designation in the same evidence sentence is
         # also the pleaded-role basis when the inventory lacks a narrower one.
         # This preserves evidence language; it does not infer a legal conclusion.
         if not basis and substantive_roles:
             basis = "; ".join(substantive_roles)
+            evidence_field_categories.add("pleaded_role_basis")
+        party_index = len(parties)
         parties.append({
             "identity": identity,
             "procedural_roles": [role] if role else [],
@@ -1405,6 +1415,17 @@ def build_q1_validated_party_claims(
             "entity_type": normalize_proposed_answer_whitespace(str(raw.get("entity_type") or "")),
             "residence_or_ppb": normalize_proposed_answer_whitespace(str(raw.get("residence_or_ppb") or "")),
             "related_action_roles": related_roles,
+        })
+        diagnostic_rows.append({
+            "party_index": party_index,
+            "evidence_sentence_match_count": evidence_sentence_match_count,
+            "evidence_field_categories": sorted(evidence_field_categories),
+        })
+    if diagnostics_out is not None:
+        diagnostics_out.clear()
+        diagnostics_out.update({
+            "party_count": len(parties),
+            "parties": diagnostic_rows,
         })
     scope = reasoner_result.get("review_scope")
     completeness = str(scope.get("completeness") or "").strip().lower() if isinstance(scope, Mapping) else ""
@@ -2346,14 +2367,17 @@ def run_generation(
             reasoner_result
         )
         acceptance_claims_doc = validated_claims_doc
+        q1_claim_extraction_diagnostics: Optional[dict[str, Any]] = None
         if (
             acceptance_claims_doc is None
             and question_id == "Q1"
             and de.detect_party_role_question_intent(inputs["question_text"])
         ):
+            q1_claim_extraction_diagnostics = {}
             acceptance_claims_doc = build_q1_validated_party_claims(
                 reasoner_result,
                 evidence_packet=inspection.get("evidence_packet"),
+                diagnostics_out=q1_claim_extraction_diagnostics,
             )
             typed_summary = render_q1_validated_party_claims(
                 acceptance_claims_doc
@@ -2382,6 +2406,7 @@ def run_generation(
                     "Canonical Q1 answer dropped typed party claims",
                     reason_code="q1_typed_claim_rendering_lost",
                     missing_typed_claim_fields=missing_typed_claim_fields,
+                    q1_claim_extraction_diagnostics=q1_claim_extraction_diagnostics,
                     finalized=False,
                 )
         if q2_diagnostics is not None:
@@ -2406,6 +2431,10 @@ def run_generation(
             }
             if q2_diagnostics is not None:
                 err_kwargs[DIAGNOSTIC_RESULT_KEY] = q2_diagnostics
+            if q1_claim_extraction_diagnostics is not None:
+                err_kwargs["q1_claim_extraction_diagnostics"] = (
+                    q1_claim_extraction_diagnostics
+                )
             if validated_claims_provenance is not None:
                 err_kwargs.update(validated_claims_provenance)
             raise GenerationError(
