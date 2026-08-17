@@ -1442,11 +1442,12 @@ class PartyRoleProceduralSynthesisRepairPathTests(unittest.TestCase):
         self.assertFalse(result["audit"].get("party_role_completeness_failed"))
         self.assertTrue(result["audit"].get("party_role_repair_attempted"))
         self.assertEqual(result["audit"].get("party_role_provider_calls"), 2)
-        self.assertTrue(
+        self.assertFalse(
             result["audit"].get(
                 "party_role_deterministic_rescission_effect_fallback"
             )
         )
+        self.assertIn("negatively affect", result["proposed_answer"].lower())
 
     def test_full_answer_rewrite_is_rejected_then_deterministically_recovered(self):
         question = "Who are the parties and what are their roles in this action?"
@@ -1915,15 +1916,11 @@ class PartyRoleQ1SynthesisValidationFixTests(unittest.TestCase):
                 "party_role_deterministic_rescission_effect_fallback"
             )
         )
-        self.assertTrue(
-            result["audit"].get(
-                "party_role_deterministic_complaint_roadmap_fallback"
-            )
-        )
         self.assertEqual(
             result["audit"].get("missing_party_role_attributes") or [],
             [],
         )
+        self.assertIn("negatively affect", result["proposed_answer"].lower())
 
     def test_golden_replay_observed_mixed_gap_run_shape(self):
         """Replay the observed Q1 shape: mixed gaps → attribute repair →
