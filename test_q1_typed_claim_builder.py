@@ -2,6 +2,7 @@
 
 import importlib.util
 import unittest
+from unittest import mock
 from pathlib import Path
 
 
@@ -210,6 +211,64 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
         self.assertNotIn("secret pleaded basis", serialized)
         self.assertNotIn("secret substantive role", serialized)
         self.assertNotIn("secret related role", serialized)
+
+    def test_failed_first_contract_pass_revalidates_after_q1_retention(self):
+        claims = {
+            "schema_version": "q1_validated_party_claims.v1",
+            "roster_completeness": "complete",
+            "parties": [
+                {
+                    "identity": "Synthetic Restored Party",
+                    "procedural_roles": ["defendant"],
+                    "pleaded_role_basis": "named insured",
+                    "substantive_role": "named insured",
+                    "related_action_roles": ["third-party plaintiff"],
+                }
+            ],
+        }
+        first = CLI.ac.AcceptanceValidationResult(
+            ok=False,
+            final_answer="Attorney analysis after lossy contract repair.",
+        )
+        second = CLI.ac.AcceptanceValidationResult(
+            ok=True,
+            final_answer="unused validator copy",
+        )
+        diagnostics = {}
+
+        with mock.patch.object(
+            CLI.ac,
+            "validate_final_answer_against_contract",
+            side_effect=[first, second],
+        ) as validate:
+            canonical, validation = (
+                CLI.finalize_canonical_answer_against_contract(
+                    CLI.render_q1_validated_party_claims(claims),
+                    object(),
+                    canonicalize=lambda text: text,
+                    validated_claims=claims,
+                    q1_retention_diagnostics_out=diagnostics,
+                )
+            )
+
+        self.assertEqual(validate.call_count, 2)
+        self.assertTrue(validation.ok)
+        self.assertTrue(CLI.q1_rendered_claims_present(canonical, claims))
+        by_stage = {
+            row["stage"]: row["missing_typed_claim_fields"]
+            for row in diagnostics["stages"]
+        }
+        self.assertEqual(by_stage["pre_contract"], [])
+        self.assertEqual(
+            by_stage["post_contract_repair"],
+            [{"party_index": 0, "field": "identity"},
+             {"party_index": 0, "field": "procedural_roles"},
+             {"party_index": 0, "field": "pleaded_role_basis"},
+             {"party_index": 0, "field": "substantive_role"},
+             {"party_index": 0, "field": "related_action_roles"}],
+        )
+        self.assertEqual(by_stage["post_retention"], [])
+        self.assertEqual(by_stage["final_validation"], [])
 
     def test_retention_stage_diagnostics_are_privacy_safe(self):
         claims = {
