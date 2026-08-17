@@ -242,6 +242,40 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
             by_name["Synthetic Alpha"]["substantive_role"],
         )
 
+    def test_renders_and_retains_substantive_role_limitation(self):
+        claims = {
+            "schema_version": "q1_validated_party_claims.v1",
+            "roster_completeness": "complete",
+            "parties": [
+                {
+                    "identity": "Synthetic Party",
+                    "procedural_roles": ["defendant"],
+                    "pleaded_role_basis": "",
+                    "substantive_role": "",
+                    "entity_type": "",
+                    "residence_or_ppb": "",
+                    "related_action_roles": [],
+                }
+            ],
+        }
+
+        rendered = CLI.render_q1_validated_party_claims(claims)
+        limitation = CLI._Q1_SUBSTANTIVE_ROLE_LIMITATION
+        self.assertIn("limited substantive role information", rendered)
+        self.assertIn(limitation, rendered)
+        self.assertTrue(CLI.q1_rendered_claims_present(rendered, claims))
+
+        without_limitation = rendered.replace(limitation, "")
+        self.assertFalse(
+            CLI.q1_rendered_claims_present(without_limitation, claims)
+        )
+        restored = CLI.retain_q1_validated_party_claims(
+            without_limitation,
+            claims,
+        )
+        self.assertIn(limitation, restored)
+        self.assertEqual(restored.count(limitation), 1)
+
     def test_restores_typed_summary_after_contract_repair_drops_it(self):
         claims = {
             "schema_version": "q1_validated_party_claims.v1",
@@ -417,6 +451,10 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
                         "missing_typed_claim_fields": [
                             {"party_index": 0, "field": "identity"},
                             {"party_index": 0, "field": "procedural_roles"},
+                            {
+                                "party_index": None,
+                                "field": "substantive_role_limitation",
+                            },
                         ],
                     }
                 ],
