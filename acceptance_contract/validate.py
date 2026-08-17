@@ -92,6 +92,22 @@ def _any_phrase_present(haystack_norm: str, phrases: Sequence[str]) -> bool:
     return any(_contains_phrase(haystack_norm, p) for p in phrases)
 
 
+def _safe_phrase_coverage(
+    haystack_norm: str, phrases: Sequence[str]
+) -> dict[str, Any]:
+    """Return phrase-position coverage without exposing contract prose."""
+    matched: list[int] = []
+    missing: list[int] = []
+    for index, phrase in enumerate(phrases, start=1):
+        target = matched if _contains_phrase(haystack_norm, phrase) else missing
+        target.append(index)
+    return {
+        "phrase_count": len(phrases),
+        "matched_indices": matched,
+        "missing_indices": missing,
+    }
+
+
 @dataclass(frozen=True)
 class CriterionEvalSpec:
     """In-memory evaluation fields for one criterion (not for logging)."""
@@ -194,6 +210,7 @@ class CriterionResult:
     semantic: str
     result_code: str
     diagnostics: tuple[str, ...] = ()
+    phrase_coverage: Mapping[str, Any] = field(default_factory=dict)
 
     def as_safe_dict(self) -> dict[str, Any]:
         return {
@@ -203,6 +220,7 @@ class CriterionResult:
             "semantic": self.semantic,
             "result_code": self.result_code,
             "diagnostics": list(self.diagnostics),
+            "phrase_coverage": dict(self.phrase_coverage),
         }
 
 
@@ -743,6 +761,23 @@ def evaluate_criterion(
         return evaluate_q2_no_defense_or_indemnity(answer_text, validated_claims)
 
     norm = _norm(answer_text)
+    evidence_norm = _norm(
+        answer_text
+        if validated_evidence_text is None
+        else validated_evidence_text
+    )
+    phrase_coverage = {
+        "presence": _safe_phrase_coverage(norm, spec.presence_phrases),
+        "evidence": _safe_phrase_coverage(
+            evidence_norm, spec.evidence_phrases
+        ),
+        "semantic_required": _safe_phrase_coverage(
+            norm, spec.semantic_required_phrases
+        ),
+        "semantic_forbidden": _safe_phrase_coverage(
+            norm, spec.semantic_forbidden_phrases
+        ),
+    }
     present = _all_phrases_present(norm, spec.presence_phrases) if spec.presence_phrases else (
         bool(_norm(spec.fallback_text)) and _contains_phrase(norm, spec.fallback_text)
         if spec.fallback_text
@@ -763,16 +798,12 @@ def evaluate_criterion(
             evidence=EVIDENCE_UNSUPPORTED,
             semantic=SEMANTIC_NOT_APPLICABLE,
             result_code=CRIT_FAIL_MISSING,
+            phrase_coverage=phrase_coverage,
             diagnostics=["criterion_absent"],
         )
 
     evidence_ok = True
     if spec.evidence_phrases:
-        evidence_norm = _norm(
-            answer_text
-            if validated_evidence_text is None
-            else validated_evidence_text
-        )
         evidence_ok = _all_phrases_present(
             evidence_norm, spec.evidence_phrases
         )
@@ -784,6 +815,7 @@ def evaluate_criterion(
             evidence=evidence,
             semantic=SEMANTIC_NOT_APPLICABLE,
             result_code=CRIT_FAIL_UNSUPPORTED,
+            phrase_coverage=phrase_coverage,
             diagnostics=["evidence_unsupported"],
         )
 
@@ -807,7 +839,8 @@ def evaluate_criterion(
                 evidence=evidence,
                 semantic=semantic,
                 result_code=CRIT_FAIL_SEMANTIC,
-                diagnostics=["semantic_preservation_failed"],
+                phrase_coverage=phrase_coverage,
+            diagnostics=["semantic_preservation_failed"],
             )
 
     return CriterionResult(
@@ -817,6 +850,7 @@ def evaluate_criterion(
         semantic=semantic,
         result_code=CRIT_PASS,
         diagnostics=(),
+        phrase_coverage=phrase_coverage,
     )
 
 
@@ -1197,6 +1231,7 @@ def safe_provenance_record(
                 "evidence": c.evidence,
                 "semantic": c.semantic,
                 "result_code": c.result_code,
+                "phrase_coverage": dict(c.phrase_coverage),
             }
             for c in validation.criterion_results
         ]
