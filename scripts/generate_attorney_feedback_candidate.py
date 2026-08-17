@@ -2272,6 +2272,13 @@ def run_generation(
             acceptance_claims_doc = build_q1_validated_party_claims(
                 reasoner_result
             )
+            typed_summary = render_q1_validated_party_claims(
+                acceptance_claims_doc
+            )
+            if normalize_proposed_answer_whitespace(typed_summary).lower() not in (
+                normalize_proposed_answer_whitespace(proposed).lower()
+            ):
+                proposed = f"{proposed.rstrip()}\n\n{typed_summary}".strip()
         canonical, validation = finalize_canonical_answer_against_contract(
             proposed,
             contract_view,
