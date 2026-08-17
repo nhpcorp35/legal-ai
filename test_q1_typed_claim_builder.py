@@ -99,6 +99,7 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
                         "party_index": 0,
                         "evidence_sentence_match_count": 0,
                         "evidence_field_categories": ["substantive_role"],
+                        "substantive_role_term_min_sentence_distance": {},
                     },
                     {
                         "party_index": 1,
@@ -108,6 +109,10 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
                             "related_action_roles",
                             "substantive_role",
                         ],
+                        "substantive_role_term_min_sentence_distance": {
+                            "named_insured": 0,
+                            "insured": 0,
+                        },
                     },
                 ],
                 "role_vocabulary_counts": {
@@ -192,11 +197,35 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
             ]
         }
 
+        diagnostics = {}
         claims = CLI.build_q1_validated_party_claims(
             result,
             evidence_packet=evidence_packet,
+            diagnostics_out=diagnostics,
         )
         by_name = {party["identity"]: party for party in claims["parties"]}
+
+        self.assertEqual(
+            diagnostics["parties"][0][
+                "substantive_role_term_min_sentence_distance"
+            ],
+            {
+                "named_insured": 1,
+                "insured": 1,
+                "owner": 0,
+                "contractor": 1,
+            },
+        )
+        self.assertEqual(
+            diagnostics["parties"][1][
+                "substantive_role_term_min_sentence_distance"
+            ],
+            {"owner": 1, "contractor": 1},
+        )
+        serialized_diagnostics = repr(diagnostics)
+        self.assertNotIn("Synthetic Alpha", serialized_diagnostics)
+        self.assertNotIn("Synthetic Beta", serialized_diagnostics)
+        self.assertNotIn("It is the named insured", serialized_diagnostics)
 
         self.assertEqual(
             by_name["Synthetic Alpha"]["substantive_role"],
