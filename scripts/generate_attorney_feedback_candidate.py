@@ -1521,6 +1521,8 @@ def retain_q1_validated_party_claims(
     the complete deterministic summary unchanged if any typed claim is absent.
     The caller must still revalidate the exact returned string.
     """
+    if q1_rendered_claims_present(answer_text, claims):
+        return answer_text
     canonicalize_fn = canonicalize or canonical_proposed_answer
     canonicalized_answer = canonicalize_fn(answer_text)
     if q1_rendered_claims_present(canonicalized_answer, claims):
