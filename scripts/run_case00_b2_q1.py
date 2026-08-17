@@ -76,6 +76,7 @@ _ACCEPTANCE_CONTRACT_OBJECT_NAME = "acceptance_contract.json"
 # (benchmark_id, question_id) pairs eligible for canonical private resolution.
 CANONICAL_ACCEPTANCE_CONTRACT_ALLOWLIST: frozenset[tuple[str, str]] = frozenset(
     {
+        (REQUIRED_CASE00_BENCHMARK_ID, "Q1"),
         (REQUIRED_CASE00_BENCHMARK_ID, "Q2"),
     }
 )
