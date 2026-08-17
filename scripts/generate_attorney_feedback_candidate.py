@@ -1748,9 +1748,12 @@ def finalize_canonical_answer_against_contract(
             answer_text=repaired.final_answer,
             claims=validated_claims,
         )
-    if not repaired.ok:
+    if not repaired.ok and not is_q1_claims:
         return repaired.final_answer, repaired
 
+    # Q1 typed claims can make the first contract pass fail when fallback or
+    # duplication repair removes a deterministic party field. Continue through
+    # canonicalization, typed-summary retention, and exact final revalidation.
     canonical = canonicalize_fn(repaired.final_answer)
     if is_q1_claims:
         record_q1_retention_stage(
