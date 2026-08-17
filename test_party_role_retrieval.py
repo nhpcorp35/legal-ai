@@ -172,6 +172,41 @@ class PartyRoleRetrievalTests(unittest.TestCase):
         self.assertTrue(parties_hit.get("page_id"))
         self.assertIsInstance(parties_hit.get("excerpt"), str)
 
+    def test_explicit_role_coverage_pages_are_injected_beyond_top_k(self):
+        complaint = _normalized(
+            _doc(
+                105,
+                "complaint",
+                [
+                    "SUPREME COURT\\nAlpha Holdings LLC, Plaintiff, -against- Beta Inc., Defendant.",
+                    "PARTIES\\nPlaintiff Alpha Holdings LLC. Defendant Beta Inc.",
+                    "FACTUAL BACKGROUND\\nBeta Inc. acted as the contractor and insurance broker.",
+                    "In the related action, Beta Inc. was the plaintiff. In this action it is a defendant.",
+                ],
+                filename="nyscef_doc_no_105_complaint.pdf",
+            )
+        )
+        result = mb.retrieve_canonical_records(
+            [complaint],
+            self.party_query,
+            top_k=1,
+        )
+        by_page = {hit["pdf_page"]: hit for hit in result["results"]}
+        self.assertIn(3, by_page)
+        self.assertIn(4, by_page)
+        self.assertIn("insurance broker", by_page[3]["excerpt"])
+        self.assertIn("related action", by_page[4]["excerpt"])
+        self.assertTrue(by_page[3].get("party_role_coverage_expanded"))
+        self.assertTrue(by_page[4].get("party_role_coverage_expanded"))
+        self.assertLessEqual(
+            sum(
+                1
+                for hit in result["results"]
+                if hit.get("party_role_coverage_expanded")
+            ),
+            mb.PARTY_ROLE_COVERAGE_EXPAND_MAX_PAGES,
+        )
+
     def test_motion_query_keeps_motion_priority(self):
         result = mb.retrieve_canonical_records(
             self.docs,
