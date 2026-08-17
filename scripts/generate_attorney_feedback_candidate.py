@@ -1329,6 +1329,143 @@ def presentation_rewrite_lost_satisfied_criteria(
     return lost
 
 
+_Q1_RELATED_ACTION_CUE_RE = re.compile(
+    r"(?i)\b(?:underlying|related|separate|third[ -]party)\s+(?:action|case|litigation)\b"
+)
+_Q1_RELATED_ROLE_RE = re.compile(
+    r"(?i)\b(?:third[ -]party plaintiff|third[ -]party defendant|"
+    r"respondent on appeal|appellant|plaintiff|defendant)\b"
+)
+
+
+_Q1_SUBSTANTIVE_ROLE_RE = re.compile(
+    r"(?i)\b(?:insurer|underwriter|named insured|additional insured|"
+    r"owner|contractor|tenant|landlord|broker)\b"
+)
+
+
+def build_q1_validated_party_claims(
+    reasoner_result: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Build typed Q1 claims from deterministic inventory and retained propositions."""
+    audit = reasoner_result.get("audit")
+    expected = audit.get("party_role_expected_attributes") or [] if isinstance(audit, Mapping) else []
+    corpus = "\n".join(
+        " ".join((str(p.get("text") or ""), str(p.get("source_excerpt") or p.get("excerpt") or "")))
+        for p in reasoner_result.get("propositions") or [] if isinstance(p, Mapping)
+    )
+    sentences = [
+        normalize_proposed_answer_whitespace(sentence)
+        for sentence in re.split(r"(?<=[.!?])\s+|\n+", corpus)
+        if normalize_proposed_answer_whitespace(sentence)
+    ]
+    parties: list[dict[str, Any]] = []
+    for raw in expected:
+        if not isinstance(raw, Mapping):
+            continue
+        identity = normalize_proposed_answer_whitespace(str(raw.get("identity") or ""))
+        if not identity:
+            continue
+        role = normalize_proposed_answer_whitespace(str(raw.get("procedural_role") or ""))
+        basis = normalize_proposed_answer_whitespace(str(raw.get("pleaded_role_basis") or ""))
+        related_roles: list[str] = []
+        substantive_roles: list[str] = []
+        for sentence in sentences:
+            if not re.search(re.escape(identity), sentence, re.IGNORECASE):
+                continue
+            role_probe = re.sub(
+                re.escape(identity), " ", sentence, flags=re.IGNORECASE
+            )
+            for matched in _Q1_SUBSTANTIVE_ROLE_RE.findall(role_probe):
+                value = normalize_proposed_answer_whitespace(matched).lower()
+                if value and value not in substantive_roles:
+                    substantive_roles.append(value)
+            if not _Q1_RELATED_ACTION_CUE_RE.search(sentence):
+                continue
+            for matched in _Q1_RELATED_ROLE_RE.findall(sentence):
+                value = normalize_proposed_answer_whitespace(matched).lower()
+                if value and value != role.lower() and value not in related_roles:
+                    related_roles.append(value)
+        parties.append({
+            "identity": identity,
+            "procedural_roles": [role] if role else [],
+            "pleaded_role_basis": basis,
+            "substantive_role": "; ".join(substantive_roles),
+            "entity_type": normalize_proposed_answer_whitespace(str(raw.get("entity_type") or "")),
+            "residence_or_ppb": normalize_proposed_answer_whitespace(str(raw.get("residence_or_ppb") or "")),
+            "related_action_roles": related_roles,
+        })
+    scope = reasoner_result.get("review_scope")
+    completeness = str(scope.get("completeness") or "").strip().lower() if isinstance(scope, Mapping) else ""
+    claims = {
+        "schema_version": ac.Q1_VALIDATED_PARTY_CLAIMS_SCHEMA_VERSION,
+        "parties": parties,
+        "roster_completeness": "complete" if completeness in {"complete", "established"} else "not_established",
+    }
+    if not ac.q1_party_claims_are_valid(claims):
+        raise GenerationError(
+            "Typed Q1 validated party claims failed shape validation",
+            reason_code="q1_validated_party_claims_invalid",
+            finalized=False,
+        )
+    return claims
+
+
+def render_q1_validated_party_claims(claims: Mapping[str, Any]) -> str:
+    """Render typed claims into concise attorney-facing prose."""
+    if not ac.q1_party_claims_are_valid(claims):
+        raise GenerationError(
+            "Cannot render malformed typed Q1 party claims",
+            reason_code="q1_validated_party_claims_invalid",
+            finalized=False,
+        )
+    lines = ["Validated party/role summary:"]
+    for party in claims.get("parties") or []:
+        parts = [
+            "current role: "
+            + (", ".join(party.get("procedural_roles") or []) or "not established")
+        ]
+        if party.get("pleaded_role_basis"):
+            parts.append(f"pleaded designation: {party['pleaded_role_basis']}")
+        if party.get("substantive_role"):
+            parts.append(f"substantive role: {party['substantive_role']}")
+        if party.get("related_action_roles"):
+            parts.append("related-action role: " + ", ".join(party["related_action_roles"]))
+        lines.append(f"- {party['identity']} — " + "; ".join(parts) + ".")
+    if claims.get("roster_completeness") != "complete":
+        lines.append(
+            "The retrieved record does not establish that this is a complete party roster."
+        )
+    return "\n".join(lines)
+
+
+def q1_rendered_claims_present(
+    answer_text: str, claims: Mapping[str, Any]
+) -> bool:
+    """True only when every typed claim rendered into the final answer."""
+    norm = normalize_proposed_answer_whitespace(answer_text).lower()
+    for party in claims.get("parties") or []:
+        required = [
+            str(party.get("identity") or ""),
+            *(party.get("procedural_roles") or []),
+            str(party.get("pleaded_role_basis") or ""),
+            str(party.get("substantive_role") or ""),
+            *(party.get("related_action_roles") or []),
+        ]
+        if any(
+            normalize_proposed_answer_whitespace(value).lower() not in norm
+            for value in required
+            if normalize_proposed_answer_whitespace(value)
+        ):
+            return False
+    if (
+        claims.get("roster_completeness") != "complete"
+        and "does not establish that this is a complete party roster" not in norm
+    ):
+        return False
+    return True
+
+
 def validated_acceptance_evidence_text(reasoner_result: Mapping[str, Any]) -> str:
     """Serialize retained, post-validation evidence for contract checks.
 
@@ -2156,13 +2293,42 @@ def run_generation(
         validated_evidence = validated_acceptance_evidence_text(
             reasoner_result
         )
+        acceptance_claims_doc = validated_claims_doc
+        if (
+            acceptance_claims_doc is None
+            and question_id == "Q1"
+            and de.detect_party_role_question_intent(inputs["question_text"])
+        ):
+            acceptance_claims_doc = build_q1_validated_party_claims(
+                reasoner_result
+            )
+            typed_summary = render_q1_validated_party_claims(
+                acceptance_claims_doc
+            )
+            if normalize_proposed_answer_whitespace(typed_summary).lower() not in (
+                normalize_proposed_answer_whitespace(proposed).lower()
+            ):
+                proposed = f"{proposed.rstrip()}\n\n{typed_summary}".strip()
         canonical, validation = finalize_canonical_answer_against_contract(
             proposed,
             contract_view,
             verified_relief_claims=verified_claims,
-            validated_claims=validated_claims_doc,
+            validated_claims=acceptance_claims_doc,
             validated_evidence_text=validated_evidence,
         )
+        if (
+            isinstance(acceptance_claims_doc, Mapping)
+            and acceptance_claims_doc.get("schema_version")
+            == ac.Q1_VALIDATED_PARTY_CLAIMS_SCHEMA_VERSION
+            and not q1_rendered_claims_present(
+                canonical, acceptance_claims_doc
+            )
+        ):
+            raise GenerationError(
+                "Canonical Q1 answer dropped typed party claims",
+                reason_code="q1_typed_claim_rendering_lost",
+                finalized=False,
+            )
         if q2_diagnostics is not None:
             q2_diagnostics = build_q2_production_evidence_diagnostics(
                 evidence_packet=evidence_packet,
