@@ -2060,14 +2060,29 @@ def merge_contract_structure_requirements(
         }
 
     req = structure_requirements if isinstance(structure_requirements, Mapping) else {}
-    required_kinds = [
+    # Acceptance contracts may describe the output packet itself (for example,
+    # answer_text/supporting_evidence/limitations).  Those are not complaint
+    # sections and must never be injected into complaint_structure_context.
+    complaint_roadmap_kinds = {
+        "overview",
+        "procedural_layout",
+        "factual_layout",
+        "parties",
+    }
+    all_required_kinds = [
         str(k) for k in (req.get("required_kinds") or []) if str(k).strip()
+    ]
+    required_kinds = [
+        kind for kind in all_required_kinds if kind in complaint_roadmap_kinds
     ]
     required_categories = [
         str(c) for c in (req.get("required_categories") or []) if str(c).strip()
     ]
     required_ranges = [
-        dict(r) for r in (req.get("required_ranges") or []) if isinstance(r, dict)
+        dict(r)
+        for r in (req.get("required_ranges") or [])
+        if isinstance(r, dict)
+        and str(r.get("kind") or "").strip() in complaint_roadmap_kinds
     ]
 
     # Preserve contract-required metadata without discarding existing sections.
