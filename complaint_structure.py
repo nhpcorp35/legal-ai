@@ -2089,7 +2089,9 @@ def merge_contract_structure_requirements(
     base["contract_required_kinds"] = list(required_kinds)
     base["contract_required_categories"] = list(required_categories)
 
-    if not required_ranges and not required_kinds and not required_categories:
+    # Categories alone are acceptance metadata, not evidence of a complaint
+    # structure.  Do not manufacture a complaint document from them.
+    if not required_ranges and not required_kinds:
         if not base["documents"]:
             return None
         return base
