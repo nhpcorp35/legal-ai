@@ -954,6 +954,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         )
         # Never include env / credential material in stdout.
         print(json.dumps(result, indent=2, sort_keys=True))
+        if result.get("ok") and args.b2_prefix:
+            from diagnose_case00_q1_role_vocabulary import report_case_root
+
+            diagnostic = report_case_root(Path(args.case_root))
+            print(json.dumps(diagnostic, sort_keys=True))
         return 0 if result.get("ok") else 1
     except RebuildError as exc:
         payload = {"ok": False, "error": exc.message}
