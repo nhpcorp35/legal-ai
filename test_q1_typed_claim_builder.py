@@ -47,8 +47,9 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
                 {
                     "page_id": "synthetic-page-1",
                     "excerpt": (
-                        "Synthetic Contractor is the named insured, a defendant "
-                        "here, and a third-party plaintiff in the related action."
+                        "Synthetic Contractor is the named insured and a "
+                        "defendant here. In the related action, it is a "
+                        "third-party plaintiff."
                     ),
                 }
             ]
@@ -68,6 +69,10 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
         self.assertEqual(
             by_name["Synthetic Underwriters"]["procedural_roles"],
             ["plaintiff"],
+        )
+        self.assertEqual(
+            by_name["Synthetic Underwriters"]["substantive_role"],
+            "insurer",
         )
         self.assertIn(
             "third-party plaintiff",
@@ -92,7 +97,7 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
                     {
                         "party_index": 0,
                         "evidence_sentence_match_count": 0,
-                        "evidence_field_categories": [],
+                        "evidence_field_categories": ["substantive_role"],
                     },
                     {
                         "party_index": 1,
