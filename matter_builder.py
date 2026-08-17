@@ -3685,6 +3685,22 @@ PARTY_ROLE_PASSAGE_EXCERPT_MAX = 2500
 PARTY_ROLE_COMBINED_EXCERPT_MAX = 4000
 # Contiguous PARTIES-section expansion hard cap (pages per pleading span).
 PARTY_ROLE_SECTION_EXPAND_MAX_PAGES = 6
+# Role-bearing pages outside opening/PARTIES sections: bounded total injection.
+PARTY_ROLE_COVERAGE_EXPAND_MAX_PAGES = 6
+
+# Keep these cues aligned with deterministic Q1 typed-claim extraction.
+PARTY_ROLE_SUBSTANTIVE_DESIGNATION_RE = re.compile(
+    r"(?i)\b(?:insurer|underwriter|named\s+insured|additional\s+insured|"
+    r"owner|contractor|tenant|landlord|broker)\b"
+)
+PARTY_ROLE_RELATED_ACTION_CUE_RE = re.compile(
+    r"(?i)\b(?:underlying|related|separate|third[ -]party)\s+"
+    r"(?:action|case|litigation)\b"
+)
+PARTY_ROLE_RELATED_ACTION_ROLE_RE = re.compile(
+    r"(?i)\b(?:third[ -]party plaintiff|third[ -]party defendant|"
+    r"respondent on appeal|appellant|plaintiff|defendant)\b"
+)
 
 # Transparent hybrid weights (sum intentionally > 1; absolute scale is relative).
 # boilerplate_penalty is applied as a negative component when justified.
@@ -4802,6 +4818,86 @@ def _iter_document_page_entries(entry_lookup_by_doc):
         yield doc_no, ordered
 
 
+def _page_has_party_role_coverage(text):
+    """True only for explicit typed-claim role evidence on one page."""
+    raw = text or ""
+    if PARTY_ROLE_SUBSTANTIVE_DESIGNATION_RE.search(raw):
+        return True
+    return bool(
+        PARTY_ROLE_RELATED_ACTION_CUE_RE.search(raw)
+        and PARTY_ROLE_RELATED_ACTION_ROLE_RE.search(raw)
+    )
+
+
+def _party_role_coverage_excerpt(text):
+    """Return bounded cue-bearing sentences plus adjacent related-action context."""
+    filtered = _filter_party_role_procedural_boilerplate(text or "")
+    units = [
+        clean_text(unit)
+        for unit in re.split(r"(?<=[.!?])\s+|\n+", filtered)
+        if clean_text(unit)
+    ]
+    keep = set()
+    for index, unit in enumerate(units):
+        if PARTY_ROLE_SUBSTANTIVE_DESIGNATION_RE.search(unit):
+            keep.add(index)
+        if PARTY_ROLE_RELATED_ACTION_CUE_RE.search(unit):
+            for adjacent in (index - 1, index, index + 1):
+                if 0 <= adjacent < len(units):
+                    keep.add(adjacent)
+    selected = [unit for index, unit in enumerate(units) if index in keep]
+    return _truncate_at_token_boundary(
+        "\n".join(selected), PARTY_ROLE_PASSAGE_EXCERPT_MAX
+    )
+
+
+def _collect_party_role_coverage_page_ids(page_lookup):
+    """Collect bounded operative-pleading pages with explicit role coverage."""
+    candidates = []
+    for page_id, entry in (page_lookup or {}).items():
+        text = ((entry.get("page") or {}).get("text") or "")
+        kind = _pleading_kind_for_party_role(entry, text)
+        if not _is_operative_pleading_kind(kind):
+            continue
+        if _is_affirmation_or_service_filing(entry, text):
+            continue
+        if not _page_has_party_role_coverage(text):
+            continue
+        candidates.append(
+            (
+                0 if PARTY_ROLE_RELATED_ACTION_CUE_RE.search(text) else 1,
+                entry.get("nyscef_document_number") is None,
+                entry.get("nyscef_document_number")
+                if entry.get("nyscef_document_number") is not None
+                else 10**9,
+                (entry.get("page") or {}).get("page_number") or 0,
+                page_id,
+            )
+        )
+    candidates.sort()
+    selected = []
+    selected_ids = set()
+
+    def _add(item):
+        page_id = item[-1]
+        if page_id in selected_ids:
+            return
+        if len(selected) >= PARTY_ROLE_COVERAGE_EXPAND_MAX_PAGES:
+            return
+        selected.append(page_id)
+        selected_ids.add(page_id)
+
+    # Reserve one slot for each available typed-claim coverage category before
+    # filling the remaining bounded slots in deterministic order.
+    for priority in (0, 1):
+        first = next((item for item in candidates if item[0] == priority), None)
+        if first is not None:
+            _add(first)
+    for item in candidates:
+        _add(item)
+    return selected
+
+
 def _collect_parties_section_page_ids(page_lookup):
     """
     Contiguous PARTIES-section page ids for initiating/operative pleadings.
@@ -4969,8 +5065,9 @@ def _build_party_role_section_candidate(
     phrases=None,
     *,
     intro_continuation=False,
+    coverage_expanded=False,
 ):
-    """Score/build a candidate for a contiguous PARTIES/intro-section page."""
+    """Score/build a candidate for bounded party-role coverage expansion."""
     candidate = _score_page_candidate(
         entry,
         phrase,
@@ -4997,9 +5094,13 @@ def _build_party_role_section_candidate(
             explanation = list(candidate.get("ranking_explanation") or [])
             explanation.append("contiguous PARTIES-section expansion")
             candidate["ranking_explanation"] = explanation
-    # Rebuild excerpt when this page continues an opening section without a heading.
-    if intro_continuation or not candidate.get("excerpt"):
-        text = (entry.get("page") or {}).get("text") or ""
+    # Coverage pages need cue-centered text rather than the ordinary Q1 window.
+    text = (entry.get("page") or {}).get("text") or ""
+    if coverage_expanded:
+        candidate["excerpt"] = _party_role_coverage_excerpt(text)
+        candidate["party_role_coverage_expanded"] = True
+        candidate.setdefault("page_text", text)
+    elif intro_continuation or not candidate.get("excerpt"):
         candidate["excerpt"] = _party_role_evidence_excerpt(
             entry,
             text,
@@ -5009,7 +5110,8 @@ def _build_party_role_section_candidate(
             intro_continuation=intro_continuation,
         )
         candidate.setdefault("page_text", text)
-    candidate["party_role_section_expanded"] = True
+    if not coverage_expanded:
+        candidate["party_role_section_expanded"] = True
     return candidate
 
 
@@ -5025,19 +5127,26 @@ def _ensure_party_role_section_pages(
     scored_by_page=None,
 ):
     """
-    Ensure contiguous PARTIES and intro-section pages reach evidence packets.
+    Ensure bounded party-role section and explicit role-coverage pages reach packets.
 
     Preserves ordinary diversification for pages already selected; injects any
-    missing section pages that ranking/top-k would otherwise drop.
+    missing section/coverage pages that ranking/top-k would otherwise drop.
     """
     if not (hints or {}).get("party_role_intent"):
         return ranked
 
     parties_ids = _collect_parties_section_page_ids(page_lookup)
     intro_ids, intro_continuations = _collect_intro_section_page_ids(page_lookup)
+    protected_section_ids = set(intro_ids) | set(parties_ids)
+    coverage_ids = [
+        page_id
+        for page_id in _collect_party_role_coverage_page_ids(page_lookup)
+        if page_id not in protected_section_ids
+    ]
+    coverage_id_set = set(coverage_ids)
     section_ids = []
     seen = set()
-    for page_id in list(intro_ids) + list(parties_ids):
+    for page_id in list(intro_ids) + list(parties_ids) + list(coverage_ids):
         if page_id in seen:
             continue
         seen.add(page_id)
@@ -5052,6 +5161,7 @@ def _ensure_party_role_section_pages(
     injected = list(ranked)
     for page_id in section_ids:
         intro_continuation = page_id in intro_continuations
+        coverage_expanded = page_id in coverage_id_set
         if page_id in selected_ids:
             # A section page can have entered through ordinary scoring before
             # expansion.  Give it the same provenance marker as an injected
@@ -5059,10 +5169,15 @@ def _ensure_party_role_section_pages(
             # contiguous section, not just the pages expansion happened to add.
             for existing_hit in injected:
                 if existing_hit.get("page_id") == page_id:
-                    existing_hit["party_role_section_expanded"] = True
-                    if intro_continuation:
-                        entry = page_lookup.get(page_id)
-                        if entry:
+                    entry = page_lookup.get(page_id)
+                    if coverage_expanded and entry:
+                        text = (entry.get("page") or {}).get("text") or ""
+                        existing_hit["excerpt"] = _party_role_coverage_excerpt(text)
+                        existing_hit["party_role_coverage_expanded"] = True
+                        existing_hit.setdefault("page_text", text)
+                    else:
+                        existing_hit["party_role_section_expanded"] = True
+                        if intro_continuation and entry:
                             text = (entry.get("page") or {}).get("text") or ""
                             existing_hit["excerpt"] = _party_role_evidence_excerpt(
                                 entry,
@@ -5088,20 +5203,25 @@ def _ensure_party_role_section_pages(
                 case_map_signals,
                 phrases=phrases,
                 intro_continuation=intro_continuation,
+                coverage_expanded=coverage_expanded,
             )
         else:
             existing = dict(existing)
-            existing["party_role_section_expanded"] = True
             text = (entry.get("page") or {}).get("text") or ""
-            if intro_continuation or not existing.get("excerpt"):
-                existing["excerpt"] = _party_role_evidence_excerpt(
-                    entry,
-                    text,
-                    phrase=phrase,
-                    tokens=tokens,
-                    phrases=list((_phrase_lists(phrases))[2]),
-                    intro_continuation=intro_continuation,
-                )
+            if coverage_expanded:
+                existing["excerpt"] = _party_role_coverage_excerpt(text)
+                existing["party_role_coverage_expanded"] = True
+            else:
+                existing["party_role_section_expanded"] = True
+                if intro_continuation or not existing.get("excerpt"):
+                    existing["excerpt"] = _party_role_evidence_excerpt(
+                        entry,
+                        text,
+                        phrase=phrase,
+                        tokens=tokens,
+                        phrases=list((_phrase_lists(phrases))[2]),
+                        intro_continuation=intro_continuation,
+                    )
             existing.setdefault("page_text", text)
         if not validate_canonical_result_citation(existing, page_lookup):
             continue
