@@ -841,8 +841,16 @@ def evaluate_q1_structured_criterion(
         )
         diagnostic = "q1_structured_defendant_designations"
     elif spec.id == "Q1_C4_LIMITED_SUBSTANTIVE_ROLE_INFORMATION":
-        satisfied = any(bool(_norm(str(p.get("substantive_role") or ""))) for p in parties)
-        diagnostic = "q1_structured_substantive_roles"
+        defendants = [
+            p
+            for p, roles in current
+            if any("defendant" in role for role in roles)
+        ]
+        satisfied = bool(defendants) and any(
+            not _norm(str(p.get("substantive_role") or ""))
+            for p in defendants
+        )
+        diagnostic = "q1_structured_substantive_role_limitation"
     elif spec.id == "Q1_C5_DUAL_ROLES_IN_RELATED_ACTION":
         satisfied = any(
             bool(

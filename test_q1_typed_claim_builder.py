@@ -261,7 +261,11 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
 
         rendered = CLI.render_q1_validated_party_claims(claims)
         limitation = CLI._Q1_SUBSTANTIVE_ROLE_LIMITATION
-        self.assertIn("limited substantive role information", rendered)
+        self.assertIn(
+            "do not establish the substantive role allegedly played",
+            rendered,
+        )
+        self.assertIn("claimant, or injured person", rendered)
         self.assertIn(limitation, rendered)
         self.assertTrue(CLI.q1_rendered_claims_present(rendered, claims))
 
@@ -275,6 +279,74 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
         )
         self.assertIn(limitation, restored)
         self.assertEqual(restored.count(limitation), 1)
+
+    def test_limitation_remains_when_only_some_defendant_roles_are_known(self):
+        claims = {
+            "schema_version": "q1_validated_party_claims.v1",
+            "roster_completeness": "complete",
+            "parties": [
+                {
+                    "identity": "Synthetic Known Defendant",
+                    "procedural_roles": ["defendant"],
+                    "pleaded_role_basis": "named insured",
+                    "substantive_role": "named insured",
+                    "related_action_roles": [],
+                },
+                {
+                    "identity": "Synthetic Unknown Defendant",
+                    "procedural_roles": ["defendant"],
+                    "pleaded_role_basis": "",
+                    "substantive_role": "",
+                    "related_action_roles": [],
+                },
+            ],
+        }
+
+        rendered = CLI.render_q1_validated_party_claims(claims)
+        self.assertIn(CLI._Q1_SUBSTANTIVE_ROLE_LIMITATION, rendered)
+        self.assertTrue(CLI.q1_rendered_claims_present(rendered, claims))
+
+    def test_extracts_and_renders_numbered_underwriter_dual_role(self):
+        result = {
+            "review_scope": {"completeness": "not_established"},
+            "audit": {
+                "party_role_expected_attributes": [
+                    {
+                        "identity": "Certain Interested Underwriters At Lloyd's, London",
+                        "procedural_role": "plaintiff",
+                        "pleaded_role_basis": "",
+                    }
+                ]
+            },
+        }
+        packet = {
+            "retrieval_hits": [
+                {
+                    "excerpt": (
+                        "Attorneys for the Plaintiff, In Action No.: 1 "
+                        "Defendants in Action No.: 2 Certain Interested "
+                        "Underwriters At Lloyd's, London."
+                    )
+                }
+            ]
+        }
+
+        claims = CLI.build_q1_validated_party_claims(
+            result,
+            evidence_packet=packet,
+        )
+        party = claims["parties"][0]
+        self.assertIn(
+            "defendant in Action No. 2",
+            party["related_action_roles"],
+        )
+        rendered = CLI.render_q1_validated_party_claims(claims)
+        self.assertIn(
+            "A later filing describes the Underwriters as plaintiff in "
+            "Action No. 1 and defendants in Action No. 2.",
+            rendered,
+        )
+        self.assertTrue(CLI.q1_rendered_claims_present(rendered, claims))
 
     def test_restores_typed_summary_after_contract_repair_drops_it(self):
         claims = {
@@ -451,10 +523,6 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
                         "missing_typed_claim_fields": [
                             {"party_index": 0, "field": "identity"},
                             {"party_index": 0, "field": "procedural_roles"},
-                            {
-                                "party_index": None,
-                                "field": "substantive_role_limitation",
-                            },
                         ],
                     }
                 ],
