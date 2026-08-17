@@ -1384,7 +1384,7 @@ def build_q1_validated_party_claims(
                 continue
             for matched in _Q1_RELATED_ROLE_RE.findall(sentence):
                 value = normalize_proposed_answer_whitespace(matched).lower()
-                if value and value not in related_roles:
+                if value and value != role.lower() and value not in related_roles:
                     related_roles.append(value)
         parties.append({
             "identity": identity,
