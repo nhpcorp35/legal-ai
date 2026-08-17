@@ -3678,5 +3678,68 @@ class DeterministicComplaintRoadmapFallbackRegressionTests(unittest.TestCase):
         )
 
 
+class DeterministicPartyAttributeRetentionRegressionTests(unittest.TestCase):
+    def test_only_missing_evidence_attributes_are_appended_and_revalidate(self) -> None:
+        expected = [
+            {
+                "identity": "SYNTHETIC BUILDER LLC",
+                "procedural_role": "defendant",
+                "residence_or_ppb": "principal place of business in Example County",
+            }
+        ]
+        current = {
+            "proposed_answer": (
+                "The complaint identifies SYNTHETIC BUILDER LLC as defendant."
+            ),
+            "audit": {},
+        }
+        missing = de.find_missing_party_role_attributes(current, expected)
+        self.assertEqual(
+            [(item["party"], item["category"]) for item in missing],
+            [("SYNTHETIC BUILDER LLC", "residence_or_ppb")],
+        )
+
+        merged = de.apply_deterministic_party_role_attribute_fallbacks(
+            current,
+            missing,
+        )
+
+        self.assertIsNotNone(merged)
+        assert merged is not None
+        self.assertIn(
+            "The complaint alleges SYNTHETIC BUILDER LLC principal place of "
+            "business in Example County.",
+            merged["proposed_answer"],
+        )
+        self.assertEqual(
+            de.find_missing_party_role_attributes(merged, expected),
+            [],
+        )
+        self.assertEqual(
+            merged["audit"]["party_role_deterministic_attribute_fallbacks"],
+            [
+                {
+                    "party": "SYNTHETIC BUILDER LLC",
+                    "category": "residence_or_ppb",
+                    "value": "principal place of business in Example County",
+                }
+            ],
+        )
+
+    def test_synthesis_gaps_are_not_converted_to_party_facts(self) -> None:
+        current = {"proposed_answer": "Synthetic answer.", "audit": {}}
+        merged = de.apply_deterministic_party_role_attribute_fallbacks(
+            current,
+            [
+                {
+                    "party": None,
+                    "category": "complaint_roadmap",
+                    "value": "preserve roadmap",
+                }
+            ],
+        )
+        self.assertEqual(merged, current)
+
+
 if __name__ == "__main__":
     unittest.main()

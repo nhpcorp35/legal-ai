@@ -7514,6 +7514,50 @@ def _is_party_role_synthesis_category(category: str) -> bool:
     return normalize_whitespace(category) in _PARTY_ROLE_SYNTHESIS_CATEGORIES
 
 
+def apply_deterministic_party_role_attribute_fallbacks(
+    current_draft: Any,
+    missing_attributes: Sequence[dict],
+) -> Optional[dict]:
+    """Append only evidence-extracted party attributes still absent after repair."""
+    if not isinstance(current_draft, dict):
+        return None
+    additions: List[str] = []
+    audit_rows: List[dict] = []
+    for item in missing_attributes or []:
+        if not isinstance(item, dict):
+            continue
+        category = normalize_whitespace(item.get("category"))
+        if not category or _is_party_role_synthesis_category(category):
+            continue
+        party = normalize_whitespace(item.get("party"))
+        value = normalize_whitespace(item.get("value"))
+        if not party or not value:
+            continue
+        if category == "procedural_role":
+            sentence = f"The complaint identifies {party} as {value}."
+        elif category == "pleaded_role_basis":
+            sentence = f"The complaint pleads {party} as {value}."
+        elif category == "identity":
+            sentence = f"The complaint identifies {party}."
+        else:
+            sentence = f"The complaint alleges {party} {value}."
+        additions.append(sentence)
+        audit_rows.append(
+            {"party": party, "category": category, "value": value}
+        )
+    if not additions:
+        return dict(current_draft)
+    merged = dict(current_draft)
+    proposed = normalize_whitespace(merged.get("proposed_answer") or "")
+    merged["proposed_answer"] = normalize_whitespace(
+        " ".join([proposed, *additions])
+    )
+    audit = dict(merged.get("audit") or {})
+    audit["party_role_deterministic_attribute_fallbacks"] = audit_rows
+    merged["audit"] = audit
+    return merged
+
+
 def partition_party_role_missing_requirements(
     missing: Sequence[dict],
 ) -> Tuple[List[dict], List[dict]]:
@@ -9168,7 +9212,23 @@ def answer_attorney_record_question(
             missing_after = find_missing_party_role_requirements(
                 validated, expected, expected_synthesis
             )
-            # Deterministic PB/notice fallbacks after repair / merge when those
+            # The model has already consumed its one bounded repair. Preserve any
+            # still-missing evidence-extracted party attributes deterministically,
+            # then re-run the exact same completeness predicate.
+            attr_remaining, _syn_remaining = partition_party_role_missing_requirements(
+                missing_after
+            )
+            if attr_remaining:
+                merged_attributes = apply_deterministic_party_role_attribute_fallbacks(
+                    validated,
+                    attr_remaining,
+                )
+                if merged_attributes is not None:
+                    validated = merged_attributes
+                    missing_after = find_missing_party_role_requirements(
+                        validated, expected, expected_synthesis
+                    )
+            # Deterministic synthesis fallbacks after repair / merge when those
             # fillable categories remain missing among any other gaps.
             if missing_after:
                 _attr_remaining, syn_remaining = (
