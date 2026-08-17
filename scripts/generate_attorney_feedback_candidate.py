@@ -1338,6 +1338,12 @@ _Q1_RELATED_ROLE_RE = re.compile(
 )
 
 
+_Q1_SUBSTANTIVE_ROLE_RE = re.compile(
+    r"(?i)\b(?:insurer|underwriter|named insured|additional insured|"
+    r"owner|contractor|tenant|landlord|broker)\b"
+)
+
+
 def build_q1_validated_party_claims(
     reasoner_result: Mapping[str, Any],
 ) -> dict[str, Any]:
@@ -1348,7 +1354,11 @@ def build_q1_validated_party_claims(
         " ".join((str(p.get("text") or ""), str(p.get("source_excerpt") or p.get("excerpt") or "")))
         for p in reasoner_result.get("propositions") or [] if isinstance(p, Mapping)
     )
-    related_context = bool(_Q1_RELATED_ACTION_CUE_RE.search(corpus))
+    sentences = [
+        normalize_proposed_answer_whitespace(sentence)
+        for sentence in re.split(r"(?<=[.!?])\s+|\n+", corpus)
+        if normalize_proposed_answer_whitespace(sentence)
+    ]
     parties: list[dict[str, Any]] = []
     for raw in expected:
         if not isinstance(raw, Mapping):
@@ -1359,19 +1369,25 @@ def build_q1_validated_party_claims(
         role = normalize_proposed_answer_whitespace(str(raw.get("procedural_role") or ""))
         basis = normalize_proposed_answer_whitespace(str(raw.get("pleaded_role_basis") or ""))
         related_roles: list[str] = []
-        if related_context:
-            for sentence in re.split(r"(?<=[.!?])\s+|\n+", corpus):
-                if not re.search(re.escape(identity), sentence, re.IGNORECASE):
-                    continue
-                for matched in _Q1_RELATED_ROLE_RE.findall(sentence):
-                    value = normalize_proposed_answer_whitespace(matched).lower()
-                    if value and value not in related_roles:
-                        related_roles.append(value)
+        substantive_roles: list[str] = []
+        for sentence in sentences:
+            if not re.search(re.escape(identity), sentence, re.IGNORECASE):
+                continue
+            for matched in _Q1_SUBSTANTIVE_ROLE_RE.findall(sentence):
+                value = normalize_proposed_answer_whitespace(matched).lower()
+                if value and value not in substantive_roles:
+                    substantive_roles.append(value)
+            if not _Q1_RELATED_ACTION_CUE_RE.search(sentence):
+                continue
+            for matched in _Q1_RELATED_ROLE_RE.findall(sentence):
+                value = normalize_proposed_answer_whitespace(matched).lower()
+                if value and value not in related_roles:
+                    related_roles.append(value)
         parties.append({
             "identity": identity,
             "procedural_roles": [role] if role else [],
             "pleaded_role_basis": basis,
-            "substantive_role": basis,
+            "substantive_role": "; ".join(substantive_roles),
             "entity_type": normalize_proposed_answer_whitespace(str(raw.get("entity_type") or "")),
             "residence_or_ppb": normalize_proposed_answer_whitespace(str(raw.get("residence_or_ppb") or "")),
             "related_action_roles": related_roles,
@@ -1390,6 +1406,34 @@ def build_q1_validated_party_claims(
             finalized=False,
         )
     return claims
+
+
+def render_q1_validated_party_claims(claims: Mapping[str, Any]) -> str:
+    """Render typed claims into concise attorney-facing prose."""
+    if not ac.q1_party_claims_are_valid(claims):
+        raise GenerationError(
+            "Cannot render malformed typed Q1 party claims",
+            reason_code="q1_validated_party_claims_invalid",
+            finalized=False,
+        )
+    lines = ["Validated party/role summary:"]
+    for party in claims.get("parties") or []:
+        parts = [
+            "current role: "
+            + (", ".join(party.get("procedural_roles") or []) or "not established")
+        ]
+        if party.get("pleaded_role_basis"):
+            parts.append(f"pleaded designation: {party['pleaded_role_basis']}")
+        if party.get("substantive_role"):
+            parts.append(f"substantive role: {party['substantive_role']}")
+        if party.get("related_action_roles"):
+            parts.append("related-action role: " + ", ".join(party["related_action_roles"]))
+        lines.append(f"- {party['identity']} — " + "; ".join(parts) + ".")
+    if claims.get("roster_completeness") != "complete":
+        lines.append(
+            "The retrieved record does not establish that this is a complete party roster."
+        )
+    return "\n".join(lines)
 
 
 def validated_acceptance_evidence_text(reasoner_result: Mapping[str, Any]) -> str:
