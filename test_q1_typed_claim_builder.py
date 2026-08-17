@@ -451,6 +451,10 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
                         "missing_typed_claim_fields": [
                             {"party_index": 0, "field": "identity"},
                             {"party_index": 0, "field": "procedural_roles"},
+                            {
+                                "party_index": None,
+                                "field": "substantive_role_limitation",
+                            },
                         ],
                     }
                 ],
