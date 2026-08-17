@@ -1080,10 +1080,8 @@ def apply_idempotent_contract_fallback(
         if not _norm(frag):
             actions[cid] = FALLBACK_NONE
             continue
-        if cid in inserted_for or answer_already_contains_equivalent(out, frag):
-            actions[cid] = FALLBACK_SKIPPED_EQUIVALENT
-            continue
-        # Do not insert fallback that would manufacture unsupported evidence.
+        # Evidence authority is checked before equivalence so answer prose
+        # cannot bypass an explicit fail-closed evidence channel.
         if not criterion_evidence_already_supported(
             out,
             spec,
@@ -1091,6 +1089,9 @@ def apply_idempotent_contract_fallback(
             validated_evidence_text=validated_evidence_text,
         ):
             actions[cid] = FALLBACK_SKIPPED_UNSUPPORTED
+            continue
+        if cid in inserted_for or answer_already_contains_equivalent(out, frag):
+            actions[cid] = FALLBACK_SKIPPED_EQUIVALENT
             continue
         # Insert exactly once.
         if out and not out.endswith(("\n", " ")):
