@@ -4242,7 +4242,8 @@ def apply_party_role_packet_budget(
     Deterministic selection:
     1. Deduplicate redundant pages/propositions (stable first-seen order).
     2. Always retain controlling initiating/operative caption, intro, and PARTIES pages.
-    3. Then retain only page-text-demonstrated change/qualification/conflict evidence.
+    3. Then retain explicit substantive/related-action coverage and page-text-
+       demonstrated change/qualification/conflict evidence.
     4. Never truncate party names or role paragraphs — omit whole non-protected
        hits when the budget would otherwise be exceeded.
     """
@@ -4263,13 +4264,18 @@ def apply_party_role_packet_budget(
     for hit in deduped:
         if hit.get("controlling_party_role_pleading"):
             protected.append(hit)
-        elif (
-            _hit_is_necessary_party_role_exception(hit)
-            or hit_is_material_for_party_role_question(hit)
-        ):
-            # The caller normally supplies materiality-filtered hits, but keep
-            # this public helper fail-closed when invoked directly.
-            qualifying.append(hit)
+        else:
+            text = _hit_page_materiality_text(hit)
+            has_role_coverage = bool(
+                _PARTY_ROLE_SUBSTANTIVE_COVERAGE_RE.search(text)
+                or _PARTY_ROLE_RELATED_ACTION_COVERAGE_RE.search(text)
+            )
+            if _hit_is_necessary_party_role_exception(hit) or (
+                has_role_coverage and hit_is_material_for_party_role_question(hit)
+            ):
+                # Explicit coverage cues may enter only through the existing
+                # materiality gate; repetitive identity hits remain excluded.
+                qualifying.append(hit)
 
     # If the protected group itself creates character pressure, deterministically
     # remove only nonresponsive prose from each page.  Complete role-bearing
