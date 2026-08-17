@@ -206,6 +206,45 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
         self.assertNotIn("secret substantive role", serialized)
         self.assertNotIn("secret related role", serialized)
 
+    def test_retention_stage_diagnostics_are_privacy_safe(self):
+        claims = {
+            "schema_version": "q1_validated_party_claims.v1",
+            "roster_completeness": "complete",
+            "parties": [
+                {
+                    "identity": "Synthetic Secret Party",
+                    "procedural_roles": ["plaintiff"],
+                    "pleaded_role_basis": "",
+                    "substantive_role": "",
+                    "related_action_roles": [],
+                }
+            ],
+        }
+        diagnostics = {"schema_version": "q1_retention_diagnostics.v1"}
+        CLI.record_q1_retention_stage(
+            diagnostics,
+            stage="post_canonicalization",
+            answer_text="Attorney analysis without the typed summary.",
+            claims=claims,
+        )
+        self.assertEqual(
+            diagnostics,
+            {
+                "schema_version": "q1_retention_diagnostics.v1",
+                "stages": [
+                    {
+                        "stage": "post_canonicalization",
+                        "missing_typed_claim_fields": [
+                            {"party_index": 0, "field": "identity"},
+                            {"party_index": 0, "field": "procedural_roles"},
+                        ],
+                    }
+                ],
+            },
+        )
+        self.assertNotIn("Synthetic Secret Party", repr(diagnostics))
+        self.assertNotIn("plaintiff", repr(diagnostics))
+
     def test_empty_inventory_is_valid_and_fails_closed_at_criteria(self):
         claims = CLI.build_q1_validated_party_claims(
             {"propositions": [], "audit": {}, "review_scope": {}}
