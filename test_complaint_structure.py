@@ -874,6 +874,9 @@ class ContractRoadmapScopeRegressionTests(unittest.TestCase):
             merged["contract_required_categories"],
             ["attorney_packet"],
         )
+        self.assertIsNone(
+            cs.merge_contract_structure_requirements(None, answer_contract)
+        )
 
     def test_complaint_scoped_contract_range_is_retained(self) -> None:
         merged = cs.merge_contract_structure_requirements(
