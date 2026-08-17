@@ -223,6 +223,12 @@ _PARTY_ROLE_SUBSTANTIVE_COVERAGE_RE = re.compile(
     r")\b"
 )
 
+_PARTY_ROLE_NUMBERED_DUAL_ACTION_RE = re.compile(
+    r"(?i)\bplaintiffs?\b[\s\S]{0,120}\baction\s+no\.?\s*:\s*1\b"
+    r"[\s\S]{0,180}\bdefendants?\b[\s\S]{0,120}"
+    r"\baction\s+no\.?\s*:\s*2\b"
+)
+
 _PARTY_ROLE_RELATED_ACTION_COVERAGE_RE = re.compile(
     r"(?i)\b(?:underlying|related|separate|third[\s-]+party)\s+"
     r"(?:action|case|litigation)\b[\s\S]{0,400}\b"
@@ -3913,7 +3919,13 @@ def _hit_materially_changes_party_role(text: str) -> bool:
     Generic caption labels, isolated names, and incidental role words do not
     satisfy this gate.
     """
-    return bool(text and _PARTY_ROLE_MATERIAL_CHANGE_RE.search(text))
+    return bool(
+        text
+        and (
+            _PARTY_ROLE_MATERIAL_CHANGE_RE.search(text)
+            or _PARTY_ROLE_NUMBERED_DUAL_ACTION_RE.search(text)
+        )
+    )
 
 
 def _hit_is_necessary_party_role_exception(hit: dict) -> bool:
@@ -4269,6 +4281,7 @@ def apply_party_role_packet_budget(
             has_role_coverage = bool(
                 _PARTY_ROLE_SUBSTANTIVE_COVERAGE_RE.search(text)
                 or _PARTY_ROLE_RELATED_ACTION_COVERAGE_RE.search(text)
+                or _PARTY_ROLE_NUMBERED_DUAL_ACTION_RE.search(text)
             )
             if _hit_is_necessary_party_role_exception(hit) or (
                 has_role_coverage and hit_is_material_for_party_role_question(hit)
@@ -4289,6 +4302,8 @@ def apply_party_role_packet_budget(
     def _coverage_priority(item: dict) -> int:
         text = _hit_page_materiality_text(item)
         if _PARTY_ROLE_RELATED_ACTION_COVERAGE_RE.search(text):
+            return 0
+        if _PARTY_ROLE_NUMBERED_DUAL_ACTION_RE.search(text):
             return 0
         if _PARTY_ROLE_SUBSTANTIVE_COVERAGE_RE.search(text):
             return 1
@@ -4353,6 +4368,9 @@ def apply_party_role_packet_budget(
                 _hit_page_materiality_text(hit)
             )
             or _PARTY_ROLE_RELATED_ACTION_COVERAGE_RE.search(
+                _hit_page_materiality_text(hit)
+            )
+            or _PARTY_ROLE_NUMBERED_DUAL_ACTION_RE.search(
                 _hit_page_materiality_text(hit)
             )
         ),
