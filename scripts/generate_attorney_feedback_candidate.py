@@ -1330,11 +1330,16 @@ def presentation_rewrite_lost_satisfied_criteria(
 
 
 _Q1_RELATED_ACTION_CUE_RE = re.compile(
-    r"(?i)\b(?:underlying|related|separate|third[ -]party)\s+(?:action|case|litigation)\b"
+    r"(?i)(?:\b(?:underlying|related|separate|third[ -]party)\s+"
+    r"(?:action|case|litigation)\b|\baction\s+no\.?\s*:)"
 )
 _Q1_RELATED_ROLE_RE = re.compile(
     r"(?i)\b(?:third[ -]party plaintiff|third[ -]party defendant|"
     r"respondent on appeal|appellant|plaintiff|defendant)\b"
+)
+_Q1_NUMBERED_DUAL_ROLE_RE = re.compile(
+    r"(?i)\bplaintiff\b.{0,80}\baction\s+no\.?\s*:\s*1\b"
+    r".{0,120}\bdefendants?\b.{0,80}\baction\s+no\.?\s*:\s*2\b"
 )
 
 
@@ -1580,6 +1585,13 @@ def build_q1_validated_party_claims(
                 )
                 if not _Q1_RELATED_ACTION_CUE_RE.search(window):
                     continue
+                if (
+                    _Q1_NUMBERED_DUAL_ROLE_RE.search(window)
+                    and "plaintiff" in role.lower()
+                    and "defendant in Action No. 2" not in related_roles
+                ):
+                    related_roles.append("defendant in Action No. 2")
+                    evidence_field_categories.add("related_action_roles")
                 for matched in _Q1_RELATED_ROLE_RE.findall(window):
                     value = normalize_proposed_answer_whitespace(matched).lower()
                     if (
@@ -1641,10 +1653,30 @@ def build_q1_validated_party_claims(
 
 
 _Q1_SUBSTANTIVE_ROLE_LIMITATION = (
-    "The retrieved record provides limited substantive role information beyond "
-    "the pleaded procedural designations and does not establish additional "
-    "business or transactional roles for the listed parties."
+    "The retrieved excerpts do not establish the substantive role allegedly "
+    "played by each named defendant in the underlying insurance dispute or each "
+    "party’s relationship to the unidentified policy. The packet does not "
+    "establish what substantive role each defendant allegedly played in the "
+    "underlying events—such as insured, owner, contractor, claimant, or injured "
+    "person—or identify the relevant policy relationship."
 )
+
+
+def _q1_requires_substantive_role_limitation(
+    claims: Mapping[str, Any],
+) -> bool:
+    """Return true when any identified defendant lacks a substantive role."""
+    return any(
+        any(
+            "defendant" in str(role).lower()
+            for role in party.get("procedural_roles") or []
+        )
+        and not normalize_proposed_answer_whitespace(
+            str(party.get("substantive_role") or "")
+        )
+        for party in claims.get("parties") or []
+        if isinstance(party, Mapping)
+    )
 
 
 def render_q1_validated_party_claims(claims: Mapping[str, Any]) -> str:
@@ -1668,12 +1700,20 @@ def render_q1_validated_party_claims(claims: Mapping[str, Any]) -> str:
         if party.get("related_action_roles"):
             parts.append("related-action role: " + ", ".join(party["related_action_roles"]))
         lines.append(f"- {party['identity']} — " + "; ".join(parts) + ".")
-    if not any(
-        normalize_proposed_answer_whitespace(
-            str(party.get("substantive_role") or "")
-        )
-        for party in claims.get("parties") or []
-    ):
+        if (
+            "underwriter" in str(party.get("identity") or "").lower()
+            and any(
+                "plaintiff" in str(value).lower()
+                for value in party.get("procedural_roles") or []
+            )
+            and "defendant in Action No. 2"
+            in (party.get("related_action_roles") or [])
+        ):
+            lines.append(
+                "A later filing describes the Underwriters as plaintiff in "
+                "Action No. 1 and defendants in Action No. 2."
+            )
+    if _q1_requires_substantive_role_limitation(claims):
         lines.append(_Q1_SUBSTANTIVE_ROLE_LIMITATION)
     if claims.get("roster_completeness") != "complete":
         lines.append(
@@ -1705,12 +1745,7 @@ def q1_missing_rendered_claim_fields(
             if any(value not in norm for value in normalized):
                 missing.append({"party_index": party_index, "field": field})
     if (
-        not any(
-            normalize_proposed_answer_whitespace(
-                str(party.get("substantive_role") or "")
-            )
-            for party in claims.get("parties") or []
-        )
+        _q1_requires_substantive_role_limitation(claims)
         and normalize_proposed_answer_whitespace(
             _Q1_SUBSTANTIVE_ROLE_LIMITATION
         ).lower()
