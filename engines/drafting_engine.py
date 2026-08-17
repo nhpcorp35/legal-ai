@@ -6104,6 +6104,7 @@ _PARTY_ROLE_DETERMINISTIC_SYNTHESIS_CATEGORIES = frozenset(
     {
         "procedural_bearing",
         "notice_defendant_explanation",
+        "complaint_roadmap",
     }
 )
 _PARTY_ROLE_DETERMINISTIC_PROCEDURAL_BEARING_PARAGRAPH = (
@@ -6124,6 +6125,7 @@ _PARTY_ROLE_RETAINED_SYNTHESIS_UNITS_KEY = "party_role_retained_synthesis_units"
 _PARTY_ROLE_DETERMINISTIC_FALLBACK_AUDIT_KEYS = (
     "party_role_deterministic_procedural_bearing_fallback",
     "party_role_deterministic_notice_defendant_explanation_fallback",
+    "party_role_deterministic_complaint_roadmap_fallback",
 )
 _PARTY_ROLE_NO_WRONGDOING_RE = re.compile(
     r"(?i)\b(?:"
@@ -6622,6 +6624,68 @@ def _notice_defendant_section_needs_deterministic_fill(
     )
 
 
+def deterministic_party_role_complaint_roadmap_paragraph(
+    expected_synthesis: Optional[Sequence[dict]] = None,
+) -> str:
+    """Build a minimal roadmap solely from extracted complaint markers."""
+    criterion = _synthesis_criterion_for_category(
+        expected_synthesis or [], "complaint_roadmap"
+    )
+    if not isinstance(criterion, dict):
+        return ""
+    markers: List[str] = []
+    seen = set()
+    ranges = [
+        item
+        for item in (criterion.get("section_ranges") or [])
+        if isinstance(item, dict)
+    ]
+    for item in ranges:
+        heading = normalize_whitespace(item.get("heading") or "")
+        marker = heading
+        if not marker:
+            try:
+                start = item.get("start")
+                end = item.get("end")
+                if start is not None and end is not None:
+                    marker = (
+                        f"paragraph {int(start)}"
+                        if int(start) == int(end)
+                        else f"paragraphs {int(start)}–{int(end)}"
+                    )
+            except (TypeError, ValueError):
+                marker = ""
+        key = marker.lower()
+        if marker and key not in seen:
+            seen.add(key)
+            markers.append(marker)
+    if not markers:
+        for raw in criterion.get("section_headings") or []:
+            marker = normalize_whitespace(raw)
+            key = marker.lower()
+            if marker and key not in seen:
+                seen.add(key)
+                markers.append(marker)
+    if not markers:
+        return ""
+    return "Complaint roadmap: " + "; ".join(markers) + "."
+
+
+def _complaint_roadmap_section_needs_deterministic_fill(
+    section: Any,
+    *,
+    expected_synthesis: Optional[Sequence[dict]] = None,
+) -> bool:
+    if not isinstance(section, str) or not normalize_whitespace(section):
+        return True
+    criterion = _synthesis_criterion_for_category(
+        expected_synthesis or [], "complaint_roadmap"
+    )
+    return not _synthesis_section_satisfies(
+        normalize_whitespace(section), "complaint_roadmap", criterion
+    )
+
+
 def _apply_deterministic_synthesis_fills(
     candidate: Dict[str, Any],
     *,
@@ -6663,6 +6727,20 @@ def _apply_deterministic_synthesis_fills(
             )
         )
         filled.append("notice_defendant_explanation")
+    if (
+        "complaint_roadmap" in allowed_set
+        and "complaint_roadmap" in _PARTY_ROLE_DETERMINISTIC_SYNTHESIS_CATEGORIES
+        and _complaint_roadmap_section_needs_deterministic_fill(
+            candidate.get("complaint_roadmap"),
+            expected_synthesis=expected_synthesis,
+        )
+    ):
+        paragraph = deterministic_party_role_complaint_roadmap_paragraph(
+            expected_synthesis
+        )
+        if paragraph:
+            candidate["complaint_roadmap"] = paragraph
+            filled.append("complaint_roadmap")
     return filled
 
 
@@ -6942,6 +7020,37 @@ def apply_deterministic_party_role_synthesis_fallbacks(
         if merged_notice is None:
             return None
         draft = merged_notice
+    if "complaint_roadmap" in remaining:
+        paragraph = deterministic_party_role_complaint_roadmap_paragraph(
+            expected_synthesis
+        )
+        if not paragraph:
+            return None
+        _ensure_synthesis_lifecycle_categories(audit_out, ["complaint_roadmap"])
+        if audit_out is not None:
+            _lifecycle_set_state(
+                audit_out["party_role_synthesis_category_lifecycle"],
+                ["complaint_roadmap"],
+                "requested",
+                True,
+            )
+            _lifecycle_set_state(
+                audit_out["party_role_synthesis_category_lifecycle"],
+                ["complaint_roadmap"],
+                "parsed",
+                True,
+            )
+        merged_roadmap = merge_party_role_synthesis_patch(
+            draft,
+            {"complaint_roadmap": paragraph},
+            expected_synthesis=expected_synthesis,
+            audit_out=audit_out,
+        )
+        if merged_roadmap is None:
+            return None
+        draft = merged_roadmap
+        if audit_out is not None:
+            audit_out["party_role_deterministic_complaint_roadmap_fallback"] = True
     return draft if isinstance(draft, dict) else None
 
 

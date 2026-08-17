@@ -3628,5 +3628,55 @@ class PartyRoleRepairPromptRetentionRegressionTests(unittest.TestCase):
         self.assertIn("is a resident of Example County", prompt)
 
 
+class DeterministicComplaintRoadmapFallbackRegressionTests(unittest.TestCase):
+    def test_fallback_uses_only_exact_extracted_headings(self) -> None:
+        expected = [
+            {
+                "category": "complaint_roadmap",
+                "section_headings": ["introduction", "parties"],
+                "paragraph_numbers": [1, 2, 10, 11],
+                "section_ranges": [],
+                "structure_backed": False,
+            }
+        ]
+        paragraph = de.deterministic_party_role_complaint_roadmap_paragraph(expected)
+        self.assertEqual(paragraph, "Complaint roadmap: introduction; parties.")
+        self.assertEqual(
+            de.find_missing_party_role_synthesis(
+                {"proposed_answer": paragraph},
+                expected,
+            ),
+            [],
+        )
+
+    def test_fallback_emits_exact_ranges_when_heading_is_absent(self) -> None:
+        expected = [
+            {
+                "category": "complaint_roadmap",
+                "section_headings": [],
+                "paragraph_numbers": [20, 21, 22],
+                "section_ranges": [
+                    {
+                        "heading": "",
+                        "kind": "factual_layout",
+                        "start": 20,
+                        "end": 22,
+                        "paragraph_numbers": [20, 21, 22],
+                    }
+                ],
+                "structure_backed": True,
+            }
+        ]
+        paragraph = de.deterministic_party_role_complaint_roadmap_paragraph(expected)
+        self.assertEqual(paragraph, "Complaint roadmap: paragraphs 20–22.")
+        self.assertEqual(
+            de.find_missing_party_role_synthesis(
+                {"proposed_answer": paragraph},
+                expected,
+            ),
+            [],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
