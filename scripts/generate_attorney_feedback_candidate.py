@@ -1401,7 +1401,7 @@ _Q1_ROLE_VOCABULARY_PATTERNS = {
 def q1_role_vocabulary_counts(
     evidence_packet: Mapping[str, Any],
 ) -> dict[str, dict[str, int]]:
-    """Count only fixed legal-role vocabulary in bounded evidence excerpts."""
+    """Count literal occurrences of fixed legal-role vocabulary in evidence excerpts."""
     evidence_text = "\n".join(
         str(hit.get("excerpt") or "")
         for hit in evidence_packet.get("retrieval_hits") or []
