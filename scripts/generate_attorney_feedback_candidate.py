@@ -1466,6 +1466,27 @@ def q1_rendered_claims_present(
     return True
 
 
+def retain_q1_validated_party_claims(
+    answer_text: str,
+    claims: Mapping[str, Any],
+    *,
+    canonicalize: Optional[Callable[[str], str]] = None,
+) -> str:
+    """Restore the deterministic Q1 summary after lossy contract repair.
+
+    Contract fallback and duplication repair run before presentation
+    canonicalization. If that repair removes any rendered typed claim, append
+    the complete deterministic summary once and canonicalize the restored
+    answer. The caller must still revalidate the exact returned string.
+    """
+    if q1_rendered_claims_present(answer_text, claims):
+        return answer_text
+    summary = render_q1_validated_party_claims(claims)
+    restored = f"{str(answer_text or '').rstrip()}\\n\\n{summary}".strip()
+    canonicalize_fn = canonicalize or canonical_proposed_answer
+    return canonicalize_fn(restored)
+
+
 def validated_acceptance_evidence_text(reasoner_result: Mapping[str, Any]) -> str:
     """Serialize retained, post-validation evidence for contract checks.
 
@@ -1617,6 +1638,16 @@ def finalize_canonical_answer_against_contract(
         return repaired.final_answer, repaired
 
     canonical = canonicalize_fn(repaired.final_answer)
+    if (
+        isinstance(validated_claims, Mapping)
+        and validated_claims.get("schema_version")
+        == ac.Q1_VALIDATED_PARTY_CLAIMS_SCHEMA_VERSION
+    ):
+        canonical = retain_q1_validated_party_claims(
+            canonical,
+            validated_claims,
+            canonicalize=canonicalize_fn,
+        )
     final = ac.validate_final_answer_against_contract(
         canonical,
         contract_view,

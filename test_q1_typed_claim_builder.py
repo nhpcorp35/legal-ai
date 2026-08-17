@@ -75,6 +75,30 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
             )
         )
 
+    def test_restores_typed_summary_after_contract_repair_drops_it(self):
+        claims = {
+            "schema_version": "q1_validated_party_claims.v1",
+            "roster_completeness": "not_established",
+            "parties": [
+                {
+                    "identity": "Synthetic Underwriters",
+                    "procedural_roles": ["plaintiff"],
+                    "pleaded_role_basis": "insurer",
+                    "substantive_role": "insurer",
+                    "related_action_roles": ["defendant"],
+                }
+            ],
+        }
+        repaired_without_summary = "Attorney analysis retained after contract repair."
+        restored = CLI.retain_q1_validated_party_claims(
+            repaired_without_summary, claims
+        )
+        self.assertTrue(CLI.q1_rendered_claims_present(restored, claims))
+        self.assertEqual(restored.count("Validated party/role summary:"), 1)
+        self.assertEqual(
+            CLI.retain_q1_validated_party_claims(restored, claims), restored
+        )
+
     def test_empty_inventory_is_valid_and_fails_closed_at_criteria(self):
         claims = CLI.build_q1_validated_party_claims(
             {"propositions": [], "audit": {}, "review_scope": {}}
