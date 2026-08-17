@@ -94,6 +94,45 @@ def _counts(text: str, terms: tuple[str, ...]) -> dict[str, int]:
     }
 
 
+def report_case_root(
+    root: Path,
+    *,
+    benchmark_id: str = "Case-00-Triborough",
+    question_id: str = "Q1",
+) -> dict:
+    page_records = json.loads(
+        (root / "derived/page-extraction/canonical_page_records.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    spec = case_cli.resolve_canonical_acceptance_contract_spec(
+        benchmark_id=benchmark_id,
+        question_id=question_id,
+    )
+    contract_bytes = case_cli.download_canonical_acceptance_contract_bytes(
+        object_key=spec["object_key"]
+    )
+    contract = json.loads(contract_bytes.decode("utf-8"))
+    evidence_text = "\n".join(_strings(page_records))
+    contract_text = "\n".join(_strings(contract))
+    return {
+        "ok": True,
+        "benchmark_id": benchmark_id,
+        "question_id": question_id,
+        "privacy": "aggregate_allowlisted_vocabulary_only",
+        "evidence": {
+            "role_terms": _counts(evidence_text, ROLE_TERMS),
+            "related_cues": _counts(evidence_text, RELATED_CUES),
+            "procedural_roles": _counts(evidence_text, PROCEDURAL_ROLES),
+        },
+        "acceptance_contract": {
+            "role_terms": _counts(contract_text, ROLE_TERMS),
+            "related_cues": _counts(contract_text, RELATED_CUES),
+            "procedural_roles": _counts(contract_text, PROCEDURAL_ROLES),
+        },
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--benchmark-id", default="Case-00-Triborough")
@@ -116,40 +155,16 @@ def main() -> int:
             stderr=subprocess.DEVNULL,
             env=os.environ.copy(),
         )
-        page_records = json.loads(
-            (root / "derived/page-extraction/canonical_page_records.json").read_text(
-                encoding="utf-8"
+        print(
+            json.dumps(
+                report_case_root(
+                    root,
+                    benchmark_id=args.benchmark_id,
+                    question_id=args.question_id,
+                ),
+                sort_keys=True,
             )
         )
-
-        spec = case_cli.resolve_canonical_acceptance_contract_spec(
-            benchmark_id=args.benchmark_id,
-            question_id=args.question_id,
-        )
-        contract_bytes = case_cli.download_canonical_acceptance_contract_bytes(
-            object_key=spec["object_key"]
-        )
-        contract = json.loads(contract_bytes.decode("utf-8"))
-
-        evidence_text = "\n".join(_strings(page_records))
-        contract_text = "\n".join(_strings(contract))
-        report = {
-            "ok": True,
-            "benchmark_id": args.benchmark_id,
-            "question_id": args.question_id,
-            "privacy": "aggregate_allowlisted_vocabulary_only",
-            "evidence": {
-                "role_terms": _counts(evidence_text, ROLE_TERMS),
-                "related_cues": _counts(evidence_text, RELATED_CUES),
-                "procedural_roles": _counts(evidence_text, PROCEDURAL_ROLES),
-            },
-            "acceptance_contract": {
-                "role_terms": _counts(contract_text, ROLE_TERMS),
-                "related_cues": _counts(contract_text, RELATED_CUES),
-                "procedural_roles": _counts(contract_text, PROCEDURAL_ROLES),
-            },
-        }
-        print(json.dumps(report, sort_keys=True))
     return 0
 
 
