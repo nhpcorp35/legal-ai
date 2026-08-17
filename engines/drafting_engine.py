@@ -6105,6 +6105,7 @@ _PARTY_ROLE_DETERMINISTIC_SYNTHESIS_CATEGORIES = frozenset(
     {
         "procedural_bearing",
         "notice_defendant_explanation",
+        "rescission_effect",
         "complaint_roadmap",
     }
 )
@@ -6802,8 +6803,9 @@ def resolve_party_role_synthesis_patch(
     """
     Parse a model synthesis patch, with deterministic fillable-category recovery.
 
-    Strict parse runs first. When ``procedural_bearing`` and/or
-    ``notice_defendant_explanation`` are among the allowed missing categories
+    Strict parse runs first. When ``procedural_bearing``,
+    ``notice_defendant_explanation``, and/or ``rescission_effect`` are
+    among the allowed missing categories
     and the model omits them or supplies invalid/conclusory phrasing, those
     categories alone are replaced with deterministic evidence-grounded
     paragraphs and the patch is re-parsed. Other category failures stay
@@ -6822,6 +6824,7 @@ def resolve_party_role_synthesis_patch(
             audit_out[
                 "party_role_deterministic_notice_defendant_explanation_fallback"
             ] = False
+            audit_out["party_role_deterministic_rescission_effect_fallback"] = False
         return strict
 
     allowed = [
@@ -6886,6 +6889,7 @@ def resolve_party_role_synthesis_patch(
             audit_out[
                 "party_role_deterministic_notice_defendant_explanation_fallback"
             ] = False
+            audit_out["party_role_deterministic_rescission_effect_fallback"] = False
         return None
 
     if audit_out is not None:
@@ -6899,6 +6903,9 @@ def resolve_party_role_synthesis_patch(
         audit_out[
             "party_role_deterministic_notice_defendant_explanation_fallback"
         ] = "notice_defendant_explanation" in filled_cats
+        audit_out["party_role_deterministic_rescission_effect_fallback"] = (
+            "rescission_effect" in filled_cats
+        )
     return filled
 
 

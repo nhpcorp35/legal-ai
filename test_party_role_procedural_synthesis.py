@@ -1011,6 +1011,46 @@ class PartyRoleDeterministicProceduralBearingFallbackTests(unittest.TestCase):
         )
 
 
+    def test_resolve_patch_fills_missing_rescission_effect(self):
+        packet = _packet(FULL_SYNTHETIC_COMPLAINT)
+        expected = de.extract_party_role_expected_attributes(packet)
+        synthesis = de.extract_party_role_expected_synthesis(packet, expected)
+        self.assertIn(
+            "rescission_effect",
+            {item["category"] for item in synthesis},
+        )
+        audit = {}
+
+        parsed = de.resolve_party_role_synthesis_patch(
+            {"synthesis_patch": {}},
+            allowed_categories=["rescission_effect"],
+            original_answer=_notice_and_rescission_prefix(expected),
+            expected_synthesis=synthesis,
+            audit_out=audit,
+        )
+
+        self.assertIsNotNone(parsed)
+        self.assertEqual(set(parsed), {"rescission_effect"})
+        self.assertEqual(
+            parsed["rescission_effect"],
+            de.deterministic_party_role_rescission_effect_paragraph(synthesis),
+        )
+        self.assertTrue(
+            audit.get("party_role_deterministic_rescission_effect_fallback")
+        )
+        self.assertEqual(
+            de.find_missing_party_role_synthesis(
+                {"proposed_answer": parsed["rescission_effect"]},
+                [
+                    item
+                    for item in synthesis
+                    if item["category"] == "rescission_effect"
+                ],
+            ),
+            [],
+        )
+
+
 class PartyRoleSynthesisPatchSchemaAndLifecycleTests(unittest.TestCase):
     def test_omitted_category_fails_closed_with_audit_reason(self):
         packet = _packet(FULL_SYNTHETIC_COMPLAINT)
@@ -1359,7 +1399,7 @@ class PartyRoleProceduralSynthesisRepairPathTests(unittest.TestCase):
         self.assertIn("does not itself allege wrongdoing", lowered)
         self.assertIn("negatively affect", lowered)
 
-    def test_noncompliant_patch_remains_blocked_without_second_retry(self):
+    def test_incomplete_patch_uses_deterministic_fallback_without_second_retry(self):
         question = "Who are the parties and what are their roles in this action?"
         retrieval = {
             "query": question,
@@ -1397,13 +1437,19 @@ class PartyRoleProceduralSynthesisRepairPathTests(unittest.TestCase):
             retrieval,
             model_call=_model,
         )
-        self.assertEqual(result["status"], de.STATUS_NOT_READY)
+        self.assertEqual(result["status"], de.STATUS_READY)
         self.assertEqual(len(calls), 2)
-        self.assertTrue(result["audit"].get("party_role_completeness_failed"))
+        self.assertFalse(result["audit"].get("party_role_completeness_failed"))
         self.assertTrue(result["audit"].get("party_role_repair_attempted"))
         self.assertEqual(result["audit"].get("party_role_provider_calls"), 2)
+        self.assertFalse(
+            result["audit"].get(
+                "party_role_deterministic_rescission_effect_fallback"
+            )
+        )
+        self.assertIn("negatively affect", result["proposed_answer"].lower())
 
-    def test_failed_patch_blocking_and_one_call_maximum(self):
+    def test_full_answer_rewrite_is_rejected_then_deterministically_recovered(self):
         question = "Who are the parties and what are their roles in this action?"
         retrieval = {
             "query": question,
@@ -1435,10 +1481,15 @@ class PartyRoleProceduralSynthesisRepairPathTests(unittest.TestCase):
             retrieval,
             model_call=_model,
         )
-        self.assertEqual(result["status"], de.STATUS_NOT_READY)
+        self.assertEqual(result["status"], de.STATUS_READY)
         self.assertEqual(len(calls), 2)
-        self.assertTrue(result["audit"].get("party_role_completeness_failed"))
+        self.assertFalse(result["audit"].get("party_role_completeness_failed"))
         self.assertEqual(result["audit"].get("party_role_provider_calls"), 2)
+        self.assertTrue(
+            result["audit"].get(
+                "party_role_deterministic_rescission_effect_fallback"
+            )
+        )
 
     def test_patch_prompt_is_evidence_grounded_and_omits_draft_rewrite(self):
         question = "Who are the parties and what are their roles in this action?"
@@ -1510,7 +1561,7 @@ class PartyRoleProceduralSynthesisRepairPathTests(unittest.TestCase):
         self.assertIn("procedural_bearing", repair)
         self.assertNotIn("paragraphs ", result["proposed_answer"].lower())
 
-    def test_full_revalidation_after_merge_fails_closed_if_still_incomplete(self):
+    def test_full_revalidation_accepts_complete_deterministic_recovery(self):
         question = "Who are the parties and what are their roles in this action?"
         retrieval = {
             "query": question,
@@ -1543,9 +1594,26 @@ class PartyRoleProceduralSynthesisRepairPathTests(unittest.TestCase):
             retrieval,
             model_call=_model,
         )
-        self.assertEqual(result["status"], de.STATUS_NOT_READY)
+        self.assertEqual(result["status"], de.STATUS_READY)
         self.assertEqual(len(calls), 2)
-        self.assertTrue(result["audit"].get("party_role_completeness_failed"))
+        self.assertFalse(result["audit"].get("party_role_completeness_failed"))
+        self.assertTrue(
+            result["audit"].get(
+                "party_role_deterministic_rescission_effect_fallback"
+            )
+        )
+        self.assertEqual(
+            de.find_missing_party_role_requirements(
+                result,
+                de.extract_party_role_expected_attributes(
+                    de.build_evidence_packet(question, retrieval)
+                ),
+                de.extract_party_role_expected_synthesis(
+                    de.build_evidence_packet(question, retrieval)
+                ),
+            ),
+            [],
+        )
 
     def test_contamination_refs_absent_from_prompts_when_synthesis_required(self):
         question = "Identify the parties and their procedural roles."
@@ -1807,7 +1875,7 @@ class PartyRoleQ1SynthesisValidationFixTests(unittest.TestCase):
         self.assertIn("bear on service", answer)
         self.assertIn("does not itself allege wrongdoing", answer)
 
-    def test_failure_retains_fallback_flags_and_notice_lifecycle(self):
+    def test_complete_fallback_retains_flags_and_notice_lifecycle(self):
         question = "Identify the parties and their procedural roles."
         retrieval = {
             "query": question,
@@ -1829,8 +1897,8 @@ class PartyRoleQ1SynthesisValidationFixTests(unittest.TestCase):
         result = de.answer_attorney_record_question(
             question, retrieval, model_call=_model
         )
-        self.assertEqual(result["status"], de.STATUS_NOT_READY)
-        self.assertTrue(result["audit"].get("party_role_completeness_failed"))
+        self.assertEqual(result["status"], de.STATUS_READY)
+        self.assertFalse(result["audit"].get("party_role_completeness_failed"))
         self.assertTrue(
             result["audit"].get("party_role_deterministic_procedural_bearing_fallback")
         )
@@ -1843,14 +1911,16 @@ class PartyRoleQ1SynthesisValidationFixTests(unittest.TestCase):
         by_cat = {row["category"]: row for row in lifecycle}
         self.assertIn("notice_defendant_explanation", by_cat)
         self.assertTrue(by_cat["notice_defendant_explanation"].get("requested"))
-        # Missing either non-fillable category still fails closed.
-        missing_cats = {
-            item.get("category")
-            for item in result["audit"].get("missing_party_role_attributes") or []
-        }
         self.assertTrue(
-            {"rescission_effect", "complaint_roadmap"} & missing_cats
+            result["audit"].get(
+                "party_role_deterministic_rescission_effect_fallback"
+            )
         )
+        self.assertEqual(
+            result["audit"].get("missing_party_role_attributes") or [],
+            [],
+        )
+        self.assertIn("negatively affect", result["proposed_answer"].lower())
 
     def test_golden_replay_observed_mixed_gap_run_shape(self):
         """Replay the observed Q1 shape: mixed gaps → attribute repair →
