@@ -57,8 +57,21 @@ def _json_object(text: str) -> dict[str, Any]:
 def semantic_payload_json_schema() -> dict[str, Any]:
     full = ac.acceptance_contract_json_schema()
     names = ("required_criterion_ids", "evidence_constraints", "semantic_preservation", "duplication_rules", "criteria", "structure_requirements")
-    return {"type": "object", "additionalProperties": False, "required": list(names), "properties": {name: full["properties"][name] for name in names}}
+    schema = {"type": "object", "additionalProperties": False, "required": list(names), "properties": {name: full["properties"][name] for name in names}}
 
+    def strictify(node: Any) -> Any:
+        if isinstance(node, list):
+            return [strictify(item) for item in node]
+        if not isinstance(node, dict):
+            return node
+        out = {key: strictify(value) for key, value in node.items()}
+        properties = out.get("properties")
+        if out.get("type") == "object" and isinstance(properties, dict):
+            out["additionalProperties"] = False
+            out["required"] = list(properties)
+        return out
+
+    return strictify(schema)
 
 def derive_semantic_payload(section: str, *, model: str) -> dict[str, Any]:
     response = OpenAI().chat.completions.create(
