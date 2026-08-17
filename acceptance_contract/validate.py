@@ -762,13 +762,32 @@ def q1_party_claims_are_valid(claims: Optional[Mapping[str, Any]]) -> bool:
         return False
     if claims.get("schema_version") != Q1_VALIDATED_PARTY_CLAIMS_SCHEMA_VERSION:
         return False
+    if set(claims) != {
+        "schema_version",
+        "parties",
+        "roster_completeness",
+    }:
+        return False
     parties = claims.get("parties")
     if not isinstance(parties, list):
         return False
     if claims.get("roster_completeness") not in {"complete", "incomplete", "not_established"}:
         return False
+    allowed_party_fields = {
+        "identity",
+        "procedural_roles",
+        "pleaded_role_basis",
+        "substantive_role",
+        "entity_type",
+        "residence_or_ppb",
+        "related_action_roles",
+    }
     for party in parties:
-        if not isinstance(party, Mapping) or not _norm(str(party.get("identity") or "")):
+        if (
+            not isinstance(party, Mapping)
+            or not set(party).issubset(allowed_party_fields)
+            or not _norm(str(party.get("identity") or ""))
+        ):
             return False
         if any(
             not isinstance(party.get(field), list)
@@ -806,10 +825,15 @@ def evaluate_q1_structured_criterion(
         satisfied = any(any("defendant" in r for r in roles) for _p, roles in current)
         diagnostic = "q1_structured_defendant_parties"
     elif spec.id == "Q1_C3_SPECIFIC_DEFENDANT_ROLE_DESIGNATIONS":
-        satisfied = any(
-            any("defendant" in r for r in roles)
-            and (bool(_norm(str(p.get("pleaded_role_basis") or ""))) or len(roles) > 1)
+        defendants = [
+            (p, roles)
             for p, roles in current
+            if any("defendant" in r for r in roles)
+        ]
+        satisfied = bool(defendants) and all(
+            bool(_norm(str(p.get("pleaded_role_basis") or "")))
+            or len(roles) > 1
+            for p, roles in defendants
         )
         diagnostic = "q1_structured_defendant_designations"
     elif spec.id == "Q1_C4_LIMITED_SUBSTANTIVE_ROLE_INFORMATION":
@@ -817,8 +841,12 @@ def evaluate_q1_structured_criterion(
         diagnostic = "q1_structured_substantive_roles"
     elif spec.id == "Q1_C5_DUAL_ROLES_IN_RELATED_ACTION":
         satisfied = any(
-            bool(roles) and bool(related.get(_norm(str(p.get("identity") or ""))))
+            bool(
+                related.get(_norm(str(p.get("identity") or "")), set())
+                - roles
+            )
             for p, roles in current
+            if roles
         )
         diagnostic = "q1_structured_related_action_roles"
     elif spec.id == "Q1_C6_INCOMPLETE_PARTY_ROSTER":
