@@ -912,17 +912,49 @@ def run_production_retrieval(
     if not de.detect_party_role_question_intent(question_text):
         return primary
 
+    numbered_action_patterns = (
+        re.compile(r"\baction\s+(?:no\.?|number)\s*1\b", re.IGNORECASE),
+        re.compile(r"\baction\s+(?:no\.?|number)\s*2\b", re.IGNORECASE),
+        re.compile(r"\bplaintiffs?\b", re.IGNORECASE),
+        re.compile(r"\bdefendants?\b", re.IGNORECASE),
+    )
+    matched_page_ids = []
+    matched_documents = []
+    for document in prepared:
+        matched_pages = []
+        for page in document.get("pages") or []:
+            page_text = str(page.get("text") or page.get("page_text") or "")
+            normalized_text = " ".join(page_text.split())
+            if all(pattern.search(normalized_text) for pattern in numbered_action_patterns):
+                matched_pages.append(page)
+                if page.get("page_id"):
+                    matched_page_ids.append(str(page["page_id"]))
+                if len(matched_page_ids) >= min(10, top_k):
+                    break
+        if matched_pages:
+            matched_documents.append(
+                {
+                    **{key: value for key, value in document.items() if key != "pages"},
+                    "pages": matched_pages,
+                    "page_count": len(matched_pages),
+                }
+            )
+        if len(matched_page_ids) >= min(10, top_k):
+            break
+
     supplemental_query = (
         "Action No. 1 Action No. 2 plaintiff defendant related action "
         "party roles"
     )
-    supplemental = mb.retrieve_canonical_records(
-        prepared,
-        supplemental_query,
-        case_map=case_map,
-        top_k=min(10, top_k),
-        build_case_map_if_missing=False,
-    )
+    supplemental = {"results": []}
+    if matched_documents:
+        supplemental = mb.retrieve_canonical_records(
+            matched_documents,
+            supplemental_query,
+            case_map=case_map,
+            top_k=min(10, top_k),
+            build_case_map_if_missing=False,
+        )
     merged = []
     seen = set()
     primary_count = 0
@@ -947,9 +979,11 @@ def run_production_retrieval(
     result["results"] = merged
     result["result_count"] = len(merged)
     result["party_role_supplemental_retrieval"] = {
-        "query_kind": "numbered_related_action_roles",
+        "query_kind": "deterministic_numbered_related_action_roles",
         "max_hits": min(10, top_k),
         "primary_result_count": primary_count,
+        "matched_page_count": len(matched_page_ids),
+        "matched_page_ids": matched_page_ids,
         "supplemental_added_count": supplemental_added,
     }
     return result
@@ -1011,6 +1045,9 @@ def audit_serialized_model_input(
             evidence_packet.get("complaint_structure_context")
         ),
         "complaint_relief_routing": retrieval.get("complaint_relief_routing"),
+        "party_role_supplemental_retrieval": retrieval.get(
+            "party_role_supplemental_retrieval"
+        ),
         "retrieval_count_semantics": {
             "upstream_retrieval_hit_count": (
                 "Hits returned before evidence-packet materiality and budget filtering."

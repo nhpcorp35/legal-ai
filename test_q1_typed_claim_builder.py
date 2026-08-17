@@ -27,7 +27,21 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
         with mock.patch.object(
             CLI.mb,
             "prepare_documents_for_canonical_retrieval",
-            return_value=[{"prepared": True}],
+            return_value=[
+                {
+                    "nyscef_document_number": 7,
+                    "pages": [
+                        {
+                            "page_id": "page-dual",
+                            "text": (
+                                "The Underwriters are plaintiffs in Action No. 1 "
+                                "and defendants in Action No. 2."
+                            ),
+                        },
+                        {"page_id": "page-other", "text": "Other allegations."},
+                    ],
+                }
+            ],
         ), mock.patch.object(
             CLI.mb,
             "retrieve_canonical_records",
@@ -61,11 +75,53 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
         self.assertEqual(
             result["party_role_supplemental_retrieval"],
             {
-                "query_kind": "numbered_related_action_roles",
+                "query_kind": "deterministic_numbered_related_action_roles",
                 "max_hits": 10,
                 "primary_result_count": 1,
+                "matched_page_count": 1,
+                "matched_page_ids": ["page-dual"],
                 "supplemental_added_count": 1,
             },
+        )
+
+        supplemental_documents = retrieve.call_args_list[1].args[0]
+        self.assertEqual(
+            [page["page_id"] for page in supplemental_documents[0]["pages"]],
+            ["page-dual"],
+        )
+
+    def test_party_role_retrieval_skips_supplemental_without_exact_page(self):
+        with mock.patch.object(
+            CLI.mb,
+            "prepare_documents_for_canonical_retrieval",
+            return_value=[
+                {
+                    "pages": [
+                        {
+                            "page_id": "page-generic",
+                            "text": "Plaintiff and defendant appear in the action.",
+                        }
+                    ]
+                }
+            ],
+        ), mock.patch.object(
+            CLI.mb,
+            "retrieve_canonical_records",
+            return_value={"results": [], "result_count": 0},
+        ) as retrieve:
+            result = CLI.run_production_retrieval(
+                [],
+                {},
+                "Who are the parties and what are their roles?",
+                top_k=30,
+            )
+
+        self.assertEqual(retrieve.call_count, 1)
+        self.assertEqual(
+            result["party_role_supplemental_retrieval"]["matched_page_count"], 0
+        )
+        self.assertEqual(
+            result["party_role_supplemental_retrieval"]["matched_page_ids"], []
         )
 
     def test_non_party_role_retrieval_remains_single_pass(self):
