@@ -99,6 +99,37 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
             CLI.retain_q1_validated_party_claims(restored, claims), restored
         )
 
+    def test_missing_field_diagnostics_are_privacy_safe(self):
+        claims = {
+            "schema_version": "q1_validated_party_claims.v1",
+            "roster_completeness": "not_established",
+            "parties": [
+                {
+                    "identity": "Synthetic Secret Party",
+                    "procedural_roles": ["plaintiff"],
+                    "pleaded_role_basis": "secret pleaded basis",
+                    "substantive_role": "secret substantive role",
+                    "related_action_roles": ["secret related role"],
+                }
+            ],
+        }
+        diagnostics = CLI.q1_missing_rendered_claim_fields("plaintiff", claims)
+        self.assertEqual(
+            diagnostics,
+            [
+                {"party_index": 0, "field": "identity"},
+                {"party_index": 0, "field": "pleaded_role_basis"},
+                {"party_index": 0, "field": "substantive_role"},
+                {"party_index": 0, "field": "related_action_roles"},
+                {"party_index": None, "field": "roster_completeness"},
+            ],
+        )
+        serialized = repr(diagnostics)
+        self.assertNotIn("Synthetic Secret Party", serialized)
+        self.assertNotIn("secret pleaded basis", serialized)
+        self.assertNotIn("secret substantive role", serialized)
+        self.assertNotIn("secret related role", serialized)
+
     def test_empty_inventory_is_valid_and_fails_closed_at_criteria(self):
         claims = CLI.build_q1_validated_party_claims(
             {"propositions": [], "audit": {}, "review_scope": {}}

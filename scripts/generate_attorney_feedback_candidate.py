@@ -1439,31 +1439,41 @@ def render_q1_validated_party_claims(claims: Mapping[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def q1_rendered_claims_present(
+def q1_missing_rendered_claim_fields(
     answer_text: str, claims: Mapping[str, Any]
-) -> bool:
-    """True only when every typed claim rendered into the final answer."""
+) -> list[dict[str, Any]]:
+    """Return privacy-safe locations for typed claims missing from final prose."""
     norm = normalize_proposed_answer_whitespace(answer_text).lower()
-    for party in claims.get("parties") or []:
-        required = [
-            str(party.get("identity") or ""),
-            *(party.get("procedural_roles") or []),
-            str(party.get("pleaded_role_basis") or ""),
-            str(party.get("substantive_role") or ""),
-            *(party.get("related_action_roles") or []),
-        ]
-        if any(
-            normalize_proposed_answer_whitespace(value).lower() not in norm
-            for value in required
-            if normalize_proposed_answer_whitespace(value)
-        ):
-            return False
+    missing: list[dict[str, Any]] = []
+    for party_index, party in enumerate(claims.get("parties") or []):
+        fields = {
+            "identity": [str(party.get("identity") or "")],
+            "procedural_roles": list(party.get("procedural_roles") or []),
+            "pleaded_role_basis": [str(party.get("pleaded_role_basis") or "")],
+            "substantive_role": [str(party.get("substantive_role") or "")],
+            "related_action_roles": list(party.get("related_action_roles") or []),
+        }
+        for field, values in fields.items():
+            normalized = [
+                normalize_proposed_answer_whitespace(value).lower()
+                for value in values
+                if normalize_proposed_answer_whitespace(value)
+            ]
+            if any(value not in norm for value in normalized):
+                missing.append({"party_index": party_index, "field": field})
     if (
         claims.get("roster_completeness") != "complete"
         and "does not establish that this is a complete party roster" not in norm
     ):
-        return False
-    return True
+        missing.append({"party_index": None, "field": "roster_completeness"})
+    return missing
+
+
+def q1_rendered_claims_present(
+    answer_text: str, claims: Mapping[str, Any]
+) -> bool:
+    """True only when every typed claim rendered into the final answer."""
+    return not q1_missing_rendered_claim_fields(answer_text, claims)
 
 
 def retain_q1_validated_party_claims(
@@ -2351,15 +2361,17 @@ def run_generation(
             isinstance(acceptance_claims_doc, Mapping)
             and acceptance_claims_doc.get("schema_version")
             == ac.Q1_VALIDATED_PARTY_CLAIMS_SCHEMA_VERSION
-            and not q1_rendered_claims_present(
+        ):
+            missing_typed_claim_fields = q1_missing_rendered_claim_fields(
                 canonical, acceptance_claims_doc
             )
-        ):
-            raise GenerationError(
-                "Canonical Q1 answer dropped typed party claims",
-                reason_code="q1_typed_claim_rendering_lost",
-                finalized=False,
-            )
+            if missing_typed_claim_fields:
+                raise GenerationError(
+                    "Canonical Q1 answer dropped typed party claims",
+                    reason_code="q1_typed_claim_rendering_lost",
+                    missing_typed_claim_fields=missing_typed_claim_fields,
+                    finalized=False,
+                )
         if q2_diagnostics is not None:
             q2_diagnostics = build_q2_production_evidence_diagnostics(
                 evidence_packet=evidence_packet,
