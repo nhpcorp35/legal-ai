@@ -4875,9 +4875,27 @@ def _collect_party_role_coverage_page_ids(page_lookup):
             )
         )
     candidates.sort()
-    return [
-        item[-1] for item in candidates[:PARTY_ROLE_COVERAGE_EXPAND_MAX_PAGES]
-    ]
+    selected = []
+    selected_ids = set()
+
+    def _add(item):
+        page_id = item[-1]
+        if page_id in selected_ids:
+            return
+        if len(selected) >= PARTY_ROLE_COVERAGE_EXPAND_MAX_PAGES:
+            return
+        selected.append(page_id)
+        selected_ids.add(page_id)
+
+    # Reserve one slot for each available typed-claim coverage category before
+    # filling the remaining bounded slots in deterministic order.
+    for priority in (0, 1):
+        first = next((item for item in candidates if item[0] == priority), None)
+        if first is not None:
+            _add(first)
+    for item in candidates:
+        _add(item)
+    return selected
 
 
 def _collect_parties_section_page_ids(page_lookup):
