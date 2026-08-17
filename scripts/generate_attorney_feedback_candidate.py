@@ -1330,7 +1330,14 @@ def presentation_rewrite_lost_satisfied_criteria(
 
 
 def validated_acceptance_evidence_text(reasoner_result: Mapping[str, Any]) -> str:
-    """Serialize only retained validated propositions for contract evidence checks."""
+    """Serialize retained, post-validation evidence for contract checks.
+
+    Party-role completeness repair can retain deterministic evidence-extracted
+    attribute rows and synthesis units after category-specific validation.
+    Include only those bounded fields plus citation-validated propositions;
+    never serialize raw retrieval hits, removed propositions, review-scope
+    prose, unresolved questions, or arbitrary audit content.
+    """
     rows: list[str] = []
     for proposition in reasoner_result.get("propositions") or []:
         if not isinstance(proposition, Mapping):
@@ -1352,6 +1359,34 @@ def validated_acceptance_evidence_text(reasoner_result: Mapping[str, Any]) -> st
             rows.append(excerpt)
         if page_id:
             rows.append(f"page_id {page_id}")
+
+    audit = reasoner_result.get("audit")
+    if isinstance(audit, Mapping):
+        for item in audit.get("party_role_deterministic_attribute_fallbacks") or []:
+            if not isinstance(item, Mapping):
+                continue
+            party = normalize_proposed_answer_whitespace(
+                str(item.get("party") or "")
+            )
+            category = normalize_proposed_answer_whitespace(
+                str(item.get("category") or "")
+            )
+            value = normalize_proposed_answer_whitespace(
+                str(item.get("value") or "")
+            )
+            if party and category and value:
+                rows.append(f"{party} {category} {value}")
+        for item in audit.get("party_role_retained_synthesis_units") or []:
+            if not isinstance(item, Mapping):
+                continue
+            category = normalize_proposed_answer_whitespace(
+                str(item.get("category") or "")
+            )
+            text_value = normalize_proposed_answer_whitespace(
+                str(item.get("text") or "")
+            )
+            if category and text_value:
+                rows.append(f"{category} {text_value}")
     return "\n".join(rows)
 
 
