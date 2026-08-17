@@ -720,6 +720,50 @@ class ValidatedAcceptanceEvidenceSerializationTests(unittest.TestCase):
         self.assertNotIn("RAW_RETRIEVAL_MUST_NOT_ENTER", serialized)
         self.assertNotIn("AUDIT_MUST_NOT_ENTER", serialized)
 
+    def test_validated_party_role_repairs_feed_acceptance_evidence(self) -> None:
+        reasoner = {
+            "propositions": [],
+            "audit": {
+                "party_role_deterministic_attribute_fallbacks": [
+                    {
+                        "party": "Synthetic Plaintiff LLC",
+                        "category": "procedural_role",
+                        "value": "plaintiff",
+                    }
+                ],
+                "party_role_retained_synthesis_units": [
+                    {
+                        "category": "complaint_roadmap",
+                        "text": "Synthetic validated roadmap statement.",
+                    }
+                ],
+                "removed_propositions": [
+                    {"text": "REMOVED_PROPOSITION_MUST_NOT_ENTER"}
+                ],
+                "private": "ARBITRARY_AUDIT_MUST_NOT_ENTER",
+            },
+            "retrieved_evidence": [
+                {"excerpt": "RAW_RETRIEVAL_MUST_NOT_ENTER"}
+            ],
+            "review_scope": {
+                "qualification": "REVIEW_SCOPE_MUST_NOT_ENTER"
+            },
+            "unresolved_questions": ["UNRESOLVED_MUST_NOT_ENTER"],
+        }
+        serialized = CLI.validated_acceptance_evidence_text(reasoner)
+        self.assertIn(
+            "Synthetic Plaintiff LLC procedural_role plaintiff", serialized
+        )
+        self.assertIn(
+            "complaint_roadmap Synthetic validated roadmap statement.",
+            serialized,
+        )
+        self.assertNotIn("REMOVED_PROPOSITION_MUST_NOT_ENTER", serialized)
+        self.assertNotIn("ARBITRARY_AUDIT_MUST_NOT_ENTER", serialized)
+        self.assertNotIn("RAW_RETRIEVAL_MUST_NOT_ENTER", serialized)
+        self.assertNotIn("REVIEW_SCOPE_MUST_NOT_ENTER", serialized)
+        self.assertNotIn("UNRESOLVED_MUST_NOT_ENTER", serialized)
+
 
 if __name__ == "__main__":
     unittest.main()
