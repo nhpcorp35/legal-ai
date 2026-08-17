@@ -1517,16 +1517,21 @@ def retain_q1_validated_party_claims(
     """Restore the deterministic Q1 summary after lossy contract repair.
 
     Contract fallback and duplication repair run before presentation
-    canonicalization. If that repair removes any rendered typed claim, append
-    the complete deterministic summary once and canonicalize the restored
-    answer. The caller must still revalidate the exact returned string.
+    canonicalization. Canonicalize the model-authored answer first, then append
+    the complete deterministic summary unchanged if any typed claim is absent.
+    The caller must still revalidate the exact returned string.
     """
     if q1_rendered_claims_present(answer_text, claims):
         return answer_text
-    summary = render_q1_validated_party_claims(claims)
-    restored = f"{str(answer_text or '').rstrip()}\\n\\n{summary}".strip()
     canonicalize_fn = canonicalize or canonical_proposed_answer
-    return canonicalize_fn(restored)
+    canonicalized_answer = canonicalize_fn(answer_text)
+    if q1_rendered_claims_present(canonicalized_answer, claims):
+        return canonicalized_answer
+    # The typed summary is already deterministic, bounded Markdown. Append it
+    # after presentation canonicalization so a lossy formatter cannot rewrite
+    # or remove an identity that the final retention check requires.
+    summary = render_q1_validated_party_claims(claims)
+    return f"{canonicalized_answer.rstrip()}\n\n{summary}".strip()
 
 
 def validated_acceptance_evidence_text(reasoner_result: Mapping[str, Any]) -> str:

@@ -146,6 +146,35 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
             CLI.retain_q1_validated_party_claims(restored, claims), restored
         )
 
+    def test_appends_summary_after_lossy_canonicalization(self):
+        claims = {
+            "schema_version": "q1_validated_party_claims.v1",
+            "roster_completeness": "complete",
+            "parties": [
+                {
+                    "identity": "Synthetic Final Party",
+                    "procedural_roles": ["defendant"],
+                    "pleaded_role_basis": "",
+                    "substantive_role": "",
+                    "related_action_roles": [],
+                }
+            ],
+        }
+
+        def lossy_canonicalizer(text):
+            return str(text).replace("Synthetic Final Party", "").strip()
+
+        restored = CLI.retain_q1_validated_party_claims(
+            "Attorney analysis.",
+            claims,
+            canonicalize=lossy_canonicalizer,
+        )
+
+        self.assertIn("Attorney analysis.", restored)
+        self.assertIn("Synthetic Final Party", restored)
+        self.assertNotIn("\\n", restored)
+        self.assertTrue(CLI.q1_rendered_claims_present(restored, claims))
+
     def test_missing_field_diagnostics_are_privacy_safe(self):
         claims = {
             "schema_version": "q1_validated_party_claims.v1",
