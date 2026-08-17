@@ -99,7 +99,6 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
                         "evidence_sentence_match_count": 1,
                         "evidence_field_categories": [
                             "identity",
-                            "pleaded_role_basis",
                             "related_action_roles",
                             "substantive_role",
                         ],
