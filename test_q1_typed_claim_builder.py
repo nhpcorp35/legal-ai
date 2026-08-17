@@ -164,14 +164,20 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
         def lossy_canonicalizer(text):
             return str(text).replace("Synthetic Final Party", "").strip()
 
+        answer_with_summary = (
+            "Attorney analysis.\n\n" + CLI.render_q1_validated_party_claims(claims)
+        )
+        self.assertTrue(CLI.q1_rendered_claims_present(answer_with_summary, claims))
+
         restored = CLI.retain_q1_validated_party_claims(
-            "Attorney analysis.",
+            answer_with_summary,
             claims,
             canonicalize=lossy_canonicalizer,
         )
 
         self.assertIn("Attorney analysis.", restored)
         self.assertIn("Synthetic Final Party", restored)
+        self.assertNotIn("\\n", restored)
         self.assertTrue(CLI.q1_rendered_claims_present(restored, claims))
 
     def test_missing_field_diagnostics_are_privacy_safe(self):
