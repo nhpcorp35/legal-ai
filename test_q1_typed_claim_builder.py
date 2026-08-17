@@ -68,6 +68,12 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
         self.assertIn("Validated party/role summary:", rendered)
         self.assertIn("related-action role: third-party plaintiff", rendered)
         self.assertIn("does not establish that this is a complete party roster", rendered)
+        self.assertTrue(CLI.q1_rendered_claims_present(rendered, claims))
+        self.assertFalse(
+            CLI.q1_rendered_claims_present(
+                rendered.replace("third-party plaintiff", ""), claims
+            )
+        )
 
     def test_empty_inventory_is_valid_and_fails_closed_at_criteria(self):
         claims = CLI.build_q1_validated_party_claims(
