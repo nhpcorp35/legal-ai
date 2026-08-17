@@ -1373,7 +1373,10 @@ def build_q1_validated_party_claims(
         for sentence in sentences:
             if not re.search(re.escape(identity), sentence, re.IGNORECASE):
                 continue
-            for matched in _Q1_SUBSTANTIVE_ROLE_RE.findall(sentence):
+            role_probe = re.sub(
+                re.escape(identity), " ", sentence, flags=re.IGNORECASE
+            )
+            for matched in _Q1_SUBSTANTIVE_ROLE_RE.findall(role_probe):
                 value = normalize_proposed_answer_whitespace(matched).lower()
                 if value and value not in substantive_roles:
                     substantive_roles.append(value)
