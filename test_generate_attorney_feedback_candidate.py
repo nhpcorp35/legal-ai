@@ -713,7 +713,7 @@ class ValidatedAcceptanceEvidenceSerializationTests(unittest.TestCase):
             ],
             "audit": {"private": "AUDIT_MUST_NOT_ENTER"},
         }
-        serialized = gen.validated_acceptance_evidence_text(reasoner)
+        serialized = CLI.validated_acceptance_evidence_text(reasoner)
         self.assertIn("Synthetic validated proposition.", serialized)
         self.assertIn("Synthetic cited source excerpt.", serialized)
         self.assertIn("page_id synthetic-page-7", serialized)
