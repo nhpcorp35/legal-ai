@@ -1527,6 +1527,41 @@ class ProceduralNoiseHardExclusionTests(unittest.TestCase):
         page_ids = {hit["page_id"] for hit in packet["retrieval_hits"]}
         self.assertEqual(page_ids, {"nyscef-610-p1", "nyscef-611-p1"})
 
+    def test_numbered_dual_action_role_in_later_filing_is_retained(self):
+        later_filing = self._hit(
+            result_id="dual-action-keep",
+            page_id="nyscef-612-p1",
+            nyscef=612,
+            doc_type="affirmation",
+            filename="nyscef_doc_no_612_attorney_affirmation.pdf",
+            page_text=(
+                "Attorneys for the Plaintiff, In Action No.: 1 Defendants in "
+                "Action No.: 2 Certain Interested Underwriters At Lloyd's, London."
+            ),
+            excerpt=(
+                "Attorneys for the Plaintiff, In Action No.: 1 Defendants in "
+                "Action No.: 2 Certain Interested Underwriters At Lloyd's, London."
+            ),
+            classifications=["procedural"],
+            score=6.0,
+        )
+
+        self.assertTrue(
+            de.hit_is_material_for_party_role_question(later_filing)
+        )
+        packet = de.build_evidence_packet(
+            self.party_query,
+            {"query": self.party_query, "results": [later_filing]},
+        )
+        self.assertEqual(
+            [hit["page_id"] for hit in packet["retrieval_hits"]],
+            ["nyscef-612-p1"],
+        )
+        self.assertIn(
+            "Action No.: 1 Defendants in Action No.: 2",
+            packet["retrieval_hits"][0]["excerpt"],
+        )
+
 
 class PartyRolePacketBudgetTests(unittest.TestCase):
     def setUp(self):
