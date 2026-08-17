@@ -1346,13 +1346,19 @@ _Q1_SUBSTANTIVE_ROLE_RE = re.compile(
 
 def build_q1_validated_party_claims(
     reasoner_result: Mapping[str, Any],
+    *,
+    evidence_packet: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
-    """Build typed Q1 claims from deterministic inventory and retained propositions."""
+    """Build typed Q1 claims only from deterministic inventory and evidence."""
     audit = reasoner_result.get("audit")
     expected = audit.get("party_role_expected_attributes") or [] if isinstance(audit, Mapping) else []
-    corpus = "\n".join(
-        " ".join((str(p.get("text") or ""), str(p.get("source_excerpt") or p.get("excerpt") or "")))
-        for p in reasoner_result.get("propositions") or [] if isinstance(p, Mapping)
+    # The exact serialized pre-draft packet is deterministic and bounded. Do
+    # not mine model-produced proposed_answer or propositions for typed claims.
+    packet = evidence_packet if isinstance(evidence_packet, Mapping) else {}
+    corpus = "\\n".join(
+        str(hit.get("excerpt") or "")
+        for hit in packet.get("retrieval_hits") or []
+        if isinstance(hit, Mapping) and str(hit.get("excerpt") or "").strip()
     )
     sentences = [
         normalize_proposed_answer_whitespace(sentence)
@@ -1386,6 +1392,11 @@ def build_q1_validated_party_claims(
                 value = normalize_proposed_answer_whitespace(matched).lower()
                 if value and value != role.lower() and value not in related_roles:
                     related_roles.append(value)
+        # A bounded substantive designation in the same evidence sentence is
+        # also the pleaded-role basis when the inventory lacks a narrower one.
+        # This preserves evidence language; it does not infer a legal conclusion.
+        if not basis and substantive_roles:
+            basis = "; ".join(substantive_roles)
         parties.append({
             "identity": identity,
             "procedural_roles": [role] if role else [],
@@ -2341,7 +2352,8 @@ def run_generation(
             and de.detect_party_role_question_intent(inputs["question_text"])
         ):
             acceptance_claims_doc = build_q1_validated_party_claims(
-                reasoner_result
+                reasoner_result,
+                evidence_packet=inspection.get("evidence_packet"),
             )
             typed_summary = render_q1_validated_party_claims(
                 acceptance_claims_doc

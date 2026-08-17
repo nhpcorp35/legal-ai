@@ -22,11 +22,8 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
         result = {
             "propositions": [
                 {
-                    "text": (
-                        "Synthetic Contractor is the named insured, a defendant "
-                        "here, and a third-party plaintiff in the related action."
-                    ),
-                    "source_excerpt": "Synthetic Contractor third-party plaintiff.",
+                    "text": "Synthetic Contractor is a landlord in model prose.",
+                    "source_excerpt": "Synthetic Contractor landlord.",
                 }
             ],
             "review_scope": {"completeness": "not_established"},
@@ -45,7 +42,20 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
                 ]
             },
         }
-        claims = CLI.build_q1_validated_party_claims(result)
+        evidence_packet = {
+            "retrieval_hits": [
+                {
+                    "page_id": "synthetic-page-1",
+                    "excerpt": (
+                        "Synthetic Contractor is the named insured, a defendant "
+                        "here, and a third-party plaintiff in the related action."
+                    ),
+                }
+            ]
+        }
+        claims = CLI.build_q1_validated_party_claims(
+            result, evidence_packet=evidence_packet
+        )
         self.assertEqual(
             claims["schema_version"],
             "q1_validated_party_claims.v1",
@@ -63,6 +73,13 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
         self.assertEqual(
             by_name["Synthetic Contractor"]["substantive_role"],
             "named insured",
+        )
+        self.assertEqual(
+            by_name["Synthetic Contractor"]["pleaded_role_basis"],
+            "named insured",
+        )
+        self.assertNotIn(
+            "landlord", by_name["Synthetic Contractor"]["substantive_role"]
         )
         rendered = CLI.render_q1_validated_party_claims(claims)
         self.assertIn("Validated party/role summary:", rendered)
