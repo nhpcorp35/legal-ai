@@ -1356,16 +1356,18 @@ def build_q1_validated_party_claims(
     # The exact serialized pre-draft packet is deterministic and bounded. Do
     # not mine model-produced proposed_answer or propositions for typed claims.
     packet = evidence_packet if isinstance(evidence_packet, Mapping) else {}
-    corpus = "\n".join(
-        str(hit.get("excerpt") or "")
-        for hit in packet.get("retrieval_hits") or []
-        if isinstance(hit, Mapping) and str(hit.get("excerpt") or "").strip()
-    )
-    sentences = [
-        normalize_proposed_answer_whitespace(sentence)
-        for sentence in re.split(r"(?<=[.!?])\s+|\n+", corpus)
-        if normalize_proposed_answer_whitespace(sentence)
-    ]
+    sentence_groups: list[list[str]] = []
+    for hit in packet.get("retrieval_hits") or []:
+        if not isinstance(hit, Mapping):
+            continue
+        excerpt = str(hit.get("excerpt") or "")
+        group = [
+            normalize_proposed_answer_whitespace(sentence)
+            for sentence in re.split(r"(?<=[.!?])\s+|\n+", excerpt)
+            if normalize_proposed_answer_whitespace(sentence)
+        ]
+        if group:
+            sentence_groups.append(group)
     parties: list[dict[str, Any]] = []
     diagnostic_rows: list[dict[str, Any]] = []
     for raw in expected:
@@ -1380,26 +1382,45 @@ def build_q1_validated_party_claims(
         substantive_roles: list[str] = []
         evidence_sentence_match_count = 0
         evidence_field_categories: set[str] = set()
-        for sentence in sentences:
-            if not re.search(re.escape(identity), sentence, re.IGNORECASE):
-                continue
-            evidence_sentence_match_count += 1
-            evidence_field_categories.add("identity")
-            role_probe = re.sub(
-                re.escape(identity), " ", sentence, flags=re.IGNORECASE
-            )
-            for matched in _Q1_SUBSTANTIVE_ROLE_RE.findall(role_probe):
-                value = normalize_proposed_answer_whitespace(matched).lower()
-                if value and value not in substantive_roles:
-                    substantive_roles.append(value)
-                    evidence_field_categories.add("substantive_role")
-            if not _Q1_RELATED_ACTION_CUE_RE.search(sentence):
-                continue
-            for matched in _Q1_RELATED_ROLE_RE.findall(sentence):
-                value = normalize_proposed_answer_whitespace(matched).lower()
-                if value and value != role.lower() and value not in related_roles:
-                    related_roles.append(value)
-                    evidence_field_categories.add("related_action_roles")
+        # The inventory basis was itself extracted from the bounded evidence
+        # packet. Reuse only recognized substantive designations from it.
+        for matched in _Q1_SUBSTANTIVE_ROLE_RE.findall(basis):
+            value = normalize_proposed_answer_whitespace(matched).lower()
+            if value and value not in substantive_roles:
+                substantive_roles.append(value)
+                evidence_field_categories.add("substantive_role")
+        for group in sentence_groups:
+            for sentence_index, sentence in enumerate(group):
+                if not re.search(re.escape(identity), sentence, re.IGNORECASE):
+                    continue
+                evidence_sentence_match_count += 1
+                evidence_field_categories.add("identity")
+                role_probe = re.sub(
+                    re.escape(identity), " ", sentence, flags=re.IGNORECASE
+                )
+                for matched in _Q1_SUBSTANTIVE_ROLE_RE.findall(role_probe):
+                    value = normalize_proposed_answer_whitespace(matched).lower()
+                    if value and value not in substantive_roles:
+                        substantive_roles.append(value)
+                        evidence_field_categories.add("substantive_role")
+                # Related-action clauses often follow the identity sentence
+                # with a pronoun. Permit only the immediately adjacent sentence
+                # in the same retrieval hit, and still require an explicit
+                # related-action cue before accepting a different role.
+                window = " ".join(
+                    group[sentence_index : min(len(group), sentence_index + 2)]
+                )
+                if not _Q1_RELATED_ACTION_CUE_RE.search(window):
+                    continue
+                for matched in _Q1_RELATED_ROLE_RE.findall(window):
+                    value = normalize_proposed_answer_whitespace(matched).lower()
+                    if (
+                        value
+                        and value != role.lower()
+                        and value not in related_roles
+                    ):
+                        related_roles.append(value)
+                        evidence_field_categories.add("related_action_roles")
         # A bounded substantive designation in the same evidence sentence is
         # also the pleaded-role basis when the inventory lacks a narrower one.
         # This preserves evidence language; it does not infer a legal conclusion.
