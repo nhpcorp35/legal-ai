@@ -1113,12 +1113,6 @@ def upload_candidate_artifacts_to_b2(
 
 
 def main(argv: Optional[list[str]] = None) -> int:
-    effective_argv = list(sys.argv[1:] if argv is None else argv)
-    if effective_argv and effective_argv[0] == "--privacy-safe-role-diagnostic":
-        from diagnose_case00_q1_role_vocabulary import main as diagnostic_main
-
-        return diagnostic_main(effective_argv[1:])
-
     parser = argparse.ArgumentParser(
         description=(
             "Rebuild Case-00 from Backblaze B2, generate one attorney-feedback "
@@ -1206,7 +1200,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             "when --validated-claims-path is set."
         ),
     )
-    args = parser.parse_args(effective_argv)
+    args = parser.parse_args(argv)
 
     try:
         acceptance = resolve_production_acceptance_contract(
