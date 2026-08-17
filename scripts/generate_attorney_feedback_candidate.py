@@ -1355,7 +1355,7 @@ def build_q1_validated_party_claims(
     # The exact serialized pre-draft packet is deterministic and bounded. Do
     # not mine model-produced proposed_answer or propositions for typed claims.
     packet = evidence_packet if isinstance(evidence_packet, Mapping) else {}
-    corpus = "\\n".join(
+    corpus = "\n".join(
         str(hit.get("excerpt") or "")
         for hit in packet.get("retrieval_hits") or []
         if isinstance(hit, Mapping) and str(hit.get("excerpt") or "").strip()
