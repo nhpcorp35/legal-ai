@@ -114,6 +114,7 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
                     "substantive_role_terms": {
                         "named_insured": 1,
                         "insured": 1,
+                        "contractor": 1,
                     },
                     "related_action_cues": {"related_action": 1},
                     "procedural_role_terms": {
