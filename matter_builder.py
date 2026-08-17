@@ -5119,7 +5119,12 @@ def _ensure_party_role_section_pages(
 
     parties_ids = _collect_parties_section_page_ids(page_lookup)
     intro_ids, intro_continuations = _collect_intro_section_page_ids(page_lookup)
-    coverage_ids = _collect_party_role_coverage_page_ids(page_lookup)
+    protected_section_ids = set(intro_ids) | set(parties_ids)
+    coverage_ids = [
+        page_id
+        for page_id in _collect_party_role_coverage_page_ids(page_lookup)
+        if page_id not in protected_section_ids
+    ]
     coverage_id_set = set(coverage_ids)
     section_ids = []
     seen = set()
