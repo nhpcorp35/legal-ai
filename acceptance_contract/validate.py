@@ -1126,11 +1126,40 @@ def _phrase_overlap_ratio(a: str, b: str) -> float:
     return inter / float(max(len(ta), len(tb)))
 
 
+def _primary_validated_identity(
+    sentence: str,
+    validated_identities: Sequence[str],
+) -> str:
+    """Return the longest validated identity contained in one sentence."""
+    normalized = _norm(sentence)
+    matches = [
+        _norm(identity)
+        for identity in validated_identities
+        if _norm(identity) and _norm(identity) in normalized
+    ]
+    return max(matches, key=len) if matches else ""
+
+
+def _sentences_name_distinct_validated_identities(
+    first: str,
+    second: str,
+    validated_identities: Sequence[str],
+) -> bool:
+    first_identity = _primary_validated_identity(first, validated_identities)
+    second_identity = _primary_validated_identity(second, validated_identities)
+    return bool(
+        first_identity
+        and second_identity
+        and first_identity != second_identity
+    )
+
+
 def apply_duplication_gate(
     answer_text: str,
     duplication_rules: Mapping[str, Any],
     *,
     repair: bool = True,
+    validated_identities: Sequence[str] = (),
 ) -> tuple[str, str, list[str]]:
     """Remove materially duplicative prose or fail closed.
 
@@ -1150,9 +1179,18 @@ def apply_duplication_gate(
     for sentence in sentences:
         dup = False
         for prior in keep:
-            if texts_are_equivalent(sentence, prior) or _phrase_overlap_ratio(
-                sentence, prior
-            ) >= max(max_ratio, 0.85):
+            equivalent = texts_are_equivalent(sentence, prior)
+            overlap = _phrase_overlap_ratio(sentence, prior) >= max(
+                max_ratio, 0.85
+            )
+            distinct_identities = (
+                _sentences_name_distinct_validated_identities(
+                    sentence,
+                    prior,
+                    validated_identities,
+                )
+            )
+            if equivalent or (overlap and not distinct_identities):
                 dup = True
                 break
         if dup:
@@ -1168,9 +1206,16 @@ def apply_duplication_gate(
     still = False
     for i, a in enumerate(keep):
         for b in keep[i + 1 :]:
-            if texts_are_equivalent(a, b) or _phrase_overlap_ratio(a, b) >= max(
-                max_ratio, 0.85
-            ):
+            equivalent = texts_are_equivalent(a, b)
+            overlap = _phrase_overlap_ratio(a, b) >= max(max_ratio, 0.85)
+            distinct_identities = (
+                _sentences_name_distinct_validated_identities(
+                    a,
+                    b,
+                    validated_identities,
+                )
+            )
+            if equivalent or (overlap and not distinct_identities):
                 still = True
                 break
         if still:
@@ -1266,10 +1311,22 @@ def validate_final_answer_against_contract(
                 # First insert then skip is expected idempotent behavior.
                 pass
 
+    validated_identities = []
+    if (
+        isinstance(validated_claims, Mapping)
+        and validated_claims.get("schema_version")
+        == Q1_VALIDATED_PARTY_CLAIMS_SCHEMA_VERSION
+    ):
+        validated_identities = [
+            str(party.get("identity") or "")
+            for party in validated_claims.get("parties") or []
+            if isinstance(party, Mapping) and str(party.get("identity") or "")
+        ]
     text, dup_result, dup_diags = apply_duplication_gate(
         text,
         view.duplication_rules,
         repair=apply_duplication_repair,
+        validated_identities=validated_identities,
     )
     diagnostics.extend(dup_diags)
 
