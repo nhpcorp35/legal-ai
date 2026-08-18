@@ -1070,6 +1070,27 @@ def audit_serialized_model_input(
     }
 
 
+def safe_party_role_supplemental_diagnostics(
+    inspection: Mapping[str, Any],
+) -> Optional[dict[str, Any]]:
+    """Return privacy-safe supplemental retrieval facts for failure output."""
+    audit = inspection.get("audit")
+    if not isinstance(audit, Mapping):
+        return None
+    raw = audit.get("party_role_supplemental_retrieval")
+    if not isinstance(raw, Mapping):
+        return None
+    allowed = (
+        "query_kind",
+        "max_hits",
+        "primary_result_count",
+        "matched_page_count",
+        "matched_page_ids",
+        "supplemental_added_count",
+    )
+    return {key: raw[key] for key in allowed if key in raw}
+
+
 def candidate_content_sha256(candidate: dict) -> str:
     without = {k: v for k, v in candidate.items() if k != "candidate_sha256"}
     return _sha256_bytes(_canonical_json_bytes(without))
@@ -2821,12 +2842,16 @@ def run_generation(
                 canonical, acceptance_claims_doc
             )
             if missing_typed_claim_fields:
+                supplemental_diagnostics = safe_party_role_supplemental_diagnostics(
+                    inspection
+                )
                 raise GenerationError(
                     "Canonical Q1 answer dropped typed party claims",
                     reason_code="q1_typed_claim_rendering_lost",
                     missing_typed_claim_fields=missing_typed_claim_fields,
                     q1_claim_extraction_diagnostics=q1_claim_extraction_diagnostics,
                     q1_retention_diagnostics=q1_retention_diagnostics,
+                    party_role_supplemental_retrieval=supplemental_diagnostics,
                     finalized=False,
                 )
         if q2_diagnostics is not None:
@@ -2854,6 +2879,9 @@ def run_generation(
             if q1_claim_extraction_diagnostics is not None:
                 err_kwargs["q1_claim_extraction_diagnostics"] = (
                     q1_claim_extraction_diagnostics
+                )
+                err_kwargs["party_role_supplemental_retrieval"] = (
+                    safe_party_role_supplemental_diagnostics(inspection)
                 )
             if validated_claims_provenance is not None:
                 err_kwargs.update(validated_claims_provenance)

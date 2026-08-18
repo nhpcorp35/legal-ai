@@ -144,6 +144,40 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
         self.assertEqual(retrieve.call_count, 1)
         self.assertNotIn("party_role_supplemental_retrieval", result)
 
+    def test_failure_diagnostics_expose_only_safe_supplemental_fields(self):
+        diagnostics = CLI.safe_party_role_supplemental_diagnostics(
+            {
+                "audit": {
+                    "party_role_supplemental_retrieval": {
+                        "query_kind": "deterministic_numbered_related_action_roles",
+                        "max_hits": 10,
+                        "primary_result_count": 30,
+                        "matched_page_count": 1,
+                        "matched_page_ids": ["nyscef-7-page-3"],
+                        "supplemental_added_count": 1,
+                        "private_excerpt": "must not escape",
+                    }
+                }
+            }
+        )
+
+        self.assertEqual(
+            diagnostics,
+            {
+                "query_kind": "deterministic_numbered_related_action_roles",
+                "max_hits": 10,
+                "primary_result_count": 30,
+                "matched_page_count": 1,
+                "matched_page_ids": ["nyscef-7-page-3"],
+                "supplemental_added_count": 1,
+            },
+        )
+
+    def test_failure_diagnostics_absent_for_non_party_retrieval(self):
+        self.assertIsNone(
+            CLI.safe_party_role_supplemental_diagnostics({"audit": {}})
+        )
+
     def test_builds_party_roles_related_roles_and_incomplete_scope(self):
         result = {
             "propositions": [
