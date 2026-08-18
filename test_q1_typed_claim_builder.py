@@ -133,6 +133,35 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
 
         self.assertEqual(CLI._numbered_related_action_excerpt(text), text)
 
+    def test_validated_numbered_action_excerpt_survives_packet_serialization(self):
+        excerpt = (
+            "In Action No.: 1, the Underwriters are Plaintiffs; "
+            "in Action No.: 2, they are Defendants."
+        )
+        packet = CLI.de.build_evidence_packet(
+            "Who are the parties and what are their roles?",
+            {
+                "results": [
+                    {
+                        "result_id": "focused-related-action",
+                        "page_id": "focused-page",
+                        "document_type": "affirmation",
+                        "classifications": ["procedural"],
+                        "excerpt": excerpt,
+                        "party_role_numbered_action_excerpt": True,
+                    }
+                ]
+            },
+        )
+
+        self.assertEqual(len(packet["retrieval_hits"]), 1)
+        self.assertEqual(packet["retrieval_hits"][0]["excerpt"], excerpt)
+        self.assertTrue(
+            packet["retrieval_hits"][0][
+                "party_role_numbered_action_excerpt"
+            ]
+        )
+
     def test_party_role_retrieval_skips_supplemental_without_exact_page(self):
         with mock.patch.object(
             CLI.mb,

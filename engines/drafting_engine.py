@@ -4196,6 +4196,16 @@ def _party_role_hit_dedupe_key(hit: dict) -> str:
     )
 
 
+def _hit_has_validated_numbered_action_excerpt(hit: dict) -> bool:
+    """True only for the deterministic focused excerpt produced upstream."""
+    return bool(
+        hit.get("party_role_numbered_action_excerpt")
+        and _PARTY_ROLE_NUMBERED_DUAL_ACTION_RE.search(
+            normalize_whitespace(hit.get("excerpt") or "")
+        )
+    )
+
+
 def _compress_protected_party_role_hit(hit: dict) -> dict:
     """Remove nonresponsive prose while preserving complete role-bearing lines."""
     excerpt = str(hit.get("excerpt") or "")
@@ -4277,6 +4287,8 @@ def apply_party_role_packet_budget(
     for hit in deduped:
         if hit.get("controlling_party_role_pleading"):
             protected.append(hit)
+        elif _hit_has_validated_numbered_action_excerpt(hit):
+            qualifying.append(hit)
         else:
             text = _hit_page_materiality_text(hit)
             has_role_coverage = bool(
@@ -4301,6 +4313,8 @@ def apply_party_role_packet_budget(
         protected = [_compress_protected_party_role_hit(hit) for hit in protected]
 
     def _coverage_priority(item: dict) -> int:
+        if _hit_has_validated_numbered_action_excerpt(item):
+            return 0
         text = _hit_page_materiality_text(item)
         if _PARTY_ROLE_RELATED_ACTION_COVERAGE_RE.search(text):
             return 0
@@ -4374,6 +4388,7 @@ def apply_party_role_packet_budget(
             or _PARTY_ROLE_NUMBERED_DUAL_ACTION_RE.search(
                 _hit_page_materiality_text(hit)
             )
+            or _hit_has_validated_numbered_action_excerpt(hit)
         ),
     }
     return selected, meta
@@ -4395,6 +4410,7 @@ def filter_hits_for_party_role_materiality(
         hit
         for hit in marked_source
         if hit.get("controlling_party_role_pleading")
+        or _hit_has_validated_numbered_action_excerpt(hit)
         or hit_is_material_for_party_role_question(hit)
     ]
     fallback = "none"
@@ -4494,6 +4510,8 @@ def build_evidence_packet(
                 "score": hit.get("score"),
             }
         )
+        if _hit_has_validated_numbered_action_excerpt(hit):
+            compact_hits[-1]["party_role_numbered_action_excerpt"] = True
         # Preserve full page text for relief routing provenance so synthesis can
         # cite clause-bounded source excerpts beyond short query windows.
         if relief_intent:
