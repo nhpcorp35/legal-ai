@@ -733,7 +733,7 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
         )
         second = CLI.ac.AcceptanceValidationResult(
             ok=True,
-            final_answer="unused validator copy",
+            final_answer=CLI.render_q1_validated_party_claims(claims),
         )
         diagnostics = {}
 
@@ -772,6 +772,50 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
         )
         self.assertEqual(by_stage["post_retention"], [])
         self.assertEqual(by_stage["final_validation"], [])
+
+    def test_q1_final_validation_uses_safe_deduplicated_answer(self):
+        claims = {
+            "schema_version": "q1_validated_party_claims.v1",
+            "roster_completeness": "complete",
+            "parties": [
+                {
+                    "identity": "Synthetic Deduped Party",
+                    "procedural_roles": ["defendant"],
+                    "pleaded_role_basis": "named insured",
+                    "substantive_role": "named insured",
+                    "related_action_roles": [],
+                }
+            ],
+        }
+        summary = CLI.render_q1_validated_party_claims(claims)
+        first = CLI.ac.AcceptanceValidationResult(
+            ok=False,
+            final_answer="Duplicative attorney analysis.",
+        )
+        second = CLI.ac.AcceptanceValidationResult(
+            ok=True,
+            final_answer=summary,
+            duplication_result=CLI.ac.DUP_REPAIRED,
+        )
+
+        with mock.patch.object(
+            CLI.ac,
+            "validate_final_answer_against_contract",
+            side_effect=[first, second],
+        ) as validate:
+            canonical, validation = CLI.finalize_canonical_answer_against_contract(
+                summary,
+                object(),
+                canonicalize=lambda text: text,
+                validated_claims=claims,
+            )
+
+        self.assertEqual(canonical, summary)
+        self.assertEqual(validation.final_answer, summary)
+        self.assertTrue(CLI.q1_rendered_claims_present(canonical, claims))
+        self.assertTrue(
+            validate.call_args_list[1].kwargs["apply_duplication_repair"]
+        )
 
     def test_retention_stage_diagnostics_are_privacy_safe(self):
         claims = {
