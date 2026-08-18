@@ -1164,12 +1164,19 @@ def _adds_validated_identity(
     This is an exact normalized-string coverage guard, independent of the
     semantic/overlap heuristic used to classify duplicate prose.
     """
-    normalized_sentence = _norm(sentence)
-    normalized_retained = _norm(" ".join(retained_sentences))
+    # Typed-claim retention is punctuation-sensitive: legal identities that
+    # differ only by commas or suffix punctuation must not collapse here.
+    def normalize_exact(value: str) -> str:
+        return " ".join(str(value or "").split()).lower()
+
+    normalized_sentence = normalize_exact(sentence)
+    normalized_retained = normalize_exact(" ".join(retained_sentences))
     return any(
         identity_norm in normalized_sentence
         and identity_norm not in normalized_retained
-        for identity_norm in (_norm(identity) for identity in validated_identities)
+        for identity_norm in (
+            normalize_exact(identity) for identity in validated_identities
+        )
         if identity_norm
     )
 
