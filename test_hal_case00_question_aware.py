@@ -984,7 +984,7 @@ class CanonicalAcceptanceContractResolveTests(unittest.TestCase):
                 question_id="Q1",
                 object_keys=[{"key": self.Q2_OBJECT_KEY_V101, "size": 2709}],
             )
-        self.assertIn("no allowlisted", ctx.exception.message)
+        self.assertIn("no acceptance-contract version candidates", ctx.exception.message)
         self.assertEqual(ctx.exception.details.get("question_id"), "Q1")
 
     def test_verify_q2_success_returns_safe_pins(self) -> None:
