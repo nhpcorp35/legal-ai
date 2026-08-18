@@ -289,7 +289,7 @@ class WorkflowGateTests(unittest.TestCase):
         )
         preflight_idx = text.index("Q2 production-boundary preflight")
         generate_idx = text.index(
-            "Generate requested question and publish four verified artifacts to B2"
+            "Generate requested question and publish five verified artifacts to B2"
         )
         self.assertLess(accept_idx, derive_idx)
         self.assertLess(derive_idx, preflight_idx)
@@ -310,7 +310,7 @@ class WorkflowGateTests(unittest.TestCase):
     def test_generation_step_gated_on_replay_and_preflight_success(self) -> None:
         text = _workflow_text()
         gen_block = text.split(
-            "Generate requested question and publish four verified artifacts to B2",
+            "Generate requested question and publish five verified artifacts to B2",
             1,
         )[1].split("Upload machine-readable run result", 1)[0]
         self.assertIn(
@@ -354,7 +354,7 @@ class WorkflowGateTests(unittest.TestCase):
         )
         self.assertIn("Q2 production-boundary preflight", names)
         self.assertIn(
-            "Generate requested question and publish four verified artifacts to B2",
+            "Generate requested question and publish five verified artifacts to B2",
             names,
         )
         accept_i = names.index("Resolve and verify acceptance contract")
@@ -363,7 +363,7 @@ class WorkflowGateTests(unittest.TestCase):
         )
         pre_i = names.index("Q2 production-boundary preflight")
         gen_i = names.index(
-            "Generate requested question and publish four verified artifacts to B2"
+            "Generate requested question and publish five verified artifacts to B2"
         )
         self.assertEqual(accept_i + 1, derive_i)
         self.assertEqual(derive_i + 1, pre_i)
