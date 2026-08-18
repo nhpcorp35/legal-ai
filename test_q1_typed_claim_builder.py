@@ -864,6 +864,28 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
         self.assertIn(first, repaired)
         self.assertIn(second, repaired)
 
+    def test_dedupe_does_not_semantically_collapse_distinct_identities(self):
+        first = "Synthetic Company — current role: defendant."
+        second = "Synthetic Company II — current role: defendant."
+
+        with mock.patch.object(
+            CLI.ac,
+            "texts_are_equivalent",
+            return_value=True,
+        ):
+            repaired, result, _diagnostics = CLI.ac.apply_duplication_gate(
+                f"{first} {second}",
+                {"max_duplicate_phrase_ratio": 0.25},
+                validated_identities=[
+                    "Synthetic Company",
+                    "Synthetic Company II",
+                ],
+            )
+
+        self.assertEqual(result, CLI.ac.DUP_OK)
+        self.assertIn(first, repaired)
+        self.assertIn(second, repaired)
+
     def test_retention_stage_diagnostics_are_privacy_safe(self):
         claims = {
             "schema_version": "q1_validated_party_claims.v1",
