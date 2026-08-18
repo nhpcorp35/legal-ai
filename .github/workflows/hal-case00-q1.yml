@@ -421,7 +421,7 @@ jobs:
           echo "exit_code=$status" >> "$GITHUB_OUTPUT"
           exit "$status"
 
-      - name: Generate requested question and publish four verified artifacts to B2
+      - name: Generate requested question and publish five verified artifacts to B2
         id: case00
         if: ${{ success() && (env.QUESTION_ID != 'Q2' || (steps.q2-replay.outputs.ok == 'true' && steps.q2-preflight.outputs.ok == 'true')) }}
         shell: bash
