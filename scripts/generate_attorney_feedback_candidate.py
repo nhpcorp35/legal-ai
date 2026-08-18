@@ -1372,7 +1372,12 @@ def _format_proposed_answer_markdown(
     # Already a clean multiline Markdown list: keep structure, drop escape noise.
     lines = text.splitlines()
     list_line_count = sum(1 for ln in lines if _MARKDOWN_LIST_LINE_RE.match(ln))
-    if list_line_count >= 2:
+    table_line_count = sum(
+        1
+        for ln in lines
+        if ln.strip().startswith("|") and ln.strip().endswith("|")
+    )
+    if list_line_count >= 2 or table_line_count >= 2:
         cleaned: list[str] = []
         for ln in lines:
             stripped = ln.rstrip()
@@ -1871,7 +1876,7 @@ def _q1_requires_substantive_role_limitation(
 
 
 def render_q1_validated_party_claims(claims: Mapping[str, Any]) -> str:
-    """Render typed claims into concise attorney-facing prose."""
+    """Render typed claims for acceptance validation and retention checks."""
     if not ac.q1_party_claims_are_valid(claims):
         raise GenerationError(
             "Cannot render malformed typed Q1 party claims",
@@ -1909,6 +1914,58 @@ def render_q1_validated_party_claims(claims: Mapping[str, Any]) -> str:
     if claims.get("roster_completeness") != "complete":
         lines.append(
             "The retrieved record does not establish that this is a complete party roster."
+        )
+    return "\n".join(lines)
+
+
+def render_q1_attorney_answer(claims: Mapping[str, Any]) -> str:
+    """Render already-validated Q1 claims as a scannable review table."""
+    if not ac.q1_party_claims_are_valid(claims):
+        raise GenerationError(
+            "Cannot render malformed typed Q1 party claims",
+            reason_code="q1_validated_party_claims_invalid",
+            finalized=False,
+        )
+    lines = [
+        "Validated party/role summary:",
+        "",
+        "| Party | Alleged role(s) | Entity / location |",
+        "|---|---|---|",
+    ]
+    for party in claims.get("parties") or []:
+        role_parts = [
+            "current role: "
+            + (", ".join(party.get("procedural_roles") or []) or "not established"),
+            "pleaded designation: "
+            + (party.get("pleaded_role_basis") or "not established"),
+            "substantive role: "
+            + (party.get("substantive_role") or "not established"),
+        ]
+        if party.get("related_action_roles"):
+            role_parts.append(
+                "related-action role: "
+                + ", ".join(party["related_action_roles"])
+            )
+        entity_parts = [
+            value
+            for value in (
+                party.get("entity_type"),
+                party.get("residence_or_ppb"),
+            )
+            if value
+        ]
+        identity = str(party["identity"]).replace("|", "\\|")
+        role_text = "; ".join(role_parts).replace("|", "\\|")
+        entity_text = ("; ".join(entity_parts) or "not established").replace(
+            "|", "\\|"
+        )
+        lines.append(f"| {identity} | {role_text} | {entity_text} |")
+    lines.extend(["", "Limitations:"])
+    if _q1_requires_substantive_role_limitation(claims):
+        lines.append(f"- {_Q1_SUBSTANTIVE_ROLE_LIMITATION}")
+    if claims.get("roster_completeness") != "complete":
+        lines.append(
+            "- The retrieved record does not establish that this is a complete party roster."
         )
     return "\n".join(lines)
 
@@ -2107,6 +2164,25 @@ def validated_acceptance_evidence_text(reasoner_result: Mapping[str, Any]) -> st
             if category and text_value:
                 rows.append(f"{category} {text_value}")
     return "\n".join(rows)
+
+
+def validate_q1_attorney_answer(
+    claims: Mapping[str, Any],
+    contract_view: ac.ContractEvaluationView,
+    *,
+    validated_evidence_text: Optional[str] = None,
+) -> tuple[str, ac.AcceptanceValidationResult]:
+    """Serialize validated Q1 claims without running prose deduplication."""
+    attorney_answer = canonical_proposed_answer(render_q1_attorney_answer(claims))
+    validation = ac.validate_final_answer_against_contract(
+        attorney_answer,
+        contract_view,
+        apply_fallback=False,
+        apply_duplication_repair=False,
+        validated_claims=claims,
+        validated_evidence_text=validated_evidence_text,
+    )
+    return validation.final_answer, validation
 
 
 def finalize_canonical_answer_against_contract(
@@ -2931,6 +3007,28 @@ def run_generation(
             validated_evidence_text=validated_evidence,
             q1_retention_diagnostics_out=q1_retention_diagnostics,
         )
+        if (
+            validation.ok
+            and isinstance(acceptance_claims_doc, Mapping)
+            and acceptance_claims_doc.get("schema_version")
+            == ac.Q1_VALIDATED_PARTY_CLAIMS_SCHEMA_VERSION
+        ):
+            # The model answer and deterministic summary above remain the
+            # fail-closed completeness/acceptance gate. Once that gate passes,
+            # serialize only the validated typed claims for attorney review.
+            # This prevents the duplication repair used by the gate from
+            # becoming the user-facing representation.
+            canonical, validation = validate_q1_attorney_answer(
+                acceptance_claims_doc,
+                contract_view,
+                validated_evidence_text=validated_evidence,
+            )
+            record_q1_retention_stage(
+                q1_retention_diagnostics,
+                stage="attorney_render",
+                answer_text=canonical,
+                claims=acceptance_claims_doc,
+            )
         if (
             isinstance(acceptance_claims_doc, Mapping)
             and acceptance_claims_doc.get("schema_version")

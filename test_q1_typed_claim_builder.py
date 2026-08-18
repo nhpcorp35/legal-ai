@@ -819,6 +819,84 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
             validate.call_args_list[1].kwargs["apply_duplication_repair"]
         )
 
+    def test_q1_table_avoids_production_list_flattening_and_fragments(self):
+        claims = {
+            "schema_version": "q1_validated_party_claims.v1",
+            "roster_completeness": "not_established",
+            "parties": [
+                {
+                    "identity": "Synthetic Underwriters",
+                    "procedural_roles": ["plaintiff"],
+                    "pleaded_role_basis": "",
+                    "substantive_role": "underwriters",
+                    "entity_type": "",
+                    "residence_or_ppb": "",
+                    "related_action_roles": ["defendant in Action No. 2"],
+                },
+                {
+                    "identity": "Synthetic Named Insured",
+                    "procedural_roles": ["defendant"],
+                    "pleaded_role_basis": "notice defendant",
+                    "substantive_role": "named insured",
+                    "entity_type": "domestic corporation",
+                    "residence_or_ppb": "New York",
+                    "related_action_roles": [],
+                },
+            ],
+        }
+
+        rendered = CLI.render_q1_attorney_answer(claims)
+        canonical = CLI.canonical_proposed_answer(rendered)
+
+        self.assertEqual(canonical, rendered)
+        self.assertIn("| Party | Alleged role(s) | Entity / location |", canonical)
+        self.assertEqual(canonical.count("Synthetic Underwriters"), 1)
+        self.assertEqual(canonical.count("Synthetic Named Insured"), 1)
+        self.assertNotIn("Action No.\n\n2", canonical)
+        self.assertNotIn("Validated party/role summary: -", canonical)
+
+    def test_q1_attorney_render_is_revalidated_without_prose_deduplication(self):
+        claims = {
+            "schema_version": "q1_validated_party_claims.v1",
+            "roster_completeness": "not_established",
+            "parties": [
+                {
+                    "identity": "Synthetic Underwriters",
+                    "procedural_roles": ["plaintiff"],
+                    "pleaded_role_basis": "",
+                    "substantive_role": "underwriters",
+                    "entity_type": "",
+                    "residence_or_ppb": "",
+                    "related_action_roles": ["defendant in Action No. 2"],
+                }
+            ],
+        }
+
+        def validate(answer, _contract, **kwargs):
+            self.assertIn("| Party | Alleged role(s) | Entity / location |", answer)
+            self.assertFalse(kwargs["apply_fallback"])
+            self.assertFalse(kwargs["apply_duplication_repair"])
+            self.assertIs(kwargs["validated_claims"], claims)
+            return CLI.ac.AcceptanceValidationResult(
+                ok=True,
+                final_answer=answer,
+            )
+
+        with mock.patch.object(
+            CLI.ac,
+            "validate_final_answer_against_contract",
+            side_effect=validate,
+        ):
+            answer, validation = CLI.validate_q1_attorney_answer(
+                claims,
+                object(),
+                validated_evidence_text="synthetic evidence",
+            )
+
+        self.assertTrue(validation.ok)
+        self.assertEqual(answer.count("Synthetic Underwriters"), 1)
+        self.assertNotIn("Action No.\n\n2", answer)
+
     def test_q1_retention_places_authoritative_summary_before_model_prose(self):
         claims = {
             "schema_version": "q1_validated_party_claims.v1",
