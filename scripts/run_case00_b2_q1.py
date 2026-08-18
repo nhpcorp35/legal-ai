@@ -43,11 +43,6 @@ if str(_SCRIPTS) not in sys.path:
 
 import acceptance_contract as ac  # noqa: E402
 import rebuild_case00_derived as rebuild_cli  # noqa: E402
-from case00_attorney_eval.cli import (  # noqa: E402
-    EvaluatorCLIError,
-    load_candidates_from_directory,
-)
-from case00_attorney_eval.evaluate import evaluate_case00  # noqa: E402
 from case00_attorney_eval.review_packet import (  # noqa: E402
     PACKET_FILENAME,
     write_attorney_review_packet,
@@ -1041,7 +1036,7 @@ def render_candidate_review_packet(
     *,
     question_id: str,
 ) -> Path:
-    """Evaluate a finalized candidate and render its deterministic review packet."""
+    """Render a packet from finalized generation data without unstaged gold files."""
     qid = str(question_id or "").strip()
     candidate_path = Path(candidate_dir) / f"{qid}_candidate_answer.json"
     if not candidate_path.is_file():
@@ -1050,25 +1045,48 @@ def render_candidate_review_packet(
             question_id=qid,
             path=str(candidate_path),
         )
+    completeness = generation.get("completeness_validation")
+    if not isinstance(completeness, Mapping):
+        completeness = {}
+    acceptance = generation.get("acceptance_contract")
+    if not isinstance(acceptance, Mapping):
+        acceptance = {}
+    evaluation = {
+        "corpus_id": "case-00-triborough",
+        "benchmark_id": acceptance.get("benchmark_id") or "Case-00-Triborough",
+        "packet_id": "attorney-review-packet-02-live",
+        "questions": [
+            {
+                "question_id": qid,
+                "flags": {"requires_attorney_review": True},
+                "reference_answer_status": {
+                    "status": "not_loaded_in_generation_workflow"
+                },
+                "candidate_vs_reference_diagnostics": {
+                    "comparison_performed": False,
+                    "method": "generation_acceptance_validation_only",
+                    "note": (
+                        "The production generation workflow does not stage private "
+                        "gold labels; no candidate-vs-reference comparison was "
+                        "performed. Review the evidence matrix, cited record, "
+                        "limitations, and unresolved questions directly."
+                    ),
+                    "citation_evidence_coverage": {
+                        "generation_finalized": bool(generation.get("finalized")),
+                        "completeness_validation_present": bool(completeness),
+                        "acceptance_contract_present": bool(acceptance),
+                    },
+                },
+            }
+        ],
+    }
     try:
-        candidates = load_candidates_from_directory(Path(candidate_dir))
-        evaluation = evaluate_case00(
-            Path(case_root),
-            candidate_answers=candidates,
-            question_ids=[qid],
-        )
         return write_attorney_review_packet(
             candidate_path,
             evaluation,
             output_path=Path(candidate_dir) / PACKET_FILENAME,
             generation=generation,
         )
-    except EvaluatorCLIError as exc:
-        raise DurableUploadError(
-            "attorney review packet candidate loading failed",
-            reason_code=exc.code,
-            question_id=qid,
-        ) from exc
     except Exception as exc:  # noqa: BLE001 — emit type only; never private content
         raise DurableUploadError(
             "attorney review packet rendering failed",
