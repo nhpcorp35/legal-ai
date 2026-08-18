@@ -314,12 +314,12 @@ class WorkflowGateTests(unittest.TestCase):
             1,
         )[1].split("Upload machine-readable run result", 1)[0]
         self.assertIn(
-            "if: ${{ success() && steps.q2-replay.outputs.ok == 'true' && steps.q2-preflight.outputs.ok == 'true' }}",
+            "if: ${{ success() && (env.QUESTION_ID != 'Q2' || (steps.q2-replay.outputs.ok == 'true' && steps.q2-preflight.outputs.ok == 'true')) }}",
             gen_block,
         )
         self.assertIn("scripts/run_case00_b2_q1.py", gen_block)
         self.assertIn(
-            "if: ${{ success() && steps.q2-replay.outputs.ok == 'true' }}",
+            "if: ${{ env.QUESTION_ID == 'Q2' && success() && steps.q2-replay.outputs.ok == 'true' }}",
             text.split("Derive Q2 sanitized live-replay", 1)[1].split(
                 "Generate requested question", 1
             )[0],
