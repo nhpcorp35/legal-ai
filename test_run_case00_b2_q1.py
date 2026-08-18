@@ -36,6 +36,7 @@ ARTIFACTS = (
     "Q1_candidate_answer.md",
     "generation_manifest.json",
     "model_input_audit.json",
+    "case00_attorney_review_packet.md",
 )
 
 
@@ -98,7 +99,7 @@ class NormalizePrefixTests(unittest.TestCase):
 
 
 class DurableUploadUnitTests(unittest.TestCase):
-    def test_uploads_all_four_with_exact_canonical_keys_and_head_verify(self) -> None:
+    def test_uploads_all_five_with_exact_canonical_keys_and_head_verify(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             candidate = Path(tmp) / "q1-candidate-20260808T154500Z"
             sizes = _seed_candidate_dir(candidate)
@@ -129,9 +130,9 @@ class DurableUploadUnitTests(unittest.TestCase):
             self.assertEqual(durable["bucket"], "legalai-corpus")
             self.assertEqual(durable["prefix"], CANONICAL_PREFIX)
             self.assertEqual(durable["object_keys"], expected_keys)
-            self.assertEqual(len(uploaded), 4)
+            self.assertEqual(len(uploaded), 5)
             self.assertEqual([item[2] for item in uploaded], expected_keys)
-            self.assertEqual(client.head_object.call_count, 4)
+            self.assertEqual(client.head_object.call_count, 5)
             for obj, name in zip(durable["objects"], ARTIFACTS):
                 self.assertEqual(obj["filename"], name)
                 self.assertEqual(obj["size"], sizes[name])
@@ -279,9 +280,14 @@ class DurableUploadUnitTests(unittest.TestCase):
                         "create_b2_client",
                         return_value=client,
                     ):
-                        captured = io.StringIO()
-                        with patch("sys.stdout", captured):
-                            code = CLI.main(
+                        with patch.object(
+                            CLI,
+                            "render_candidate_review_packet",
+                            return_value=candidate / "case00_attorney_review_packet.md",
+                        ):
+                            captured = io.StringIO()
+                            with patch("sys.stdout", captured):
+                                code = CLI.main(
                                 [
                                     "--case-root",
                                     str(candidate.parent),
@@ -342,22 +348,27 @@ class DurableUploadUnitTests(unittest.TestCase):
                         "create_b2_client",
                         return_value=client,
                     ):
-                        captured = io.StringIO()
-                        with patch("sys.stdout", captured):
-                            code = CLI.main(
-                                [
-                                    "--case-root",
-                                    str(candidate.parent),
-                                    "--question-id",
-                                    "Q1",
-                                    "--required-commit",
-                                    "b" * 40,
-                                    "--candidate-output-root",
-                                    str(candidate.parent),
-                                    "--authorization-confirmed",
-                                    "--generation-only",
-                                ]
-                            )
+                        with patch.object(
+                            CLI,
+                            "render_candidate_review_packet",
+                            return_value=candidate / "case00_attorney_review_packet.md",
+                        ):
+                            captured = io.StringIO()
+                            with patch("sys.stdout", captured):
+                                code = CLI.main(
+                                    [
+                                        "--case-root",
+                                        str(candidate.parent),
+                                        "--question-id",
+                                        "Q1",
+                                        "--required-commit",
+                                        "b" * 40,
+                                        "--candidate-output-root",
+                                        str(candidate.parent),
+                                        "--authorization-confirmed",
+                                        "--generation-only",
+                                    ]
+                                )
             self.assertEqual(code, 0)
             self.assertEqual(len(run_calls), 2)
             gen_argv = run_calls[1]
