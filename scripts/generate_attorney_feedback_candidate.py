@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import itertools
 import json
 import os
 import re
@@ -1004,7 +1005,7 @@ def run_production_retrieval(
 
 
 def _numbered_related_action_excerpt(text: str) -> str:
-    """Return only a sentence/line that states both numbered-action roles."""
+    """Return a bounded sentence/line containing both numbered-action roles."""
     filtered = mb._filter_party_role_procedural_boilerplate(text or "")
     units = [
         mb.clean_text(unit)
@@ -1013,11 +1014,34 @@ def _numbered_related_action_excerpt(text: str) -> str:
     ]
     for unit in units:
         normalized = " ".join(unit.split())
-        if de._PARTY_ROLE_NUMBERED_DUAL_ACTION_RE.search(normalized):
+        if _minimum_numbered_action_role_span(normalized) <= 200:
             return mb._truncate_at_token_boundary(
                 unit, mb.PARTY_ROLE_PASSAGE_EXCERPT_MAX
             )
     return ""
+
+
+_NUMBERED_ACTION_ROLE_PATTERNS = (
+    re.compile(r"\baction\s+(?:no\.?|number)\s*:?\s*1\b", re.IGNORECASE),
+    re.compile(r"\baction\s+(?:no\.?|number)\s*:?\s*2\b", re.IGNORECASE),
+    re.compile(r"\bplaintiffs?\b", re.IGNORECASE),
+    re.compile(r"\bdefendants?\b", re.IGNORECASE),
+)
+
+
+def _minimum_numbered_action_role_span(text: str) -> int:
+    """Return the shortest span containing both actions and both party roles."""
+    matches = [
+        list(pattern.finditer(text))
+        for pattern in _NUMBERED_ACTION_ROLE_PATTERNS
+    ]
+    if any(not group for group in matches):
+        return sys.maxsize
+    return min(
+        max(match.end() for match in combination)
+        - min(match.start() for match in combination)
+        for combination in itertools.product(*matches)
+    )
 
 
 def audit_serialized_model_input(
@@ -1478,8 +1502,10 @@ _Q1_RELATED_ROLE_RE = re.compile(
     r"respondent on appeal|appellant|plaintiff|defendant)\b"
 )
 _Q1_NUMBERED_DUAL_ROLE_RE = re.compile(
-    r"(?i)\bplaintiff\b.{0,80}\baction\s+no\.?\s*:\s*1\b"
-    r".{0,120}\bdefendants?\b.{0,80}\baction\s+no\.?\s*:\s*2\b"
+    r"(?is)(?=.{0,200}\baction\s+(?:no\.?|number)\s*:?\s*1\b)"
+    r"(?=.{0,200}\baction\s+(?:no\.?|number)\s*:?\s*2\b)"
+    r"(?=.{0,200}\bplaintiffs?\b)"
+    r"(?=.{0,200}\bdefendants?\b).{0,200}"
 )
 
 
