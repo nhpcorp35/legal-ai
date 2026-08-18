@@ -930,6 +930,22 @@ def build_parser() -> argparse.ArgumentParser:
             "(no rebuild, no model provider)."
         ),
     )
+    parser.add_argument(
+        "--probe-c5-structure",
+        action="store_true",
+        help=(
+            "Read the existing B2 derived page cache and emit only privacy-safe "
+            "C5 token topology measurements (no rebuild and no model provider)."
+        ),
+    )
+    parser.add_argument(
+        "--probe-cache-digest",
+        default=None,
+        help=(
+            "Exact 64-character lowercase digest of an existing immutable "
+            "runtime cache; valid only with --probe-c5-structure."
+        ),
+    )
     return parser
 
 
@@ -938,6 +954,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     try:
+        if args.probe_c5_structure:
+            import probe_case00_c5_structure as c5_probe
+
+            return c5_probe.main(cache_digest=args.probe_cache_digest)
         if args.validate_only:
             report = validate_generator_inputs(
                 args.case_root,
