@@ -99,6 +99,75 @@ class NormalizePrefixTests(unittest.TestCase):
 
 
 class DurableUploadUnitTests(unittest.TestCase):
+    def test_renders_review_packet_from_finalized_candidate_without_model_call(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            case_root = Path(tmp) / "case"
+            candidate = Path(tmp) / "q1-candidate-render"
+            candidate.mkdir(parents=True)
+            candidate_json = candidate / "Q1_candidate_answer.json"
+            candidate_json.write_text("{}\n", encoding="utf-8")
+            expected = candidate / "case00_attorney_review_packet.md"
+            generation = {"ok": True, "finalized": True}
+            evaluation = {"records": []}
+
+            with patch.object(
+                CLI,
+                "load_candidates_from_directory",
+                return_value={"Q1": "candidate answer"},
+            ) as load_candidates:
+                with patch.object(
+                    CLI,
+                    "evaluate_case00",
+                    return_value=evaluation,
+                ) as evaluate:
+                    with patch.object(
+                        CLI,
+                        "write_attorney_review_packet",
+                        return_value=expected,
+                    ) as write_packet:
+                        actual = CLI.render_candidate_review_packet(
+                            case_root,
+                            candidate,
+                            generation,
+                            question_id="Q1",
+                        )
+
+            self.assertEqual(actual, expected)
+            load_candidates.assert_called_once_with(candidate)
+            evaluate.assert_called_once_with(
+                case_root,
+                candidate_answers={"Q1": "candidate answer"},
+                question_ids=["Q1"],
+            )
+            write_packet.assert_called_once_with(
+                candidate_json,
+                evaluation,
+                output_path=expected,
+                generation=generation,
+            )
+
+    def test_review_packet_render_failure_is_privacy_safe(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            candidate = Path(tmp) / "q1-candidate-render-failure"
+            candidate.mkdir(parents=True)
+            (candidate / "Q1_candidate_answer.json").write_text(
+                "{}\n", encoding="utf-8"
+            )
+            with patch.object(
+                CLI,
+                "load_candidates_from_directory",
+                side_effect=RuntimeError("PRIVATE CASE BODY"),
+            ):
+                with self.assertRaises(CLI.DurableUploadError) as ctx:
+                    CLI.render_candidate_review_packet(
+                        Path(tmp) / "case",
+                        candidate,
+                        {"ok": True, "finalized": True},
+                        question_id="Q1",
+                    )
+            self.assertEqual(ctx.exception.details["error_type"], "RuntimeError")
+            self.assertNotIn("PRIVATE CASE BODY", json.dumps(ctx.exception.details))
+
     def test_uploads_all_five_with_exact_canonical_keys_and_head_verify(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             candidate = Path(tmp) / "q1-candidate-20260808T154500Z"
