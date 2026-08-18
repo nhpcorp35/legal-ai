@@ -110,6 +110,20 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
 
         self.assertEqual(CLI._numbered_related_action_excerpt(text), "")
 
+    def test_numbered_action_excerpt_collapses_visual_line_wraps(self):
+        text = (
+            "Attorneys for the Plaintiff, In Action No.: 1\n"
+            "Defendants in Action No.: 2\n"
+            "Certain Interested Underwriters At Lloyd's, London.\n"
+            "Unrelated filing history follows."
+        )
+
+        self.assertEqual(
+            CLI._numbered_related_action_excerpt(text),
+            "Attorneys for the Plaintiff, In Action No.: 1 Defendants in "
+            "Action No.: 2 Certain Interested Underwriters At Lloyd's, London.",
+        )
+
     def test_party_role_retrieval_skips_supplemental_without_exact_page(self):
         with mock.patch.object(
             CLI.mb,
