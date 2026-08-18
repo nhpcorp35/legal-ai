@@ -911,6 +911,29 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
         self.assertIn("Synthetic Alpha Company Inc", repaired)
         self.assertIn("Synthetic Alpha Company, Inc.", repaired)
 
+    def test_dedupe_sentence_split_preserves_multi_period_legal_identity(self):
+        first = "Synthetic Alpha L.L.C. — current role: defendant."
+        second = "Synthetic Beta L.L.C. — current role: defendant."
+
+        with mock.patch.object(CLI.ac, "texts_are_equivalent", return_value=True):
+            with mock.patch.object(
+                acceptance_validate,
+                "_sentences_name_distinct_validated_identities",
+                return_value=False,
+            ):
+                repaired, result, _diagnostics = CLI.ac.apply_duplication_gate(
+                    f"{first} {second}",
+                    {"max_duplicate_phrase_ratio": 0.25},
+                    validated_identities=[
+                        "Synthetic Alpha L.L.C.",
+                        "Synthetic Beta L.L.C.",
+                    ],
+                )
+
+        self.assertIn(result, (CLI.ac.DUP_OK, CLI.ac.DUP_REPAIRED))
+        self.assertIn("Synthetic Alpha L.L.C.", repaired)
+        self.assertIn("Synthetic Beta L.L.C.", repaired)
+
     def test_retention_stage_diagnostics_are_privacy_safe(self):
         claims = {
             "schema_version": "q1_validated_party_claims.v1",
