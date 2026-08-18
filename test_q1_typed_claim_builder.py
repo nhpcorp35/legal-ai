@@ -897,6 +897,97 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
         self.assertEqual(answer.count("Synthetic Underwriters"), 1)
         self.assertNotIn("Action No.\n\n2", answer)
 
+    def test_exact_q1_table_accepts_only_structured_duplication_failure(self):
+        claims = {
+            "schema_version": "q1_validated_party_claims.v1",
+            "roster_completeness": "not_established",
+            "parties": [
+                {
+                    "identity": f"Synthetic Party {index:02d}",
+                    "procedural_roles": ["defendant"],
+                    "pleaded_role_basis": "notice defendant",
+                    "substantive_role": "",
+                    "entity_type": "domestic corporation",
+                    "residence_or_ppb": "New York",
+                    "related_action_roles": [],
+                }
+                for index in range(18)
+            ],
+        }
+        criterion = CLI.ac.CriterionResult(
+            criterion_id="Q1_SYNTHETIC",
+            presence=CLI.ac.PRESENCE_PRESENT,
+            evidence=CLI.ac.EVIDENCE_SUPPORTED,
+            semantic=CLI.ac.SEMANTIC_PRESERVED,
+            result_code=CLI.ac.CRIT_PASS,
+        )
+        duplicate_only = CLI.ac.AcceptanceValidationResult(
+            ok=False,
+            final_answer="ignored",
+            criterion_results=[criterion],
+            duplication_result=CLI.ac.DUP_FAIL,
+            diagnostics=["material_duplication_remaining"],
+        )
+
+        with mock.patch.object(
+            CLI.ac,
+            "validate_final_answer_against_contract",
+            return_value=duplicate_only,
+        ):
+            answer, validation = CLI.validate_q1_attorney_answer(
+                claims,
+                object(),
+                validated_evidence_text="synthetic evidence",
+            )
+
+        self.assertTrue(validation.ok)
+        self.assertEqual(validation.duplication_result, CLI.ac.DUP_OK)
+        self.assertEqual(
+            validation.diagnostics,
+            ["q1_exact_structured_table_duplication_not_applicable"],
+        )
+        self.assertEqual(answer.count("\n| Synthetic Party"), 18)
+
+    def test_q1_table_does_not_override_any_additional_failure(self):
+        claims = {
+            "schema_version": "q1_validated_party_claims.v1",
+            "roster_completeness": "not_established",
+            "parties": [
+                {
+                    "identity": "Synthetic Party",
+                    "procedural_roles": ["defendant"],
+                    "pleaded_role_basis": "notice defendant",
+                    "substantive_role": "",
+                    "entity_type": "",
+                    "residence_or_ppb": "",
+                    "related_action_roles": [],
+                }
+            ],
+        }
+        failed = CLI.ac.AcceptanceValidationResult(
+            ok=False,
+            final_answer="ignored",
+            criterion_results=[],
+            duplication_result=CLI.ac.DUP_FAIL,
+            diagnostics=[
+                "material_duplication_remaining",
+                "another_failure",
+            ],
+        )
+
+        with mock.patch.object(
+            CLI.ac,
+            "validate_final_answer_against_contract",
+            return_value=failed,
+        ):
+            _answer, validation = CLI.validate_q1_attorney_answer(
+                claims,
+                object(),
+            )
+
+        self.assertFalse(validation.ok)
+        self.assertEqual(validation.duplication_result, CLI.ac.DUP_FAIL)
+
     def test_q1_retention_places_authoritative_summary_before_model_prose(self):
         claims = {
             "schema_version": "q1_validated_party_claims.v1",
