@@ -841,6 +841,29 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
         self.assertTrue(CLI.q1_rendered_claims_present(retained, claims))
         self.assertGreater(retained.find(model_prose), retained.find("related-action role:"))
 
+    def test_dedupe_preserves_distinct_validated_high_overlap_identities(self):
+        first = (
+            "Alpha Holdings Insurance Company — current role: defendant; "
+            "pleaded designation: named insured."
+        )
+        second = (
+            "Alpha Holdings Insurance Company of New York — current role: "
+            "defendant; pleaded designation: named insured."
+        )
+
+        repaired, result, _diagnostics = CLI.ac.apply_duplication_gate(
+            f"{first} {second}",
+            {"max_duplicate_phrase_ratio": 0.25},
+            validated_identities=[
+                "Alpha Holdings Insurance Company",
+                "Alpha Holdings Insurance Company of New York",
+            ],
+        )
+
+        self.assertEqual(result, CLI.ac.DUP_OK)
+        self.assertIn(first, repaired)
+        self.assertIn(second, repaired)
+
     def test_retention_stage_diagnostics_are_privacy_safe(self):
         claims = {
             "schema_version": "q1_validated_party_claims.v1",
