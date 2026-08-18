@@ -817,6 +817,30 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
             validate.call_args_list[1].kwargs["apply_duplication_repair"]
         )
 
+    def test_q1_retention_places_authoritative_summary_before_model_prose(self):
+        claims = {
+            "schema_version": "q1_validated_party_claims.v1",
+            "roster_completeness": "complete",
+            "parties": [
+                {
+                    "identity": "Synthetic Priority Party",
+                    "procedural_roles": ["defendant"],
+                    "pleaded_role_basis": "named insured",
+                    "substantive_role": "named insured",
+                    "related_action_roles": ["defendant in Action No. 2"],
+                }
+            ],
+        }
+        model_prose = "Synthetic Priority Party is a defendant."
+
+        retained = CLI.retain_q1_validated_party_claims(model_prose, claims)
+
+        self.assertTrue(
+            retained.startswith("Validated party/role summary:")
+        )
+        self.assertTrue(CLI.q1_rendered_claims_present(retained, claims))
+        self.assertGreater(retained.find(model_prose), retained.find("related-action role:"))
+
     def test_retention_stage_diagnostics_are_privacy_safe(self):
         claims = {
             "schema_version": "q1_validated_party_claims.v1",

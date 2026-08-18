@@ -1990,9 +1990,11 @@ def retain_q1_validated_party_claims(
     """Restore the deterministic Q1 summary after lossy contract repair.
 
     Contract fallback and duplication repair run before presentation
-    canonicalization. Canonicalize the model-authored answer first, then append
-    the complete deterministic summary unchanged if any typed claim is absent.
-    The caller must still revalidate the exact returned string.
+    canonicalization. Canonicalize the model-authored answer first, then place
+    the complete deterministic summary before it if any typed claim is absent.
+    The duplication gate is stable-first, so authoritative typed claims must
+    precede overlapping model prose. The caller must still revalidate the exact
+    returned string.
     """
     if q1_rendered_claims_present(answer_text, claims):
         return answer_text
@@ -2000,11 +2002,11 @@ def retain_q1_validated_party_claims(
     canonicalized_answer = canonicalize_fn(answer_text)
     if q1_rendered_claims_present(canonicalized_answer, claims):
         return canonicalized_answer
-    # The typed summary is already deterministic, bounded Markdown. Append it
-    # after presentation canonicalization so a lossy formatter cannot rewrite
-    # or remove an identity that the final retention check requires.
+    # The typed summary is already deterministic, bounded Markdown. Put it
+    # first so stable-first deduplication preserves authoritative claims and
+    # removes only later overlapping model prose.
     summary = render_q1_validated_party_claims(claims)
-    return f"{canonicalized_answer.rstrip()}\n\n{summary}".strip()
+    return f"{summary}\n\n{canonicalized_answer.lstrip()}".strip()
 
 
 def validated_acceptance_evidence_text(reasoner_result: Mapping[str, Any]) -> str:
