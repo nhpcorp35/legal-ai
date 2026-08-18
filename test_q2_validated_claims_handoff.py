@@ -213,7 +213,7 @@ class WorkflowHandoffWiringTests(unittest.TestCase):
             "Generate requested question", 1
         )[0]
         gen = text.split(
-            "Generate requested question and publish four verified artifacts to B2",
+            "Generate requested question and publish five verified artifacts to B2",
             1,
         )[1].split("Upload machine-readable run result", 1)[0]
         self.assertIn("--validated-claims-out", pre)
