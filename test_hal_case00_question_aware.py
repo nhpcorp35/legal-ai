@@ -300,6 +300,7 @@ class CandidateArtifactNameTests(unittest.TestCase):
                 "Q1_candidate_answer.md",
                 "generation_manifest.json",
                 "model_input_audit.json",
+                "case00_attorney_review_packet.md",
             ),
         )
         self.assertEqual(CLI.CANDIDATE_ARTIFACT_NAMES, CLI.candidate_artifact_names("Q1"))
@@ -312,6 +313,7 @@ class CandidateArtifactNameTests(unittest.TestCase):
                 "Q2_candidate_answer.md",
                 "generation_manifest.json",
                 "model_input_audit.json",
+                "case00_attorney_review_packet.md",
             ),
         )
 
@@ -377,12 +379,16 @@ class QuestionAwareUploadTests(unittest.TestCase):
             )
             self.assertTrue(
                 all("/Q2_candidate_answer." in key or key.endswith(
-                    ("generation_manifest.json", "model_input_audit.json")
+                    (
+                        "generation_manifest.json",
+                        "model_input_audit.json",
+                        "case00_attorney_review_packet.md",
+                    )
                 )
                 for key in durable["object_keys"])
             )
             self.assertEqual(durable["question_id"], "Q2")
-            self.assertEqual(len(durable["object_keys"]), 4)
+            self.assertEqual(len(durable["object_keys"]), 5)
 
     def test_upload_rejects_unexpected_q2_filename(self) -> None:
         with self.assertRaises(CLI.DurableUploadError) as ctx:
@@ -454,9 +460,14 @@ class WrapperQuestionRoutingTests(unittest.TestCase):
                     "create_b2_client",
                     return_value=client,
                 ):
-                    captured = io.StringIO()
-                    with patch("sys.stdout", captured):
-                        code = CLI.main(
+                    with patch.object(
+                        CLI,
+                        "render_candidate_review_packet",
+                        return_value=candidate / "case00_attorney_review_packet.md",
+                    ):
+                        captured = io.StringIO()
+                        with patch("sys.stdout", captured):
+                            code = CLI.main(
                             [
                                 "--case-root",
                                 str(candidate.parent),
