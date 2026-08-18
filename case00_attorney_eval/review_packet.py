@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
@@ -166,6 +167,108 @@ def _render_mapping(mapping: Any) -> list[str]:
     return lines
 
 
+def _table_cell(value: Any) -> str:
+    """Render one Markdown-table cell without allowing row breaks."""
+    if value in (None, "", [], {}):
+        return _NONE
+    return (
+        _scalar(value)
+        .replace("|", r"\|")
+        .replace("\r", " ")
+        .replace("\n", "<br>")
+    )
+
+
+def _candidate_audit(candidate: Mapping[str, Any]) -> Mapping[str, Any]:
+    audit = candidate.get("audit")
+    if isinstance(audit, Mapping):
+        return audit
+    reasoner = candidate.get("reasoner_result")
+    if isinstance(reasoner, Mapping) and isinstance(reasoner.get("audit"), Mapping):
+        return reasoner["audit"]
+    return {}
+
+
+def _party_related_action_role(candidate: Mapping[str, Any], identity: str) -> str:
+    """Read an already-rendered typed related-action role for one identity."""
+    answer = str(candidate.get("proposed_answer") or "")
+    folded = answer.casefold()
+    start = 0
+    while True:
+        start = folded.find(identity.casefold(), start)
+        if start < 0:
+            return _NONE
+        window = answer[start : start + 800]
+        if re.search(r"(?i)^.{0,160}\bcurrent role:", window):
+            matched = re.search(
+                r"(?i)related-action role:\s*((?:third[ -]party\s+)?"
+                r"(?:plaintiff|defendant|appellant|respondent)"
+                r"(?:\s+in\s+Action\s+(?:No\.?|Number)\s*:?\s*\d+)?)",
+                window,
+            )
+            return matched.group(1).strip() if matched else _NONE
+        start += len(identity)
+
+
+def _party_citations(candidate: Mapping[str, Any], identity: str) -> str:
+    """Return unique record locators whose bounded text names the identity."""
+    identity_norm = " ".join(identity.casefold().split())
+    citations: list[str] = []
+    for collection in ("propositions", "supporting_evidence"):
+        for item in _as_items(candidate.get(collection)):
+            if not isinstance(item, Mapping):
+                continue
+            text = " ".join(
+                str(item.get(key) or "")
+                for key in (
+                    "text",
+                    "description",
+                    "source_excerpt",
+                    "excerpt",
+                    "rationale",
+                )
+            )
+            if identity_norm not in " ".join(text.casefold().split()):
+                continue
+            locator = _locators(item)
+            if locator and locator not in citations:
+                citations.append(locator)
+    return "<br>".join(citations) if citations else _NONE
+
+
+def _render_party_role_evidence_matrix(
+    candidate: Mapping[str, Any],
+) -> list[str]:
+    """Render the deterministic Q1 party inventory with adjacent citations."""
+    rows = _candidate_audit(candidate).get("party_role_expected_attributes")
+    if not isinstance(rows, list) or not rows:
+        return [_NONE]
+    lines = [
+        "| Party | Current role | Pleaded designation | Related-action role | Supporting pages |",
+        "|---|---|---|---|---|",
+    ]
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        identity = str(row.get("identity") or "").strip()
+        if not identity:
+            continue
+        lines.append(
+            "| "
+            + " | ".join(
+                (
+                    _table_cell(identity),
+                    _table_cell(row.get("procedural_role")),
+                    _table_cell(row.get("pleaded_role_basis")),
+                    _table_cell(_party_related_action_role(candidate, identity)),
+                    _table_cell(_party_citations(candidate, identity)),
+                )
+            )
+            + " |"
+        )
+    return lines if len(lines) > 2 else [_NONE]
+
+
 def _question_evaluation(
     evaluation: Mapping[str, Any], question_id: Optional[str]
 ) -> Mapping[str, Any]:
@@ -232,15 +335,29 @@ def render_attorney_review_packet(
         "",
         _scalar(candidate.get("question_text") or evaluated.get("question_text") or _NONE),
         "",
-        "## 3. Proposed Answer",
+        "## 3. Attorney Scan: Party / Role Evidence Matrix",
+        "",
+        *_render_party_role_evidence_matrix(candidate),
+        "",
+        "## 4. Unresolved Factual, Evidentiary, or Procedural Questions and Review Limitations",
+        "",
+        "### Unresolved Questions",
+        "",
+        *_render_items(candidate.get("unresolved_questions")),
+        "",
+        "### Review Scope / Limitations",
+        "",
+        _scalar(limitations) if limitations not in (None, "") else _NONE,
+        "",
+        "## 5. Proposed Answer",
         "",
         _scalar(candidate.get("proposed_answer") or evaluated.get("evaluated_answer") or _NONE),
         "",
-        "## 4. Material Propositions",
+        "## 6. Material Propositions",
         "",
         *_render_propositions(candidate.get("propositions")),
         "",
-        "## 5. Supporting Evidence",
+        "## 7. Supporting Evidence",
         "",
         *_render_items(candidate.get("supporting_evidence")),
         "",
@@ -248,15 +365,11 @@ def render_attorney_review_packet(
         "",
         *_render_items(candidate.get("documents_pages_reviewed")),
         "",
-        "## 6. Contrary Evidence and Contradictions",
+        "## 8. Contrary Evidence and Contradictions",
         "",
         *_render_items(candidate.get("contrary_evidence")),
         "",
-        "## 7. Unresolved Factual, Evidentiary, or Procedural Questions",
-        "",
-        *_render_items(candidate.get("unresolved_questions")),
-        "",
-        "## 8. Candidate-vs-Reference Diagnostics",
+        "## 9. Candidate-vs-Reference Diagnostics",
         "",
         f"- **Reference status:** {_scalar(reference.get('status') or diagnostics.get('reference_status') or 'Not available')}",
         f"- **Comparison performed:** {_scalar(bool(diagnostics.get('comparison_performed')))}",
@@ -279,7 +392,7 @@ def render_attorney_review_packet(
         "",
         *_render_mapping(diagnostics.get("citation_evidence_coverage")),
         "",
-        "## 9. Confidence, Limitations, and Attorney-Review Scope",
+        "## 10. Confidence, Limitations, and Attorney-Review Scope",
         "",
         f"- **Candidate confidence:** {_scalar(confidence) if confidence is not None else 'Not available'}",
         f"- **Requires attorney review:** {_scalar(requires_attorney_review)}",
@@ -290,7 +403,7 @@ def render_attorney_review_packet(
         "- **Boundary:** Provisional reference material, if present, is not attorney-approved.",
         "- **Scope:** Verify the answer against the cited record, contrary evidence, unresolved issues, and applicable procedural posture before relying on it.",
         "",
-        "## 10. Attorney Decision Checklist",
+        "## 11. Attorney Decision Checklist",
         "",
         "- [ ] Accept",
         "- [ ] Revise",
