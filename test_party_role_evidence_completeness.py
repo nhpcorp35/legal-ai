@@ -2987,7 +2987,7 @@ class PartyRoleDraftingCompletenessTests(unittest.TestCase):
         self.assertNotIn("attorney_feedback", repair)
         self.assertIn("domestic corporation", result["proposed_answer"].lower())
 
-    def test_failed_repair_is_generation_failure_without_second_retry(self):
+    def test_failed_repair_uses_grounded_fallback_without_second_retry(self):
         calls = []
 
         def _model(system_prompt, user_prompt):
@@ -3000,16 +3000,25 @@ class PartyRoleDraftingCompletenessTests(unittest.TestCase):
             self.retrieval,
             model_call=_model,
         )
-        self.assertEqual(result["status"], de.STATUS_NOT_READY)
+        self.assertEqual(result["status"], de.STATUS_READY)
         self.assertEqual(len(calls), 2)
-        self.assertTrue(result["audit"].get("party_role_completeness_failed"))
         self.assertTrue(result["audit"].get("party_role_repair_attempted"))
         self.assertEqual(result["audit"].get("party_role_provider_calls"), 2)
-        self.assertTrue(result["audit"].get("missing_party_role_attributes"))
-        self.assertEqual(result["proposed_answer"], "")
-        self.assertEqual(result["propositions"], [])
+        fallbacks = result["audit"].get(
+            "party_role_deterministic_attribute_fallbacks"
+        )
+        self.assertTrue(fallbacks)
+        self.assertEqual(
+            de.find_missing_party_role_attributes(
+                result,
+                de.extract_party_role_expected_attributes(
+                    de.build_evidence_packet(self.party_question, self.retrieval)
+                ),
+            ),
+            [],
+        )
 
-    def test_eighteen_proposed_six_retained_excerpt_mismatch_no_false_pass(self):
+    def test_eighteen_proposed_six_retained_excerpt_mismatch_recovers_safely(self):
         """
         18 proposed / 6 retained / 12 excerpt_mismatch must not keep a
         pre-filter completeness PASS or high confidence.
@@ -3135,20 +3144,29 @@ class PartyRoleDraftingCompletenessTests(unittest.TestCase):
             self.retrieval,
             model_call=_model,
         )
-        # Citation filter drops 12 props; scrubbed retained texts are incomplete;
-        # bounded repair cannot recover → FAIL / NOT READY (no false PASS).
-        self.assertEqual(result["status"], de.STATUS_NOT_READY)
+        # Citation filtering drops all 12 unsupported props. The one bounded
+        # retry remains incomplete, then deterministic recovery may append only
+        # attributes extracted from the validated evidence packet.
+        self.assertEqual(result["status"], de.STATUS_READY)
         self.assertEqual(len(calls), 2)
         self.assertTrue(result["audit"].get("party_role_repair_attempted"))
-        self.assertTrue(result["audit"].get("party_role_completeness_failed"))
         self.assertEqual(result["audit"].get("party_role_provider_calls"), 2)
+        self.assertTrue(
+            result["audit"].get("party_role_deterministic_attribute_fallbacks")
+        )
         self.assertNotEqual(result.get("confidence"), 0.95)
         self.assertNotEqual(
             (result.get("review_scope") or {}).get("completeness"),
             "complete",
         )
-        self.assertEqual(result["proposed_answer"], "")
-        self.assertEqual(result["propositions"], [])
+        self.assertEqual(len(result["propositions"]), 6)
+        rendered = result["proposed_answer"].lower()
+        self.assertNotIn("invented unsupported party claim", rendered)
+        self.assertNotIn("phantom party excerpt", rendered)
+        self.assertEqual(
+            de.find_missing_party_role_attributes(result, expected),
+            [],
+        )
 
     def test_non_party_questions_skip_instruction_and_repair(self):
         motion_hit = {
