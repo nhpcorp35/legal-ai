@@ -1154,6 +1154,26 @@ def _sentences_name_distinct_validated_identities(
     )
 
 
+def _adds_validated_identity(
+    sentence: str,
+    retained_sentences: Sequence[str],
+    validated_identities: Sequence[str],
+) -> bool:
+    """True when dropping ``sentence`` would erase a validated identity.
+
+    This is an exact normalized-string coverage guard, independent of the
+    semantic/overlap heuristic used to classify duplicate prose.
+    """
+    normalized_sentence = _norm(sentence)
+    normalized_retained = _norm(" ".join(retained_sentences))
+    return any(
+        identity_norm in normalized_sentence
+        and identity_norm not in normalized_retained
+        for identity_norm in (_norm(identity) for identity in validated_identities)
+        if identity_norm
+    )
+
+
 def apply_duplication_gate(
     answer_text: str,
     duplication_rules: Mapping[str, Any],
@@ -1193,6 +1213,12 @@ def apply_duplication_gate(
             if (equivalent or overlap) and not distinct_identities:
                 dup = True
                 break
+        if dup and _adds_validated_identity(
+            sentence,
+            keep,
+            validated_identities,
+        ):
+            dup = False
         if dup:
             removed += 1
             continue

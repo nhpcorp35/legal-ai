@@ -5,6 +5,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import acceptance_contract.validate as acceptance_validate
+
 
 def load_cli():
     path = Path(__file__).parent / "scripts" / "generate_attorney_feedback_candidate.py"
@@ -885,6 +887,29 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
         self.assertEqual(result, CLI.ac.DUP_OK)
         self.assertIn(first, repaired)
         self.assertIn(second, repaired)
+
+    def test_dedupe_retains_new_identity_when_distinct_identity_heuristic_misses(self):
+        first = "Synthetic Alpha Company — current role: defendant."
+        second = "Synthetic Omega Company — current role: defendant."
+
+        with mock.patch.object(CLI.ac, "texts_are_equivalent", return_value=True):
+            with mock.patch.object(
+                acceptance_validate,
+                "_sentences_name_distinct_validated_identities",
+                return_value=False,
+            ):
+                repaired, result, _diagnostics = CLI.ac.apply_duplication_gate(
+                    f"{first} {second}",
+                    {"max_duplicate_phrase_ratio": 0.25},
+                    validated_identities=[
+                        "Synthetic Alpha Company",
+                        "Synthetic Omega Company",
+                    ],
+                )
+
+        self.assertEqual(result, CLI.ac.DUP_OK)
+        self.assertIn("Synthetic Alpha Company", repaired)
+        self.assertIn("Synthetic Omega Company", repaired)
 
     def test_retention_stage_diagnostics_are_privacy_safe(self):
         claims = {
