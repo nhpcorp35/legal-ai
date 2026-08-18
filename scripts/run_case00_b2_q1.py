@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Rebuild Case-00 derived artifacts from B2, generate one candidate, upload to B2.
 
-This wrapper runs rebuild + generation in the same checkout, then uploads the
-four finalized candidate artifacts to Backblaze B2. Local --candidate-output-root
+This wrapper runs rebuild + generation in the same checkout, renders the
+attorney review packet, then uploads the five finalized candidate artifacts to
+Backblaze B2. Local --candidate-output-root
 paths (including /tmp) are ephemeral only; durable handoff is verified B2 object
 keys under the canonical candidate prefix.
 
@@ -42,6 +43,15 @@ if str(_SCRIPTS) not in sys.path:
 
 import acceptance_contract as ac  # noqa: E402
 import rebuild_case00_derived as rebuild_cli  # noqa: E402
+from case00_attorney_eval.cli import (  # noqa: E402
+    EvaluatorCLIError,
+    load_candidates_from_directory,
+)
+from case00_attorney_eval.evaluate import evaluate_case00  # noqa: E402
+from case00_attorney_eval.review_packet import (  # noqa: E402
+    PACKET_FILENAME,
+    write_attorney_review_packet,
+)
 
 AUTHORIZATION_ACKNOWLEDGEMENT = (
     "I_AUTHORIZE_PRIVATE_EVIDENCE_TRANSMISSION_TO_MODEL_PROVIDER"
@@ -289,7 +299,7 @@ def stage_question_from_canonical_b2_packet(
 
 
 def candidate_artifact_names(question_id: str) -> tuple[str, ...]:
-    """Return the four durable candidate basenames for a question id.
+    """Return the five durable candidate basenames for a question id.
 
     Q1 keeps the historical filenames; Q2+ use ``{question_id}_candidate_answer.*``.
     """
@@ -301,6 +311,7 @@ def candidate_artifact_names(question_id: str) -> tuple[str, ...]:
         f"{qid}_candidate_answer.md",
         "generation_manifest.json",
         "model_input_audit.json",
+        PACKET_FILENAME,
     )
 
 
@@ -1023,6 +1034,49 @@ def _candidate_dir_from_payload(payload: dict[str, Any]) -> Path:
     return path.resolve()
 
 
+def render_candidate_review_packet(
+    case_root: Path,
+    candidate_dir: Path,
+    generation: Mapping[str, Any],
+    *,
+    question_id: str,
+) -> Path:
+    """Evaluate a finalized candidate and render its deterministic review packet."""
+    qid = str(question_id or "").strip()
+    candidate_path = Path(candidate_dir) / f"{qid}_candidate_answer.json"
+    if not candidate_path.is_file():
+        raise DurableUploadError(
+            "candidate JSON missing before attorney review packet rendering",
+            question_id=qid,
+            path=str(candidate_path),
+        )
+    try:
+        candidates = load_candidates_from_directory(Path(candidate_dir))
+        evaluation = evaluate_case00(
+            Path(case_root),
+            candidate_answers=candidates,
+            question_ids=[qid],
+        )
+        return write_attorney_review_packet(
+            candidate_path,
+            evaluation,
+            output_path=Path(candidate_dir) / PACKET_FILENAME,
+            generation=generation,
+        )
+    except EvaluatorCLIError as exc:
+        raise DurableUploadError(
+            "attorney review packet candidate loading failed",
+            reason_code=exc.code,
+            question_id=qid,
+        ) from exc
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise DurableUploadError(
+            "attorney review packet rendering failed",
+            error_type=type(exc).__name__,
+            question_id=qid,
+        ) from exc
+
+
 def upload_candidate_artifacts_to_b2(
     candidate_dir: Path,
     *,
@@ -1032,7 +1086,7 @@ def upload_candidate_artifacts_to_b2(
     environ: Optional[Mapping[str, str]] = None,
     question_id: str = "Q1",
 ) -> dict[str, Any]:
-    """Upload the four finalized artifacts and verify each with head_object.
+    """Upload the five finalized artifacts and verify each with head_object.
 
     Local ``candidate_dir`` is treated as ephemeral. Success requires remote
     verification of every object; missing or size-mismatched objects fail closed.
@@ -1328,6 +1382,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     try:
         generation_payload = _parse_generation_payload(generation.stdout)
         candidate_dir = _candidate_dir_from_payload(generation_payload)
+        render_candidate_review_packet(
+            Path(args.case_root),
+            candidate_dir,
+            generation_payload,
+            question_id=acceptance["question_id"],
+        )
         durable = upload_candidate_artifacts_to_b2(
             candidate_dir,
             prefix=candidate_prefix,
