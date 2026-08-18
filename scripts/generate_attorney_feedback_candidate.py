@@ -919,6 +919,7 @@ def run_production_retrieval(
         re.compile(r"\bdefendants?\b", re.IGNORECASE),
     )
     matched_page_ids = []
+    matched_page_text_by_id = {}
     matched_documents = []
     for document in prepared:
         matched_pages = []
@@ -928,7 +929,9 @@ def run_production_retrieval(
             if all(pattern.search(normalized_text) for pattern in numbered_action_patterns):
                 matched_pages.append(page)
                 if page.get("page_id"):
-                    matched_page_ids.append(str(page["page_id"]))
+                    page_id = str(page["page_id"])
+                    matched_page_ids.append(page_id)
+                    matched_page_text_by_id[page_id] = page_text
                 if len(matched_page_ids) >= min(10, top_k):
                     break
         if matched_pages:
@@ -970,7 +973,15 @@ def run_production_retrieval(
             if not key or key in seen:
                 continue
             seen.add(key)
-            merged.append(dict(row))
+            merged_row = dict(row)
+            if key in matched_page_text_by_id:
+                focused_excerpt = _numbered_related_action_excerpt(
+                    matched_page_text_by_id.get(key, "")
+                )
+                if focused_excerpt:
+                    merged_row["excerpt"] = focused_excerpt
+                    merged_row["party_role_numbered_action_excerpt"] = True
+            merged.append(merged_row)
             if source == "primary":
                 primary_count += 1
             else:
@@ -987,6 +998,25 @@ def run_production_retrieval(
         "supplemental_added_count": supplemental_added,
     }
     return result
+
+
+def _numbered_related_action_excerpt(text: str) -> str:
+    """Return only a sentence/line that states both numbered-action roles."""
+    filtered = mb._filter_party_role_procedural_boilerplate(text or "")
+    units = [
+        mb.clean_text(unit)
+        for unit in re.split(
+            r"(?<!No\.)(?<!no\.)(?<=[.!?])\s+|\n+", filtered
+        )
+        if mb.clean_text(unit)
+    ]
+    for unit in units:
+        normalized = " ".join(unit.split())
+        if de._PARTY_ROLE_NUMBERED_DUAL_ACTION_RE.search(normalized):
+            return mb._truncate_at_token_boundary(
+                unit, mb.PARTY_ROLE_PASSAGE_EXCERPT_MAX
+            )
+    return ""
 
 
 def audit_serialized_model_input(

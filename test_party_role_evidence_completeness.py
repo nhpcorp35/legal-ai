@@ -1569,6 +1569,45 @@ class PartyRolePacketBudgetTests(unittest.TestCase):
             "Who are the parties and what are their roles in this action?"
         )
 
+    def test_dual_action_hit_without_colon_survives_twelve_hit_budget(self):
+        ordinary = []
+        for i in range(12):
+            ordinary.append(
+                {
+                    "result_id": f"ordinary-{i}",
+                    "page_id": f"ordinary-page-{i}",
+                    "nyscef_document_number": 100 + i,
+                    "pdf_page": 1,
+                    "source_filename": f"answer-{i}.pdf",
+                    "document_type": "answer",
+                    "excerpt": (
+                        f"Plaintiff Example {i} LLC is a corporation and Defendant "
+                        f"Example {i} Inc. is a corporation."
+                    ),
+                    "score": 20.0 - i,
+                }
+            )
+        dual_action = {
+            "result_id": "dual-action",
+            "page_id": "dual-action-page",
+            "nyscef_document_number": 999,
+            "pdf_page": 1,
+            "source_filename": "related-action-order.pdf",
+            "document_type": "order",
+            "excerpt": (
+                "The Underwriters are plaintiffs in Action No. 1 and defendants "
+                "in Action No. 2."
+            ),
+            "score": 1.0,
+        }
+
+        selected, _meta = de.apply_party_role_packet_budget(
+            ordinary + [dual_action], max_hits=12
+        )
+
+        self.assertIn("dual-action-page", [hit["page_id"] for hit in selected])
+        self.assertLessEqual(len(selected), 12)
+
     def test_controlling_pleading_survives_total_budget(self):
         plaintiffs = ", ".join(f"Budget Plaintiff {i} LLC" for i in range(1, 12))
         defendants = ", ".join(f"Budget Defendant {i} Inc" for i in range(1, 12))
@@ -2948,7 +2987,7 @@ class PartyRoleDraftingCompletenessTests(unittest.TestCase):
         self.assertNotIn("attorney_feedback", repair)
         self.assertIn("domestic corporation", result["proposed_answer"].lower())
 
-    def test_failed_repair_is_generation_failure_without_second_retry(self):
+    def test_failed_repair_uses_grounded_fallback_without_second_retry(self):
         calls = []
 
         def _model(system_prompt, user_prompt):
@@ -2961,16 +3000,25 @@ class PartyRoleDraftingCompletenessTests(unittest.TestCase):
             self.retrieval,
             model_call=_model,
         )
-        self.assertEqual(result["status"], de.STATUS_NOT_READY)
+        self.assertEqual(result["status"], de.STATUS_READY)
         self.assertEqual(len(calls), 2)
-        self.assertTrue(result["audit"].get("party_role_completeness_failed"))
         self.assertTrue(result["audit"].get("party_role_repair_attempted"))
         self.assertEqual(result["audit"].get("party_role_provider_calls"), 2)
-        self.assertTrue(result["audit"].get("missing_party_role_attributes"))
-        self.assertEqual(result["proposed_answer"], "")
-        self.assertEqual(result["propositions"], [])
+        fallbacks = result["audit"].get(
+            "party_role_deterministic_attribute_fallbacks"
+        )
+        self.assertTrue(fallbacks)
+        self.assertEqual(
+            de.find_missing_party_role_attributes(
+                result,
+                de.extract_party_role_expected_attributes(
+                    de.build_evidence_packet(self.party_question, self.retrieval)
+                ),
+            ),
+            [],
+        )
 
-    def test_eighteen_proposed_six_retained_excerpt_mismatch_no_false_pass(self):
+    def test_eighteen_proposed_six_retained_excerpt_mismatch_recovers_safely(self):
         """
         18 proposed / 6 retained / 12 excerpt_mismatch must not keep a
         pre-filter completeness PASS or high confidence.
@@ -3096,20 +3144,29 @@ class PartyRoleDraftingCompletenessTests(unittest.TestCase):
             self.retrieval,
             model_call=_model,
         )
-        # Citation filter drops 12 props; scrubbed retained texts are incomplete;
-        # bounded repair cannot recover → FAIL / NOT READY (no false PASS).
-        self.assertEqual(result["status"], de.STATUS_NOT_READY)
+        # Citation filtering drops all 12 unsupported props. The one bounded
+        # retry remains incomplete, then deterministic recovery may append only
+        # attributes extracted from the validated evidence packet.
+        self.assertEqual(result["status"], de.STATUS_READY)
         self.assertEqual(len(calls), 2)
         self.assertTrue(result["audit"].get("party_role_repair_attempted"))
-        self.assertTrue(result["audit"].get("party_role_completeness_failed"))
         self.assertEqual(result["audit"].get("party_role_provider_calls"), 2)
+        self.assertTrue(
+            result["audit"].get("party_role_deterministic_attribute_fallbacks")
+        )
         self.assertNotEqual(result.get("confidence"), 0.95)
         self.assertNotEqual(
             (result.get("review_scope") or {}).get("completeness"),
             "complete",
         )
-        self.assertEqual(result["proposed_answer"], "")
-        self.assertEqual(result["propositions"], [])
+        self.assertEqual(len(result["propositions"]), 6)
+        rendered = result["proposed_answer"].lower()
+        self.assertNotIn("invented unsupported party claim", rendered)
+        self.assertNotIn("phantom party excerpt", rendered)
+        self.assertEqual(
+            de.find_missing_party_role_attributes(result, expected),
+            [],
+        )
 
     def test_non_party_questions_skip_instruction_and_repair(self):
         motion_hit = {

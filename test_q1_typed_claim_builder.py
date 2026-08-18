@@ -22,7 +22,11 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
     def test_party_role_retrieval_merges_bounded_numbered_action_pass(self):
         primary_hit = {"page_id": "page-primary", "result_id": "primary"}
         duplicate_hit = {"page_id": "page-primary", "result_id": "duplicate"}
-        dual_action_hit = {"page_id": "page-dual", "result_id": "dual"}
+        dual_action_hit = {
+            "page_id": "page-dual",
+            "result_id": "dual",
+            "excerpt": "Unrelated query-centered lead.",
+        }
 
         with mock.patch.object(
             CLI.mb,
@@ -73,6 +77,14 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
             ["page-primary", "page-dual"],
         )
         self.assertEqual(
+            result["results"][1]["excerpt"],
+            "The Underwriters are plaintiffs in Action No. 1 and defendants "
+            "in Action No. 2.",
+        )
+        self.assertTrue(
+            result["results"][1]["party_role_numbered_action_excerpt"]
+        )
+        self.assertEqual(
             result["party_role_supplemental_retrieval"],
             {
                 "query_kind": "deterministic_numbered_related_action_roles",
@@ -89,6 +101,14 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
             [page["page_id"] for page in supplemental_documents[0]["pages"]],
             ["page-dual"],
         )
+
+    def test_numbered_action_excerpt_does_not_combine_unrelated_sentences(self):
+        text = (
+            "Plaintiffs filed Action No. 1. "
+            "Defendants later answered in Action No. 2."
+        )
+
+        self.assertEqual(CLI._numbered_related_action_excerpt(text), "")
 
     def test_party_role_retrieval_skips_supplemental_without_exact_page(self):
         with mock.patch.object(
