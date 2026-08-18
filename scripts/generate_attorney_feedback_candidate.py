@@ -2208,10 +2208,17 @@ def finalize_canonical_answer_against_contract(
         canonical,
         contract_view,
         apply_fallback=False,
-        apply_duplication_repair=False,
+        apply_duplication_repair=is_q1_claims,
         validated_claims=validated_claims,
         validated_evidence_text=validated_evidence_text,
     )
+    final_answer = final.final_answer if is_q1_claims else canonical
+    if (
+        is_q1_claims
+        and not q1_rendered_claims_present(final_answer, validated_claims)
+    ):
+        final.ok = False
+        final.diagnostics.append("final_dedupe_lost_q1_typed_claim")
     lost = presentation_rewrite_lost_satisfied_criteria(repaired, final)
     if lost:
         final.ok = False
@@ -2220,9 +2227,9 @@ def finalize_canonical_answer_against_contract(
             final.diagnostics.append(f"presentation_rewrite_lost_criterion:{cid}")
     elif not final.ok:
         final.diagnostics.append("canonical_acceptance_validation_failed")
-    # Always return the canonical presentation string as the candidate body,
-    # even on failure, so audits inspect the same text JSON/Markdown would emit.
-    final.final_answer = canonical
+    # Q1 may require one final deterministic dedupe after typed-summary
+    # retention. Return exactly the string that the final validator checked.
+    final.final_answer = final_answer
     if is_q1_claims:
         record_q1_retention_stage(
             q1_retention_diagnostics_out,
@@ -2230,7 +2237,7 @@ def finalize_canonical_answer_against_contract(
             answer_text=final.final_answer,
             claims=validated_claims,
         )
-    return canonical, final
+    return final_answer, final
 
 
 def write_candidate_artifacts(
