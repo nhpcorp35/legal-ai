@@ -1495,7 +1495,8 @@ def presentation_rewrite_lost_satisfied_criteria(
 
 _Q1_RELATED_ACTION_CUE_RE = re.compile(
     r"(?i)(?:\b(?:underlying|related|separate|third[ -]party)\s+"
-    r"(?:action|case|litigation)\b|\baction\s+no\.?\s*:)"
+    r"(?:action|case|litigation)\b|\baction\s+(?:no\.?|number)"
+    r"\s*:?\s*[12]\b)"
 )
 _Q1_RELATED_ROLE_RE = re.compile(
     r"(?i)\b(?:third[ -]party plaintiff|third[ -]party defendant|"
@@ -1662,7 +1663,10 @@ def build_q1_validated_party_claims(
         excerpt = str(hit.get("excerpt") or "")
         group = [
             normalize_proposed_answer_whitespace(sentence)
-            for sentence in re.split(r"(?<=[.!?])\s+|\n+", excerpt)
+            for sentence in re.split(
+                r"(?<!No\.)(?<!no\.)(?<=[.!?])\s+|\n+",
+                excerpt,
+            )
             if normalize_proposed_answer_whitespace(sentence)
         ]
         if group:

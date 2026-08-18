@@ -593,6 +593,42 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
         )
         self.assertTrue(CLI.q1_rendered_claims_present(rendered, claims))
 
+    def test_typed_claim_window_does_not_split_action_no_abbreviation(self):
+        result = {
+            "review_scope": {"completeness": "not_established"},
+            "audit": {
+                "party_role_expected_attributes": [
+                    {
+                        "identity": "Synthetic Underwriters",
+                        "procedural_role": "plaintiff",
+                        "pleaded_role_basis": "",
+                    }
+                ]
+            },
+        }
+        packet = {
+            "retrieval_hits": [
+                {
+                    "excerpt": (
+                        "Action No. 1 lists Synthetic Underwriters as Plaintiffs; "
+                        "Action No. 2 lists them as Defendants."
+                    )
+                }
+            ]
+        }
+
+        diagnostics = {}
+        CLI.build_q1_validated_party_claims(
+            result,
+            evidence_packet=packet,
+            diagnostics_out=diagnostics,
+        )
+
+        self.assertEqual(diagnostics["numbered_dual_role_window_count"], 1)
+        self.assertEqual(
+            diagnostics["numbered_dual_role_identity_party_count"], 1
+        )
+
     def test_restores_typed_summary_after_contract_repair_drops_it(self):
         claims = {
             "schema_version": "q1_validated_party_claims.v1",
