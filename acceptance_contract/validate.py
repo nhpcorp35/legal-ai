@@ -1190,7 +1190,7 @@ def apply_duplication_gate(
                     validated_identities,
                 )
             )
-            if equivalent or (overlap and not distinct_identities):
+            if (equivalent or overlap) and not distinct_identities:
                 dup = True
                 break
         if dup:
@@ -1215,7 +1215,7 @@ def apply_duplication_gate(
                     validated_identities,
                 )
             )
-            if equivalent or (overlap and not distinct_identities):
+            if (equivalent or overlap) and not distinct_identities:
                 still = True
                 break
         if still:
