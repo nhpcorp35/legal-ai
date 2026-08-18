@@ -98,9 +98,13 @@ class GenerateAndEvaluateWorkflowTests(unittest.TestCase):
             str(packet_path.resolve()),
         )
         packet = packet_path.read_text(encoding="utf-8")
-        self.assertIn("## 3. Proposed Answer", packet)
-        self.assertIn("## 4. Material Propositions", packet)
-        self.assertIn("## 10. Attorney Decision Checklist", packet)
+        self.assertIn(
+            "## 3. Attorney Scan: Party / Role Evidence Matrix",
+            packet,
+        )
+        self.assertIn("## 5. Proposed Answer", packet)
+        self.assertIn("## 6. Material Propositions", packet)
+        self.assertIn("## 11. Attorney Decision Checklist", packet)
         self.assertIn("NOT ATTORNEY-APPROVED", packet)
         eval_payload = json.loads(
             (run_dir / "case00_attorney_feedback_eval.json").read_text(encoding="utf-8")
