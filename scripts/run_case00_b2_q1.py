@@ -1069,7 +1069,7 @@ def render_candidate_review_packet(
             reason_code=exc.code,
             question_id=qid,
         ) from exc
-    except (OSError, ValueError, KeyError, TypeError) as exc:
+    except Exception as exc:  # noqa: BLE001 — emit type only; never private content
         raise DurableUploadError(
             "attorney review packet rendering failed",
             error_type=type(exc).__name__,
