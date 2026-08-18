@@ -125,6 +125,14 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
             "Action No.: 2 Certain Interested Underwriters At Lloyd's, London.",
         )
 
+    def test_numbered_action_excerpt_accepts_action_before_role(self):
+        text = (
+            "In Action No.: 1, the Underwriters are Plaintiffs; "
+            "in Action No.: 2, they are Defendants."
+        )
+
+        self.assertEqual(CLI._numbered_related_action_excerpt(text), text)
+
     def test_party_role_retrieval_skips_supplemental_without_exact_page(self):
         with mock.patch.object(
             CLI.mb,
