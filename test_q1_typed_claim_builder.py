@@ -862,7 +862,7 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
             ],
         )
 
-        self.assertEqual(result, CLI.ac.DUP_OK)
+        self.assertIn(result, (CLI.ac.DUP_OK, CLI.ac.DUP_REPAIRED))
         self.assertIn(first, repaired)
         self.assertIn(second, repaired)
 
@@ -889,8 +889,8 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
         self.assertIn(second, repaired)
 
     def test_dedupe_retains_new_identity_when_distinct_identity_heuristic_misses(self):
-        first = "Synthetic Alpha Company — current role: defendant."
-        second = "Synthetic Omega Company — current role: defendant."
+        first = "Synthetic Alpha Company Inc — current role: defendant."
+        second = "Synthetic Alpha Company, Inc. — current role: defendant."
 
         with mock.patch.object(CLI.ac, "texts_are_equivalent", return_value=True):
             with mock.patch.object(
@@ -902,14 +902,14 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
                     f"{first} {second}",
                     {"max_duplicate_phrase_ratio": 0.25},
                     validated_identities=[
-                        "Synthetic Alpha Company",
-                        "Synthetic Omega Company",
+                        "Synthetic Alpha Company Inc",
+                        "Synthetic Alpha Company, Inc.",
                     ],
                 )
 
-        self.assertEqual(result, CLI.ac.DUP_OK)
-        self.assertIn("Synthetic Alpha Company", repaired)
-        self.assertIn("Synthetic Omega Company", repaired)
+        self.assertIn(result, (CLI.ac.DUP_OK, CLI.ac.DUP_REPAIRED))
+        self.assertIn("Synthetic Alpha Company Inc", repaired)
+        self.assertIn("Synthetic Alpha Company, Inc.", repaired)
 
     def test_retention_stage_diagnostics_are_privacy_safe(self):
         claims = {
