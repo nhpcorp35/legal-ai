@@ -962,6 +962,7 @@ def run_production_retrieval(
     seen = set()
     primary_count = 0
     supplemental_added = 0
+    focused_excerpt_count = 0
     for source, rows in (
         ("primary", primary.get("results") or []),
         ("supplemental", supplemental.get("results") or []),
@@ -981,6 +982,7 @@ def run_production_retrieval(
                 if focused_excerpt:
                     merged_row["excerpt"] = focused_excerpt
                     merged_row["party_role_numbered_action_excerpt"] = True
+                    focused_excerpt_count += 1
             merged.append(merged_row)
             if source == "primary":
                 primary_count += 1
@@ -996,6 +998,7 @@ def run_production_retrieval(
         "matched_page_count": len(matched_page_ids),
         "matched_page_ids": matched_page_ids,
         "supplemental_added_count": supplemental_added,
+        "focused_excerpt_count": focused_excerpt_count,
     }
     return result
 
@@ -1051,6 +1054,13 @@ def audit_serialized_model_input(
         if party_role_intent
         else []
     )
+    supplemental_diagnostics = dict(
+        retrieval.get("party_role_supplemental_retrieval") or {}
+    )
+    if supplemental_diagnostics:
+        supplemental_diagnostics["serialized_numbered_action_hit_count"] = sum(
+            1 for hit in hits if hit.get("party_role_numbered_action_excerpt")
+        )
     audit = {
         "question": question_text,
         "party_role_intent": bool(party_role_intent),
@@ -1073,9 +1083,7 @@ def audit_serialized_model_input(
             evidence_packet.get("complaint_structure_context")
         ),
         "complaint_relief_routing": retrieval.get("complaint_relief_routing"),
-        "party_role_supplemental_retrieval": retrieval.get(
-            "party_role_supplemental_retrieval"
-        ),
+        "party_role_supplemental_retrieval": supplemental_diagnostics or None,
         "retrieval_count_semantics": {
             "upstream_retrieval_hit_count": (
                 "Hits returned before evidence-packet materiality and budget filtering."
@@ -1115,6 +1123,8 @@ def safe_party_role_supplemental_diagnostics(
         "matched_page_count",
         "matched_page_ids",
         "supplemental_added_count",
+        "focused_excerpt_count",
+        "serialized_numbered_action_hit_count",
     )
     return {key: raw[key] for key in allowed if key in raw}
 
@@ -1631,8 +1641,17 @@ def build_q1_validated_party_claims(
         ]
         if group:
             sentence_groups.append(group)
+    numbered_dual_role_window_count = sum(
+        1
+        for group in sentence_groups
+        for sentence_index in range(len(group))
+        if _Q1_NUMBERED_DUAL_ROLE_RE.search(
+            " ".join(group[sentence_index : min(len(group), sentence_index + 2)])
+        )
+    )
     parties: list[dict[str, Any]] = []
     diagnostic_rows: list[dict[str, Any]] = []
+    numbered_dual_role_identity_party_count = 0
     for raw in expected:
         if not isinstance(raw, Mapping):
             continue
@@ -1645,6 +1664,7 @@ def build_q1_validated_party_claims(
         substantive_roles: list[str] = []
         evidence_sentence_match_count = 0
         evidence_field_categories: set[str] = set()
+        numbered_dual_role_identity_window = False
         # The inventory basis was itself extracted from the bounded evidence
         # packet. Reuse only recognized substantive designations from it.
         for matched in _Q1_SUBSTANTIVE_ROLE_RE.findall(basis):
@@ -1715,6 +1735,8 @@ def build_q1_validated_party_claims(
                 )
                 if not _Q1_RELATED_ACTION_CUE_RE.search(window):
                     continue
+                if _Q1_NUMBERED_DUAL_ROLE_RE.search(window):
+                    numbered_dual_role_identity_window = True
                 if (
                     _Q1_NUMBERED_DUAL_ROLE_RE.search(window)
                     and "plaintiff" in role.lower()
@@ -1738,6 +1760,8 @@ def build_q1_validated_party_claims(
             basis = "; ".join(substantive_roles)
             evidence_field_categories.add("pleaded_role_basis")
         party_index = len(parties)
+        if numbered_dual_role_identity_window:
+            numbered_dual_role_identity_party_count += 1
         parties.append({
             "identity": identity,
             "procedural_roles": [role] if role else [],
@@ -1765,6 +1789,13 @@ def build_q1_validated_party_claims(
             "party_count": len(parties),
             "parties": diagnostic_rows,
             "role_vocabulary_counts": q1_role_vocabulary_counts(packet),
+            "numbered_dual_role_window_count": numbered_dual_role_window_count,
+            "numbered_dual_role_identity_party_count": (
+                numbered_dual_role_identity_party_count
+            ),
+            "related_action_role_party_count": sum(
+                1 for party in parties if party.get("related_action_roles")
+            ),
         })
     scope = reasoner_result.get("review_scope")
     completeness = str(scope.get("completeness") or "").strip().lower() if isinstance(scope, Mapping) else ""
