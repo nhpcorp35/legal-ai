@@ -1193,9 +1193,20 @@ def apply_duplication_gate(
     Uses ``max_duplicate_phrase_ratio`` from contract duplication_rules.
     """
     max_ratio = float(duplication_rules.get("max_duplicate_phrase_ratio") or 0.25)
+    protected_text = answer_text or ""
+    period_sentinel = "\ue000"
+    for identity in sorted(validated_identities, key=lambda value: -len(str(value))):
+        identity_text = str(identity or "")
+        if "." not in identity_text:
+            continue
+        pattern = re.compile(re.escape(identity_text), re.IGNORECASE)
+        protected_text = pattern.sub(
+            lambda matched: matched.group(0).replace(".", period_sentinel),
+            protected_text,
+        )
     sentences = [
-        s.strip()
-        for s in _SENTENCE_SPLIT_RE.split(answer_text or "")
+        s.strip().replace(period_sentinel, ".")
+        for s in _SENTENCE_SPLIT_RE.split(protected_text)
         if s and s.strip()
     ]
     if len(sentences) < 2:
