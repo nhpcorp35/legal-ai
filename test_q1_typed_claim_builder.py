@@ -93,6 +93,7 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
                 "matched_page_count": 1,
                 "matched_page_ids": ["page-dual"],
                 "supplemental_added_count": 1,
+                "focused_excerpt_count": 1,
             },
         )
 
@@ -189,6 +190,8 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
                         "matched_page_count": 1,
                         "matched_page_ids": ["nyscef-7-page-3"],
                         "supplemental_added_count": 1,
+                        "focused_excerpt_count": 1,
+                        "serialized_numbered_action_hit_count": 1,
                         "private_excerpt": "must not escape",
                     }
                 }
@@ -204,6 +207,8 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
                 "matched_page_count": 1,
                 "matched_page_ids": ["nyscef-7-page-3"],
                 "supplemental_added_count": 1,
+                "focused_excerpt_count": 1,
+                "serialized_numbered_action_hit_count": 1,
             },
         )
 
@@ -321,6 +326,9 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
                         "third_party_plaintiff": 1,
                     },
                 },
+                "numbered_dual_role_window_count": 0,
+                "numbered_dual_role_identity_party_count": 0,
+                "related_action_role_party_count": 1,
             },
         )
         serialized_diagnostics = repr(diagnostics)
@@ -524,15 +532,22 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
             ]
         }
 
+        diagnostics = {}
         claims = CLI.build_q1_validated_party_claims(
             result,
             evidence_packet=packet,
+            diagnostics_out=diagnostics,
         )
         party = claims["parties"][0]
         self.assertIn(
             "defendant in Action No. 2",
             party["related_action_roles"],
         )
+        self.assertEqual(diagnostics["numbered_dual_role_window_count"], 1)
+        self.assertEqual(
+            diagnostics["numbered_dual_role_identity_party_count"], 1
+        )
+        self.assertEqual(diagnostics["related_action_role_party_count"], 1)
         rendered = CLI.render_q1_validated_party_claims(claims)
         self.assertIn(
             "A later filing describes the Underwriters as plaintiff in "
