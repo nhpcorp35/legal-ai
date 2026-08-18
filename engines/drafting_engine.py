@@ -224,9 +224,9 @@ _PARTY_ROLE_SUBSTANTIVE_COVERAGE_RE = re.compile(
 )
 
 _PARTY_ROLE_NUMBERED_DUAL_ACTION_RE = re.compile(
-    r"(?i)\bplaintiffs?\b[\s\S]{0,120}\baction\s+no\.?\s*:\s*1\b"
+    r"(?i)\bplaintiffs?\b[\s\S]{0,120}\baction\s+(?:no\.?|number)\s*:?\s*1\b"
     r"[\s\S]{0,180}\bdefendants?\b[\s\S]{0,120}"
-    r"\baction\s+no\.?\s*:\s*2\b"
+    r"\baction\s+(?:no\.?|number)\s*:?\s*2\b"
 )
 
 _PARTY_ROLE_RELATED_ACTION_COVERAGE_RE = re.compile(

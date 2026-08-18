@@ -1569,6 +1569,45 @@ class PartyRolePacketBudgetTests(unittest.TestCase):
             "Who are the parties and what are their roles in this action?"
         )
 
+    def test_dual_action_hit_without_colon_survives_twelve_hit_budget(self):
+        ordinary = []
+        for i in range(12):
+            ordinary.append(
+                {
+                    "result_id": f"ordinary-{i}",
+                    "page_id": f"ordinary-page-{i}",
+                    "nyscef_document_number": 100 + i,
+                    "pdf_page": 1,
+                    "source_filename": f"answer-{i}.pdf",
+                    "document_type": "answer",
+                    "excerpt": (
+                        f"Plaintiff Example {i} LLC is a corporation and Defendant "
+                        f"Example {i} Inc. is a corporation."
+                    ),
+                    "score": 20.0 - i,
+                }
+            )
+        dual_action = {
+            "result_id": "dual-action",
+            "page_id": "dual-action-page",
+            "nyscef_document_number": 999,
+            "pdf_page": 1,
+            "source_filename": "related-action-order.pdf",
+            "document_type": "order",
+            "excerpt": (
+                "The Underwriters are plaintiffs in Action No. 1 and defendants "
+                "in Action No. 2."
+            ),
+            "score": 1.0,
+        }
+
+        selected, _meta = de.apply_party_role_packet_budget(
+            ordinary + [dual_action], max_hits=12
+        )
+
+        self.assertIn("dual-action-page", [hit["page_id"] for hit in selected])
+        self.assertLessEqual(len(selected), 12)
+
     def test_controlling_pleading_survives_total_budget(self):
         plaintiffs = ", ".join(f"Budget Plaintiff {i} LLC" for i in range(1, 12))
         defendants = ", ".join(f"Budget Defendant {i} Inc" for i in range(1, 12))
