@@ -108,43 +108,31 @@ class DurableUploadUnitTests(unittest.TestCase):
             candidate_json.write_text("{}\n", encoding="utf-8")
             expected = candidate / "case00_attorney_review_packet.md"
             generation = {"ok": True, "finalized": True}
-            evaluation = {"records": []}
-
             with patch.object(
                 CLI,
-                "load_candidates_from_directory",
-                return_value={"Q1": "candidate answer"},
-            ) as load_candidates:
-                with patch.object(
-                    CLI,
-                    "evaluate_case00",
-                    return_value=evaluation,
-                ) as evaluate:
-                    with patch.object(
-                        CLI,
-                        "write_attorney_review_packet",
-                        return_value=expected,
-                    ) as write_packet:
-                        actual = CLI.render_candidate_review_packet(
-                            case_root,
-                            candidate,
-                            generation,
-                            question_id="Q1",
-                        )
+                "write_attorney_review_packet",
+                return_value=expected,
+            ) as write_packet:
+                actual = CLI.render_candidate_review_packet(
+                    case_root,
+                    candidate,
+                    generation,
+                    question_id="Q1",
+                )
 
             self.assertEqual(actual, expected)
-            load_candidates.assert_called_once_with(candidate)
-            evaluate.assert_called_once_with(
-                case_root,
-                candidate_answers={"Q1": "candidate answer"},
-                question_ids=["Q1"],
+            args, kwargs = write_packet.call_args
+            self.assertEqual(args[0], candidate_json)
+            evaluation = args[1]
+            diagnostic = evaluation["questions"][0][
+                "candidate_vs_reference_diagnostics"
+            ]
+            self.assertFalse(diagnostic["comparison_performed"])
+            self.assertEqual(
+                diagnostic["method"], "generation_acceptance_validation_only"
             )
-            write_packet.assert_called_once_with(
-                candidate_json,
-                evaluation,
-                output_path=expected,
-                generation=generation,
-            )
+            self.assertEqual(kwargs["output_path"], expected)
+            self.assertEqual(kwargs["generation"], generation)
 
     def test_review_packet_render_failure_is_privacy_safe(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -155,7 +143,7 @@ class DurableUploadUnitTests(unittest.TestCase):
             )
             with patch.object(
                 CLI,
-                "load_candidates_from_directory",
+                "write_attorney_review_packet",
                 side_effect=RuntimeError("PRIVATE CASE BODY"),
             ):
                 with self.assertRaises(CLI.DurableUploadError) as ctx:
