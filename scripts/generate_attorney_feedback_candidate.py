@@ -1005,9 +1005,7 @@ def _numbered_related_action_excerpt(text: str) -> str:
     filtered = mb._filter_party_role_procedural_boilerplate(text or "")
     units = [
         mb.clean_text(unit)
-        for unit in re.split(
-            r"(?<!No\.)(?<!no\.)(?<=[.!?])\s+|\n+", filtered
-        )
+        for unit in re.split(r"(?<!No\.)(?<!no\.)(?<=[.!?])\s+", filtered)
         if mb.clean_text(unit)
     ]
     for unit in units:
