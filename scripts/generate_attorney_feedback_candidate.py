@@ -2066,12 +2066,17 @@ def retain_q1_validated_party_claims(
     return f"{summary}\n\n{canonicalized_answer.lstrip()}".strip()
 
 
-def validated_acceptance_evidence_text(reasoner_result: Mapping[str, Any]) -> str:
+def validated_acceptance_evidence_text(
+    reasoner_result: Mapping[str, Any],
+    *,
+    verified_relief_claims: Optional[Sequence[Mapping[str, Any]]] = None,
+) -> str:
     """Serialize retained, post-validation evidence for contract checks.
 
     Party-role completeness repair can retain deterministic evidence-extracted
     attribute rows and synthesis units after category-specific validation.
-    Include only those bounded fields plus citation-validated propositions;
+    Include only those bounded fields plus citation-validated propositions and
+    evidence snippets from the same verified relief-claims handoff;
     never serialize raw retrieval hits, removed propositions, review-scope
     prose, unresolved questions, or arbitrary audit content.
     """
@@ -2163,6 +2168,21 @@ def validated_acceptance_evidence_text(reasoner_result: Mapping[str, Any]) -> st
             )
             if category and text_value:
                 rows.append(f"{category} {text_value}")
+    # Q2 relief synthesis can replace model propositions with deterministic
+    # attorney prose. Preserve the source-backed snippets from the verified
+    # claims used by that serializer so evidence validation follows the same
+    # authority as canonicalization, rather than a stale/empty model audit.
+    for claim in verified_relief_claims or []:
+        if not isinstance(claim, Mapping) or not claim.get("supported"):
+            continue
+        snippet = normalize_proposed_answer_whitespace(
+            str(claim.get("evidence_snippet") or "")
+        )
+        page_id = str(claim.get("page_id") or "").strip()
+        if snippet:
+            rows.append(snippet)
+            if page_id:
+                rows.append(f"page_id {page_id}")
     return "\n".join(rows)
 
 
@@ -2993,10 +3013,37 @@ def run_generation(
             verified_claims = reasoner_audit_pre.get("verified_relief_claims")
             if not isinstance(verified_claims, list):
                 verified_claims = None
-        validated_evidence = validated_acceptance_evidence_text(
-            reasoner_result
-        )
         acceptance_claims_doc = validated_claims_doc
+        if (
+            acceptance_claims_doc is None
+            and question_id == "Q2"
+            and verified_claims is not None
+        ):
+            # Use the same immutable, privacy-safe claim shape for the normal
+            # Q2 evidence path as for the preflight handoff. This lets the
+            # shared no-defense evaluator validate a supported paraphrase
+            # without treating OCR-fragmented source text as display prose.
+            acceptance_claims_doc = build_validated_structured_claims(
+                benchmark_id=str(acceptance_contract_config.get("benchmark_id") or ""),
+                question_id=question_id,
+                acceptance_contract_object_key=str(
+                    acceptance_contract_config.get("object_key") or ""
+                ),
+                acceptance_contract_content_sha256=str(
+                    acceptance_contract_config.get("content_sha256") or ""
+                ),
+                claims=verified_claims,
+            )
+        validated_evidence = validated_acceptance_evidence_text(
+            reasoner_result,
+            verified_relief_claims=verified_claims,
+        )
+        if acceptance_claims_doc is not None and not validated_evidence.strip():
+            # The privacy-safe Q2 handoff intentionally contains no OCR text.
+            # Its fixed templates and typed semantic evaluator are the only
+            # authority available at this boundary; do not treat an empty
+            # handoff as evidence-unsupported before those checks can run.
+            validated_evidence = None
         q1_claim_extraction_diagnostics: Optional[dict[str, Any]] = None
         if (
             acceptance_claims_doc is None
