@@ -157,6 +157,43 @@ class AttorneyReviewPacketTests(unittest.TestCase):
         ):
             self.assertIn(expected, packet)
 
+    def test_party_role_matrix_places_roles_next_to_supporting_pages(self):
+        candidate = self._candidate()
+        candidate["audit"] = {
+            "party_role_expected_attributes": [
+                {
+                    "identity": "Alpha LLC",
+                    "procedural_role": "plaintiff",
+                    "pleaded_role_basis": "named insured",
+                }
+            ]
+        }
+        candidate["proposed_answer"] = (
+            "Alpha LLC — current role: plaintiff; pleaded designation: named "
+            "insured; related-action role: defendant in Action No. 2."
+        )
+
+        packet = render_attorney_review_packet(candidate, self._evaluation())
+
+        self.assertIn("Attorney Scan: Party / Role Evidence Matrix", packet)
+        self.assertIn(
+            "| Party | Current role | Pleaded designation | Related-action role | Supporting pages |",
+            packet,
+        )
+        self.assertIn("| Alpha LLC | plaintiff | named insured |", packet)
+        self.assertIn("defendant in Action No. 2", packet)
+        self.assertIn(
+            "Page ID: " + chr(96) + "nyscef-101-page-0004" + chr(96),
+            packet,
+        )
+        self.assertLess(
+            packet.index(
+                "Unresolved Factual, Evidentiary, or Procedural Questions "
+                "and Review Limitations"
+            ),
+            packet.index("Proposed Answer"),
+        )
+
     def test_candidate_review_requirement_cannot_be_downgraded(self):
         candidate = self._candidate()
         evaluation = self._evaluation()
