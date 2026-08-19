@@ -83,6 +83,7 @@ CANONICAL_ACCEPTANCE_CONTRACT_ALLOWLIST: frozenset[tuple[str, str]] = frozenset(
     {
         (REQUIRED_CASE00_BENCHMARK_ID, "Q1"),
         (REQUIRED_CASE00_BENCHMARK_ID, "Q2"),
+        (REQUIRED_CASE00_BENCHMARK_ID, "Q3"),
     }
 )
 
