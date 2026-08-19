@@ -2759,6 +2759,52 @@ def load_configured_acceptance_contract(
     return ac.LOAD_OK, result.evaluation, None, prov
 
 
+
+def build_acceptance_contract_drafting_instruction(
+    contract_view: Optional[ac.ContractEvaluationView],
+) -> str:
+    """Return an in-memory contract-derived checklist for the model prompt.
+
+    This is prompt guidance only. It is never serialized to artifacts or status
+    output, and the ordinary acceptance validator remains the authority.
+    """
+    if contract_view is None:
+        return ""
+
+    criteria_lines: list[str] = []
+    for criterion in contract_view.criteria:
+        required = [
+            phrase
+            for phrase in (
+                *criterion.presence_phrases,
+                *criterion.evidence_phrases,
+                *criterion.semantic_required_phrases,
+            )
+            if str(phrase).strip()
+        ]
+        if not required:
+            continue
+        rendered = "; ".join(
+            json.dumps(str(phrase), ensure_ascii=False) for phrase in required
+        )
+        criteria_lines.append(f"- {criterion.id}: {rendered}")
+
+    if not criteria_lines:
+        return ""
+
+    return (
+        "ACCEPTANCE-CONTRACT DRAFTING CHECKLIST (mandatory):\n"
+        "Write the proposed_answer so every listed criterion is addressed in "
+        "a distinct, clearly labeled section. Include each listed phrase "
+        "verbatim only when it is supported by the supplied evidence packet, "
+        "and attach the supporting page_id citation in that section. Do not "
+        "satisfy this checklist only in propositions, source excerpts, or audit "
+        "fields. Do not invent policy facts, dates, parties, coverage terms, or "
+        "evidence; if the supplied record does not support a required item, say "
+        "so with the available citation and preserve uncertainty.\n"
+        + "\n".join(criteria_lines)
+    )
+
 def run_generation(
     *,
     case_root: Path,
@@ -2901,6 +2947,15 @@ def run_generation(
     docs_subset = _documents_for_hit_pages(
         list(retrieval.get("results") or []), documents
     )
+    contract_drafting_instruction = build_acceptance_contract_drafting_instruction(
+        contract_view
+    )
+    active_system_prompt = de.RECORD_ANALYSIS_SYSTEM_PROMPT
+    if contract_drafting_instruction:
+        active_system_prompt = (
+            f"{active_system_prompt}\n\n{contract_drafting_instruction}"
+        )
+
     reasoner_result = de.answer_attorney_record_question(
         inputs["question_text"],
         retrieval,
@@ -2912,6 +2967,7 @@ def run_generation(
         if isinstance(structure_map, dict)
         else None,
         model_call=model_call,
+        system_prompt=active_system_prompt,
     )
 
     audit = reasoner_result.get("audit") or {}
