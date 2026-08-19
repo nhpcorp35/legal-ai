@@ -2930,7 +2930,7 @@ def append_source_backed_missing_presence_excerpts(
             citation = f"NYSCEF {doc_no}"
             if isinstance(page_no, int):
                 citation += f", PDF p.{page_no}"
-            additions.append(f"- {excerpt} ({citation})")
+            additions.append(f"- {phrase_text} ({citation})")
     if not additions:
         return proposed_answer
     return (
