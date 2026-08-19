@@ -785,6 +785,49 @@ class PrefixSafetyRegressionTests(unittest.TestCase):
         self.assertTrue(key.startswith(CANONICAL_PREFIX))
 
 
+
+class ContractPromptGuidanceTests(unittest.TestCase):
+    def test_contract_guidance_includes_only_required_evaluation_phrases(self) -> None:
+        import acceptance_contract as ac
+
+        view = ac.ContractEvaluationView(
+            contract_id="synthetic-contract",
+            version="v1.0.0",
+            schema_version="v1",
+            benchmark_id=REQUIRED_BENCHMARK,
+            question_id="Q3",
+            object_key="synthetic/key",
+            content_sha256="a" * 64,
+            required_criterion_ids=("crit-a",),
+            evidence_constraints={},
+            semantic_preservation={},
+            duplication_rules={},
+            criteria=(
+                ac.CriterionEvalSpec(
+                    id="crit-a",
+                    presence_phrases=("required presence",),
+                    evidence_phrases=("required evidence",),
+                    semantic_required_phrases=("required semantic",),
+                    semantic_forbidden_phrases=("forbidden phrase",),
+                    fallback_text="private fallback must not be injected",
+                ),
+            ),
+            structure_requirements=ac.StructureRequirements((), (), ()),
+        )
+
+        prompt = CLI.build_acceptance_contract_drafting_instruction(view)
+
+        self.assertIn("crit-a", prompt)
+        self.assertIn("required presence", prompt)
+        self.assertIn("required evidence", prompt)
+        self.assertIn("required semantic", prompt)
+        self.assertNotIn("forbidden phrase", prompt)
+        self.assertNotIn("private fallback must not be injected", prompt)
+
+    def test_contract_guidance_is_empty_without_a_contract(self) -> None:
+        self.assertEqual(CLI.build_acceptance_contract_drafting_instruction(None), "")
+
+
 class CanonicalAcceptanceContractResolveTests(unittest.TestCase):
     """Question-aware acceptance-contract resolution (synthetic fixtures only)."""
 
