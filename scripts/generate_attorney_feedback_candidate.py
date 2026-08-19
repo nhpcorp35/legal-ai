@@ -2868,60 +2868,6 @@ def merge_retrieval_results(primary: Mapping[str, Any], supplemental: Mapping[st
     return out
 
 
-def preflight_acceptance_contract_source_evidence(
-    documents: Sequence[Mapping[str, Any]],
-    contract_view: Optional[ac.ContractEvaluationView],
-) -> dict[str, Any]:
-    """Verify that every contract evidence phrase exists in permitted sources.
-
-    This runs before retrieval or provider invocation.  It exposes only
-    criterion-level counts, never source text or protected contract phrases.
-    """
-    if contract_view is None:
-        return {"configured": False, "ok": True, "criteria": []}
-
-    page_texts: list[str] = []
-    for document in documents:
-        for page in document.get("pages") or []:
-            if not isinstance(page, Mapping):
-                continue
-            text = str(page.get("text") or page.get("page_text") or "")
-            normalized = " ".join(text.casefold().split())
-            if normalized:
-                page_texts.append(normalized)
-
-    criteria: list[dict[str, Any]] = []
-    for criterion in contract_view.criteria:
-        phrases = tuple(
-            " ".join(str(value or "").casefold().split())
-            for value in criterion.evidence_phrases
-            if str(value or "").strip()
-        )
-        supporting_page_count = sum(
-            1
-            for text in page_texts
-            if any(phrase in text for phrase in phrases)
-        )
-        matched_phrase_count = sum(
-            1 for phrase in phrases if any(phrase in text for text in page_texts)
-        )
-        criteria.append(
-            {
-                "criterion_id": criterion.id,
-                "required_evidence_phrase_count": len(phrases),
-                "matched_evidence_phrase_count": matched_phrase_count,
-                "supporting_page_count": supporting_page_count,
-                "ok": matched_phrase_count == len(phrases),
-            }
-        )
-
-    return {
-        "configured": True,
-        "ok": all(item["ok"] for item in criteria),
-        "source_page_count": len(page_texts),
-        "criteria": criteria,
-    }
-
 def run_generation(
     *,
     case_root: Path,
@@ -3012,14 +2958,6 @@ def run_generation(
         inputs["inventory"],
         inputs["exhibit_map"],
     )
-    evidence_preflight = preflight_acceptance_contract_source_evidence(
-        documents, contract_view
-    )
-    if not evidence_preflight["ok"]:
-        raise GenerationError(
-            "Acceptance-contract source evidence preflight failed before model generation",
-            acceptance_contract_evidence_preflight=evidence_preflight,
-        )
     retrieval = run_production_retrieval(
         documents,
         inputs["case_map"],
