@@ -786,6 +786,22 @@ class PrefixSafetyRegressionTests(unittest.TestCase):
 
 
 
+
+class AcceptanceEvidenceBindingTests(unittest.TestCase):
+    def test_acceptance_evidence_includes_verified_packet_excerpts(self) -> None:
+        evidence = CLI.validated_acceptance_evidence_text(
+            {"propositions": [], "audit": {}},
+            evidence_packet={
+                "retrieval_hits": [
+                    {"excerpt": "verified packet evidence", "page_id": "page-7"}
+                ]
+            },
+        )
+
+        self.assertIn("verified packet evidence", evidence)
+        self.assertIn("page_id page-7", evidence)
+
+
 class ContractPromptGuidanceTests(unittest.TestCase):
     def test_contract_guidance_includes_only_required_evaluation_phrases(self) -> None:
         import acceptance_contract as ac
