@@ -843,6 +843,48 @@ class ContractPromptGuidanceTests(unittest.TestCase):
     def test_contract_guidance_is_empty_without_a_contract(self) -> None:
         self.assertEqual(CLI.build_acceptance_contract_drafting_instruction(None), "")
 
+    def test_contract_evidence_query_and_merge_are_bounded_and_stable(self) -> None:
+        import acceptance_contract as ac
+
+        view = ac.ContractEvaluationView(
+            contract_id="synthetic-contract",
+            version="v1.0.0",
+            schema_version="v1",
+            benchmark_id=REQUIRED_BENCHMARK,
+            question_id="Q3",
+            object_key="synthetic/key",
+            content_sha256="a" * 64,
+            required_criterion_ids=("crit-a",),
+            evidence_constraints={},
+            semantic_preservation={},
+            duplication_rules={},
+            criteria=(
+                ac.CriterionEvalSpec(
+                    id="crit-a",
+                    presence_phrases=(),
+                    evidence_phrases=("policy number", "policy number", "coverage"),
+                    semantic_required_phrases=(),
+                    semantic_forbidden_phrases=(),
+                    fallback_text="must not be used as a query",
+                ),
+            ),
+            structure_requirements=ac.StructureRequirements((), (), ()),
+        )
+
+        self.assertEqual(
+            CLI.contract_evidence_retrieval_query(view),
+            "policy number coverage",
+        )
+        merged = CLI.merge_retrieval_results(
+            {"results": [{"page_id": "p1"}, {"page_id": "p2"}]},
+            {"results": [{"page_id": "p2"}, {"page_id": "p3"}]},
+        )
+        self.assertEqual(
+            [row["page_id"] for row in merged["results"]],
+            ["p1", "p2", "p3"],
+        )
+        self.assertTrue(merged["contract_evidence_retrieval_applied"])
+
 
 class CanonicalAcceptanceContractResolveTests(unittest.TestCase):
     """Question-aware acceptance-contract resolution (synthetic fixtures only)."""
