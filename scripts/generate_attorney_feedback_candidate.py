@@ -2069,6 +2069,7 @@ def retain_q1_validated_party_claims(
 def validated_acceptance_evidence_text(
     reasoner_result: Mapping[str, Any],
     *,
+    evidence_packet: Optional[Mapping[str, Any]] = None,
     verified_relief_claims: Optional[Sequence[Mapping[str, Any]]] = None,
 ) -> str:
     """Serialize retained, post-validation evidence for contract checks.
@@ -2183,6 +2184,22 @@ def validated_acceptance_evidence_text(
             rows.append(snippet)
             if page_id:
                 rows.append(f"page_id {page_id}")
+    # Acceptance evidence must be derived from the exact retrieval packet that
+    # reached the model, rather than from whichever source excerpts the model
+    # happened to repeat in its proposition objects. This preserves the
+    # validator's evidence grounding without treating model serialization
+    # choices as evidence loss.
+    for hit in (evidence_packet or {}).get("retrieval_hits") or []:
+        if not isinstance(hit, Mapping):
+            continue
+        excerpt = normalize_proposed_answer_whitespace(
+            str(hit.get("excerpt") or "")
+        )
+        page_id = str(hit.get("page_id") or "").strip()
+        if excerpt:
+            rows.append(excerpt)
+        if page_id:
+            rows.append(f"page_id {page_id}")
     return "\n".join(rows)
 
 
@@ -3092,6 +3109,7 @@ def run_generation(
             )
         validated_evidence = validated_acceptance_evidence_text(
             reasoner_result,
+            evidence_packet=inspection.get("evidence_packet"),
             verified_relief_claims=verified_claims,
         )
         if acceptance_claims_doc is not None and not validated_evidence.strip():
