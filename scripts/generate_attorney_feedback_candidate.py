@@ -2907,7 +2907,7 @@ def preflight_acceptance_contract_source_evidence(
         )
         criteria.append(
             {
-                "criterion_id": criterion.criterion_id,
+                "criterion_id": criterion.id,
                 "required_evidence_phrase_count": len(phrases),
                 "matched_evidence_phrase_count": matched_phrase_count,
                 "supporting_page_count": supporting_page_count,
