@@ -2196,10 +2196,19 @@ def validated_acceptance_evidence_text(
             str(hit.get("excerpt") or "")
         )
         page_id = str(hit.get("page_id") or "").strip()
+        nyscef_document_number = hit.get("nyscef_document_number")
+        pdf_page = hit.get("pdf_page")
         if excerpt:
             rows.append(excerpt)
         if page_id:
             rows.append(f"page_id {page_id}")
+        # These are verified retrieval-citation metadata, not model assertions.
+        # Keep canonical labels so acceptance contracts may require source and
+        # page citations without depending on a model to repeat their syntax.
+        if isinstance(nyscef_document_number, int):
+            rows.append(f"NYSCEF {nyscef_document_number}")
+        if isinstance(pdf_page, int):
+            rows.append(f"PDF p.{pdf_page}")
     return "\n".join(rows)
 
 
