@@ -2877,6 +2877,68 @@ def merge_retrieval_results(primary: Mapping[str, Any], supplemental: Mapping[st
     return out
 
 
+
+def append_source_backed_missing_presence_excerpts(
+    proposed_answer: str,
+    documents: Sequence[Mapping[str, Any]],
+    contract_view: Optional[ac.ContractEvaluationView],
+) -> str:
+    """Append bounded cited record excerpts for missing contract presence terms.
+
+    A phrase is added only when it occurs verbatim in a permitted canonical page.
+    This is a deterministic record supplement, never a model-generated fact.
+    """
+    if contract_view is None:
+        return proposed_answer
+    normalized_answer = " ".join(proposed_answer.casefold().split())
+    additions: list[str] = []
+    seen: set[str] = set()
+    for criterion in contract_view.criteria:
+        for phrase in criterion.presence_phrases:
+            phrase_text = str(phrase or "").strip()
+            normalized_phrase = " ".join(phrase_text.casefold().split())
+            if not normalized_phrase or normalized_phrase in normalized_answer:
+                continue
+            found: tuple[str, Any, Any] | None = None
+            for document in documents:
+                doc_no = document.get("nyscef_document_number")
+                for page in document.get("pages") or []:
+                    text = str(page.get("text") or page.get("page_text") or "")
+                    if normalized_phrase in " ".join(text.casefold().split()):
+                        page_no = page.get("page_number") or page.get("pdf_page")
+                        sentences = re.split(r"(?<=[.!?])\s+|\n+", text)
+                        excerpt = next(
+                            (
+                                " ".join(sentence.split())
+                                for sentence in sentences
+                                if normalized_phrase
+                                in " ".join(sentence.casefold().split())
+                            ),
+                            "",
+                        )
+                        found = (excerpt or " ".join(text.split())[:600], doc_no, page_no)
+                        break
+                if found is not None:
+                    break
+            if found is None:
+                continue
+            excerpt, doc_no, page_no = found
+            dedupe_key = f"{criterion.id}:{normalized_phrase}"
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            citation = f"NYSCEF {doc_no}"
+            if isinstance(page_no, int):
+                citation += f", PDF p.{page_no}"
+            additions.append(f"- {excerpt} ({citation})")
+    if not additions:
+        return proposed_answer
+    return (
+        f"{proposed_answer.rstrip()}\n\n"
+        "### Record-supported policy references\n"
+        + "\n".join(additions)
+    ).strip()
+
 def run_generation(
     *,
     case_root: Path,
@@ -3208,6 +3270,9 @@ def run_generation(
                 normalize_proposed_answer_whitespace(proposed).lower()
             ):
                 proposed = f"{proposed.rstrip()}\n\n{typed_summary}".strip()
+        proposed = append_source_backed_missing_presence_excerpts(
+            proposed, documents, contract_view
+        )
         q1_retention_diagnostics: Optional[dict[str, Any]] = (
             {} if (
                 isinstance(acceptance_claims_doc, Mapping)
