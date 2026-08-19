@@ -2822,6 +2822,51 @@ def build_acceptance_contract_drafting_instruction(
         + "\n".join(criteria_lines)
     )
 
+
+def contract_evidence_retrieval_query(
+    contract_view: Optional[ac.ContractEvaluationView],
+) -> str:
+    """Build a bounded local retrieval query from contract evidence terms.
+
+    The query is used only against the already-permitted Case-00 corpus. It is
+    not serialized to B2 artifacts or status output.
+    """
+    if contract_view is None:
+        return ""
+    phrases: list[str] = []
+    seen: set[str] = set()
+    for criterion in contract_view.criteria:
+        for phrase in criterion.evidence_phrases:
+            cleaned = str(phrase or "").strip()
+            key = cleaned.casefold()
+            if cleaned and key not in seen:
+                seen.add(key)
+                phrases.append(cleaned)
+    return " ".join(phrases)
+
+
+def merge_retrieval_results(primary: Mapping[str, Any], supplemental: Mapping[str, Any]) -> dict:
+    """Merge retrieval hits deterministically by page/result identity."""
+    out = dict(primary)
+    merged: list[dict] = []
+    seen: set[str] = set()
+    for source in (primary, supplemental):
+        for raw in source.get("results") or []:
+            if not isinstance(raw, Mapping):
+                continue
+            item = dict(raw)
+            key = str(item.get("page_id") or item.get("result_id") or "")
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            merged.append(item)
+    out["results"] = merged
+    out["result_count"] = len(merged)
+    out["contract_evidence_retrieval_applied"] = bool(
+        supplemental.get("results")
+    )
+    return out
+
 def run_generation(
     *,
     case_root: Path,
@@ -2918,6 +2963,22 @@ def run_generation(
         inputs["question_text"],
         top_k=top_k,
     )
+    # Bring the exact source terms the loaded contract requires into the same
+    # permitted retrieval packet before the provider sees any evidence. This is
+    # retrieval only; it never converts contract terms into unsupported facts.
+    contract_evidence_query = contract_evidence_retrieval_query(contract_view)
+    if contract_evidence_query:
+        contract_evidence_retrieval = mb.retrieve_canonical_records(
+            mb.prepare_documents_for_canonical_retrieval(documents),
+            contract_evidence_query,
+            case_map=inputs["case_map"],
+            top_k=top_k,
+            build_case_map_if_missing=False,
+        )
+        retrieval = merge_retrieval_results(
+            retrieval, contract_evidence_retrieval
+        )
+
     # Attach structure map to retrieval for party-role evidence routing only when
     # schema-current; never fabricate ranges from a stale/absent map.
     structure_map = inputs.get("complaint_structure_map")
