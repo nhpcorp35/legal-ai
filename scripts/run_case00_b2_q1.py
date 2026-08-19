@@ -87,6 +87,19 @@ CANONICAL_ACCEPTANCE_CONTRACT_ALLOWLIST: frozenset[tuple[str, str]] = frozenset(
     }
 )
 
+CANONICAL_ACCEPTANCE_CONTRACT_FIXED_PINS: dict[tuple[str, str], dict[str, str]] = {
+    (REQUIRED_CASE00_BENCHMARK_ID, "Q3"): {
+        "object_key": (
+            "Benchmarks/acceptance-contracts/Case-00-Triborough/Q3/"
+            "case00-triborough-q3-insurance-policy-coverage/v1.0.0/"
+            "acceptance_contract.json"
+        ),
+        "contract_id": "case00-triborough-q3-insurance-policy-coverage",
+        "version": "v1.0.0",
+        "content_sha256": "d8a2be5c014907debc0d74ca95d7f4b5ab0805cd72d14e278cd7a184b890d670",
+    }
+}
+
 # Backward-compatible alias: historical callers treated this as a size pin map.
 # Version selection is now listing-driven; sizes come from B2 object metadata.
 CANONICAL_ACCEPTANCE_CONTRACT_EXPECTED_SIZES: dict[tuple[str, str], int] = {}
@@ -350,6 +363,9 @@ def canonical_acceptance_contract_id(benchmark_id: str, question_id: str) -> str
             benchmark_id=bench,
             question_id=qid,
         )
+    fixed = CANONICAL_ACCEPTANCE_CONTRACT_FIXED_PINS.get((bench, qid))
+    if fixed is not None:
+        return fixed["contract_id"]
     return f"case00-triborough-{qid.lower()}"
 
 
@@ -376,6 +392,10 @@ def build_canonical_acceptance_contract_prefix(
             benchmark_id=bench,
             question_id=qid,
         )
+    fixed = CANONICAL_ACCEPTANCE_CONTRACT_FIXED_PINS.get((bench, qid))
+    if fixed is not None:
+        version = fixed["version"]
+        return fixed["object_key"][: -len(version + "/" + _ACCEPTANCE_CONTRACT_OBJECT_NAME)]
     contract_id = canonical_acceptance_contract_id(bench, qid)
     return (
         "Benchmarks/acceptance-contracts/case-00-triborough/"
@@ -405,6 +425,19 @@ def build_canonical_acceptance_contract_object_key(
     prefix = build_canonical_acceptance_contract_prefix(benchmark_id, question_id)
     ver = str(version or "").strip()
     parse_acceptance_contract_semver(ver)
+    fixed = CANONICAL_ACCEPTANCE_CONTRACT_FIXED_PINS.get(
+        (str(benchmark_id or "").strip(), str(question_id or "").strip())
+    )
+    if fixed is not None:
+        if ver != fixed["version"]:
+            raise AcceptanceContractConfigError(
+                "fixed acceptance-contract version mismatch",
+                benchmark_id=str(benchmark_id or "").strip(),
+                question_id=str(question_id or "").strip(),
+                expected_version=fixed["version"],
+                actual_version=ver,
+            )
+        return fixed["object_key"]
     return f"{prefix}{ver}/{_ACCEPTANCE_CONTRACT_OBJECT_NAME}"
 
 
@@ -623,7 +656,27 @@ def resolve_canonical_acceptance_contract_spec(
             contract_id=contract_id,
             prefix=prefix,
         )
-    selected = select_highest_acceptance_contract_candidate(candidates)
+    fixed = CANONICAL_ACCEPTANCE_CONTRACT_FIXED_PINS.get((bench, qid))
+    if fixed is not None:
+        selected = next(
+            (
+                candidate
+                for candidate in candidates
+                if candidate["object_key"] == fixed["object_key"]
+                and candidate["version"] == fixed["version"]
+            ),
+            None,
+        )
+        if selected is None:
+            raise AcceptanceContractConfigError(
+                "pinned acceptance-contract object is absent from canonical prefix",
+                benchmark_id=bench,
+                question_id=qid,
+                object_key=fixed["object_key"],
+                version=fixed["version"],
+            )
+    else:
+        selected = select_highest_acceptance_contract_candidate(candidates)
     expected_size = selected.get("size")
     if expected_size is None:
         # Optional legacy pin map (empty by default) — never invent sizes.
@@ -644,6 +697,9 @@ def resolve_canonical_acceptance_contract_spec(
         "contract_id": contract_id,
         "version": str(selected["version"]),
         "prefix": prefix,
+        "expected_content_sha256": (
+            fixed["content_sha256"] if fixed is not None else None
+        ),
     }
 
 
@@ -656,6 +712,7 @@ def verify_acceptance_contract_object_bytes(
     expected_question_id: str,
     expected_contract_id: Optional[str] = None,
     expected_version: Optional[str] = None,
+    expected_content_sha256: Optional[str] = None,
 ) -> dict[str, Any]:
     """Verify size, identity, schema, embedded hash, and object integrity.
 
@@ -691,6 +748,14 @@ def verify_acceptance_contract_object_bytes(
             object_key=object_key,
             error_code=result.error_code,
             diagnostics=list(result.diagnostics),
+        )
+    expected_content_sha = str(expected_content_sha256 or "").strip().lower()
+    if expected_content_sha and result.computed_content_sha256.lower() != expected_content_sha:
+        raise AcceptanceContractConfigError(
+            "acceptance-contract content SHA-256 mismatch",
+            object_key=object_key,
+            expected_content_sha256=expected_content_sha,
+            actual_content_sha256=result.computed_content_sha256.lower(),
         )
     meta = result.metadata
     if meta is None:
