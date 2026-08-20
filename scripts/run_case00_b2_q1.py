@@ -88,6 +88,16 @@ CANONICAL_ACCEPTANCE_CONTRACT_ALLOWLIST: frozenset[tuple[str, str]] = frozenset(
 )
 
 CANONICAL_ACCEPTANCE_CONTRACT_FIXED_PINS: dict[tuple[str, str], dict[str, str]] = {
+    (REQUIRED_CASE00_BENCHMARK_ID, "Q1"): {
+        "object_key": (
+            "Benchmarks/acceptance-contracts/case-00-triborough/Q1/"
+            "case00-triborough-q1-party-scope-amendment/v1.0.0/"
+            "acceptance_contract.json"
+        ),
+        "contract_id": "case00-triborough-q1-party-scope-amendment",
+        "version": "v1.0.0",
+        "content_sha256": "4d33bf3d89d54fb125ec309c7d0db938dfb2ce20096c5211d2e93a4d4a22222c",
+    },
     (REQUIRED_CASE00_BENCHMARK_ID, "Q3"): {
         "object_key": (
             "Benchmarks/acceptance-contracts/Case-00-Triborough/Q3/"
