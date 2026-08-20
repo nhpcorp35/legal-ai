@@ -83,6 +83,12 @@ EXPECTED_REPO_OWNER = "nhpcorp35"
 EXPECTED_REPO_NAME = "legal-ai"
 EXPECTED_REPO_BRANCH = "main"
 
+# Attorney-approved Q1 scope amendment: the complaint, not an independently
+# brought action, controls the party roster for this question.
+Q1_PARTY_SCOPE_AMENDMENT_CONTRACT_ID = (
+    "case00-triborough-q1-party-scope-amendment"
+)
+
 # Path substrings that must never be opened as generation inputs.
 _PROTECTED_PATH_MARKERS = (
     "attorney-gold-benchmark",
@@ -1848,6 +1854,45 @@ def build_q1_validated_party_claims(
     return claims
 
 
+def apply_q1_party_scope_amendment(
+    claims: Mapping[str, Any],
+    contract_view: ac.ContractEvaluationView,
+    *,
+    diagnostics_out: Optional[dict[str, Any]] = None,
+) -> Mapping[str, Any]:
+    """Apply the attorney-approved Q1 boundary without changing generic Q1.
+
+    Related-action roles remain available for ordinary Q1 contracts.  The
+    Case-00 amendment is narrower: an independently brought action may not
+    expand or recategorize this complaint's party roster unless the record
+    establishes the necessary connection/consolidation.
+    """
+    if contract_view.contract_id != Q1_PARTY_SCOPE_AMENDMENT_CONTRACT_ID:
+        return claims
+    amended = dict(claims)
+    amended_parties = []
+    removed_count = 0
+    for party in claims.get("parties") or []:
+        if not isinstance(party, Mapping):
+            amended_parties.append(party)
+            continue
+        amended_party = dict(party)
+        removed_count += len(amended_party.get("related_action_roles") or [])
+        amended_party["related_action_roles"] = []
+        amended_parties.append(amended_party)
+    amended["parties"] = amended_parties
+    if diagnostics_out is not None:
+        diagnostics_out["independent_action_roles_excluded"] = True
+        diagnostics_out["independent_action_role_count_excluded"] = removed_count
+    if not ac.q1_party_claims_are_valid(amended):
+        raise GenerationError(
+            "Q1 party-scope amendment produced invalid typed claims",
+            reason_code="q1_party_scope_amendment_invalid",
+            finalized=False,
+        )
+    return amended
+
+
 _Q1_SUBSTANTIVE_ROLE_LIMITATION = (
     "The retrieved excerpts do not establish the substantive role allegedly "
     "played by each named defendant in the underlying insurance dispute or each "
@@ -3261,6 +3306,11 @@ def run_generation(
             acceptance_claims_doc = build_q1_validated_party_claims(
                 reasoner_result,
                 evidence_packet=inspection.get("evidence_packet"),
+                diagnostics_out=q1_claim_extraction_diagnostics,
+            )
+            acceptance_claims_doc = apply_q1_party_scope_amendment(
+                acceptance_claims_doc,
+                contract_view,
                 diagnostics_out=q1_claim_extraction_diagnostics,
             )
             typed_summary = render_q1_validated_party_claims(

@@ -3,6 +3,7 @@
 import importlib.util
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 import acceptance_contract.validate as acceptance_validate
@@ -1148,6 +1149,44 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
         )
         self.assertEqual(claims["parties"], [])
         self.assertEqual(claims["roster_completeness"], "not_established")
+
+    def test_party_scope_amendment_excludes_independent_action_roles_only(self):
+        claims = {
+            "schema_version": "q1_validated_party_claims.v1",
+            "roster_completeness": "not_established",
+            "parties": [{
+                "identity": "Synthetic Underwriters",
+                "procedural_roles": ["plaintiff"],
+                "pleaded_role_basis": "",
+                "substantive_role": "underwriters",
+                "entity_type": "",
+                "residence_or_ppb": "",
+                "related_action_roles": ["defendant in Action No. 2"],
+            }],
+        }
+        diagnostics = {}
+        amended = CLI.apply_q1_party_scope_amendment(
+            claims,
+            SimpleNamespace(
+                contract_id=CLI.Q1_PARTY_SCOPE_AMENDMENT_CONTRACT_ID
+            ),
+            diagnostics_out=diagnostics,
+        )
+        self.assertEqual(
+            amended["parties"][0]["related_action_roles"], []
+        )
+        self.assertEqual(
+            claims["parties"][0]["related_action_roles"],
+            ["defendant in Action No. 2"],
+        )
+        self.assertNotIn("Action No. 2", CLI.render_q1_attorney_answer(amended))
+        self.assertEqual(
+            diagnostics["independent_action_role_count_excluded"], 1
+        )
+        unchanged = CLI.apply_q1_party_scope_amendment(
+            claims, SimpleNamespace(contract_id="other-q1-contract")
+        )
+        self.assertIs(unchanged, claims)
 
 
 if __name__ == "__main__":
