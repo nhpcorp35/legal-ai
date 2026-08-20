@@ -91,12 +91,12 @@ CANONICAL_ACCEPTANCE_CONTRACT_FIXED_PINS: dict[tuple[str, str], dict[str, str]] 
     (REQUIRED_CASE00_BENCHMARK_ID, "Q1"): {
         "object_key": (
             "Benchmarks/acceptance-contracts/case-00-triborough/Q1/"
-            "case00-triborough-q1-party-scope-amendment/v1.0.1/"
+            "case00-triborough-q1-party-scope-amendment/v1.0.2/"
             "acceptance_contract.json"
         ),
         "contract_id": "case00-triborough-q1-party-scope-amendment",
-        "version": "v1.0.1",
-        "content_sha256": "2249afe307c2caae919ec3748fddc80517d49e77b08d7d44a48fd12b1fd900ad",
+        "version": "v1.0.2",
+        "content_sha256": "a2391dc350c6aa9db0cc2c8f800d459b8c1360eac45b36c23c1ea630e27bb75f",
     },
     (REQUIRED_CASE00_BENCHMARK_ID, "Q3"): {
         "object_key": (
