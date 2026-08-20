@@ -98,6 +98,30 @@ class NormalizePrefixTests(unittest.TestCase):
                     CLI.normalize_candidate_b2_prefix(bad)
 
 
+class CanonicalQ1AcceptanceContractTests(unittest.TestCase):
+    def test_q1_uses_the_party_scope_amendment_pin(self) -> None:
+        benchmark_id = CLI.REQUIRED_CASE00_BENCHMARK_ID
+        expected_key = (
+            "Benchmarks/acceptance-contracts/case-00-triborough/Q1/"
+            "case00-triborough-q1-party-scope-amendment/v1.0.0/"
+            "acceptance_contract.json"
+        )
+        self.assertEqual(
+            CLI.canonical_acceptance_contract_id(benchmark_id, "Q1"),
+            "case00-triborough-q1-party-scope-amendment",
+        )
+        self.assertEqual(
+            CLI.build_canonical_acceptance_contract_object_key(
+                benchmark_id, "Q1", version="v1.0.0"
+            ),
+            expected_key,
+        )
+        with self.assertRaises(CLI.AcceptanceContractConfigError):
+            CLI.build_canonical_acceptance_contract_object_key(
+                benchmark_id, "Q1", version="v1.0.1"
+            )
+
+
 class DurableUploadUnitTests(unittest.TestCase):
     def test_renders_review_packet_from_finalized_candidate_without_model_call(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
