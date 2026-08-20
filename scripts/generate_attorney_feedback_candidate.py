@@ -3197,6 +3197,20 @@ def run_generation(
         or [],
     }
 
+    q1_timeout_fallback = (
+        question_id == "Q1"
+        and de.detect_party_role_question_intent(inputs["question_text"])
+        and "timeout" in str(audit.get("provider_error") or "").lower()
+    )
+    if q1_timeout_fallback:
+        # Q1's deterministic typed-claims path can be safely validated and
+        # rendered without a second provider response.
+        reasoner_result = dict(reasoner_result)
+        reasoner_result["status"] = de.STATUS_READY
+        reasoner_result["proposed_answer"] = ""
+        audit = dict(audit)
+        audit["q1_timeout_typed_claims_fallback"] = True
+        reasoner_result["audit"] = audit
     finalized = (
         reasoner_result.get("status") == de.STATUS_READY and not completeness_failed
     )
