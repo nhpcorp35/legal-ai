@@ -328,6 +328,7 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
         self.assertNotIn(
             "landlord", by_name["Synthetic Contractor"]["substantive_role"]
         )
+
         self.assertEqual(
             diagnostics,
             {
@@ -389,6 +390,30 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
             CLI.q1_rendered_claims_present(
                 rendered.replace("third-party plaintiff", ""), claims
             )
+        )
+
+    def test_party_scope_timeout_uses_complete_deterministic_inventory(self):
+        result = {
+            "review_scope": {"completeness": "not_established"},
+            "audit": {
+                "provider_error": "TimeoutError: timed out",
+                "party_role_expected_attributes": [
+                    {"identity": "Synthetic Plaintiff", "procedural_role": "plaintiff"},
+                    {"identity": "Synthetic Defendant", "procedural_role": "defendant"},
+                ],
+            },
+        }
+        diagnostics = {}
+        claims = CLI.build_q1_validated_party_claims(
+            result,
+            diagnostics_out=diagnostics,
+            require_deterministic_roster_completeness=True,
+        )
+
+        self.assertEqual(claims["roster_completeness"], "complete")
+        self.assertEqual(
+            diagnostics["roster_completeness_source"],
+            "deterministic_expected_inventory",
         )
 
     def test_associates_adjacent_role_without_cross_party_leakage(self):
