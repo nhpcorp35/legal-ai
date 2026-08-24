@@ -1233,12 +1233,43 @@ def _adds_validated_identity(
     )
 
 
+def _adds_protected_phrase(
+    sentence: str,
+    retained_sentences: Sequence[str],
+    protected_phrases: Sequence[str],
+) -> bool:
+    """True when dropping ``sentence`` would erase contract-required meaning."""
+    normalized_sentence = _norm(sentence)
+    normalized_retained = _norm(" ".join(retained_sentences))
+    return any(
+        phrase_norm in normalized_sentence and phrase_norm not in normalized_retained
+        for phrase_norm in (_norm(phrase) for phrase in protected_phrases)
+        if phrase_norm
+    )
+
+
+def _sentences_add_distinct_protected_phrases(
+    first: str,
+    second: str,
+    protected_phrases: Sequence[str],
+) -> bool:
+    """True when either similar sentence carries protected meaning the other lacks."""
+    return _adds_protected_phrase(
+        first, [second], protected_phrases
+    ) or _adds_protected_phrase(
+        second,
+        [first],
+        protected_phrases,
+    )
+
+
 def apply_duplication_gate(
     answer_text: str,
     duplication_rules: Mapping[str, Any],
     *,
     repair: bool = True,
     validated_identities: Sequence[str] = (),
+    protected_phrases: Sequence[str] = (),
 ) -> tuple[str, str, list[str]]:
     """Remove materially duplicative prose or fail closed.
 
@@ -1247,11 +1278,12 @@ def apply_duplication_gate(
     max_ratio = float(duplication_rules.get("max_duplicate_phrase_ratio") or 0.25)
     protected_text = answer_text or ""
     period_sentinel = "\ue000"
-    for identity in sorted(validated_identities, key=lambda value: -len(str(value))):
-        identity_text = str(identity or "")
-        if "." not in identity_text:
+    protected_tokens = tuple(validated_identities) + tuple(protected_phrases)
+    for token in sorted(protected_tokens, key=lambda value: -len(str(value))):
+        token_text = str(token or "")
+        if "." not in token_text:
             continue
-        pattern = re.compile(re.escape(identity_text), re.IGNORECASE)
+        pattern = re.compile(re.escape(token_text), re.IGNORECASE)
         protected_text = pattern.sub(
             lambda matched: matched.group(0).replace(".", period_sentinel),
             protected_text,
@@ -1289,6 +1321,8 @@ def apply_duplication_gate(
             validated_identities,
         ):
             dup = False
+        if dup and _adds_protected_phrase(sentence, keep, protected_phrases):
+            dup = False
         if dup:
             removed += 1
             continue
@@ -1311,7 +1345,16 @@ def apply_duplication_gate(
                     validated_identities,
                 )
             )
-            if (equivalent or overlap) and not distinct_identities:
+            distinct_protected_phrases = _sentences_add_distinct_protected_phrases(
+                a,
+                b,
+                protected_phrases,
+            )
+            if (
+                (equivalent or overlap)
+                and not distinct_identities
+                and not distinct_protected_phrases
+            ):
                 still = True
                 break
         if still:
@@ -1359,7 +1402,10 @@ def validate_final_answer_against_contract(
     # policy, period/limits, terms, and uncertainty criteria; applying a
     # carried-over pleaded-count inventory here can reject an otherwise
     # fully validated policy answer.
-    if view.contract_id == Q3_POLICY_COVERAGE_CONTRACT_ID and view.question_id == "Q3":
+    if (
+        view.contract_id == Q3_POLICY_COVERAGE_CONTRACT_ID
+        and view.question_id == "Q3"
+    ):
         counts = []
     text, counts_ok, count_diags = evaluate_material_omissions_for_source_counts(
         text,
@@ -1425,11 +1471,20 @@ def validate_final_answer_against_contract(
             for party in validated_claims.get("parties") or []
             if isinstance(party, Mapping) and str(party.get("identity") or "")
         ]
+    protected_phrases: list[str] = []
+    if view.contract_id == Q3_POLICY_COVERAGE_CONTRACT_ID and view.question_id == "Q3":
+        protected_phrases = [
+            phrase
+            for criterion in view.criteria
+            for phrase in criterion.semantic_required_phrases
+            if str(phrase or "").strip()
+        ]
     text, dup_result, dup_diags = apply_duplication_gate(
         text,
         view.duplication_rules,
         repair=apply_duplication_repair,
         validated_identities=validated_identities,
+        protected_phrases=protected_phrases,
     )
     diagnostics.extend(dup_diags)
 
