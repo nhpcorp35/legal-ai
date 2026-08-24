@@ -1888,7 +1888,10 @@ def apply_q1_party_scope_amendment(
     expand or recategorize this complaint's party roster unless the record
     establishes the necessary connection/consolidation.
     """
-    if contract_view.contract_id != Q1_PARTY_SCOPE_AMENDMENT_CONTRACT_ID:
+    if (
+        getattr(contract_view, "contract_id", "")
+        != Q1_PARTY_SCOPE_AMENDMENT_CONTRACT_ID
+    ):
         return claims
     amended = dict(claims)
     amended_parties = []
@@ -2034,6 +2037,33 @@ def render_q1_attorney_answer(claims: Mapping[str, Any]) -> str:
             "- The retrieved record does not establish that this is a complete party roster."
         )
     return "\n".join(lines)
+
+
+def append_q1_party_scope_guidance(
+    answer_text: str, contract_view: ac.ContractEvaluationView
+) -> str:
+    """Keep Case-00's attorney-approved scope limits in the final table."""
+    if (
+        getattr(contract_view, "contract_id", "")
+        != Q1_PARTY_SCOPE_AMENDMENT_CONTRACT_ID
+    ):
+        return answer_text
+    guidance = [
+        "Party-roster boundary: the complaint caption and Parties section are "
+        "the controlling source for the party roster.",
+        "Role limitation: party designations are pleaded allegations. A notice "
+        "defendant is joined for declaratory relief because the requested "
+        "declaration may affect alleged rights; joinder itself does not allege "
+        "wrongdoing.",
+        "Separate actions: a separate action does not expand or recategorize "
+        "this action's party roster unless the record establishes a connected "
+        "or related and, where applicable, consolidated matter.",
+        "Lloyd's limitation: the record may not identify the particular "
+        "subscribing underwriters or policy issuers within the Lloyd's consortium.",
+        "Placeholder limitation: John/Jane Does and XYZ Corps. are pleaded "
+        "placeholders unless the record identifies them.",
+    ]
+    return "\n\n".join([answer_text.rstrip(), "### Scope and limitations", *guidance])
 
 
 def q1_missing_rendered_claim_fields(
@@ -2285,7 +2315,11 @@ def validate_q1_attorney_answer(
     validated_evidence_text: Optional[str] = None,
 ) -> tuple[str, ac.AcceptanceValidationResult]:
     """Serialize validated Q1 claims without running prose deduplication."""
-    attorney_answer = canonical_proposed_answer(render_q1_attorney_answer(claims))
+    attorney_answer = canonical_proposed_answer(
+        append_q1_party_scope_guidance(
+            render_q1_attorney_answer(claims), contract_view
+        )
+    )
     validation = ac.validate_final_answer_against_contract(
         attorney_answer,
         contract_view,

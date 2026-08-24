@@ -1277,6 +1277,15 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
         self.assertTrue(validation.ok)
         self.assertTrue(answer.startswith("Validated party/role summary:"))
         self.assertNotIn("model-only phrase", answer)
+        for phrase in (
+            "complaint caption and Parties section are the controlling source",
+            "notice defendant is joined for declaratory relief",
+            "separate action does not expand or recategorize",
+            "Lloyd's consortium",
+            "John/Jane Does and XYZ Corps. are pleaded placeholders",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, answer)
         self.assertTrue(
             all(
                 result.result_code == CLI.ac.CRIT_PASS
