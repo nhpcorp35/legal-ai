@@ -257,7 +257,7 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
             CLI.safe_party_role_supplemental_diagnostics({"audit": {}})
         )
 
-    def test_builds_party_roles_related_roles_and_incomplete_scope(self):
+    def test_complete_deterministic_inventory_overrides_model_scope(self):
         result = {
             "propositions": [
                 {
@@ -303,7 +303,7 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
             claims["schema_version"],
             "q1_validated_party_claims.v1",
         )
-        self.assertEqual(claims["roster_completeness"], "not_established")
+        self.assertEqual(claims["roster_completeness"], "complete")
         by_name = {party["identity"]: party for party in claims["parties"]}
         self.assertEqual(
             by_name["Synthetic Underwriters"]["procedural_roles"],
@@ -383,7 +383,9 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
         rendered = CLI.render_q1_validated_party_claims(claims)
         self.assertIn("Validated party/role summary:", rendered)
         self.assertIn("related-action role: third-party plaintiff", rendered)
-        self.assertIn("does not establish that this is a complete party roster", rendered)
+        self.assertNotIn(
+            "does not establish that this is a complete party roster", rendered
+        )
         self.assertTrue(CLI.q1_rendered_claims_present(rendered, claims))
         self.assertFalse(
             CLI.q1_rendered_claims_present(

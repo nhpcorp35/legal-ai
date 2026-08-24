@@ -1838,12 +1838,23 @@ def build_q1_validated_party_claims(
                 1 for party in parties if party.get("related_action_roles")
             ),
         })
-    scope = reasoner_result.get("review_scope")
-    completeness = str(scope.get("completeness") or "").strip().lower() if isinstance(scope, Mapping) else ""
+    # The deterministic inventory is extracted from the controlling complaint
+    # before drafting.  A model-generated review_scope is not authoritative
+    # enough to downgrade that complete roster after every inventoried party
+    # has been carried into the typed handoff.
+    inventory_identities = set(expected_identities)
+    rendered_identities = {
+        normalize_proposed_answer_whitespace(str(party.get("identity") or ""))
+        for party in parties
+        if normalize_proposed_answer_whitespace(str(party.get("identity") or ""))
+    }
+    roster_complete = bool(inventory_identities) and (
+        rendered_identities == inventory_identities
+    ) and len(parties) == len(inventory_identities)
     claims = {
         "schema_version": ac.Q1_VALIDATED_PARTY_CLAIMS_SCHEMA_VERSION,
         "parties": parties,
-        "roster_completeness": "complete" if completeness in {"complete", "established"} else "not_established",
+        "roster_completeness": "complete" if roster_complete else "not_established",
     }
     if not ac.q1_party_claims_are_valid(claims):
         raise GenerationError(
