@@ -1,0 +1,76 @@
+From c224896cead3b29398f1df2ae841fada972293e3 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Mon, 24 Aug 2026 13:53:42 -0400
+Subject: [PATCH] Use deterministic Q1 complaint roster completeness
+
+---
+ scripts/generate_attorney_feedback_candidate.py | 17 ++++++++++++++---
+ test_q1_typed_claim_builder.py                  |  8 +++++---
+ 2 files changed, 19 insertions(+), 6 deletions(-)
+
+diff --git a/scripts/generate_attorney_feedback_candidate.py b/scripts/generate_attorney_feedback_candidate.py
+index a8e87c4..f82e058 100755
+--- a/scripts/generate_attorney_feedback_candidate.py
++++ b/scripts/generate_attorney_feedback_candidate.py
+@@ -1838,12 +1838,23 @@ def build_q1_validated_party_claims(
+                 1 for party in parties if party.get("related_action_roles")
+             ),
+         })
+-    scope = reasoner_result.get("review_scope")
+-    completeness = str(scope.get("completeness") or "").strip().lower() if isinstance(scope, Mapping) else ""
++    # The deterministic inventory is extracted from the controlling complaint
++    # before drafting.  A model-generated review_scope is not authoritative
++    # enough to downgrade that complete roster after every inventoried party
++    # has been carried into the typed handoff.
++    inventory_identities = set(expected_identities)
++    rendered_identities = {
++        normalize_proposed_answer_whitespace(str(party.get("identity") or ""))
++        for party in parties
++        if normalize_proposed_answer_whitespace(str(party.get("identity") or ""))
++    }
++    roster_complete = bool(inventory_identities) and (
++        rendered_identities == inventory_identities
++    ) and len(parties) == len(inventory_identities)
+     claims = {
+         "schema_version": ac.Q1_VALIDATED_PARTY_CLAIMS_SCHEMA_VERSION,
+         "parties": parties,
+-        "roster_completeness": "complete" if completeness in {"complete", "established"} else "not_established",
++        "roster_completeness": "complete" if roster_complete else "not_established",
+     }
+     if not ac.q1_party_claims_are_valid(claims):
+         raise GenerationError(
+diff --git a/test_q1_typed_claim_builder.py b/test_q1_typed_claim_builder.py
+index 8cd3671..df3ee4c 100644
+--- a/test_q1_typed_claim_builder.py
++++ b/test_q1_typed_claim_builder.py
+@@ -257,7 +257,7 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
+             CLI.safe_party_role_supplemental_diagnostics({"audit": {}})
+         )
+ 
+-    def test_builds_party_roles_related_roles_and_incomplete_scope(self):
++    def test_complete_deterministic_inventory_overrides_model_scope(self):
+         result = {
+             "propositions": [
+                 {
+@@ -303,7 +303,7 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
+             claims["schema_version"],
+             "q1_validated_party_claims.v1",
+         )
+-        self.assertEqual(claims["roster_completeness"], "not_established")
++        self.assertEqual(claims["roster_completeness"], "complete")
+         by_name = {party["identity"]: party for party in claims["parties"]}
+         self.assertEqual(
+             by_name["Synthetic Underwriters"]["procedural_roles"],
+@@ -383,7 +383,9 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
+         rendered = CLI.render_q1_validated_party_claims(claims)
+         self.assertIn("Validated party/role summary:", rendered)
+         self.assertIn("related-action role: third-party plaintiff", rendered)
+-        self.assertIn("does not establish that this is a complete party roster", rendered)
++        self.assertNotIn(
++            "does not establish that this is a complete party roster", rendered
++        )
+         self.assertTrue(CLI.q1_rendered_claims_present(rendered, claims))
+         self.assertFalse(
+             CLI.q1_rendered_claims_present(
+-- 
+2.51.1
