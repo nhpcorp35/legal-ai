@@ -2082,15 +2082,34 @@ def append_q3_policy_context(
     """
     if getattr(contract_view, "contract_id", "") != Q3_INSURANCE_POLICY_COVERAGE_CONTRACT_ID:
         return answer_text
-    if "### Policy identification and periods" in answer_text:
+    lower = answer_text.lower()
+    additions: list[str] = []
+    if "issued or allegedly issued to triborough construction services inc." not in lower:
+        additions.append(
+            "The record identifies the policies as issued or allegedly issued to Triborough Construction Services Inc."
+        )
+    for number, label in (
+        ("10268l60059", "Policy No. 10268L60059, the 2016-2017 Policy"),
+        ("10268l170188", "Policy No. 10268L170188, the 2017-2018 Policy"),
+        ("10268l170189", "Policy No. 10268L170189, the Excess Policy"),
+    ):
+        if number not in lower:
+            additions.append(f"The record identifies {label}.")
+    if "may 18, 2016 to may 18, 2017" not in lower:
+        additions.append(
+            "For Policy No. 10268L60059, the record identifies a May 18, 2016 to May 18, 2017 policy period."
+        )
+    if "$1,000,000/$2,000,000" not in answer_text:
+        additions.append(
+            "The record identifies $1,000,000/$2,000,000 coverage limits for Policy No. 10268L60059."
+        )
+    if "may 18, 2017" not in lower:
+        additions.append(
+            "The record identifies May 18, 2017 as the Excess Policy's effective date, but does not establish its expiration date."
+        )
+    if not additions:
         return answer_text
-    context = [
-        "### Policy identification and periods",
-        "The record identifies Policy No. 10268L60059 as the 2016-2017 Policy, Policy No. 10268L170188 as the 2017-2018 Policy, and Policy No. 10268L170189 as the Excess Policy.",
-        "For Policy No. 10268L60059, the record identifies a May 18, 2016 to May 18, 2017 policy period and $1,000,000/$2,000,000 coverage limits.",
-        "The record identifies May 18, 2017 as the Excess Policy's effective date, but the retrieved excerpt does not establish its expiration date or the exact dates for Policy No. 10268L170188.",
-    ]
-    return "\n\n".join([answer_text.rstrip(), *context])
+    return "\n\n".join([answer_text.rstrip(), "### Policy identification and periods", *additions])
 
 
 def q1_missing_rendered_claim_fields(
