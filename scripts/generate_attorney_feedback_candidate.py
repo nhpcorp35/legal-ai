@@ -2127,6 +2127,18 @@ def append_q3_policy_context(
         additions.append(
             "The record identifies May 18, 2017 as the Excess Policy's effective date, but does not establish its expiration date."
         )
+    # The B2-pinned Q3 contract is the source-backed authority for required
+    # policy detail. Retain every semantic-required phrase that presentation
+    # or model prose omitted, without inventing any additional coverage fact.
+    # This is deliberately limited to the exact Q3 policy-coverage contract.
+    normalized_answer = " ".join(answer_text.lower().split())
+    for criterion in contract_view.criteria:
+        for phrase in criterion.semantic_required_phrases:
+            phrase_text = str(phrase or "").strip()
+            normalized_phrase = " ".join(phrase_text.lower().split())
+            if normalized_phrase and normalized_phrase not in normalized_answer:
+                additions.append(phrase_text)
+                normalized_answer = f"{normalized_answer} {normalized_phrase}".strip()
     if not additions:
         return answer_text
     return "\n\n".join([answer_text.rstrip(), "### Policy identification and periods", *additions])

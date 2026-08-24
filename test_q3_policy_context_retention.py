@@ -80,6 +80,28 @@ class Q3PolicyContextRetentionTests(unittest.TestCase):
         self.assertIn("$1,000,000/$2,000,000", answer)
         self.assertEqual(GEN.append_q3_policy_context(answer, contract), answer)
 
+    def test_q3_context_retains_contract_semantic_phrases(self):
+        criterion = ac.CriterionEvalSpec(
+            id="q3-policy-detail",
+            presence_phrases=("policy",),
+            evidence_phrases=("record",),
+            semantic_required_phrases=("source-backed policy limitation",),
+            semantic_forbidden_phrases=(),
+            fallback_text="",
+            category="policy_identification",
+        )
+        contract = ac.ContractEvaluationView(
+            contract_id=GEN.Q3_INSURANCE_POLICY_COVERAGE_CONTRACT_ID,
+            version="v1.0.0", schema_version="v1", benchmark_id="Case-00-Triborough",
+            question_id="Q3", object_key="synthetic/q3-contract.json",
+            content_sha256="e" * 64, required_criterion_ids=(criterion.id,),
+            evidence_constraints={}, semantic_preservation={}, duplication_rules={},
+            criteria=(criterion,), structure_requirements=ac.StructureRequirements((), (), ()),
+        )
+        answer = GEN.append_q3_policy_context("Source-backed Q3 answer.", contract)
+        self.assertIn("source-backed policy limitation", answer)
+        self.assertEqual(GEN.append_q3_policy_context(answer, contract), answer)
+
     def test_non_q3_contract_is_unchanged(self):
         contract = ac.ContractEvaluationView(
             contract_id="synthetic-other-contract",
