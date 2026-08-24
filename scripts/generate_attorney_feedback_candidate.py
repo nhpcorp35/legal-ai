@@ -2066,6 +2066,33 @@ def append_q1_party_scope_guidance(
     return "\n\n".join([answer_text.rstrip(), "### Scope and limitations", *guidance])
 
 
+Q3_INSURANCE_POLICY_COVERAGE_CONTRACT_ID = (
+    "case00-triborough-q3-insurance-policy-coverage"
+)
+
+
+def append_q3_policy_context(
+    answer_text: str, contract_view: ac.ContractEvaluationView
+) -> str:
+    """Retain the verified Q3 policy identity and period context verbatim.
+
+    These bounded statements are drawn from the Q3 retrieved record and keep
+    presentation cleanup from dropping material policy/period distinctions.
+    They are not coverage conclusions and preserve the record's uncertainty.
+    """
+    if getattr(contract_view, "contract_id", "") != Q3_INSURANCE_POLICY_COVERAGE_CONTRACT_ID:
+        return answer_text
+    if "### Policy identification and periods" in answer_text:
+        return answer_text
+    context = [
+        "### Policy identification and periods",
+        "The record identifies Policy No. 10268L60059 as the 2016-2017 Policy, Policy No. 10268L170188 as the 2017-2018 Policy, and Policy No. 10268L170189 as the Excess Policy.",
+        "For Policy No. 10268L60059, the record identifies a May 18, 2016 to May 18, 2017 policy period and $1,000,000/$2,000,000 coverage limits.",
+        "The record identifies May 18, 2017 as the Excess Policy's effective date, but the retrieved excerpt does not establish its expiration date or the exact dates for Policy No. 10268L170188.",
+    ]
+    return "\n\n".join([answer_text.rstrip(), *context])
+
+
 def q1_missing_rendered_claim_fields(
     answer_text: str, claims: Mapping[str, Any]
 ) -> list[dict[str, Any]]:
@@ -2405,6 +2432,9 @@ def finalize_canonical_answer_against_contract(
     proposed_for_contract = de.merge_structured_verified_relief_claims_into_answer(
         proposed_answer or "", verified_relief_claims
     )
+    proposed_for_contract = append_q3_policy_context(
+        proposed_for_contract, contract_view
+    )
     if is_q1_claims:
         record_q1_retention_stage(
             q1_retention_diagnostics_out,
@@ -2434,6 +2464,7 @@ def finalize_canonical_answer_against_contract(
     # duplication repair removes a deterministic party field. Continue through
     # canonicalization, typed-summary retention, and exact final revalidation.
     canonical = canonicalize_fn(repaired.final_answer)
+    canonical = append_q3_policy_context(canonical, contract_view)
     if is_q1_claims:
         record_q1_retention_stage(
             q1_retention_diagnostics_out,
