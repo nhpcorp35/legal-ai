@@ -60,6 +60,14 @@ Q1_STRUCTURED_CRITERION_IDS = frozenset({
     "Q1_C4_LIMITED_SUBSTANTIVE_ROLE_INFORMATION",
     "Q1_C5_DUAL_ROLES_IN_RELATED_ACTION", "Q1_C6_INCOMPLETE_PARTY_ROSTER",
 })
+Q1_PARTY_SCOPE_STRUCTURED_CRITERION_IDS = frozenset({
+    "complaint-controls-party-roster",
+    "pleaded-procedural-roles",
+    "notice-defendant-purpose",
+    "exclude-unconnected-actions",
+    "lloyds-identity-limitation",
+    "doe-placeholder-limitation",
+})
 
 _NO_DUTY_RE = re.compile(r"\bno\b(?:\s+\w+){0,3}\s+duty\b", re.IGNORECASE)
 _DEFEND_RE = re.compile(r"\bdefend(?:s|ed|ing)?\b", re.IGNORECASE)
@@ -864,6 +872,43 @@ def evaluate_q1_structured_criterion(
     elif spec.id == "Q1_C6_INCOMPLETE_PARTY_ROSTER":
         satisfied = claims.get("roster_completeness") in {"incomplete", "not_established"}
         diagnostic = "q1_structured_roster_completeness"
+    elif spec.id == "complaint-controls-party-roster":
+        # This amendment is limited to the controlling complaint roster.  The
+        # deterministic handoff is built from that roster before any model
+        # prose is considered, and must be explicitly complete.
+        satisfied = bool(parties) and claims.get("roster_completeness") == "complete"
+        diagnostic = "q1_party_scope_controlling_complaint_roster"
+    elif spec.id == "pleaded-procedural-roles":
+        satisfied = bool(parties) and all(
+            bool(_q1_role_values(party, "procedural_roles"))
+            for party in parties
+        )
+        diagnostic = "q1_party_scope_pleaded_procedural_roles"
+    elif spec.id == "notice-defendant-purpose":
+        satisfied = any(
+            "notice defendant" in _norm(str(party.get("pleaded_role_basis") or ""))
+            for party in parties
+        )
+        diagnostic = "q1_party_scope_notice_defendant"
+    elif spec.id == "exclude-unconnected-actions":
+        satisfied = all(
+            not _q1_role_values(party, "related_action_roles")
+            for party in parties
+        )
+        diagnostic = "q1_party_scope_unconnected_actions_excluded"
+    elif spec.id == "lloyds-identity-limitation":
+        satisfied = any(
+            "lloyd" in _norm(str(party.get("identity") or ""))
+            and "underwriter" in _norm(str(party.get("identity") or ""))
+            for party in parties
+        )
+        diagnostic = "q1_party_scope_lloyds_identity_limited"
+    elif spec.id == "doe-placeholder-limitation":
+        identities = [_norm(str(party.get("identity") or "")) for party in parties]
+        satisfied = any("doe" in identity for identity in identities) and any(
+            "xyz" in identity for identity in identities
+        )
+        diagnostic = "q1_party_scope_doe_placeholders_limited"
     coverage = dict(phrase_coverage or {})
     return CriterionResult(
         criterion_id=spec.id,
@@ -911,7 +956,13 @@ def evaluate_criterion(
             norm, spec.semantic_forbidden_phrases
         ),
     }
-    if spec.id in Q1_STRUCTURED_CRITERION_IDS and q1_party_claims_are_valid(validated_claims):
+    if (
+        spec.id in (
+            Q1_STRUCTURED_CRITERION_IDS
+            | Q1_PARTY_SCOPE_STRUCTURED_CRITERION_IDS
+        )
+        and q1_party_claims_are_valid(validated_claims)
+    ):
         assert validated_claims is not None
         return evaluate_q1_structured_criterion(
             spec, validated_claims, phrase_coverage=phrase_coverage

@@ -1188,6 +1188,77 @@ class Q1TypedClaimBuilderTests(unittest.TestCase):
         )
         self.assertIs(unchanged, claims)
 
+    def test_party_scope_attorney_render_validates_without_model_prose(self):
+        claims = {
+            "schema_version": "q1_validated_party_claims.v1",
+            "roster_completeness": "complete",
+            "parties": [
+                {
+                    "identity": "Certain Underwriters at Lloyd's",
+                    "procedural_roles": ["plaintiff"],
+                    "pleaded_role_basis": "",
+                    "substantive_role": "",
+                    "entity_type": "",
+                    "residence_or_ppb": "",
+                    "related_action_roles": [],
+                },
+                {
+                    "identity": "John/Jane Does 1-10 and XYZ Corps. 1-10",
+                    "procedural_roles": ["defendant"],
+                    "pleaded_role_basis": "notice defendant",
+                    "substantive_role": "",
+                    "entity_type": "",
+                    "residence_or_ppb": "",
+                    "related_action_roles": [],
+                },
+            ],
+        }
+        criterion_ids = (
+            "complaint-controls-party-roster",
+            "pleaded-procedural-roles",
+            "notice-defendant-purpose",
+            "exclude-unconnected-actions",
+            "lloyds-identity-limitation",
+            "doe-placeholder-limitation",
+        )
+        view = CLI.ac.ContractEvaluationView(
+            contract_id=CLI.Q1_PARTY_SCOPE_AMENDMENT_CONTRACT_ID,
+            version="1.0.4",
+            schema_version="acceptance_contract.v1",
+            benchmark_id="Case-00-Triborough",
+            question_id="Q1",
+            object_key="synthetic/q1-contract.json",
+            content_sha256="a" * 64,
+            required_criterion_ids=criterion_ids,
+            evidence_constraints={},
+            semantic_preservation={},
+            duplication_rules={"max_duplicate_phrase_ratio": 1.0},
+            criteria=tuple(
+                CLI.ac.CriterionEvalSpec(
+                    id=criterion_id,
+                    presence_phrases=("model-only phrase",),
+                    evidence_phrases=("model-only evidence",),
+                    semantic_required_phrases=("model-only semantic",),
+                    semantic_forbidden_phrases=(),
+                    fallback_text="",
+                )
+                for criterion_id in criterion_ids
+            ),
+            structure_requirements=CLI.ac.StructureRequirements((), (), ()),
+        )
+
+        answer, validation = CLI.validate_q1_attorney_answer(claims, view)
+
+        self.assertTrue(validation.ok)
+        self.assertTrue(answer.startswith("Validated party/role summary:"))
+        self.assertNotIn("model-only phrase", answer)
+        self.assertTrue(
+            all(
+                result.result_code == CLI.ac.CRIT_PASS
+                for result in validation.criterion_results
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

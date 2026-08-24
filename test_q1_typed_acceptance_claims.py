@@ -138,6 +138,39 @@ class Q1TypedPartyClaimsTests(unittest.TestCase):
         result = self.evaluate("Q1_C1_PLAINTIFF_ROLE", claims)
         self.assertEqual(result.result_code, ac.CRIT_FAIL_MISSING)
 
+    def test_party_scope_amendment_criteria_use_typed_claims(self):
+        claims = self.claims()
+        claims["roster_completeness"] = "complete"
+        claims["parties"][0]["identity"] = "Certain Underwriters at Lloyd's"
+        for party in claims["parties"]:
+            party["related_action_roles"] = []
+        claims["parties"].append(
+            {
+                "identity": "John/Jane Does 1-10 and XYZ Corps. 1-10",
+                "procedural_roles": ["defendant"],
+                "pleaded_role_basis": "notice defendant",
+                "substantive_role": "",
+                "related_action_roles": [],
+            }
+        )
+        for criterion_id in (
+            "complaint-controls-party-roster",
+            "pleaded-procedural-roles",
+            "notice-defendant-purpose",
+            "exclude-unconnected-actions",
+            "lloyds-identity-limitation",
+            "doe-placeholder-limitation",
+        ):
+            with self.subTest(criterion_id=criterion_id):
+                result = self.evaluate(criterion_id, claims)
+                self.assertEqual(result.result_code, ac.CRIT_PASS)
+                self.assertEqual(result.presence, ac.PRESENCE_PRESENT)
+
+    def test_party_scope_exclusion_fails_when_related_action_role_remains(self):
+        claims = self.claims()
+        result = self.evaluate("exclude-unconnected-actions", claims)
+        self.assertEqual(result.result_code, ac.CRIT_FAIL_MISSING)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -3327,13 +3327,11 @@ def run_generation(
                 contract_view,
                 diagnostics_out=q1_claim_extraction_diagnostics,
             )
-            typed_summary = render_q1_validated_party_claims(
-                acceptance_claims_doc
-            )
-            if normalize_proposed_answer_whitespace(typed_summary).lower() not in (
-                normalize_proposed_answer_whitespace(proposed).lower()
-            ):
-                proposed = f"{proposed.rstrip()}\n\n{typed_summary}".strip()
+            # Q1's attorney-facing answer is an exact rendering of the
+            # verified typed claims.  Do not allow model prose to become a
+            # second, lossy validation path or to reintroduce roles excluded
+            # by the party-scope amendment.
+            proposed = render_q1_attorney_answer(acceptance_claims_doc)
         proposed = append_source_backed_missing_presence_excerpts(
             proposed, documents, contract_view
         )
