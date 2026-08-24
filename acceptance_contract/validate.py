@@ -51,6 +51,7 @@ _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+|\n+")
 
 # Shared Q2 no-defense semantic evaluation (preflight + final acceptance).
 Q2_NO_DEFENSE_CRITERION_ID = "q2-no-defense-or-indemnity"
+Q3_POLICY_COVERAGE_CONTRACT_ID = "case00-triborough-q3-insurance-policy-coverage"
 Q2_NO_DEFENSE_CATEGORY = "no_defense_or_indemnity"
 Q2_VALIDATED_CLAIMS_SCHEMA_VERSION = "q2_validated_structured_claims.v1"
 Q1_VALIDATED_PARTY_CLAIMS_SCHEMA_VERSION = "q1_validated_party_claims.v1"
@@ -1353,6 +1354,13 @@ def validate_final_answer_against_contract(
     counts = list(source_identified_counts or [])
     if not counts:
         counts = source_identified_counts_from_validated(validated_claims)
+    # Pleaded-count completeness is meaningful for relief/count questions,
+    # not for the Q3 policy-inventory contract. Q3 has its own explicit
+    # policy, period/limits, terms, and uncertainty criteria; applying a
+    # carried-over pleaded-count inventory here can reject an otherwise
+    # fully validated policy answer.
+    if view.contract_id == Q3_POLICY_COVERAGE_CONTRACT_ID and view.question_id == "Q3":
+        counts = []
     text, counts_ok, count_diags = evaluate_material_omissions_for_source_counts(
         text,
         semantic_preservation=view.semantic_preservation,
