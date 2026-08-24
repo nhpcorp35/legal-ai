@@ -2532,7 +2532,12 @@ def finalize_canonical_answer_against_contract(
         validated_evidence_text=validated_evidence_text,
     )
     final_answer = final.final_answer if is_q1_claims else canonical
-    if q3_structured_duplication_only(final, contract_view):
+    if (
+        q3_duplication_only
+        and final.duplication_result == ac.DUP_OK
+        and final.criterion_results
+        and all(result.result_code == ac.CRIT_PASS for result in final.criterion_results)
+    ):
         final.ok = True
         final.duplication_result = ac.DUP_OK
         final.diagnostics = ["q3_exact_structured_policy_duplication_not_applicable"]
