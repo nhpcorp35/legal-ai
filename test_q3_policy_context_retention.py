@@ -22,6 +22,24 @@ GEN = _load_generator()
 
 
 class Q3PolicyContextRetentionTests(unittest.TestCase):
+    def _q3_contract(self):
+        return ac.ContractEvaluationView(
+            contract_id=GEN.Q3_INSURANCE_POLICY_COVERAGE_CONTRACT_ID,
+            version="v1.0.0", schema_version="v1", benchmark_id="Case-00-Triborough",
+            question_id="Q3", object_key="synthetic/q3-contract.json",
+            content_sha256="a" * 64, required_criterion_ids=(),
+            evidence_constraints={}, semantic_preservation={}, duplication_rules={},
+            criteria=(), structure_requirements=ac.StructureRequirements((), (), ()),
+        )
+
+    def test_q3_duplication_exception_requires_all_criteria_to_pass(self):
+        passed = ac.CriterionResult("q3-policy-identification", ac.PRESENCE_PRESENT, ac.EVIDENCE_SUPPORTED, ac.SEMANTIC_PRESERVED, ac.CRIT_PASS)
+        duplicate_only = ac.AcceptanceValidationResult(False, "answer", [passed], duplication_result=ac.DUP_FAIL, diagnostics=["material_duplication_remaining"])
+        self.assertTrue(GEN.q3_structured_duplication_only(duplicate_only, self._q3_contract()))
+        failed = ac.CriterionResult("q3-policy-identification", ac.PRESENCE_PRESENT, ac.EVIDENCE_SUPPORTED, ac.SEMANTIC_VIOLATED, ac.CRIT_FAIL_SEMANTIC)
+        semantic_failure = ac.AcceptanceValidationResult(False, "answer", [failed], duplication_result=ac.DUP_FAIL, diagnostics=["material_duplication_remaining"])
+        self.assertFalse(GEN.q3_structured_duplication_only(semantic_failure, self._q3_contract()))
+
     def test_q3_contract_retains_verified_policy_and_period_context_once(self):
         contract = ac.ContractEvaluationView(
             contract_id=GEN.Q3_INSURANCE_POLICY_COVERAGE_CONTRACT_ID,
