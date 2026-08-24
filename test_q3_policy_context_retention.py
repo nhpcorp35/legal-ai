@@ -64,6 +64,23 @@ class Q3PolicyContextRetentionTests(unittest.TestCase):
         )
         self.assertEqual(GEN.append_q3_policy_context("Unchanged.", contract), "Unchanged.")
 
+    def test_present_facts_are_not_repeated(self):
+        contract = ac.ContractEvaluationView(
+            contract_id=GEN.Q3_INSURANCE_POLICY_COVERAGE_CONTRACT_ID,
+            version="v1.0.0", schema_version="v1", benchmark_id="Case-00-Triborough",
+            question_id="Q3", object_key="synthetic/q3-contract.json",
+            content_sha256="c" * 64, required_criterion_ids=(),
+            evidence_constraints={}, semantic_preservation={}, duplication_rules={},
+            criteria=(), structure_requirements=ac.StructureRequirements((), (), ()),
+        )
+        answer = (
+            "The record identifies the policies as issued or allegedly issued to Triborough Construction Services Inc. "
+            "Policy No. 10268L60059 is the 2016-2017 Policy; Policy No. 10268L170188 is the 2017-2018 Policy; "
+            "and Policy No. 10268L170189 is the Excess Policy. The May 18, 2016 to May 18, 2017 period and "
+            "$1,000,000/$2,000,000 limits are identified. The Excess Policy effective date is May 18, 2017."
+        )
+        self.assertEqual(GEN.append_q3_policy_context(answer, contract), answer)
+
 
 if __name__ == "__main__":
     unittest.main()
