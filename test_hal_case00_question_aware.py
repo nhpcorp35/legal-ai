@@ -895,6 +895,7 @@ class CanonicalAcceptanceContractResolveTests(unittest.TestCase):
     )
     Q2_OBJECT_KEY_V100 = Q2_PREFIX + "v1.0.0/acceptance_contract.json"
     Q2_OBJECT_KEY_V101 = Q2_PREFIX + "v1.0.1/acceptance_contract.json"
+    Q2_OBJECT_KEY_V102 = Q2_PREFIX + "v1.0.2/acceptance_contract.json"
     # Historical alias used by older assertions.
     Q2_OBJECT_KEY = Q2_OBJECT_KEY_V100
 
@@ -930,50 +931,54 @@ class CanonicalAcceptanceContractResolveTests(unittest.TestCase):
     def _payload(self, doc: dict) -> bytes:
         return json.dumps(doc, sort_keys=True).encode("utf-8")
 
-    def test_selects_highest_semver_from_unordered_listing(self) -> None:
+    def test_selects_live_v102_from_unordered_listing(self) -> None:
         # Oldest-first listing must not control selection.
         listing = [
             {"key": self.Q2_OBJECT_KEY_V100, "size": 3463},
             {"key": self.Q2_OBJECT_KEY_V101, "size": 2709},
+            # B2's current canonical Q2 contract.
+            {"key": self.Q2_OBJECT_KEY_V102, "size": 2669},
         ]
         spec = CLI.resolve_canonical_acceptance_contract_spec(
             benchmark_id=REQUIRED_BENCHMARK,
             question_id="Q2",
             object_keys=listing,
         )
-        self.assertEqual(spec["object_key"], self.Q2_OBJECT_KEY_V101)
-        self.assertEqual(spec["expected_size"], 2709)
-        self.assertEqual(spec["version"], "v1.0.1")
+        self.assertEqual(spec["object_key"], self.Q2_OBJECT_KEY_V102)
+        self.assertEqual(spec["expected_size"], 2669)
+        self.assertEqual(spec["version"], "v1.0.2")
         self.assertEqual(spec["contract_id"], "case00-triborough-q2")
         self.assertEqual(spec["benchmark_id"], REQUIRED_BENCHMARK)
         self.assertEqual(spec["question_id"], "Q2")
         self.assertEqual(
             CLI.build_canonical_acceptance_contract_object_key(
-                REQUIRED_BENCHMARK, "Q2", version="v1.0.1"
+                REQUIRED_BENCHMARK, "Q2", version="v1.0.2"
             ),
-            self.Q2_OBJECT_KEY_V101,
+            self.Q2_OBJECT_KEY_V102,
         )
 
-    def test_unordered_listing_prefers_v101_over_v100(self) -> None:
+    def test_unordered_listing_prefers_v102_over_older_versions(self) -> None:
         candidates = CLI.list_acceptance_contract_version_candidates(
             [
                 {"key": self.Q2_OBJECT_KEY_V101, "size": 2709},
                 {"key": self.Q2_OBJECT_KEY_V100, "size": 3463},
+                {"key": self.Q2_OBJECT_KEY_V102, "size": 2669},
             ],
             prefix=self.Q2_PREFIX,
         )
         selected = CLI.select_highest_acceptance_contract_candidate(candidates)
-        self.assertEqual(selected["version"], "v1.0.1")
+        self.assertEqual(selected["version"], "v1.0.2")
         # Same result when listing order flips.
         candidates_rev = CLI.list_acceptance_contract_version_candidates(
             [
+                {"key": self.Q2_OBJECT_KEY_V102, "size": 2669},
                 {"key": self.Q2_OBJECT_KEY_V100, "size": 3463},
                 {"key": self.Q2_OBJECT_KEY_V101, "size": 2709},
             ],
             prefix=self.Q2_PREFIX,
         )
         selected_rev = CLI.select_highest_acceptance_contract_candidate(candidates_rev)
-        self.assertEqual(selected_rev["object_key"], self.Q2_OBJECT_KEY_V101)
+        self.assertEqual(selected_rev["object_key"], self.Q2_OBJECT_KEY_V102)
 
     def test_corrupt_newest_fails_closed_without_fallback(self) -> None:
         good_v100 = self._synth_doc(
