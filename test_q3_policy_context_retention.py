@@ -40,6 +40,22 @@ class Q3PolicyContextRetentionTests(unittest.TestCase):
         semantic_failure = ac.AcceptanceValidationResult(False, "answer", [failed], duplication_result=ac.DUP_FAIL, diagnostics=["material_duplication_remaining"])
         self.assertFalse(GEN.q3_structured_duplication_only(semantic_failure, self._q3_contract()))
 
+    def test_duplication_repair_retains_distinct_protected_semantics(self):
+        first = "The policy is subject to exclusions and conditions."
+        second = (
+            "The policy is subject to exclusions and conditions, including "
+            "a duty-to-defend limitation."
+        )
+        repaired, status, _ = ac.apply_duplication_gate(
+            f"{first} {second} {second}",
+            {"max_duplicate_phrase_ratio": 0.25},
+            repair=True,
+            protected_phrases=("duty-to-defend limitation",),
+        )
+        self.assertEqual(status, ac.DUP_REPAIRED)
+        self.assertIn("duty-to-defend limitation", repaired)
+        self.assertEqual(repaired.count("duty-to-defend limitation"), 1)
+
     def test_q3_contract_retains_verified_policy_and_period_context_once(self):
         contract = ac.ContractEvaluationView(
             contract_id=GEN.Q3_INSURANCE_POLICY_COVERAGE_CONTRACT_ID,
