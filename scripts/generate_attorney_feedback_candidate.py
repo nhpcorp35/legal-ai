@@ -1654,6 +1654,7 @@ def build_q1_validated_party_claims(
     *,
     evidence_packet: Optional[Mapping[str, Any]] = None,
     diagnostics_out: Optional[dict[str, Any]] = None,
+    require_deterministic_roster_completeness: bool = False,
 ) -> dict[str, Any]:
     """Build typed Q1 claims only from deterministic inventory and evidence."""
     audit = reasoner_result.get("audit")
@@ -1840,11 +1841,31 @@ def build_q1_validated_party_claims(
         })
     scope = reasoner_result.get("review_scope")
     completeness = str(scope.get("completeness") or "").strip().lower() if isinstance(scope, Mapping) else ""
+    rendered_identities = {
+        normalize_proposed_answer_whitespace(str(party.get("identity") or ""))
+        for party in parties
+        if isinstance(party, Mapping)
+    }
+    deterministic_roster_complete = (
+        require_deterministic_roster_completeness
+        and bool(expected_identities)
+        and set(expected_identities).issubset(rendered_identities)
+    )
     claims = {
         "schema_version": ac.Q1_VALIDATED_PARTY_CLAIMS_SCHEMA_VERSION,
         "parties": parties,
-        "roster_completeness": "complete" if completeness in {"complete", "established"} else "not_established",
+        "roster_completeness": (
+            "complete"
+            if deterministic_roster_complete or completeness in {"complete", "established"}
+            else "not_established"
+        ),
     }
+    if diagnostics_out is not None and require_deterministic_roster_completeness:
+        diagnostics_out["roster_completeness_source"] = (
+            "deterministic_expected_inventory"
+            if deterministic_roster_complete
+            else "reasoner_scope"
+        )
     if not ac.q1_party_claims_are_valid(claims):
         raise GenerationError(
             "Typed Q1 validated party claims failed shape validation",
@@ -3321,6 +3342,10 @@ def run_generation(
                 reasoner_result,
                 evidence_packet=inspection.get("evidence_packet"),
                 diagnostics_out=q1_claim_extraction_diagnostics,
+                require_deterministic_roster_completeness=(
+                    contract_view.contract_id
+                    == Q1_PARTY_SCOPE_AMENDMENT_CONTRACT_ID
+                ),
             )
             acceptance_claims_doc = apply_q1_party_scope_amendment(
                 acceptance_claims_doc,
