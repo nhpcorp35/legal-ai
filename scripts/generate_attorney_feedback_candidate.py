@@ -2461,6 +2461,11 @@ def finalize_canonical_answer_against_contract(
         and validated_claims.get("schema_version")
         == ac.Q1_VALIDATED_PARTY_CLAIMS_SCHEMA_VERSION
     )
+    is_q3_policy_coverage = (
+        getattr(contract_view, "contract_id", "")
+        == Q3_INSURANCE_POLICY_COVERAGE_CONTRACT_ID
+        and getattr(contract_view, "question_id", "") == "Q3"
+    )
     if q1_retention_diagnostics_out is not None:
         q1_retention_diagnostics_out.clear()
         q1_retention_diagnostics_out["schema_version"] = (
@@ -2527,7 +2532,12 @@ def finalize_canonical_answer_against_contract(
         canonical,
         contract_view,
         apply_fallback=False,
-        apply_duplication_repair=is_q1_claims or q3_duplication_only,
+        # Q3's bounded policy-context retention can add back a fact that the
+        # first dedupe removed before presentation canonicalization. Re-run
+        # the existing deterministic dedupe for this exact policy contract;
+        # otherwise the final check can fail even though the first pass and
+        # every required Q3 criterion passed.
+        apply_duplication_repair=is_q1_claims or is_q3_policy_coverage,
         validated_claims=validated_claims,
         validated_evidence_text=validated_evidence_text,
     )

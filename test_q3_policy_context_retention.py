@@ -99,6 +99,48 @@ class Q3PolicyContextRetentionTests(unittest.TestCase):
         )
         self.assertEqual(GEN.append_q3_policy_context(answer, contract), answer)
 
+    def test_finalization_repairs_q3_duplication_reintroduced_by_presentation(self):
+        facts = (
+            "issued or allegedly issued to Triborough Construction Services Inc.",
+            "10268L60059",
+            "10268L170188",
+            "10268L170189",
+        )
+        criteria = tuple(
+            ac.CriterionEvalSpec(
+                id=f"q3-policy-{index}",
+                presence_phrases=(fact,),
+                evidence_phrases=(fact,),
+                semantic_required_phrases=(fact,),
+                semantic_forbidden_phrases=(),
+                fallback_text="",
+                category="policy",
+            )
+            for index, fact in enumerate(facts, start=1)
+        )
+        contract = ac.ContractEvaluationView(
+            contract_id=GEN.Q3_INSURANCE_POLICY_COVERAGE_CONTRACT_ID,
+            version="v1.0.0", schema_version="v1", benchmark_id="Case-00-Triborough",
+            question_id="Q3", object_key="synthetic/q3-contract.json",
+            content_sha256="d" * 64,
+            required_criterion_ids=tuple(item.id for item in criteria),
+            evidence_constraints={}, semantic_preservation={"forbid_material_omissions": True},
+            duplication_rules={"max_duplicate_phrase_ratio": 0.25}, criteria=criteria,
+            structure_requirements=ac.StructureRequirements((), (), ()),
+        )
+        answer = " ".join((
+            "The record identifies the policies as issued or allegedly issued to Triborough Construction Services Inc.",
+            "The record identifies the policies as issued or allegedly issued to Triborough Construction Services Inc.",
+            "The record identifies Policy No. 10268L60059, the 2016-2017 Policy.",
+            "The record identifies Policy No. 10268L170188, the 2017-2018 Policy.",
+            "The record identifies Policy No. 10268L170189, the Excess Policy.",
+        ))
+        final_answer, result = GEN.finalize_canonical_answer_against_contract(answer, contract)
+        self.assertTrue(result.ok, result.diagnostics)
+        self.assertIn(result.duplication_result, {ac.DUP_OK, ac.DUP_REPAIRED})
+        self.assertTrue(all(item.result_code == ac.CRIT_PASS for item in result.criterion_results))
+        self.assertIn("10268L60059", final_answer)
+
 
 if __name__ == "__main__":
     unittest.main()
