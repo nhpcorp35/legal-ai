@@ -102,6 +102,57 @@ class Q3PolicyContextRetentionTests(unittest.TestCase):
         self.assertIn("source-backed policy limitation", answer)
         self.assertEqual(GEN.append_q3_policy_context(answer, contract), answer)
 
+    def test_q3_presence_label_uses_verbatim_criterion_evidence(self):
+        criterion = ac.CriterionEvalSpec(
+            id="q3-policy-identification",
+            presence_phrases=("policy identification",),
+            evidence_phrases=("Policy No. 10268L60059",),
+            semantic_required_phrases=(),
+            semantic_forbidden_phrases=(),
+            fallback_text="",
+            category="policy_identification",
+        )
+        contract = self._q3_contract().__class__(
+            **{
+                **self._q3_contract().__dict__,
+                "required_criterion_ids": (criterion.id,),
+                "criteria": (criterion,),
+            }
+        )
+        documents = ({
+            "nyscef_document_number": 42,
+            "pages": ({"page_number": 7, "text": "Policy No. 10268L60059 applies."},),
+        },)
+        answer = GEN.append_source_backed_missing_presence_excerpts(
+            "Source-backed Q3 answer.", documents, contract
+        )
+        self.assertIn("policy identification", answer)
+        self.assertIn("Policy No. 10268L60059", answer)
+        self.assertIn("NYSCEF 42, PDF p.7", answer)
+
+    def test_non_q3_presence_label_does_not_use_evidence_only(self):
+        criterion = ac.CriterionEvalSpec(
+            id="other-policy-identification",
+            presence_phrases=("policy identification",),
+            evidence_phrases=("Policy No. 10268L60059",),
+            semantic_required_phrases=(),
+            semantic_forbidden_phrases=(),
+            fallback_text="",
+            category="policy_identification",
+        )
+        contract = ac.ContractEvaluationView(
+            contract_id="synthetic-other-contract", version="v1", schema_version="v1",
+            benchmark_id="synthetic", question_id="Q9", object_key="synthetic/other.json",
+            content_sha256="f" * 64, required_criterion_ids=(criterion.id,),
+            evidence_constraints={}, semantic_preservation={}, duplication_rules={},
+            criteria=(criterion,), structure_requirements=ac.StructureRequirements((), (), ()),
+        )
+        documents = ({"nyscef_document_number": 42, "pages": ({"page_number": 7, "text": "Policy No. 10268L60059 applies."},)},)
+        self.assertEqual(
+            GEN.append_source_backed_missing_presence_excerpts("Other answer.", documents, contract),
+            "Other answer.",
+        )
+
     def test_non_q3_contract_is_unchanged(self):
         contract = ac.ContractEvaluationView(
             contract_id="synthetic-other-contract",

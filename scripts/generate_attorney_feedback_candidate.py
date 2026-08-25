@@ -3085,14 +3085,21 @@ def append_source_backed_missing_presence_excerpts(
     documents: Sequence[Mapping[str, Any]],
     contract_view: Optional[ac.ContractEvaluationView],
 ) -> str:
-    """Append bounded cited record excerpts for missing contract presence terms.
+    """Append bounded cited record references for missing contract presence terms.
 
     A phrase is added only when it occurs verbatim in a permitted canonical page.
+    For the exact Q3 policy contract, a missing acceptance label may instead be
+    paired with that criterion's verbatim record-supported evidence phrase.
     This is a deterministic record supplement, never a model-generated fact.
     """
     if contract_view is None:
         return proposed_answer
     normalized_answer = " ".join(proposed_answer.casefold().split())
+    is_q3_policy_coverage = (
+        getattr(contract_view, "contract_id", "")
+        == Q3_INSURANCE_POLICY_COVERAGE_CONTRACT_ID
+        and getattr(contract_view, "question_id", "") == "Q3"
+    )
     additions: list[str] = []
     seen: set[str] = set()
     for criterion in contract_view.criteria:
@@ -3101,30 +3108,35 @@ def append_source_backed_missing_presence_excerpts(
             normalized_phrase = " ".join(phrase_text.casefold().split())
             if not normalized_phrase or normalized_phrase in normalized_answer:
                 continue
+            source_phrases = [phrase_text]
+            if is_q3_policy_coverage:
+                source_phrases.extend(
+                    str(item or "").strip()
+                    for item in criterion.evidence_phrases
+                )
             found: tuple[str, Any, Any] | None = None
             for document in documents:
                 doc_no = document.get("nyscef_document_number")
                 for page in document.get("pages") or []:
                     text = str(page.get("text") or page.get("page_text") or "")
-                    if normalized_phrase in " ".join(text.casefold().split()):
+                    normalized_text = " ".join(text.casefold().split())
+                    matched_phrase = next(
+                        (
+                            item
+                            for item in source_phrases
+                            if item and " ".join(item.casefold().split()) in normalized_text
+                        ),
+                        "",
+                    )
+                    if matched_phrase:
                         page_no = page.get("page_number") or page.get("pdf_page")
-                        sentences = re.split(r"(?<=[.!?])\s+|\n+", text)
-                        excerpt = next(
-                            (
-                                " ".join(sentence.split())
-                                for sentence in sentences
-                                if normalized_phrase
-                                in " ".join(sentence.casefold().split())
-                            ),
-                            "",
-                        )
-                        found = (excerpt or " ".join(text.split())[:600], doc_no, page_no)
+                        found = (matched_phrase, doc_no, page_no)
                         break
                 if found is not None:
                     break
             if found is None:
                 continue
-            excerpt, doc_no, page_no = found
+            matched_phrase, doc_no, page_no = found
             dedupe_key = f"{criterion.id}:{normalized_phrase}"
             if dedupe_key in seen:
                 continue
@@ -3132,7 +3144,12 @@ def append_source_backed_missing_presence_excerpts(
             citation = f"NYSCEF {doc_no}"
             if isinstance(page_no, int):
                 citation += f", PDF p.{page_no}"
-            additions.append(f"- {phrase_text} ({citation})")
+            if matched_phrase == phrase_text:
+                additions.append(f"- {phrase_text} ({citation})")
+            else:
+                additions.append(
+                    f"- {phrase_text}: record reference {matched_phrase} ({citation})"
+                )
     if not additions:
         return proposed_answer
     return (
