@@ -84,6 +84,7 @@ CANONICAL_ACCEPTANCE_CONTRACT_ALLOWLIST: frozenset[tuple[str, str]] = frozenset(
         (REQUIRED_CASE00_BENCHMARK_ID, "Q1"),
         (REQUIRED_CASE00_BENCHMARK_ID, "Q2"),
         (REQUIRED_CASE00_BENCHMARK_ID, "Q3"),
+        (REQUIRED_CASE00_BENCHMARK_ID, "Q4"),
     }
 )
 
@@ -107,7 +108,8 @@ CANONICAL_ACCEPTANCE_CONTRACT_FIXED_PINS: dict[tuple[str, str], dict[str, str]] 
         "contract_id": "case00-triborough-q3-insurance-policy-coverage",
         "version": "v1.0.0",
         "content_sha256": "d8a2be5c014907debc0d74ca95d7f4b5ab0805cd72d14e278cd7a184b890d670",
-    }
+    },
+    (REQUIRED_CASE00_BENCHMARK_ID, "Q4"): {"object_key": "Benchmarks/acceptance-contracts/Case-00-Triborough/Q4/case00-triborough-q4-coverage-dispute-positions/v1.0.0/acceptance_contract.json", "contract_id": "case00-triborough-q4-coverage-dispute-positions", "version": "v1.0.0", "content_sha256": "b91c238384a7cde9163d43bcd94ace3cee87f60a6342dae900a68e044161d380"},
 }
 
 # Backward-compatible alias: historical callers treated this as a size pin map.
