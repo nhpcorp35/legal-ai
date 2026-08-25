@@ -130,6 +130,36 @@ class Q3PolicyContextRetentionTests(unittest.TestCase):
         self.assertIn("Policy No. 10268L60059", answer)
         self.assertIn("NYSCEF 42, PDF p.7", answer)
 
+    def test_q3_dedupe_retains_presence_label_with_shared_semantics(self):
+        criterion = ac.CriterionEvalSpec(
+            id="q3-evidence-and-uncertainty",
+            presence_phrases=("evidence limitation",),
+            evidence_phrases=("record citation",),
+            semantic_required_phrases=("uncertainty remains",),
+            semantic_forbidden_phrases=(),
+            fallback_text="",
+            category="evidence_uncertainty",
+        )
+        contract = ac.ContractEvaluationView(
+            contract_id=GEN.Q3_INSURANCE_POLICY_COVERAGE_CONTRACT_ID,
+            version="v1.0.0", schema_version="v1", benchmark_id="Case-00-Triborough",
+            question_id="Q3", object_key="synthetic/q3-contract.json",
+            content_sha256="g" * 64, required_criterion_ids=(criterion.id,),
+            evidence_constraints={}, semantic_preservation={},
+            duplication_rules={"max_duplicate_phrase_ratio": 0.25},
+            criteria=(criterion,), structure_requirements=ac.StructureRequirements((), (), ()),
+        )
+        answer = (
+            "The record citation supports the analysis and uncertainty remains. "
+            "The record citation supports the analysis and uncertainty remains; "
+            "evidence limitation."
+        )
+        result = ac.validate_final_answer_against_contract(
+            answer, contract, apply_fallback=False, apply_duplication_repair=True
+        )
+        self.assertEqual(result.criterion_results[0].result_code, ac.CRIT_PASS)
+        self.assertIn("evidence limitation", result.final_answer)
+
     def test_non_q3_presence_label_does_not_use_evidence_only(self):
         criterion = ac.CriterionEvalSpec(
             id="other-policy-identification",
