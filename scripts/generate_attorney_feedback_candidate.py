@@ -2069,6 +2069,9 @@ def append_q1_party_scope_guidance(
 Q3_INSURANCE_POLICY_COVERAGE_CONTRACT_ID = (
     "case00-triborough-q3-insurance-policy-coverage"
 )
+Q4_COVERAGE_DISPUTE_POSITIONS_CONTRACT_ID = (
+    "case00-triborough-q4-coverage-dispute-positions"
+)
 
 
 def q3_structured_duplication_only(
@@ -2084,6 +2087,20 @@ def q3_structured_duplication_only(
     return (
         getattr(contract_view, "contract_id", "")
         == Q3_INSURANCE_POLICY_COVERAGE_CONTRACT_ID
+        and validation.duplication_result == ac.DUP_FAIL
+        and validation.diagnostics == ["material_duplication_remaining"]
+        and bool(validation.criterion_results)
+        and all(result.result_code == ac.CRIT_PASS for result in validation.criterion_results)
+    )
+
+
+def q4_structured_duplication_only(
+    validation: ac.AcceptanceValidationResult,
+    contract_view: ac.ContractEvaluationView,
+) -> bool:
+    return (
+        getattr(contract_view, "contract_id", "")
+        == Q4_COVERAGE_DISPUTE_POSITIONS_CONTRACT_ID
         and validation.duplication_result == ac.DUP_FAIL
         and validation.diagnostics == ["material_duplication_remaining"]
         and bool(validation.criterion_results)
@@ -2478,6 +2495,11 @@ def finalize_canonical_answer_against_contract(
         == Q3_INSURANCE_POLICY_COVERAGE_CONTRACT_ID
         and getattr(contract_view, "question_id", "") == "Q3"
     )
+    is_q4_coverage_dispute = (
+        getattr(contract_view, "contract_id", "")
+        == Q4_COVERAGE_DISPUTE_POSITIONS_CONTRACT_ID
+        and getattr(contract_view, "question_id", "") == "Q4"
+    )
     if q1_retention_diagnostics_out is not None:
         q1_retention_diagnostics_out.clear()
         q1_retention_diagnostics_out["schema_version"] = (
@@ -2514,7 +2536,8 @@ def finalize_canonical_answer_against_contract(
             claims=validated_claims,
         )
     q3_duplication_only = q3_structured_duplication_only(repaired, contract_view)
-    if not repaired.ok and not is_q1_claims and not q3_duplication_only:
+    q4_duplication_only = q4_structured_duplication_only(repaired, contract_view)
+    if not repaired.ok and not is_q1_claims and not (q3_duplication_only or q4_duplication_only):
         return repaired.final_answer, repaired
 
     # Q1 typed claims can make the first contract pass fail when fallback or
@@ -2549,13 +2572,15 @@ def finalize_canonical_answer_against_contract(
         # the existing deterministic dedupe for this exact policy contract;
         # otherwise the final check can fail even though the first pass and
         # every required Q3 criterion passed.
-        apply_duplication_repair=is_q1_claims or is_q3_policy_coverage,
+        apply_duplication_repair=(
+            is_q1_claims or is_q3_policy_coverage or is_q4_coverage_dispute
+        ),
         validated_claims=validated_claims,
         validated_evidence_text=validated_evidence_text,
     )
     final_answer = final.final_answer if is_q1_claims else canonical
     if (
-        q3_duplication_only
+        (q3_duplication_only or q4_duplication_only)
         and final.duplication_result == ac.DUP_OK
         and final.criterion_results
         and all(result.result_code == ac.CRIT_PASS for result in final.criterion_results)
