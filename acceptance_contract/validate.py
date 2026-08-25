@@ -1476,7 +1476,10 @@ def validate_final_answer_against_contract(
         protected_phrases = [
             phrase
             for criterion in view.criteria
-            for phrase in criterion.semantic_required_phrases
+            for phrase in (
+                *criterion.presence_phrases,
+                *criterion.semantic_required_phrases,
+            )
             if str(phrase or "").strip()
         ]
     text, dup_result, dup_diags = apply_duplication_gate(
