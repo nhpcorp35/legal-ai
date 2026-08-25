@@ -2101,6 +2101,7 @@ def q4_structured_duplication_only(
     return (
         getattr(contract_view, "contract_id", "")
         == Q4_COVERAGE_DISPUTE_POSITIONS_CONTRACT_ID
+        and getattr(contract_view, "question_id", "") == "Q4"
         and validation.duplication_result == ac.DUP_FAIL
         and validation.diagnostics == ["material_duplication_remaining"]
         and bool(validation.criterion_results)
