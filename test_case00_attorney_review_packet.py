@@ -238,5 +238,14 @@ class AttorneyReviewPacketTests(unittest.TestCase):
             )
 
 
+    def test_attorney_packet_excludes_internal_generation_provenance(self):
+        packet = render_attorney_review_packet(self._candidate(), self._evaluation())
+        for label in (
+            "Generation commit:", "Generated at:", "Model:", "Provider:",
+            "Candidate SHA-256:", "Generation Provenance",
+        ):
+            self.assertNotIn(label, packet)
+
+
 if __name__ == "__main__":
     unittest.main()
