@@ -1,4 +1,6 @@
 from flask import Flask, request, render_template, abort, send_from_directory, redirect, session, url_for
+import base64
+import hashlib
 import json
 import math
 import os
@@ -1896,6 +1898,21 @@ def review_login_required():
     return bool(app.secret_key and session.get("review_user") in review_accounts())
 
 
+def load_case00_q4_review_packet():
+    """Load the B2-verified Q4 review packet from Railway secrets only."""
+    encoded = os.environ.get("LEGALAI_CASE00_Q4_PACKET_B64", "")
+    expected_sha = os.environ.get("LEGALAI_CASE00_Q4_PACKET_SHA256", "").lower()
+    if not encoded or not expected_sha:
+        return None
+    try:
+        packet = base64.b64decode(encoded, validate=True).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return None
+    if hashlib.sha256(packet.encode("utf-8")).hexdigest() != expected_sha:
+        return None
+    return packet
+
+
 # =========================
 # ROUTES
 # =========================
@@ -1983,7 +2000,12 @@ def matter():
 def case00_review():
     if not review_login_required():
         return redirect(url_for("case00_login", next=request.path))
-    return render_template("case00_review.html", reviewer=session["review_user"])
+    packet = load_case00_q4_review_packet()
+    if packet is None:
+        abort(503)
+    return render_template(
+        "case00_review.html", reviewer=session["review_user"], packet=packet
+    )
 
 @app.route("/case-00/login", methods=["GET", "POST"])
 def case00_login():
