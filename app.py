@@ -6,6 +6,8 @@ import math
 import os
 import csv
 import re
+import urllib.error
+import urllib.request
 from types import SimpleNamespace
 
 from matter_builder import get_matter
@@ -1913,6 +1915,20 @@ def load_case00_q4_review_packet():
     return packet
 
 
+def archive_case00_q4_feedback(reviewer, decision, notes, packet):
+    gateway_url = os.environ.get("LEGALAI_REVIEW_GATEWAY_URL", "").rstrip("/")
+    secret = os.environ.get("LEGALAI_REVIEW_GATEWAY_SECRET", "")
+    if not gateway_url or not secret:
+        return False
+    payload = json.dumps({"reviewer": reviewer, "decision": decision, "notes": notes, "original_packet_md": packet}).encode("utf-8")
+    request_data = urllib.request.Request(gateway_url + "/portal/case-00/q4/feedback", data=payload, headers={"Content-Type": "application/json", "X-LegalAI-Portal-Secret": secret}, method="POST")
+    try:
+        with urllib.request.urlopen(request_data, timeout=30) as response:
+            return 200 <= response.status < 300
+    except (urllib.error.URLError, urllib.error.HTTPError):
+        return False
+
+
 # =========================
 # ROUTES
 # =========================
@@ -1996,15 +2012,26 @@ def matter():
         matter=matter_data,
     )
 
-@app.route("/case-00/review")
+@app.route("/case-00/review", methods=["GET", "POST"])
 def case00_review():
     if not review_login_required():
         return redirect(url_for("case00_login", next=request.path))
     packet = load_case00_q4_review_packet()
     if packet is None:
         abort(503)
+    submitted = False
+    error = None
+    if request.method == "POST":
+        decision = clean_text(request.form.get("decision", "")).lower()
+        notes = request.form.get("notes", "").strip()
+        if decision not in {"accept", "revise", "reject", "investigate_further"}:
+            error = "Choose a review decision."
+        elif archive_case00_q4_feedback(session["review_user"], decision, notes, packet):
+            submitted = True
+        else:
+            error = "Feedback could not be archived. Please try again."
     return render_template(
-        "case00_review.html", reviewer=session["review_user"], packet=packet
+        "case00_review.html", reviewer=session["review_user"], packet=packet, submitted=submitted, error=error
     )
 
 @app.route("/case-00/login", methods=["GET", "POST"])
