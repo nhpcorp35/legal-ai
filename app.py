@@ -1,4 +1,4 @@
-from flask import Flask, request, render_template, abort, send_from_directory
+from flask import Flask, request, render_template, abort, send_from_directory, redirect, session, url_for
 import json
 import math
 import os
@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from matter_builder import get_matter
 
 app = Flask(__name__)
+app.secret_key = os.environ.get("LEGALAI_SESSION_SECRET", "")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -1882,6 +1883,18 @@ def find_case_by_id(case_id, cases):
             return case
     return None
 
+def review_accounts():
+    """Load only password hashes from deployment configuration; fail closed."""
+    raw = os.environ.get("LEGALAI_REVIEW_USERS_JSON", "")
+    try:
+        accounts = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    return accounts if isinstance(accounts, dict) else {}
+
+def review_login_required():
+    return bool(app.secret_key and session.get("review_user") in review_accounts())
+
 
 # =========================
 # ROUTES
@@ -1965,6 +1978,31 @@ def matter():
         "matter.html",
         matter=matter_data,
     )
+
+@app.route("/case-00/review")
+def case00_review():
+    if not review_login_required():
+        return redirect(url_for("case00_login", next=request.path))
+    return render_template("case00_review.html", reviewer=session["review_user"])
+
+@app.route("/case-00/login", methods=["GET", "POST"])
+def case00_login():
+    error = None
+    if request.method == "POST":
+        from werkzeug.security import check_password_hash
+        email = clean_text(request.form.get("email", "")).lower()
+        stored_hash = review_accounts().get(email)
+        if stored_hash and check_password_hash(stored_hash, request.form.get("password", "")):
+            session.clear(); session["review_user"] = email
+            target = request.args.get("next", "/case-00/review")
+            return redirect(target if target.startswith("/") else "/case-00/review")
+        error = "Sign-in failed."
+    return render_template("case00_login.html", error=error)
+
+@app.post("/case-00/logout")
+def case00_logout():
+    session.clear()
+    return redirect(url_for("case00_login"))
 
 
 @app.route("/pdf/<path:filename>")
