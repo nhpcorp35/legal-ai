@@ -117,6 +117,22 @@ class Q3PolicyContextRetentionTests(unittest.TestCase):
             contract.__class__(**{**contract.__dict__, "question_id": "Q4"})
         ))
 
+
+    def test_q5_source_evidence_excludes_prior_proposed_answer(self):
+        source = """### Proposed answer
+old candidate prose
+### Validated propositions
+- P1: verified proposition
+  - Excerpt: verified excerpt
+### Supporting evidence
+other material
+"""
+        evidence = GEN.q5_verified_source_evidence_text(source)
+        self.assertIn("verified proposition", evidence)
+        self.assertIn("verified excerpt", evidence)
+        self.assertNotIn("old candidate prose", evidence)
+        self.assertEqual(GEN.q5_verified_source_evidence_text("none"), "")
+
     def test_duplication_repair_retains_distinct_protected_semantics(self):
         first = "The policy is subject to exclusions and conditions."
         second = (
