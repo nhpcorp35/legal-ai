@@ -118,20 +118,24 @@ class Q3PolicyContextRetentionTests(unittest.TestCase):
         ))
 
 
-    def test_q5_source_evidence_excludes_prior_proposed_answer(self):
-        source = """### Proposed answer
-old candidate prose
-### Validated propositions
-- P1: verified proposition
-  - Excerpt: verified excerpt
-### Supporting evidence
-other material
-"""
-        evidence = GEN.q5_verified_source_evidence_text(source)
-        self.assertIn("verified proposition", evidence)
-        self.assertIn("verified excerpt", evidence)
-        self.assertNotIn("old candidate prose", evidence)
-        self.assertEqual(GEN.q5_verified_source_evidence_text("none"), "")
+    def test_q5_staged_source_evidence_requires_verified_proposition_block(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            staged = root / "derived" / "question-evidence"
+            staged.mkdir(parents=True)
+            (staged / "q5_validated.md").write_text(
+                "### Validated propositions\\n- P1: verified proposition\\n",
+                encoding="utf-8",
+            )
+            self.assertIn(
+                "verified proposition",
+                GEN.load_q5_staged_verified_source_evidence(root),
+            )
+            (staged / "q5_validated.md").write_text(
+                "prior candidate prose\\n", encoding="utf-8"
+            )
+            with self.assertRaises(GEN.GenerationError):
+                GEN.load_q5_staged_verified_source_evidence(root)
 
     def test_duplication_repair_retains_distinct_protected_semantics(self):
         first = "The policy is subject to exclusions and conditions."
