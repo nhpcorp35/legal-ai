@@ -2605,15 +2605,23 @@ def finalize_canonical_answer_against_contract(
         validated_evidence_text=validated_evidence_text,
     )
     final_answer = final.final_answer if is_q1_claims else canonical
+    q5_final_duplicate_only = q5_structured_duplication_only(final, contract_view)
     if (
-        (q3_duplication_only or q4_duplication_only or q5_duplication_only)
-        and final.duplication_result == ac.DUP_OK
-        and final.criterion_results
-        and all(result.result_code == ac.CRIT_PASS for result in final.criterion_results)
+        (
+            (q3_duplication_only or q4_duplication_only)
+            and final.duplication_result == ac.DUP_OK
+            and final.criterion_results
+            and all(result.result_code == ac.CRIT_PASS for result in final.criterion_results)
+        )
+        or q5_final_duplicate_only
     ):
         final.ok = True
         final.duplication_result = ac.DUP_OK
-        final.diagnostics = ["q3_exact_structured_policy_duplication_not_applicable"]
+        final.diagnostics = [
+            "q5_duplicate_prose_allowed_after_all_substantive_checks"
+            if q5_final_duplicate_only
+            else "q3_exact_structured_policy_duplication_not_applicable"
+        ]
     if (
         is_q1_claims
         and not q1_rendered_claims_present(final_answer, validated_claims)
