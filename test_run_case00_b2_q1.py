@@ -122,6 +122,25 @@ class CanonicalQ1AcceptanceContractTests(unittest.TestCase):
             )
 
 
+    def test_q5_uses_the_verified_evidence_and_unresolved_issues_pin(self) -> None:
+        benchmark_id = CLI.REQUIRED_CASE00_BENCHMARK_ID
+        expected_key = (
+            "Benchmarks/acceptance-contracts/Case-00-Triborough/Q5/"
+            "case00-triborough-q5-evidence-unresolved-issues/v1.0.0/"
+            "acceptance_contract.json"
+        )
+        self.assertEqual(
+            CLI.canonical_acceptance_contract_id(benchmark_id, "Q5"),
+            "case00-triborough-q5-evidence-unresolved-issues",
+        )
+        self.assertEqual(
+            CLI.build_canonical_acceptance_contract_object_key(
+                benchmark_id, "Q5", version="v1.0.0"
+            ),
+            expected_key,
+        )
+
+
 class DurableUploadUnitTests(unittest.TestCase):
     def test_renders_review_packet_from_finalized_candidate_without_model_call(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

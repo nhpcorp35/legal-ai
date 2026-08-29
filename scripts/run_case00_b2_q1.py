@@ -85,6 +85,7 @@ CANONICAL_ACCEPTANCE_CONTRACT_ALLOWLIST: frozenset[tuple[str, str]] = frozenset(
         (REQUIRED_CASE00_BENCHMARK_ID, "Q2"),
         (REQUIRED_CASE00_BENCHMARK_ID, "Q3"),
         (REQUIRED_CASE00_BENCHMARK_ID, "Q4"),
+        (REQUIRED_CASE00_BENCHMARK_ID, "Q5"),
     }
 )
 
@@ -110,6 +111,16 @@ CANONICAL_ACCEPTANCE_CONTRACT_FIXED_PINS: dict[tuple[str, str], dict[str, str]] 
         "content_sha256": "d8a2be5c014907debc0d74ca95d7f4b5ab0805cd72d14e278cd7a184b890d670",
     },
     (REQUIRED_CASE00_BENCHMARK_ID, "Q4"): {"object_key": "Benchmarks/acceptance-contracts/Case-00-Triborough/Q4/case00-triborough-q4-coverage-dispute-positions/v1.0.1/acceptance_contract.json", "contract_id": "case00-triborough-q4-coverage-dispute-positions", "version": "v1.0.1", "content_sha256": "33ff3ce658b0a2d6171466285186225c8b0415ca8813929c87c0f7e31535d770"},
+    (REQUIRED_CASE00_BENCHMARK_ID, "Q5"): {
+        "object_key": (
+            "Benchmarks/acceptance-contracts/Case-00-Triborough/Q5/"
+            "case00-triborough-q5-evidence-unresolved-issues/v1.0.0/"
+            "acceptance_contract.json"
+        ),
+        "contract_id": "case00-triborough-q5-evidence-unresolved-issues",
+        "version": "v1.0.0",
+        "content_sha256": "fa3296ba60877b407de1cfafc1012fa648b51ed865ae2cd060cbf672601655dc",
+    },
 }
 
 # Backward-compatible alias: historical callers treated this as a size pin map.
