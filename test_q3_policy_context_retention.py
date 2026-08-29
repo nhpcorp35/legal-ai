@@ -89,6 +89,34 @@ class Q3PolicyContextRetentionTests(unittest.TestCase):
         validation = ac.AcceptanceValidationResult(False, "answer", [passed], duplication_result=ac.DUP_FAIL, diagnostics=["material_duplication_remaining", "another_diagnostic"])
         self.assertFalse(GEN.q5_structured_duplication_only(validation, contract))
 
+
+    def test_q5_verified_contract_renderer_is_exact_contract_only(self):
+        criterion = ac.CriterionEvalSpec(
+            id="q5-procedural-limitation",
+            presence_phrases=("procedural ruling",),
+            evidence_phrases=("motion denied",),
+            semantic_required_phrases=("not a merits determination",),
+            semantic_forbidden_phrases=(),
+            fallback_text="The order resolves procedure only.",
+            category="procedural",
+        )
+        contract = ac.ContractEvaluationView(
+            contract_id=GEN.Q5_EVIDENCE_UNRESOLVED_ISSUES_CONTRACT_ID,
+            version="1.0.1", schema_version="v1", benchmark_id="Case-00-Triborough",
+            question_id="Q5", object_key="synthetic/q5-contract.json",
+            content_sha256="k" * 64, required_criterion_ids=(criterion.id,),
+            evidence_constraints={}, semantic_preservation={}, duplication_rules={},
+            criteria=(criterion,), structure_requirements=ac.StructureRequirements((), (), ()),
+        )
+        answer = GEN.render_q5_verified_contract_answer(contract)
+        self.assertIn("The order resolves procedure only.", answer)
+        self.assertIn("procedural ruling", answer)
+        self.assertIn("motion denied", answer)
+        self.assertIn("not a merits determination", answer)
+        self.assertIsNone(GEN.render_q5_verified_contract_answer(
+            contract.__class__(**{**contract.__dict__, "question_id": "Q4"})
+        ))
+
     def test_duplication_repair_retains_distinct_protected_semantics(self):
         first = "The policy is subject to exclusions and conditions."
         second = (
