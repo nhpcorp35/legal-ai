@@ -1950,6 +1950,28 @@ def archive_case00_q4_feedback(reviewer, decision, notes, packet):
         return False
 
 
+def read_case00_q4_feedback(archive_id):
+    """Read one fixed-format archived feedback item through the narrow Gateway route."""
+    gateway_url = os.environ.get("LEGALAI_REVIEW_GATEWAY_URL", "").rstrip("/")
+    secret = os.environ.get("LEGALAI_REVIEW_GATEWAY_SECRET", "")
+    if not gateway_url or not secret:
+        return None
+    payload = json.dumps({"archive_id": archive_id}).encode("utf-8")
+    request_data = urllib.request.Request(
+        gateway_url + "/portal/case-00/q4/feedback/read",
+        data=payload,
+        headers={"Content-Type": "application/json", "X-LegalAI-Portal-Secret": secret},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request_data, timeout=30) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, urllib.error.HTTPError, UnicodeDecodeError, ValueError):
+        return None
+    feedback = result.get("feedback_markdown") if isinstance(result, dict) else None
+    return feedback if isinstance(feedback, str) else None
+
+
 def packet_for_review_display(packet):
     """Hide the packet's static checklist; the portal renders the live controls."""
     return packet.split("\n## 11. Attorney Decision Checklist", 1)[0]
@@ -2089,6 +2111,22 @@ def case00_review():
     return render_template(
         "case00_review.html", reviewer=reviewer, packet=display_packet, submitted=submitted, error=error
     )
+
+@app.route("/case-00/review/feedback/<archive_id>")
+def case00_review_feedback(archive_id):
+    """Allow only Allen to read one validated Case-00 archived feedback record."""
+    reviewer = basic_review_user()
+    if reviewer is None:
+        return basic_auth_required_response()
+    if reviewer != "allen@nhpcorp.com":
+        abort(403)
+    if not re.fullmatch(r"review-\\d{8}-[0-9a-f]{12}", archive_id):
+        abort(404)
+    feedback = read_case00_q4_feedback(archive_id)
+    if feedback is None:
+        abort(404)
+    return app.response_class(feedback, mimetype="text/plain; charset=utf-8")
+
 
 @app.route("/pdf/<path:filename>")
 def serve_pdf(filename):
