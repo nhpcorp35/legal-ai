@@ -5,4 +5,3 @@
 {% if submitted %}<p><strong>Feedback archived.</strong></p>{% endif %}
 {% if error %}<p>{{ error }}</p>{% endif %}
 <form method="post"><fieldset><legend>Attorney decision</legend><label><input type="radio" name="decision" value="accept" required> Accept</label><label><input type="radio" name="decision" value="revise"> Revise</label><label><input type="radio" name="decision" value="reject"> Reject</label><label><input type="radio" name="decision" value="investigate_further"> Investigate further</label><br><label>Notes<br><textarea name="notes" rows="8" cols="80"></textarea></label><br><button>Archive feedback</button></fieldset></form>
-<form method="post" action="{{ url_for('case00_logout') }}"><button>Sign out</button></form>
