@@ -2167,21 +2167,25 @@ def render_q5_verified_contract_answer(
     return "\n".join(lines)
 
 
-def q5_verified_source_evidence_text(question_text: str) -> str:
-    """Return only Q5's canonical validated-proposition block for validation.
-
-    The Case-00 source is B2-verified. This intentionally excludes the
-    source's proposed answer and all later review material, so a deterministic
-    candidate is grounded only in the source's validated propositions and
-    excerpts rather than in prior candidate prose or OCR-fragmented retrieval.
-    """
-    text = str(question_text or "")
-    start = text.find("### Validated propositions")
-    if start < 0:
-        return ""
-    end = text.find("### Supporting evidence", start)
-    block = text[start : end if end >= 0 else len(text)]
-    return normalize_proposed_answer_whitespace(block)
+def load_q5_staged_verified_source_evidence(case_root: Path) -> str:
+    """Load the runner-local, integrity-verified Q5 proposition handoff."""
+    path = Path(case_root) / "derived" / "question-evidence" / "q5_validated.md"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise GenerationError(
+            "Q5 canonical validated source evidence unavailable",
+            reason_code="q5_verified_source_evidence_missing",
+            finalized=False,
+        ) from exc
+    normalized = normalize_proposed_answer_whitespace(text)
+    if not normalized.startswith("### Validated propositions"):
+        raise GenerationError(
+            "Q5 staged source evidence is malformed",
+            reason_code="q5_verified_source_evidence_malformed",
+            finalized=False,
+        )
+    return normalized
 
 
 def append_q3_policy_context(
@@ -3629,15 +3633,9 @@ def run_generation(
             verified_relief_claims=verified_claims,
         )
         if bool(reasoner_audit_pre.get("q5_verified_contract_renderer")):
-            source_evidence = q5_verified_source_evidence_text(
-                inputs["question_text"]
+            source_evidence = load_q5_staged_verified_source_evidence(
+                Path(case_root)
             )
-            if not source_evidence:
-                raise GenerationError(
-                    "Q5 canonical validated source evidence unavailable",
-                    reason_code="q5_verified_source_evidence_missing",
-                    finalized=False,
-                )
             validated_evidence = "\n".join(
                 part for part in (validated_evidence, source_evidence) if part
             )
