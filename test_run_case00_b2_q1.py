@@ -126,7 +126,7 @@ class CanonicalQ1AcceptanceContractTests(unittest.TestCase):
         benchmark_id = CLI.REQUIRED_CASE00_BENCHMARK_ID
         expected_key = (
             "Benchmarks/acceptance-contracts/Case-00-Triborough/Q5/"
-            "case00-triborough-q5-evidence-unresolved-issues/v1.0.0/"
+            "case00-triborough-q5-evidence-unresolved-issues/v1.0.1/"
             "acceptance_contract.json"
         )
         self.assertEqual(
@@ -135,7 +135,7 @@ class CanonicalQ1AcceptanceContractTests(unittest.TestCase):
         )
         self.assertEqual(
             CLI.build_canonical_acceptance_contract_object_key(
-                benchmark_id, "Q5", version="v1.0.0"
+                benchmark_id, "Q5", version="v1.0.1"
             ),
             expected_key,
         )
