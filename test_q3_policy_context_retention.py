@@ -58,6 +58,24 @@ class Q3PolicyContextRetentionTests(unittest.TestCase):
         semantic_failure = ac.AcceptanceValidationResult(False, "answer", [failed], duplication_result=ac.DUP_FAIL, diagnostics=["material_duplication_remaining"])
         self.assertFalse(GEN.q4_structured_duplication_only(semantic_failure, contract))
 
+    def test_q5_duplication_exception_requires_exact_contract_and_all_criteria_pass(self):
+        contract = ac.ContractEvaluationView(
+            contract_id=GEN.Q5_EVIDENCE_UNRESOLVED_ISSUES_CONTRACT_ID,
+            version="1.0.1", schema_version="v1", benchmark_id="Case-00-Triborough",
+            question_id="Q5", object_key="synthetic/q5-contract.json",
+            content_sha256="i" * 64, required_criterion_ids=(),
+            evidence_constraints={}, semantic_preservation={}, duplication_rules={},
+            criteria=(), structure_requirements=ac.StructureRequirements((), (), ()),
+        )
+        passed = ac.CriterionResult("q5-evidence", ac.PRESENCE_PRESENT, ac.EVIDENCE_SUPPORTED, ac.SEMANTIC_PRESERVED, ac.CRIT_PASS)
+        duplicate_only = ac.AcceptanceValidationResult(False, "answer", [passed], duplication_result=ac.DUP_FAIL, diagnostics=["material_duplication_remaining"])
+        self.assertTrue(GEN.q5_structured_duplication_only(duplicate_only, contract))
+        wrong_question = contract.__class__(**{**contract.__dict__, "question_id": "Q4"})
+        self.assertFalse(GEN.q5_structured_duplication_only(duplicate_only, wrong_question))
+        failed = ac.CriterionResult("q5-evidence", ac.PRESENCE_PRESENT, ac.EVIDENCE_SUPPORTED, ac.SEMANTIC_VIOLATED, ac.CRIT_FAIL_SEMANTIC)
+        semantic_failure = ac.AcceptanceValidationResult(False, "answer", [failed], duplication_result=ac.DUP_FAIL, diagnostics=["material_duplication_remaining"])
+        self.assertFalse(GEN.q5_structured_duplication_only(semantic_failure, contract))
+
     def test_duplication_repair_retains_distinct_protected_semantics(self):
         first = "The policy is subject to exclusions and conditions."
         second = (
