@@ -114,12 +114,12 @@ CANONICAL_ACCEPTANCE_CONTRACT_FIXED_PINS: dict[tuple[str, str], dict[str, str]] 
     (REQUIRED_CASE00_BENCHMARK_ID, "Q5"): {
         "object_key": (
             "Benchmarks/acceptance-contracts/Case-00-Triborough/Q5/"
-            "case00-triborough-q5-evidence-unresolved-issues/v1.0.0/"
+            "case00-triborough-q5-evidence-unresolved-issues/v1.0.1/"
             "acceptance_contract.json"
         ),
         "contract_id": "case00-triborough-q5-evidence-unresolved-issues",
-        "version": "v1.0.0",
-        "content_sha256": "fa3296ba60877b407de1cfafc1012fa648b51ed865ae2cd060cbf672601655dc",
+        "version": "v1.0.1",
+        "content_sha256": "4d835c262a011b04ce00abba8a5a100525e6073942189127c9f0790465f892a8",
     },
 }
 
