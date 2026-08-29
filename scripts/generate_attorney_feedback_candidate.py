@@ -3364,6 +3364,23 @@ def run_generation(
         retrieval = merge_retrieval_results(
             retrieval, contract_evidence_retrieval
         )
+    if (
+        contract_view is not None
+        and contract_view.contract_id == Q5_EVIDENCE_UNRESOLVED_ISSUES_CONTRACT_ID
+    ):
+        # Q5's deterministic renderer cites only B2-held contract terms. Run
+        # one bounded retrieval per required evidence phrase so a combined
+        # relevance query cannot crowd out a needed record passage.
+        for criterion in contract_view.criteria:
+            for phrase in criterion.evidence_phrases:
+                focused = mb.retrieve_canonical_records(
+                    mb.prepare_documents_for_canonical_retrieval(documents),
+                    str(phrase),
+                    case_map=inputs["case_map"],
+                    top_k=3,
+                    build_case_map_if_missing=False,
+                )
+                retrieval = merge_retrieval_results(retrieval, focused)
 
     # Attach structure map to retrieval for party-role evidence routing only when
     # schema-current; never fabricate ranges from a stale/absent map.
@@ -3583,9 +3600,15 @@ def run_generation(
                 ),
                 claims=verified_claims,
             )
+        q5_full_retrieval_evidence = (
+            {"retrieval_hits": list(retrieval.get("results") or [])}
+            if contract_view.contract_id == Q5_EVIDENCE_UNRESOLVED_ISSUES_CONTRACT_ID
+            and bool(reasoner_audit_pre.get("q5_verified_contract_renderer"))
+            else inspection.get("evidence_packet")
+        )
         validated_evidence = validated_acceptance_evidence_text(
             reasoner_result,
-            evidence_packet=inspection.get("evidence_packet"),
+            evidence_packet=q5_full_retrieval_evidence,
             verified_relief_claims=verified_claims,
         )
         if acceptance_claims_doc is not None and not validated_evidence.strip():
