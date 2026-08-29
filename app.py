@@ -1,9 +1,14 @@
-from flask import Flask, request, render_template, abort, send_from_directory
+from flask import Flask, request, render_template, abort, send_from_directory, Response
+import base64
+import hashlib
+import hmac
 import json
 import math
 import os
 import csv
 import re
+import urllib.error
+import urllib.request
 from types import SimpleNamespace
 
 from matter_builder import get_matter
@@ -23,6 +28,10 @@ PREFERRED_CSV_PATHS = [
 ]
 
 PER_PAGE = 10
+CASE00_REVIEW_QUESTIONS = {
+    "Q4": "Coverage positions and defenses",
+    "Q5": "Attorney review",
+}
 
 
 # =========================
@@ -1883,6 +1892,119 @@ def find_case_by_id(case_id, cases):
     return None
 
 
+def review_accounts():
+    """Load the two portal accounts from Railway configuration, or fail closed."""
+    try:
+        accounts = json.loads(os.environ.get("LEGALAI_REVIEW_USERS_JSON", ""))
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(accounts, dict):
+        return {}
+    return {
+        str(email).strip().lower(): password
+        for email, password in accounts.items()
+        if isinstance(email, str) and isinstance(password, str) and password
+    }
+
+
+def basic_review_user():
+    """Return the authenticated reviewer's configured email, or ``None``."""
+    authorization = request.authorization
+    if authorization is None or authorization.type.lower() != "basic":
+        return None
+    email = (authorization.username or "").strip().lower()
+    password = authorization.password or ""
+    stored_password = review_accounts().get(email)
+    if stored_password and hmac.compare_digest(password, stored_password):
+        return email
+    return None
+
+
+def basic_auth_required_response():
+    return Response(
+        "Authentication required.",
+        status=401,
+        headers={"WWW-Authenticate": 'Basic realm="Case-00 Attorney Review", charset="UTF-8"'},
+    )
+
+
+def load_case00_review_packet(question_id):
+    """Load one B2-verified packet from Railway secrets; never from Git."""
+    question_id = question_id.upper()
+    if question_id not in CASE00_REVIEW_QUESTIONS:
+        return None
+    encoded = os.environ.get(f"LEGALAI_CASE00_{question_id}_PACKET_B64", "")
+    expected_sha = os.environ.get(
+        f"LEGALAI_CASE00_{question_id}_PACKET_SHA256", ""
+    ).lower()
+    if not encoded or not expected_sha:
+        return None
+    try:
+        packet = base64.b64decode(encoded, validate=True).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return None
+    actual_sha = hashlib.sha256(packet.encode("utf-8")).hexdigest()
+    if not hmac.compare_digest(actual_sha, expected_sha):
+        return None
+    return packet
+
+
+def available_case00_review_questions():
+    return [
+        question_id
+        for question_id in CASE00_REVIEW_QUESTIONS
+        if load_case00_review_packet(question_id) is not None
+    ]
+
+
+def selected_case00_review_question():
+    available = available_case00_review_questions()
+    requested = clean_text(request.values.get("question", "")).upper()
+    if requested in available:
+        return requested
+    configured = clean_text(
+        os.environ.get("LEGALAI_CASE00_REVIEW_CURRENT_QUESTION", "Q5")
+    ).upper()
+    if configured in available:
+        return configured
+    return available[0] if available else None
+
+
+def packet_for_review_display(packet):
+    """Keep the packet's static checklist from being mistaken for live inputs."""
+    return packet.split("\n## 11. Attorney Decision Checklist", 1)[0]
+
+
+def archive_case00_feedback(question_id, reviewer, decision, notes, packet):
+    gateway_url = os.environ.get("LEGALAI_REVIEW_GATEWAY_URL", "").rstrip("/")
+    secret = os.environ.get("LEGALAI_REVIEW_GATEWAY_SECRET", "")
+    if not gateway_url or not secret:
+        return None
+    payload = json.dumps(
+        {
+            "reviewer": reviewer,
+            "decision": decision,
+            "notes": notes,
+            "original_packet_md": packet,
+        }
+    ).encode("utf-8")
+    request_data = urllib.request.Request(
+        f"{gateway_url}/portal/case-00/{question_id.lower()}/feedback",
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "X-LegalAI-Portal-Secret": secret,
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request_data, timeout=30) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, urllib.error.HTTPError, ValueError, UnicodeDecodeError):
+        return None
+    return result if isinstance(result, dict) and result.get("ok") else None
+
+
 # =========================
 # ROUTES
 # =========================
@@ -1964,6 +2086,46 @@ def matter():
     return render_template(
         "matter.html",
         matter=matter_data,
+    )
+
+
+@app.route("/case-00/review", methods=["GET", "POST"])
+def case00_review():
+    reviewer = basic_review_user()
+    if reviewer is None:
+        return basic_auth_required_response()
+    question_id = selected_case00_review_question()
+    if question_id is None:
+        abort(503)
+    packet = load_case00_review_packet(question_id)
+    if packet is None:
+        abort(503)
+    submitted = False
+    error = None
+    if request.method == "POST":
+        decision = clean_text(request.form.get("decision", "")).lower()
+        notes = request.form.get("notes", "").strip()
+        if decision not in {"accept", "revise", "reject", "investigate_further"}:
+            error = "Choose a review decision."
+        elif len(notes) > 12_000:
+            error = "Notes are too long."
+        else:
+            archive = archive_case00_feedback(
+                question_id, reviewer, decision, notes, packet
+            )
+            if archive is None:
+                error = "Feedback could not be archived. Please try again."
+            else:
+                submitted = True
+    return render_template(
+        "case00_review.html",
+        reviewer=reviewer,
+        question_id=question_id,
+        question_label=CASE00_REVIEW_QUESTIONS[question_id],
+        questions=available_case00_review_questions(),
+        packet=packet_for_review_display(packet),
+        submitted=submitted,
+        error=error,
     )
 
 
