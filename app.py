@@ -1888,10 +1888,15 @@ def find_case_by_id(case_id, cases):
     return None
 
 def review_accounts():
-    """Load the two fixed attorney-review account hashes; fail closed."""
+    """Load Base64-wrapped password hashes without Railway interpolation."""
+    def decode_hash(name):
+        try:
+            return base64.b64decode(os.environ.get(name, ""), validate=True).decode("utf-8")
+        except (ValueError, UnicodeDecodeError):
+            return ""
     accounts = {
-        "allen@nhpcorp.com": os.environ.get("LEGALAI_REVIEW_ALLEN_PASSWORD_HASH", ""),
-        "johncuomo@gmail.com": os.environ.get("LEGALAI_REVIEW_JOHN_PASSWORD_HASH", ""),
+        "allen@nhpcorp.com": decode_hash("LEGALAI_REVIEW_ALLEN_PASSWORD_HASH_B64"),
+        "johncuomo@gmail.com": decode_hash("LEGALAI_REVIEW_JOHN_PASSWORD_HASH_B64"),
     }
     return {email: password_hash for email, password_hash in accounts.items() if password_hash}
 
