@@ -2033,6 +2033,54 @@ def matter():
         matter=matter_data,
     )
 
+@app.route("/case-00/review-debug", methods=["GET"])
+def case00_review_debug():
+    """Temporary diagnostic endpoint for /case-00/review 401 issues.
+
+    Reports whether LEGALAI_REVIEW_USERS_JSON parses correctly, the account
+    count, whether the allen@nhpcorp.com key exists, and session secret
+    status. Never reveals raw env var values, credentials, or hashes.
+    """
+    lines = []
+
+    raw = os.environ.get("LEGALAI_REVIEW_USERS_JSON", "")
+    lines.append("LEGALAI_REVIEW_USERS_JSON set: %s" % bool(raw))
+
+    parsed_ok = False
+    is_dict = False
+    accounts = {}
+    parse_error = None
+    try:
+        parsed = json.loads(raw) if raw else None
+        parsed_ok = True
+        if isinstance(parsed, dict):
+            is_dict = True
+            accounts = parsed
+    except (TypeError, ValueError) as exc:
+        parse_error = type(exc).__name__
+
+    lines.append("JSON parses: %s" % parsed_ok)
+    lines.append("Parses to dict: %s" % is_dict)
+    if parse_error:
+        lines.append("Parse error type: %s" % parse_error)
+
+    lines.append("Account count: %d" % len(accounts))
+
+    target_email = "allen@nhpcorp.com"
+    key_present = target_email in accounts
+    lines.append("Key '%s' present: %s" % (target_email, key_present))
+
+    if key_present:
+        stored_value = accounts.get(target_email)
+        lines.append("Stored value type: %s" % type(stored_value).__name__)
+        if isinstance(stored_value, str):
+            lines.append("Stored value length: %d" % len(stored_value))
+
+    lines.append("Session secret set: %s" % bool(app.secret_key))
+
+    body = "\n".join(lines) + "\n"
+    return app.response_class(body, mimetype="text/plain", status=200)
+
 @app.route("/case-00/review", methods=["GET", "POST"])
 def case00_review():
     reviewer = basic_review_user()
