@@ -1888,13 +1888,12 @@ def find_case_by_id(case_id, cases):
     return None
 
 def review_accounts():
-    """Load only password hashes from deployment configuration; fail closed."""
-    raw = os.environ.get("LEGALAI_REVIEW_USERS_JSON", "")
-    try:
-        accounts = json.loads(raw)
-    except (TypeError, ValueError):
-        return {}
-    return accounts if isinstance(accounts, dict) else {}
+    """Load the two fixed attorney-review account hashes; fail closed."""
+    accounts = {
+        "allen@nhpcorp.com": os.environ.get("LEGALAI_REVIEW_ALLEN_PASSWORD_HASH", ""),
+        "johncuomo@gmail.com": os.environ.get("LEGALAI_REVIEW_JOHN_PASSWORD_HASH", ""),
+    }
+    return {email: password_hash for email, password_hash in accounts.items() if password_hash}
 
 def review_login_required():
     return bool(app.secret_key and session.get("review_user") in review_accounts())
