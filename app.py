@@ -1894,6 +1894,19 @@ def find_case_by_id(case_id, cases):
 
 def review_accounts():
     """Load the two portal accounts from Railway configuration, or fail closed."""
+    direct_accounts = {
+        os.environ.get("LEGALAI_REVIEW_ALLEN_USERNAME", "").strip().lower():
+            os.environ.get("LEGALAI_REVIEW_ALLEN_PASSWORD", ""),
+        os.environ.get("LEGALAI_REVIEW_JOHN_USERNAME", "").strip().lower():
+            os.environ.get("LEGALAI_REVIEW_JOHN_PASSWORD", ""),
+    }
+    configured_direct_accounts = {
+        email: password
+        for email, password in direct_accounts.items()
+        if email and password
+    }
+    if configured_direct_accounts:
+        return configured_direct_accounts
     try:
         accounts = json.loads(os.environ.get("LEGALAI_REVIEW_USERS_JSON", ""))
     except (TypeError, ValueError):
