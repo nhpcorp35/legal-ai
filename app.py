@@ -1,6 +1,7 @@
 from flask import Flask, request, render_template, abort, send_from_directory, redirect, session, url_for
 import base64
 import hashlib
+import hmac
 import json
 import math
 import os
@@ -1888,15 +1889,10 @@ def find_case_by_id(case_id, cases):
     return None
 
 def review_accounts():
-    """Load Base64-wrapped password hashes without Railway interpolation."""
-    def decode_hash(name):
-        try:
-            return base64.b64decode(os.environ.get(name, ""), validate=True).decode("utf-8")
-        except (ValueError, UnicodeDecodeError):
-            return ""
+    """Load the fixed MVP review accounts from Railway variables."""
     accounts = {
-        "allen@nhpcorp.com": decode_hash("LEGALAI_REVIEW_ALLEN_PASSWORD_HASH_B64"),
-        "johncuomo@gmail.com": decode_hash("LEGALAI_REVIEW_JOHN_PASSWORD_HASH_B64"),
+        os.environ.get("LEGALAI_REVIEW_ALLEN_USERNAME", "allen@nhpcorp.com").lower(): os.environ.get("LEGALAI_REVIEW_ALLEN_PASSWORD", ""),
+        os.environ.get("LEGALAI_REVIEW_JOHN_USERNAME", "johncuomo@gmail.com").lower(): os.environ.get("LEGALAI_REVIEW_JOHN_PASSWORD", ""),
     }
     return {email: password_hash for email, password_hash in accounts.items() if password_hash}
 
@@ -1906,13 +1902,12 @@ def review_login_required():
 
 def basic_review_user():
     """Authenticate the fixed attorney-review accounts with HTTP Basic Auth."""
-    from werkzeug.security import check_password_hash
     credentials = request.authorization
     if not credentials or not credentials.username or credentials.password is None:
         return None
     email = clean_text(credentials.username).lower()
     stored_hash = review_accounts().get(email)
-    if not stored_hash or not check_password_hash(stored_hash, credentials.password):
+    if not stored_hash or not hmac.compare_digest(stored_hash, credentials.password):
         return None
     return email
 
