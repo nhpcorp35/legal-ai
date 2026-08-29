@@ -8,6 +8,7 @@ import os
 import csv
 import re
 import urllib.error
+import urllib.parse
 import urllib.request
 from types import SimpleNamespace
 
@@ -2018,6 +2019,23 @@ def archive_case00_feedback(question_id, reviewer, decision, notes, packet):
     return result if isinstance(result, dict) and result.get("ok") else None
 
 
+def notify_case00_feedback(question_id, reviewer, decision):
+    """Best-effort internal alert; an alert failure never affects B2 archiving."""
+    token = os.environ.get("PUSHOVER_APP_TOKEN", "")
+    user = os.environ.get("PUSHOVER_USER_KEY", "")
+    if not token or not user:
+        return
+    data = urllib.parse.urlencode({
+        "token": token, "user": user,
+        "title": "Case-00 attorney feedback",
+        "message": f"{question_id}: {reviewer} selected {decision.replace('_', ' ')}.",
+    }).encode("utf-8")
+    try:
+        urllib.request.urlopen(urllib.request.Request("https://api.pushover.net/1/messages.json", data=data), timeout=10).close()
+    except (urllib.error.URLError, urllib.error.HTTPError):
+        pass
+
+
 # =========================
 # ROUTES
 # =========================
@@ -2130,6 +2148,7 @@ def case00_review():
                 error = "Feedback could not be archived. Please try again."
             else:
                 submitted = True
+                notify_case00_feedback(question_id, reviewer, decision)
     return render_template(
         "case00_review.html",
         reviewer=reviewer,
