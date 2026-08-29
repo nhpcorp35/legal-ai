@@ -1966,7 +1966,11 @@ def read_case00_q4_feedback(archive_id):
     try:
         with urllib.request.urlopen(request_data, timeout=30) as response:
             result = json.loads(response.read().decode("utf-8"))
-    except (urllib.error.URLError, urllib.error.HTTPError, UnicodeDecodeError, ValueError):
+    except urllib.error.HTTPError as exc:
+        app.logger.warning("Case-00 feedback reader Gateway status=%s", exc.code)
+        return None
+    except (urllib.error.URLError, UnicodeDecodeError, ValueError):
+        app.logger.warning("Case-00 feedback reader Gateway request failed")
         return None
     feedback = result.get("feedback_markdown") if isinstance(result, dict) else None
     return feedback if isinstance(feedback, str) else None
