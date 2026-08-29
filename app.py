@@ -8,6 +8,7 @@ import os
 import csv
 import re
 import urllib.error
+import urllib.parse
 import urllib.request
 from types import SimpleNamespace
 
@@ -1949,6 +1950,33 @@ def archive_case00_q4_feedback(reviewer, decision, notes, packet):
         return False
 
 
+def notify_case00_q4_feedback(reviewer, decision):
+    """Send a best-effort Pushover notification after a successful archive."""
+    app_token = os.environ.get("PUSHOVER_APP_TOKEN", "")
+    user_key = os.environ.get("PUSHOVER_USER_KEY", "")
+    if not app_token or not user_key:
+        return
+    payload = urllib.parse.urlencode(
+        {
+            "token": app_token,
+            "user": user_key,
+            "title": "LegalAI feedback received",
+            "message": f"Case-00 Q4 feedback submitted by {reviewer} ({decision.replace('_', ' ')}).",
+        }
+    ).encode("utf-8")
+    request_data = urllib.request.Request(
+        "https://api.pushover.net/1/messages.json",
+        data=payload,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request_data, timeout=10):
+            pass
+    except (urllib.error.URLError, urllib.error.HTTPError):
+        app.logger.warning("Case-00 feedback notification failed")
+
+
 # =========================
 # ROUTES
 # =========================
@@ -2048,6 +2076,7 @@ def case00_review():
         if decision not in {"accept", "revise", "reject", "investigate_further"}:
             error = "Choose a review decision."
         elif archive_case00_q4_feedback(reviewer, decision, notes, packet):
+            notify_case00_q4_feedback(reviewer, decision)
             submitted = True
         else:
             error = "Feedback could not be archived. Please try again."
