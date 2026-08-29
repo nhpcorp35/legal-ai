@@ -1,0 +1,29 @@
+<!doctype html>
+<title>Case-00 Attorney Review</title>
+<main>
+  <h1>Case-00 Attorney Review</h1>
+  <p>Signed in as {{ reviewer }}.</p>
+  <p>Submit attorney feedback here; do not send review decisions by email.</p>
+  {% if questions|length > 1 %}
+  <nav aria-label="Available reviews">
+    {% for item in questions %}
+      {% if item == question_id %}<strong>{{ item }}</strong>{% else %}<a href="{{ url_for('case00_review', question=item) }}">{{ item }}</a>{% endif %}
+    {% endfor %}
+  </nav>
+  {% endif %}
+  <h2>{{ question_id }} — {{ question_label }}</h2>
+  <pre style="white-space: pre-wrap; overflow-wrap: anywhere">{{ packet }}</pre>
+  {% if submitted %}<p><strong>Feedback archived and verified.</strong></p>{% endif %}
+  {% if error %}<p role="alert">{{ error }}</p>{% endif %}
+  <form method="post" action="{{ url_for('case00_review', question=question_id) }}">
+    <fieldset>
+      <legend>Attorney decision</legend>
+      <label><input type="radio" name="decision" value="accept" required> Accept</label>
+      <label><input type="radio" name="decision" value="revise"> Revise</label>
+      <label><input type="radio" name="decision" value="reject"> Reject</label>
+      <label><input type="radio" name="decision" value="investigate_further"> Investigate further</label>
+      <p><label for="notes">Notes</label><br><textarea id="notes" name="notes" rows="8" cols="80" maxlength="12000"></textarea></p>
+      <button type="submit">Archive feedback</button>
+    </fieldset>
+  </form>
+</main>
