@@ -2124,7 +2124,7 @@ def case00_review_feedback(archive_id):
         return basic_auth_required_response()
     if reviewer != "allen@nhpcorp.com":
         abort(403)
-    if not re.fullmatch(r"review-\\d{8}-[0-9a-f]{12}", archive_id):
+    if not re.fullmatch(r"review-\d{8}-[0-9a-f]{12}", archive_id):
         abort(404)
     feedback = read_case00_q4_feedback(archive_id)
     if feedback is None:
