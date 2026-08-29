@@ -1900,6 +1900,27 @@ def review_login_required():
     return bool(app.secret_key and session.get("review_user") in review_accounts())
 
 
+def basic_review_user():
+    """Authenticate the fixed attorney-review accounts with HTTP Basic Auth."""
+    from werkzeug.security import check_password_hash
+    credentials = request.authorization
+    if not credentials or not credentials.username or credentials.password is None:
+        return None
+    email = clean_text(credentials.username).lower()
+    stored_hash = review_accounts().get(email)
+    if not stored_hash or not check_password_hash(stored_hash, credentials.password):
+        return None
+    return email
+
+
+def basic_auth_required_response():
+    return (
+        "Authentication required.",
+        401,
+        {"WWW-Authenticate": 'Basic realm="Case-00 Attorney Review"'},
+    )
+
+
 def load_case00_q4_review_packet():
     """Load the B2-verified Q4 review packet from Railway secrets only."""
     encoded = os.environ.get("LEGALAI_CASE00_Q4_PACKET_B64", "")
@@ -2014,8 +2035,9 @@ def matter():
 
 @app.route("/case-00/review", methods=["GET", "POST"])
 def case00_review():
-    if not review_login_required():
-        return redirect(url_for("case00_login", next=request.path))
+    reviewer = basic_review_user()
+    if reviewer is None:
+        return basic_auth_required_response()
     packet = load_case00_q4_review_packet()
     if packet is None:
         abort(503)
@@ -2026,33 +2048,13 @@ def case00_review():
         notes = request.form.get("notes", "").strip()
         if decision not in {"accept", "revise", "reject", "investigate_further"}:
             error = "Choose a review decision."
-        elif archive_case00_q4_feedback(session["review_user"], decision, notes, packet):
+        elif archive_case00_q4_feedback(reviewer, decision, notes, packet):
             submitted = True
         else:
             error = "Feedback could not be archived. Please try again."
     return render_template(
-        "case00_review.html", reviewer=session["review_user"], packet=packet, submitted=submitted, error=error
+        "case00_review.html", reviewer=reviewer, packet=packet, submitted=submitted, error=error
     )
-
-@app.route("/case-00/login", methods=["GET", "POST"])
-def case00_login():
-    error = None
-    if request.method == "POST":
-        from werkzeug.security import check_password_hash
-        email = clean_text(request.form.get("email", "")).lower()
-        stored_hash = review_accounts().get(email)
-        if stored_hash and check_password_hash(stored_hash, request.form.get("password", "")):
-            session.clear(); session["review_user"] = email
-            target = request.args.get("next", "/case-00/review")
-            return redirect(target if target.startswith("/") else "/case-00/review")
-        error = "Sign-in failed."
-    return render_template("case00_login.html", error=error)
-
-@app.post("/case-00/logout")
-def case00_logout():
-    session.clear()
-    return redirect(url_for("case00_login"))
-
 
 @app.route("/pdf/<path:filename>")
 def serve_pdf(filename):
