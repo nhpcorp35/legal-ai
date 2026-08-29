@@ -533,5 +533,35 @@ class DurableUploadUnitTests(unittest.TestCase):
             )
 
 
+class Q5PacketEvidenceStagingTests(unittest.TestCase):
+    def test_extracts_only_q5_validated_propositions(self) -> None:
+        packet = """## Q4. Other question
+### Validated propositions
+- Q4 content
+## Q5. Target question
+### Proposed answer
+prior candidate prose
+### Validated propositions
+- P1: verified proposition
+  - Excerpt: verified excerpt
+### Supporting evidence
+other evidence
+## Q6. Later question
+"""
+        extracted = CLI.extract_q5_validated_propositions(packet)
+        self.assertIn("verified proposition", extracted)
+        self.assertIn("verified excerpt", extracted)
+        self.assertNotIn("prior candidate prose", extracted)
+        self.assertNotIn("Q4 content", extracted)
+
+    def test_writes_q5_evidence_runner_locally(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = CLI.write_staged_q5_validated_propositions(
+                Path(tmp), "### Validated propositions\\n- P1: verified"
+            )
+            self.assertTrue(path.is_file())
+            self.assertIn("question-evidence", str(path))
+
+
 if __name__ == "__main__":
     unittest.main()

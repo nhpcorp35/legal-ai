@@ -131,6 +131,8 @@ _QUESTION_HEADING_RE = re.compile(
     r"^## (Q[1-9][0-9]*)\.\s+(.+?)\s*$",
     re.MULTILINE,
 )
+_Q5_VALIDATED_PROPOSITIONS_HEADING = "### Validated propositions"
+_Q5_SUPPORTING_EVIDENCE_HEADING = "### Supporting evidence"
 
 
 class DurableUploadError(Exception):
@@ -220,6 +222,44 @@ def extract_question_heading_from_markdown(markdown: str, question_id: str) -> s
             question_id=qid,
         )
     return matched[qid]
+
+
+def extract_q5_validated_propositions(markdown: str) -> str:
+    """Extract only Q5's verified proposition block from the canonical packet."""
+    matches = list(_QUESTION_HEADING_RE.finditer(markdown))
+    start = None
+    end = len(markdown)
+    for index, match in enumerate(matches):
+        if match.group(1) != "Q5":
+            continue
+        start = match.end()
+        if index + 1 < len(matches):
+            end = matches[index + 1].start()
+        break
+    if start is None:
+        raise PacketStagingError("Q5 section missing from canonical packet")
+    section = markdown[start:end]
+    block_start = section.find(_Q5_VALIDATED_PROPOSITIONS_HEADING)
+    block_end = section.find(_Q5_SUPPORTING_EVIDENCE_HEADING, block_start)
+    if block_start < 0 or block_end < 0 or block_end <= block_start:
+        raise PacketStagingError("Q5 validated proposition block missing")
+    block = section[block_start:block_end].strip()
+    if not block:
+        raise PacketStagingError("Q5 validated proposition block empty")
+    return block
+
+
+def write_staged_q5_validated_propositions(case_root: Path, evidence: str) -> Path:
+    """Write the verified Q5 evidence block runner-locally, never to artifacts."""
+    text = str(evidence or "").strip()
+    if not text:
+        raise PacketStagingError("Q5 validated proposition block empty")
+    destination = (
+        Path(case_root) / "derived" / "question-evidence" / "q5_validated.md"
+    )
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(text + "\n", encoding="utf-8")
+    return destination.resolve()
 
 
 def write_staged_questions_json(
@@ -320,6 +360,16 @@ def stage_question_from_canonical_b2_packet(
         ) from exc
     heading = extract_question_heading_from_markdown(markdown, qid)
     destination = write_staged_questions_json(case_root, qid, heading)
+    q5_evidence_path = None
+    q5_evidence_sha256 = None
+    if qid == "Q5":
+        q5_evidence = extract_q5_validated_propositions(markdown)
+        q5_evidence_path = write_staged_q5_validated_propositions(
+            case_root, q5_evidence
+        )
+        q5_evidence_sha256 = hashlib.sha256(
+            q5_evidence.encode("utf-8")
+        ).hexdigest()
     return {
         "ok": True,
         "question_id": qid,
@@ -327,6 +377,8 @@ def stage_question_from_canonical_b2_packet(
         "size": int(expected_size),
         "sha256": digest,
         "questions_json": str(destination),
+        "q5_validated_propositions_staged": q5_evidence_path is not None,
+        "q5_validated_propositions_sha256": q5_evidence_sha256,
     }
 
 
