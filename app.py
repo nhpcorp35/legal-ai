@@ -1950,6 +1950,11 @@ def archive_case00_q4_feedback(reviewer, decision, notes, packet):
         return False
 
 
+def packet_for_review_display(packet):
+    """Hide the packet's static checklist; the portal renders the live controls."""
+    return packet.split("\n## 11. Attorney Decision Checklist", 1)[0]
+
+
 def notify_case00_q4_feedback(reviewer, decision):
     """Send a best-effort Pushover notification after a successful archive."""
     app_token = os.environ.get("PUSHOVER_APP_TOKEN", "")
@@ -2068,6 +2073,7 @@ def case00_review():
     packet = load_case00_q4_review_packet()
     if packet is None:
         abort(503)
+    display_packet = packet_for_review_display(packet)
     submitted = False
     error = None
     if request.method == "POST":
@@ -2081,7 +2087,7 @@ def case00_review():
         else:
             error = "Feedback could not be archived. Please try again."
     return render_template(
-        "case00_review.html", reviewer=reviewer, packet=packet, submitted=submitted, error=error
+        "case00_review.html", reviewer=reviewer, packet=display_packet, submitted=submitted, error=error
     )
 
 @app.route("/pdf/<path:filename>")
