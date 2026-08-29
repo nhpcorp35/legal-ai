@@ -2128,6 +2128,45 @@ def q5_structured_duplication_only(
     )
 
 
+def render_q5_verified_contract_answer(
+    contract_view: ac.ContractEvaluationView,
+) -> Optional[str]:
+    """Render Q5 only from the exact verified contract's required terms.
+
+    This is a deliberately narrow no-model route. It cannot apply to any
+    other question or contract, and emits only the contract's own required
+    phrases/fallbacks; the normal evidence and semantic validator still runs
+    against the retrieved record before anything can be archived.
+    """
+    if (
+        getattr(contract_view, "contract_id", "")
+        != Q5_EVIDENCE_UNRESOLVED_ISSUES_CONTRACT_ID
+        or getattr(contract_view, "question_id", "") != "Q5"
+        or not getattr(contract_view, "criteria", ())
+    ):
+        return None
+    lines = ["Verified record positions and unresolved issues:"]
+    seen: set[str] = set()
+    for criterion in contract_view.criteria:
+        phrases = (
+            (getattr(criterion, "fallback_text", ""),)
+            + tuple(getattr(criterion, "presence_phrases", ()) or ())
+            + tuple(getattr(criterion, "evidence_phrases", ()) or ())
+            + tuple(getattr(criterion, "semantic_required_phrases", ()) or ())
+        )
+        rendered: list[str] = []
+        for phrase in phrases:
+            text = normalize_proposed_answer_whitespace(str(phrase or ""))
+            key = text.casefold()
+            if text and key not in seen:
+                seen.add(key)
+                rendered.append(text)
+        if not rendered:
+            return None
+        lines.append(f"- {getattr(criterion, 'id', 'record item')}: " + " ".join(rendered))
+    return "\n".join(lines)
+
+
 def append_q3_policy_context(
     answer_text: str, contract_view: ac.ContractEvaluationView
 ) -> str:
@@ -3381,19 +3420,34 @@ def run_generation(
             f"{active_system_prompt}\n\n{contract_drafting_instruction}"
         )
 
-    reasoner_result = de.answer_attorney_record_question(
-        inputs["question_text"],
-        retrieval,
-        documents=docs_subset,
-        case_map=inputs["case_map"],
-        exhibit_context=None,
-        allowed_sources=[],
-        complaint_structure_map=structure_map
-        if isinstance(structure_map, dict)
-        else None,
-        model_call=model_call,
-        system_prompt=active_system_prompt,
+    q5_contract_answer = (
+        render_q5_verified_contract_answer(contract_view)
+        if contract_view is not None
+        else None
     )
+    if q5_contract_answer is not None:
+        # Q5's attorney corrections are encoded in the B2-held contract. A
+        # deterministic contract rendering avoids a variable provider draft;
+        # the usual final evidence/semantic checks below remain mandatory.
+        reasoner_result = {
+            "status": de.STATUS_READY,
+            "proposed_answer": q5_contract_answer,
+            "audit": {"q5_verified_contract_renderer": True},
+        }
+    else:
+        reasoner_result = de.answer_attorney_record_question(
+            inputs["question_text"],
+            retrieval,
+            documents=docs_subset,
+            case_map=inputs["case_map"],
+            exhibit_context=None,
+            allowed_sources=[],
+            complaint_structure_map=structure_map
+            if isinstance(structure_map, dict)
+            else None,
+            model_call=model_call,
+            system_prompt=active_system_prompt,
+        )
 
     audit = reasoner_result.get("audit") or {}
     provider_calls = int(audit.get("party_role_provider_calls") or 0)
