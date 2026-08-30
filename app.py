@@ -1978,6 +1978,21 @@ def load_szymczyk_review_packet():
     return packet if hmac.compare_digest(actual_sha, expected_sha) else None
 
 
+def archive_szymczyk_feedback(reviewer, decision, notes, packet):
+    gateway_url = os.environ.get("LEGALAI_REVIEW_GATEWAY_URL", "").rstrip("/")
+    secret = os.environ.get("LEGALAI_REVIEW_GATEWAY_SECRET", "")
+    if not gateway_url or not secret:
+        return None
+    payload = json.dumps({"reviewer": reviewer, "decision": decision, "notes": notes, "original_packet_md": packet}).encode("utf-8")
+    request_data = urllib.request.Request(f"{gateway_url}/portal/szymczyk/feedback", data=payload, headers={"Content-Type": "application/json", "X-LegalAI-Portal-Secret": secret}, method="POST")
+    try:
+        with urllib.request.urlopen(request_data, timeout=30) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, urllib.error.HTTPError, ValueError, UnicodeDecodeError):
+        return None
+    return result if isinstance(result, dict) and result.get("ok") else None
+
+
 def available_case00_review_questions():
     return [
         question_id
@@ -2246,7 +2261,7 @@ def case00_review():
     )
 
 
-@app.route("/szymczyk/review")
+@app.route("/szymczyk/review", methods=["GET", "POST"])
 def szymczyk_review():
     reviewer = basic_review_user()
     if reviewer is None:
@@ -2254,11 +2269,26 @@ def szymczyk_review():
     packet = load_szymczyk_review_packet()
     if packet is None:
         abort(503)
+    submitted = False
+    error = None
+    if request.method == "POST":
+        decision = clean_text(request.form.get("decision", "")).lower()
+        notes = request.form.get("notes", "").strip()
+        if decision not in {"accept", "revise", "reject", "investigate_further"}:
+            error = "Choose a review decision."
+        elif len(notes) > 12_000:
+            error = "Notes are too long."
+        elif archive_szymczyk_feedback(reviewer, decision, notes, packet) is None:
+            error = "Feedback could not be archived. Please try again."
+        else:
+            submitted = True
     return render_template_string(
         """<!doctype html><title>Szymczyk Attorney Review</title>
         <main><h1>Szymczyk Attorney Review</h1><p>Signed in as {{ reviewer }}.</p>
         <p><strong>Candidate only - not attorney-approved.</strong></p>
-        <section><pre style=\"white-space:pre-wrap;overflow-wrap:anywhere\">{{ packet }}</pre></section></main>""",
+        <section><pre style=\"white-space:pre-wrap;overflow-wrap:anywhere\">{{ packet }}</pre></section>
+        {% if submitted %}<p><strong>Feedback archived and verified.</strong></p>{% endif %}{% if error %}<p role=\"alert\">{{ error }}</p>{% endif %}
+        <form method=\"post\"><fieldset><legend>Attorney decision</legend><label><input type=\"radio\" name=\"decision\" value=\"accept\" required> Accept</label><label><input type=\"radio\" name=\"decision\" value=\"revise\"> Revise</label><label><input type=\"radio\" name=\"decision\" value=\"reject\"> Reject</label><label><input type=\"radio\" name=\"decision\" value=\"investigate_further\"> Investigate further</label><p><textarea name=\"notes\" rows=\"8\" cols=\"80\" maxlength=\"12000\"></textarea></p><button type=\"submit\">Archive feedback</button></fieldset></form></main>""",
         reviewer=reviewer,
         packet=packet_for_review_display(packet),
     )
