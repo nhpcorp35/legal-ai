@@ -52,10 +52,43 @@ def call_model(payload: dict[str, Any]) -> dict[str, Any]:
     request = urllib.request.Request("https://api.openai.com/v1/responses", data=json.dumps(payload).encode(), headers={"Authorization": f"Bearer {key}", "Content-Type":"application/json"}, method="POST")
     with urllib.request.urlopen(request, timeout=180) as response:
         body = json.loads(response.read().decode())
-    text = body.get("output_text")
-    if not isinstance(text, str):
+    return parse_response_body(body)
+
+
+def parse_response_body(body: Any) -> dict[str, Any]:
+    """Extract strict JSON from the Responses API's assistant-message content."""
+    if not isinstance(body, dict):
+        raise RuntimeError("model response was not a JSON object")
+    if body.get("status") == "incomplete":
+        raise RuntimeError("model response was incomplete")
+    if body.get("error"):
+        raise RuntimeError("model response contained an API error")
+
+    texts: list[str] = []
+    for item in body.get("output", []) if isinstance(body.get("output"), list) else []:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") == "refusal":
+            raise RuntimeError("model refused to produce structured output")
+        if item.get("type") not in (None, "message"):
+            continue
+        for content in item.get("content", []) if isinstance(item.get("content"), list) else []:
+            if not isinstance(content, dict):
+                continue
+            if content.get("type") == "refusal":
+                raise RuntimeError("model refused to produce structured output")
+            if content.get("type") in ("output_text", "text") and isinstance(content.get("text"), str):
+                texts.append(content["text"])
+    if not texts:
         raise RuntimeError("model response did not contain structured output")
-    return json.loads(text)
+    for text in texts:
+        try:
+            candidate = json.loads(text)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(candidate, dict):
+            return candidate
+    raise RuntimeError("model response structured output was not a JSON object")
 
 
 def main(argv: list[str] | None = None) -> int:
