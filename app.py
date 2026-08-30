@@ -2155,6 +2155,23 @@ def notify_case00_feedback(question_id, reviewer, decision):
         pass
 
 
+def notify_szymczyk_feedback(reviewer, decision):
+    """Best-effort internal alert; an alert failure never affects B2 archiving."""
+    token = os.environ.get("PUSHOVER_APP_TOKEN", "")
+    user = os.environ.get("PUSHOVER_USER_KEY", "")
+    if not token or not user:
+        return
+    data = urllib.parse.urlencode({
+        "token": token, "user": user,
+        "title": "Szymczyk attorney feedback",
+        "message": f"{reviewer} selected {decision.replace('_', ' ')}.",
+    }).encode("utf-8")
+    try:
+        urllib.request.urlopen(urllib.request.Request("https://api.pushover.net/1/messages.json", data=data), timeout=10).close()
+    except (urllib.error.URLError, urllib.error.HTTPError):
+        pass
+
+
 # =========================
 # ROUTES
 # =========================
@@ -2301,6 +2318,7 @@ def szymczyk_review():
             error = "Feedback could not be archived. Please try again."
         else:
             submitted = True
+            notify_szymczyk_feedback(reviewer, decision)
     return render_template_string(
         """<!doctype html><title>Szymczyk Attorney Review</title>
         <main><h1>Szymczyk Attorney Review</h1><p>Signed in as {{ reviewer }}.</p>
