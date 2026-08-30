@@ -1,4 +1,4 @@
-from flask import Flask, request, render_template, abort, send_from_directory, Response, send_file
+from flask import Flask, request, render_template, abort, send_from_directory, Response, send_file, render_template_string
 import base64
 from io import BytesIO
 import hashlib
@@ -1964,6 +1964,20 @@ def load_case00_review_packet(question_id):
     return packet
 
 
+def load_szymczyk_review_packet():
+    """Load the verified Szymczyk candidate from protected deployment config."""
+    encoded = os.environ.get("LEGALAI_SZYMCZYK_REVIEW_PACKET_B64", "")
+    expected_sha = os.environ.get("LEGALAI_SZYMCZYK_REVIEW_PACKET_SHA256", "").lower()
+    if not encoded or not expected_sha:
+        return None
+    try:
+        packet = base64.b64decode(encoded, validate=True).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return None
+    actual_sha = hashlib.sha256(packet.encode("utf-8")).hexdigest()
+    return packet if hmac.compare_digest(actual_sha, expected_sha) else None
+
+
 def available_case00_review_questions():
     return [
         question_id
@@ -2229,6 +2243,24 @@ def case00_review():
         packet=packet_for_review_display(packet),
         submitted=submitted,
         error=error,
+    )
+
+
+@app.route("/szymczyk/review")
+def szymczyk_review():
+    reviewer = basic_review_user()
+    if reviewer is None:
+        return basic_auth_required_response()
+    packet = load_szymczyk_review_packet()
+    if packet is None:
+        abort(503)
+    return render_template_string(
+        """<!doctype html><title>Szymczyk Attorney Review</title>
+        <main><h1>Szymczyk Attorney Review</h1><p>Signed in as {{ reviewer }}.</p>
+        <p><strong>Candidate only - not attorney-approved.</strong></p>
+        <section><pre style=\"white-space:pre-wrap;overflow-wrap:anywhere\">{{ packet }}</pre></section></main>""",
+        reviewer=reviewer,
+        packet=packet_for_review_display(packet),
     )
 
 
