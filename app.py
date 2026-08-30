@@ -1,5 +1,6 @@
-from flask import Flask, request, render_template, abort, send_from_directory, Response
+from flask import Flask, request, render_template, abort, send_from_directory, Response, send_file
 import base64
+from io import BytesIO
 import hashlib
 import hmac
 import json
@@ -2019,6 +2020,76 @@ def archive_case00_feedback(question_id, reviewer, decision, notes, packet):
     return result if isinstance(result, dict) and result.get("ok") else None
 
 
+def read_case00_feedback(question_id):
+    """Read one explicitly configured archived portal submission from Gateway."""
+    question_id = question_id.upper()
+    if question_id not in CASE00_REVIEW_QUESTIONS:
+        return None
+    archive_id = clean_text(
+        os.environ.get(f"LEGALAI_CASE00_{question_id}_FEEDBACK_ARCHIVE_ID", "")
+    )
+    gateway_url = os.environ.get("LEGALAI_REVIEW_GATEWAY_URL", "").rstrip("/")
+    secret = os.environ.get("LEGALAI_REVIEW_GATEWAY_SECRET", "")
+    if not archive_id or not gateway_url or not secret:
+        return None
+    payload = json.dumps({"archive_id": archive_id}).encode("utf-8")
+    request_data = urllib.request.Request(
+        f"{gateway_url}/portal/case-00/{question_id.lower()}/feedback/read",
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "X-LegalAI-Portal-Secret": secret,
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request_data, timeout=30) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, urllib.error.HTTPError, ValueError, UnicodeDecodeError):
+        return None
+    feedback = result.get("feedback_markdown") if isinstance(result, dict) else None
+    return feedback if isinstance(feedback, str) and feedback.strip() else None
+
+
+def feedback_pdf_bytes(question_id, feedback_markdown):
+    """Render one archived feedback note as a simple, printable PDF."""
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.units import inch
+    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
+    from reportlab.lib.enums import TA_LEFT
+    from xml.sax.saxutils import escape
+
+    stream = BytesIO()
+    document = SimpleDocTemplate(
+        stream,
+        pagesize=letter,
+        leftMargin=0.75 * inch,
+        rightMargin=0.75 * inch,
+        topMargin=0.75 * inch,
+        bottomMargin=0.75 * inch,
+        title=f"Case-00 {question_id} Attorney Feedback",
+        author="LegalAI",
+    )
+    styles = getSampleStyleSheet()
+    title = styles["Title"]
+    body = styles["BodyText"]
+    body.leading = 15
+    body.alignment = TA_LEFT
+    story = [
+        Paragraph(f"Case-00 {escape(question_id)} Attorney Feedback", title),
+        Spacer(1, 0.18 * inch),
+    ]
+    for line in feedback_markdown.splitlines():
+        line = line.strip()
+        if not line:
+            story.append(Spacer(1, 0.1 * inch))
+            continue
+        story.append(Paragraph(escape(line).replace("  ", "&nbsp;&nbsp;"), body))
+    document.build(story)
+    return stream.getvalue()
+
+
 def notify_case00_feedback(question_id, reviewer, decision):
     """Best-effort internal alert; an alert failure never affects B2 archiving."""
     token = os.environ.get("PUSHOVER_APP_TOKEN", "")
@@ -2158,6 +2229,25 @@ def case00_review():
         packet=packet_for_review_display(packet),
         submitted=submitted,
         error=error,
+    )
+
+
+@app.route("/case-00/review/feedback/q5.pdf")
+def case00_q5_feedback_pdf():
+    if basic_review_user() is None:
+        return basic_auth_required_response()
+    feedback = read_case00_feedback("Q5")
+    if feedback is None:
+        abort(503)
+    try:
+        pdf = feedback_pdf_bytes("Q5", feedback)
+    except ImportError:
+        abort(503)
+    return send_file(
+        BytesIO(pdf),
+        mimetype="application/pdf",
+        as_attachment=True,
+        download_name="Case-00_Q5_John-Cuomo_Feedback.pdf",
     )
 
 
