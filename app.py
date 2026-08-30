@@ -1993,6 +1993,25 @@ def archive_szymczyk_feedback(reviewer, decision, notes, packet):
     return result if isinstance(result, dict) and result.get("ok") else None
 
 
+def read_latest_szymczyk_feedback():
+    """Read the newest archived feedback through the existing server-only secret."""
+    gateway_url = os.environ.get("LEGALAI_REVIEW_GATEWAY_URL", "").rstrip("/")
+    secret = os.environ.get("LEGALAI_REVIEW_GATEWAY_SECRET", "")
+    if not gateway_url or not secret:
+        return None
+    request_data = urllib.request.Request(
+        f"{gateway_url}/portal/szymczyk/feedback/latest",
+        headers={"X-LegalAI-Portal-Secret": secret},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request_data, timeout=30) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, urllib.error.HTTPError, ValueError, UnicodeDecodeError):
+        return None
+    return result if isinstance(result, dict) and result.get("ok") else None
+
+
 def available_case00_review_questions():
     return [
         question_id
@@ -2129,23 +2148,6 @@ def notify_case00_feedback(question_id, reviewer, decision):
         "token": token, "user": user,
         "title": "Case-00 attorney feedback",
         "message": f"{question_id}: {reviewer} selected {decision.replace('_', ' ')}.",
-    }).encode("utf-8")
-    try:
-        urllib.request.urlopen(urllib.request.Request("https://api.pushover.net/1/messages.json", data=data), timeout=10).close()
-    except (urllib.error.URLError, urllib.error.HTTPError):
-        pass
-
-
-def notify_szymczyk_feedback(reviewer, decision):
-    """Best-effort internal alert; an alert failure never affects B2 archiving."""
-    token = os.environ.get("PUSHOVER_APP_TOKEN", "")
-    user = os.environ.get("PUSHOVER_USER_KEY", "")
-    if not token or not user:
-        return
-    data = urllib.parse.urlencode({
-        "token": token, "user": user,
-        "title": "Szymczyk attorney feedback",
-        "message": f"{reviewer} selected {decision.replace('_', ' ')}.",
     }).encode("utf-8")
     try:
         urllib.request.urlopen(urllib.request.Request("https://api.pushover.net/1/messages.json", data=data), timeout=10).close()
@@ -2299,7 +2301,6 @@ def szymczyk_review():
             error = "Feedback could not be archived. Please try again."
         else:
             submitted = True
-            notify_szymczyk_feedback(reviewer, decision)
     return render_template_string(
         """<!doctype html><title>Szymczyk Attorney Review</title>
         <main><h1>Szymczyk Attorney Review</h1><p>Signed in as {{ reviewer }}.</p>
@@ -2309,6 +2310,24 @@ def szymczyk_review():
         <form method=\"post\"><fieldset><legend>Attorney decision</legend><label><input type=\"radio\" name=\"decision\" value=\"accept\" required> Accept</label><label><input type=\"radio\" name=\"decision\" value=\"revise\"> Revise</label><label><input type=\"radio\" name=\"decision\" value=\"reject\"> Reject</label><label><input type=\"radio\" name=\"decision\" value=\"investigate_further\"> Investigate further</label><p><textarea name=\"notes\" rows=\"8\" cols=\"80\" maxlength=\"12000\"></textarea></p><button type=\"submit\">Archive feedback</button></fieldset></form></main>""",
         reviewer=reviewer,
         packet=packet_for_review_display(packet),
+    )
+
+
+@app.route("/szymczyk/feedback/latest")
+def szymczyk_latest_feedback():
+    if basic_review_user() is None:
+        return basic_auth_required_response()
+    feedback = read_latest_szymczyk_feedback()
+    if feedback is None:
+        abort(503)
+    return render_template_string(
+        """<!doctype html><title>Szymczyk Attorney Feedback</title>
+        <main><h1>Szymczyk Attorney Feedback</h1>
+        <p><strong>Archived feedback — read-only.</strong></p>
+        <p>Submitted: {{ submitted_at }}</p>
+        <pre style="white-space:pre-wrap;overflow-wrap:anywhere">{{ feedback_markdown }}</pre></main>""",
+        submitted_at=feedback.get("submitted_at", ""),
+        feedback_markdown=feedback.get("feedback_markdown", ""),
     )
 
 
