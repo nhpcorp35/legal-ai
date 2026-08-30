@@ -19,3 +19,19 @@ def test_rejects_quote_not_in_cited_page(tmp_path: Path):
     candidate = {"case_id": "case", "question": "Q", "proposed_answer": "A", "findings": [{"statement": "S", "evidence": [{"filename": "Complaint.pdf", "page_number": 2, "quote": "Invented text here"}]}]}
     with pytest.raises(VerifiedCaseReviewError):
         validate_candidate(candidate, load_page_index(pages))
+
+
+def test_rejects_unqualified_pleading_inconsistency(tmp_path: Path):
+    pages = tmp_path / "pages.jsonl"
+    pages.write_text(json.dumps({"filename": "Answer.pdf", "page_number": 1, "text": "A party pleads two alternative claims."}) + "\n")
+    candidate = {"case_id": "case", "question": "Q", "proposed_answer": "The two claims are inconsistent.", "findings": [{"statement": "The pleading is internally inconsistent.", "evidence": [{"filename": "Answer.pdf", "page_number": 1, "quote": "two alternative claims"}]}]}
+    with pytest.raises(VerifiedCaseReviewError, match="alternative-pleading context"):
+        validate_candidate(candidate, load_page_index(pages))
+
+
+def test_allows_conditional_pleading_inconsistency_with_open_question(tmp_path: Path):
+    pages = tmp_path / "pages.jsonl"
+    pages.write_text(json.dumps({"filename": "Answer.pdf", "page_number": 1, "text": "A party pleads two alternative claims."}) + "\n")
+    candidate = {"case_id": "case", "question": "Q", "proposed_answer": "The excerpts appear inconsistent unless they are pleaded in the alternative.", "findings": [{"statement": "The excerpts present different claimed relief.", "evidence": [{"filename": "Answer.pdf", "page_number": 1, "quote": "two alternative claims"}]}], "unresolved_questions": ["Does the full pleading identify these positions as alternative pleading or upon information and belief?"]}
+    validated = validate_candidate(candidate, load_page_index(pages))
+    assert validated["unresolved_questions"]

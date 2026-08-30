@@ -22,6 +22,41 @@ def _required(payload: Mapping[str, Any], field: str) -> str:
     return value
 
 
+def _validate_alternative_pleading_context(
+    answer: str,
+    findings: list[dict[str, Any]],
+    unresolved_questions: list[str],
+) -> None:
+    """Keep alleged pleading contradictions conditional until their context is verified.
+
+    A difference between pleaded positions is not, by itself, an inconsistency:
+    it may be alternative or hypothetical pleading.  A candidate that calls such
+    a difference inconsistent must therefore preserve that question for review
+    and identify the missing pleading context.
+    """
+    conclusion_text = " ".join(
+        [answer, *(finding["statement"] for finding in findings)]
+    ).casefold()
+    if not any(term in conclusion_text for term in ("inconsisten", "contradict")):
+        return
+
+    context_text = " ".join(unresolved_questions).casefold()
+    if not any(
+        term in context_text
+        for term in (
+            "alternative pleading",
+            "alternative or hypothetical",
+            "information and belief",
+            "full pleading",
+            "factual basis",
+        )
+    ):
+        raise VerifiedCaseReviewError(
+            "candidate labels pleaded positions inconsistent without preserving "
+            "the alternative-pleading context as an open question"
+        )
+
+
 def load_page_index(path: Path | str) -> dict[tuple[str, int], Mapping[str, Any]]:
     """Load immutable JSONL page records keyed by filename and page number."""
     try:
@@ -71,7 +106,9 @@ def validate_candidate(candidate: Mapping[str, Any], pages: Mapping[tuple[str, i
                 raise VerifiedCaseReviewError(f"finding {number} evidence {evidence_number} quote is not in the verified source")
             citations.append({"filename": filename, "page_number": page, "quote": quote})
         checked.append({"statement": statement, "evidence": citations})
-    return {"schema_version": "verified-case-candidate.v1", "case_id": case_id, "question": question, "proposed_answer": answer, "findings": checked, "unresolved_questions": [_text(x) for x in candidate.get("unresolved_questions", []) if _text(x)], "limitations": _text(candidate.get("limitations")) or "Limited to the cited verified record; attorney review is required."}
+    unresolved_questions = [_text(x) for x in candidate.get("unresolved_questions", []) if _text(x)]
+    _validate_alternative_pleading_context(answer, checked, unresolved_questions)
+    return {"schema_version": "verified-case-candidate.v1", "case_id": case_id, "question": question, "proposed_answer": answer, "findings": checked, "unresolved_questions": unresolved_questions, "limitations": _text(candidate.get("limitations")) or "Limited to the cited verified record; attorney review is required."}
 
 
 def render_packet(candidate: Mapping[str, Any]) -> str:
