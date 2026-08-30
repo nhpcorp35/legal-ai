@@ -1,0 +1,59 @@
+name: Szymczyk verified case-map packet
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Unique durable run ID
+        required: true
+        type: string
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      CASE_ID: NY-NewYork-158068-2018-Szymczyk-v-Hudson-36-37
+      SOURCE_SHA256: ff8a0773d740358d56e43055f518e42b6124a4bc4fb00a39abaf85c5393568dc
+      B2_KEY_ID: ${{ secrets.B2_KEY_ID }}
+      B2_APPLICATION_KEY: ${{ secrets.B2_APPLICATION_KEY }}
+      B2_BUCKET: ${{ secrets.B2_BUCKET }}
+      B2_ENDPOINT: ${{ secrets.B2_ENDPOINT }}
+      B2_REGION: ${{ secrets.B2_REGION }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      LEGALAI_OPENAI_MODEL: gpt-5.6-sol
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install boto3
+      - name: Download immutable page index
+        run: |
+          python - <<'PY'
+          import boto3, os
+          key = f"cases/{os.environ['CASE_ID']}/intake/source/{os.environ['SOURCE_SHA256']}/page_records.jsonl"
+          client = boto3.client('s3', endpoint_url=os.environ['B2_ENDPOINT'], region_name=os.environ['B2_REGION'], aws_access_key_id=os.environ['B2_KEY_ID'], aws_secret_access_key=os.environ['B2_APPLICATION_KEY'])
+          client.download_file(os.environ['B2_BUCKET'], key, 'page_records.jsonl')
+          PY
+      - name: Generate and validate candidate
+        run: python scripts/generate_verified_case_map.py --case-id "$CASE_ID" --page-records page_records.jsonl --output review_packet.md
+      - name: Archive and HEAD-verify outputs
+        run: |
+          python - <<'PY'
+          import boto3, hashlib, os
+          prefix = f"cases/{os.environ['CASE_ID']}/derived/attorney-review-candidates/{os.environ['INPUT_RUN_ID']}/"
+          client = boto3.client('s3', endpoint_url=os.environ['B2_ENDPOINT'], region_name=os.environ['B2_REGION'], aws_access_key_id=os.environ['B2_KEY_ID'], aws_secret_access_key=os.environ['B2_APPLICATION_KEY'])
+          for filename in ('review_packet.md',):
+              data = open(filename, 'rb').read(); key = prefix + filename
+              try: client.head_object(Bucket=os.environ['B2_BUCKET'], Key=key); raise RuntimeError('refusing to overwrite existing run output')
+              except client.exceptions.ClientError as exc:
+                  if exc.response['Error']['Code'] not in ('404','NoSuchKey','NotFound'): raise
+              digest = hashlib.sha256(data).hexdigest()
+              client.put_object(Bucket=os.environ['B2_BUCKET'], Key=key, Body=data, ContentType='text/markdown', Metadata={'sha256':digest})
+              head = client.head_object(Bucket=os.environ['B2_BUCKET'], Key=key)
+              assert head['ContentLength'] == len(data) and head['Metadata']['sha256'] == digest
+          PY
+        env:
+          INPUT_RUN_ID: ${{ inputs.run_id }}
