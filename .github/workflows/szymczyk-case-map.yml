@@ -11,10 +11,18 @@ on:
         description: Existing durable run ID to retrieve without generating
         required: false
         type: string
+      promote_run_id:
+        description: Existing durable run ID to promote as the current portal packet
+        required: false
+        type: string
+      expected_active_run_id:
+        description: Current promoted run ID, or none for the first promotion
+        required: false
+        type: string
 
 jobs:
   generate:
-    if: ${{ inputs.retrieve_run_id == '' && inputs.run_id != '' }}
+    if: ${{ inputs.retrieve_run_id == '' && inputs.promote_run_id == '' && inputs.run_id != '' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -64,7 +72,7 @@ jobs:
           INPUT_RUN_ID: ${{ inputs.run_id }}
 
   retrieve:
-    if: ${{ inputs.retrieve_run_id != '' }}
+    if: ${{ inputs.retrieve_run_id != '' && inputs.promote_run_id == '' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -97,3 +105,56 @@ jobs:
           name: szymczyk-review-packet
           path: review_packet.md
           if-no-files-found: error
+
+  promote:
+    if: ${{ inputs.promote_run_id != '' && inputs.run_id == '' && inputs.retrieve_run_id == '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      CASE_ID: NY-NewYork-158068-2018-Szymczyk-v-Hudson-36-37
+      B2_KEY_ID: ${{ secrets.B2_KEY_ID }}
+      B2_APPLICATION_KEY: ${{ secrets.B2_APPLICATION_KEY }}
+      B2_BUCKET: ${{ secrets.B2_BUCKET }}
+      B2_ENDPOINT: ${{ secrets.B2_ENDPOINT }}
+      B2_REGION: ${{ secrets.B2_REGION }}
+      INPUT_RUN_ID: ${{ inputs.promote_run_id }}
+      EXPECTED_ACTIVE_RUN_ID: ${{ inputs.expected_active_run_id }}
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install boto3
+      - name: Verify immutable candidate and update current-pointer
+        run: |
+          python - <<'PY'
+          import boto3, hashlib, json, os, re, time
+          run_id = os.environ['INPUT_RUN_ID']
+          expected_active = os.environ['EXPECTED_ACTIVE_RUN_ID']
+          if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,127}', run_id):
+              raise RuntimeError('invalid promote run ID')
+          if expected_active != 'none' and not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,127}', expected_active):
+              raise RuntimeError('expected active run ID must be an ID or none')
+          client = boto3.client('s3', endpoint_url=os.environ['B2_ENDPOINT'], region_name=os.environ['B2_REGION'], aws_access_key_id=os.environ['B2_KEY_ID'], aws_secret_access_key=os.environ['B2_APPLICATION_KEY'])
+          prefix = f"cases/{os.environ['CASE_ID']}/derived/attorney-review-candidates/"
+          key = prefix + run_id + '/review_packet.md'
+          pointer_key = f"cases/{os.environ['CASE_ID']}/derived/attorney-review-current.json"
+          try:
+              current = json.loads(client.get_object(Bucket=os.environ['B2_BUCKET'], Key=pointer_key)['Body'].read())
+              current_run = current.get('run_id') if isinstance(current, dict) else None
+          except client.exceptions.ClientError as exc:
+              if exc.response['Error']['Code'] not in ('404', 'NoSuchKey', 'NotFound'): raise
+              current_run = None
+          if (expected_active == 'none' and current_run is not None) or (expected_active != 'none' and current_run != expected_active):
+              raise RuntimeError('current promotion changed; re-run with its exact run ID')
+          head = client.head_object(Bucket=os.environ['B2_BUCKET'], Key=key)
+          if int(head['ContentLength']) > 50000: raise RuntimeError('candidate exceeds packet limit')
+          data = client.get_object(Bucket=os.environ['B2_BUCKET'], Key=key)['Body'].read()
+          digest = hashlib.sha256(data).hexdigest()
+          if head.get('Metadata', {}).get('sha256', '').lower() != digest: raise RuntimeError('candidate SHA verification failed')
+          if not data.decode('utf-8').startswith('# Verified-Case Attorney Review Packet'): raise RuntimeError('candidate packet header invalid')
+          pointer = json.dumps({'schema_version': 1, 'run_id': run_id, 'object_key': key, 'packet_sha256': digest, 'size': len(data), 'promoted_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}, sort_keys=True).encode()
+          client.put_object(Bucket=os.environ['B2_BUCKET'], Key=pointer_key, Body=pointer, ContentType='application/json', Metadata={'sha256': hashlib.sha256(pointer).hexdigest()})
+          verified = client.head_object(Bucket=os.environ['B2_BUCKET'], Key=pointer_key)
+          if verified['ContentLength'] != len(pointer) or verified.get('Metadata', {}).get('sha256') != hashlib.sha256(pointer).hexdigest(): raise RuntimeError('pointer verification failed')
+          PY

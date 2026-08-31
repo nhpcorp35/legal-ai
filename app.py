@@ -1965,7 +1965,10 @@ def load_case00_review_packet(question_id):
 
 
 def load_szymczyk_review_packet():
-    """Load the verified Szymczyk candidate from protected deployment config."""
+    """Prefer the promoted B2 packet; retain the legacy config packet as fallback."""
+    promoted = read_current_szymczyk_review_packet()
+    if promoted is not None:
+        return promoted
     encoded = os.environ.get("LEGALAI_SZYMCZYK_REVIEW_PACKET_B64", "")
     expected_sha = os.environ.get("LEGALAI_SZYMCZYK_REVIEW_PACKET_SHA256", "").lower()
     if not encoded or not expected_sha:
@@ -1976,6 +1979,31 @@ def load_szymczyk_review_packet():
         return None
     actual_sha = hashlib.sha256(packet.encode("utf-8")).hexdigest()
     return packet if hmac.compare_digest(actual_sha, expected_sha) else None
+
+
+def read_current_szymczyk_review_packet():
+    """Read the SHA-verified B2 promotion through the existing server-only gateway."""
+    gateway_url = os.environ.get("LEGALAI_REVIEW_GATEWAY_URL", "").rstrip("/")
+    secret = os.environ.get("LEGALAI_REVIEW_GATEWAY_SECRET", "")
+    if not gateway_url or not secret:
+        return None
+    request_data = urllib.request.Request(
+        f"{gateway_url}/portal/szymczyk/review-packet/current",
+        headers={"X-LegalAI-Portal-Secret": secret}, method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request_data, timeout=30) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, urllib.error.HTTPError, ValueError, UnicodeDecodeError):
+        return None
+    if not isinstance(result, dict) or not result.get("ok"):
+        return None
+    packet = result.get("review_packet_markdown")
+    expected_sha = str(result.get("packet_sha256", "")).lower()
+    if not isinstance(packet, str) or len(packet.encode("utf-8")) > 50_000 or not packet.startswith("# Verified-Case Attorney Review Packet"):
+        return None
+    actual_sha = hashlib.sha256(packet.encode("utf-8")).hexdigest()
+    return packet if re.fullmatch(r"[0-9a-f]{64}", expected_sha) and hmac.compare_digest(actual_sha, expected_sha) else None
 
 
 def archive_szymczyk_feedback(reviewer, decision, notes, packet):
