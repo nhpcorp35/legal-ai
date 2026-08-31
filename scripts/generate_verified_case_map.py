@@ -112,8 +112,6 @@ def main(argv: list[str] | None = None) -> int:
     try:
         checked = validate_candidate(candidate, index)
     except VerifiedCaseReviewError as exc:
-        if "alternative-pleading context" not in str(exc):
-            raise
         candidate = call_model(build_request(args.case_id, pages, correction=str(exc)))
         checked = validate_candidate(candidate, index)
     args.output.write_text(render_packet(checked), encoding="utf-8")
