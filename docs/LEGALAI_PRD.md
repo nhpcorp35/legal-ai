@@ -1,7 +1,7 @@
 # LegalAI PRD (Living)
 
 **Status:** Active  
-**Last updated:** 2026-08-11  
+**Last updated:** 2026-09-03  
 **Authority:** Canonical product requirements and milestone register for LegalAI.  
 **Related (unchanged scopes):** `docs/HAL_CONTROL_ROOM.md` (orchestration contract); `docs/MISSION_CONTROL_OPTIMIZATION_AUTHORITY.md` (Mission Control cost/reliability register).
 
@@ -151,3 +151,35 @@ Update this PRD **only** when one of the following is true:
 **Code missions that affect a milestone must either update this PRD or explicitly state why no PRD update is required.**
 
 Do not update for speculative status, chat memory, or unverified local success. Cite only GitHub-safe commit IDs and technical run IDs — never private benchmark text, party names, attorney names/emails, legal source contents, addresses, credentials, or private artifact contents.
+
+
+---
+
+## Daily operations log
+
+This is the short, human-readable record of completed work. Update it after
+meaningful routine work so Allen can see what changed without needing to approve
+each normal code fix. Keep entries GitHub-safe: no private case material,
+attorney details, credentials, or source-document text.
+
+### Routine execution authority
+
+Routine diagnosis, code fixes, tests, PRs, merges, deployments, and verification
+may proceed without a separate chat approval. Pause only for architecture or
+product decisions; new or deleted services/apps/data; authentication, secrets,
+billing, or access changes; attorney communications; or non-mechanical legal
+judgment.
+
+### 2026-09-03
+
+- Corrected the bounded verified-case source-excerpt extractor after its first
+  run returned no matches; merged the one-file fix in
+  `nhpcorp35/mission-control` at `074c82a4a29a83a344aefddcd96ecf9d185e3492`.
+- Verified the production Bridge deployment completed successfully and produced
+  bounded source evidence for the candidate revision.
+- Updated the protected verified-case review page with a revised
+  source-grounded candidate. The underlying B2 source was not changed, and no
+  attorney communication was sent.
+- ChatGPT custom-app catalog work remains paused pending the existing Support
+  resolution; no new Gateway app was created.
+
