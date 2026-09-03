@@ -2204,6 +2204,51 @@ def notify_szymczyk_feedback(reviewer, decision):
 # ROUTES
 # =========================
 
+
+@app.route("/workspace")
+def attorney_workspace():
+    """Protected entry point for prepared attorney-review matters."""
+    reviewer = basic_review_user()
+    if reviewer is None:
+        return basic_auth_required_response()
+    case00_questions = [
+        {
+            "id": question_id,
+            "label": CASE00_REVIEW_QUESTIONS[question_id],
+            "url": f"/case-00/review?question={question_id}",
+        }
+        for question_id in available_case00_review_questions()
+    ]
+    matters = []
+    if case00_questions:
+        matters.append(
+            {
+                "name": "Case-00 Triborough",
+                "description": "Prepared attorney-review questions with source-supported candidate answers.",
+                "questions": case00_questions,
+            }
+        )
+    if load_szymczyk_review_packet() is not None:
+        matters.append(
+            {
+                "name": "Szymczyk v. Hudson 36 / Hudson 37",
+                "description": "Verified-case pleading review with source support.",
+                "questions": [
+                    {
+                        "id": "Review",
+                        "label": "Attorney review packet",
+                        "url": "/szymczyk/review",
+                    }
+                ],
+            }
+        )
+    return render_template_string(
+        """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>LegalAI Attorney Workspace</title><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:940px;margin:0 auto;padding:48px 24px 64px}header{border-bottom:1px solid #cbd5e1;padding-bottom:24px;margin-bottom:30px}h1{margin:0 0 10px;font-size:clamp(2rem,5vw,3.25rem)}h2{margin:0 0 9px;font-size:1.4rem}p{font-size:1.05rem;line-height:1.55}.meta{color:#52606d;font-size:.96rem}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(275px,1fr));gap:20px}article,.empty{background:white;border:1px solid #cbd5e1;border-radius:10px;padding:24px;box-shadow:0 2px 8px #0f172a10}ul{padding-left:0;list-style:none;margin:20px 0 0}li+li{margin-top:10px}a{display:block;border:1px solid #245b83;border-radius:6px;color:#123f63;font-weight:bold;padding:10px 12px;text-decoration:none}a:hover,a:focus{background:#e6f1f8}</style></head><body><main><header><h1>LegalAI Attorney Workspace</h1><p class="meta">Signed in as {{ reviewer }}.</p><p>Select a prepared matter. Each question opens a source-supported candidate for your review; your decision and notes are then archived.</p></header>{% if matters %}<section class="grid" aria-label="Prepared matters">{% for matter in matters %}<article><h2>{{ matter.name }}</h2><p>{{ matter.description }}</p><ul>{% for question in matter.questions %}<li><a href="{{ question.url }}">{{ question.id }} — {{ question.label }}</a></li>{% endfor %}</ul></article>{% endfor %}</section>{% else %}<section class="empty"><h2>No prepared matters are available</h2><p>Please try again later.</p></section>{% endif %}</main></body></html>""",
+        reviewer=reviewer,
+        matters=matters,
+    )
+
+
 @app.route("/", methods=["GET", "POST"])
 def index():
     try:
