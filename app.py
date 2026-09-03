@@ -2200,6 +2200,40 @@ def notify_szymczyk_feedback(reviewer, decision):
         pass
 
 
+def notify_operator_attention(kind, message):
+    """Send a bounded, authenticated operator attention alert via Pushover."""
+    token = os.environ.get("PUSHOVER_APP_TOKEN", "")
+    user = os.environ.get("PUSHOVER_USER_KEY", "")
+    if not token or not user:
+        return False
+    title = "LegalAI approval needed" if kind == "approval" else "LegalAI decision needed"
+    data = urllib.parse.urlencode({"token": token, "user": user, "title": title, "message": message, "priority": "1", "sound": "pushover"}).encode("utf-8")
+    try:
+        with urllib.request.urlopen(urllib.request.Request("https://api.pushover.net/1/messages.json", data=data), timeout=10) as response:
+            return 200 <= response.status < 300
+    except (urllib.error.URLError, urllib.error.HTTPError):
+        return False
+
+
+@app.route("/internal/operator-attention", methods=["POST"])
+def operator_attention():
+    """Authenticated internal bridge for Codex approval/decision notifications."""
+    supplied_secret = request.headers.get("X-LegalAI-Operator-Secret", "")
+    expected_secret = os.environ.get("LEGALAI_OPERATOR_NOTIFICATION_SECRET", "")
+    if not expected_secret or not hmac.compare_digest(supplied_secret, expected_secret):
+        abort(404)
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        abort(400)
+    kind = clean_text(payload.get("kind", "")).lower()
+    message = clean_text(payload.get("message", ""))
+    if kind not in {"approval", "decision"} or not message or len(message) > 300:
+        abort(400)
+    return Response(status=204 if notify_operator_attention(kind, message) else 503)
+
+
+
+
 # =========================
 # ROUTES
 # =========================
