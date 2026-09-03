@@ -1,4 +1,4 @@
-Warning: truncated output (original token count: 18741)
+Warning: truncated output (original token count: 19498)
 Total output lines: 2468
 
 from flask import Flask, request, render_template, abort, send_from_directory, Response, send_file, render_template_string
@@ -84,7 +84,7 @@ def flatten_citation(case):
         or case.get("slip_op_citation")
     )
     if direct:
-        retur…17741 tokens truncated…for_review_display(packet),
+        retur…18498 tokens truncated…for_review_display(packet),
     )
 
 
