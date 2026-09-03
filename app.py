@@ -2266,11 +2266,11 @@ def attorney_workspace():
         matters.append(
             {
                 "name": "Szymczyk v. Hudson 36 / Hudson 37",
-                "description": "Verified-case pleading review with source support.",
+                "description": "Revised candidate following attorney feedback, with verified-source support.",
                 "questions": [
                     {
                         "id": "Review",
-                        "label": "Attorney review packet",
+                        "label": "Revised candidate for attorney review",
                         "url": "/szymczyk/review",
                     }
                 ],
