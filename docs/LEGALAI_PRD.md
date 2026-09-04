@@ -1,7 +1,7 @@
 # LegalAI PRD (Living)
 
 **Status:** Active  
-**Last updated:** 2026-09-03  
+**Last updated:** 2026-09-04  
 **Authority:** Canonical product requirements and milestone register for LegalAI.  
 **Related (unchanged scopes):** `docs/HAL_CONTROL_ROOM.md` (orchestration contract); `docs/MISSION_CONTROL_OPTIMIZATION_AUTHORITY.md` (Mission Control cost/reliability register).
 
@@ -204,4 +204,14 @@ judgment.
 - Verified the related production deployments completed successfully. The
   verified source, existing review packet, authentication, and ChatGPT app
   configuration were not changed.
+- Added the reusable, authenticated verified-matter intake path. It uses
+  short-lived direct private-storage uploads, checks the ZIP against every
+  manifest-listed PDF byte-for-byte, writes immutable source identity records,
+  and creates the bounded search index only after verification.
+- Exposed that administrator intake path from the protected workspace. No
+  matter data was uploaded or changed as part of this release, and nothing was
+  sent to an attorney. Production deployments were verified for
+  `8148b0ccf85e5ad84557214af2b09db7bbe0446b`,
+  `d47e1f9c3223bbfb63f89a21f376e539501d69c0`, and
+  `6e76eaf77984777655a69048b064a18e842965ba`.
 
