@@ -1,4 +1,5 @@
 from flask import Flask, request, render_template, abort, send_from_directory, Response, send_file, render_template_string
+from markupsafe import Markup, escape
 import base64
 from io import BytesIO
 import hashlib
@@ -2066,6 +2067,29 @@ def packet_for_review_display(packet):
     return packet.split("\n## 11. Attorney Decision Checklist", 1)[0]
 
 
+_PACKET_CITATION_RE = re.compile(
+    r"\*\*([A-Za-z0-9][A-Za-z0-9._ -]{0,180}\\.pdf), PDF page ([1-9]\\d{0,3})\*\*"
+)
+
+
+def packet_for_review_html(packet):
+    """Render only verified PDF citations as links; escape all packet text."""
+    rendered = str(escape(packet_for_review_display(packet)))
+
+    def replace_citation(match):
+        filename, page = match.group(1), match.group(2)
+        href = (
+            "/workspace/szymczyk/pdf/"
+            + urllib.parse.quote(filename, safe="")
+            + "#page="
+            + page
+        )
+        label = escape(f"{filename}, PDF page {page}")
+        return Markup(f'<strong><a href="{href}" target="_blank" rel="noopener">{label}</a></strong>')
+
+    return Markup(_PACKET_CITATION_RE.sub(replace_citation, rendered))
+
+
 def archive_case00_feedback(question_id, reviewer, decision, notes, packet):
     gateway_url = os.environ.get("LEGALAI_REVIEW_GATEWAY_URL", "").rstrip("/")
     secret = os.environ.get("LEGALAI_REVIEW_GATEWAY_SECRET", "")
@@ -2544,11 +2568,11 @@ def szymczyk_review():
         <main><h1>Szymczyk Attorney Review</h1><p>Signed in as {{ reviewer }}.</p>
         <p><strong>Candidate only - not attorney-approved.</strong></p>
         <p><a href=\"/workspace/szymczyk\">Search the verified record and open source PDFs →</a></p>
-        <section><pre style=\"white-space:pre-wrap;overflow-wrap:anywhere\">{{ packet }}</pre></section>
+        <section><pre style=\"white-space:pre-wrap;overflow-wrap:anywhere\">{{ packet_html }}</pre></section>
         {% if submitted %}<p><strong>Feedback archived and verified.</strong></p>{% endif %}{% if error %}<p role=\"alert\">{{ error }}</p>{% endif %}
         <form method=\"post\"><fieldset><legend>Attorney decision</legend><label><input type=\"radio\" name=\"decision\" value=\"accept\" required> Accept</label><label><input type=\"radio\" name=\"decision\" value=\"revise\"> Revise</label><label><input type=\"radio\" name=\"decision\" value=\"reject\"> Reject</label><label><input type=\"radio\" name=\"decision\" value=\"investigate_further\"> Investigate further</label><p><textarea name=\"notes\" rows=\"8\" cols=\"80\" maxlength=\"12000\"></textarea></p><button type=\"submit\">Archive feedback</button></fieldset></form></main>""",
         reviewer=reviewer,
-        packet=packet_for_review_display(packet),
+        packet_html=packet_for_review_html(packet),
     )
 
 
