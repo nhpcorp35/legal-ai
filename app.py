@@ -1997,8 +1997,8 @@ def load_case00_review_packet(question_id):
 
 
 
-def load_registered_case_ids():
-    """Read authenticated metadata-only case IDs through the protected gateway."""
+def load_registered_cases():
+    """Read authenticated readiness metadata through the protected gateway."""
     gateway_url = os.environ.get("LEGALAI_REVIEW_GATEWAY_URL", "").rstrip("/")
     secret = os.environ.get("LEGALAI_REVIEW_GATEWAY_SECRET", "")
     if not gateway_url or not secret:
@@ -2013,8 +2013,16 @@ def load_registered_case_ids():
             result = json.loads(response.read().decode("utf-8"))
     except (urllib.error.URLError, urllib.error.HTTPError, ValueError, UnicodeDecodeError):
         return []
-    case_ids = result.get("case_ids") if isinstance(result, dict) else None
-    return [case_id for case_id in case_ids if isinstance(case_id, str)] if isinstance(case_ids, list) else []
+    cases = result.get("cases") if isinstance(result, dict) else None
+    if not isinstance(cases, list):
+        return []
+    return [
+        {"case_id": item["case_id"], "stage": item["stage"]}
+        for item in cases
+        if isinstance(item, dict)
+        and isinstance(item.get("case_id"), str)
+        and isinstance(item.get("stage"), str)
+    ]
 
 def load_szymczyk_review_packet():
     """Prefer the promoted B2 packet; retain the legacy config packet as fallback."""
@@ -2408,12 +2416,12 @@ def attorney_workspace():
             }
         )
     known_case_ids = {"NY-NewYork-158068-2018-Szymczyk-v-Hudson-36-37"}
-    for case_id in load_registered_case_ids():
-        if case_id not in known_case_ids:
+    for case in load_registered_cases():
+        if case["case_id"] not in known_case_ids:
             matters.append(
                 {
-                    "name": case_id,
-                    "description": "Registered source matter. Verification and review preparation are in progress.",
+                    "name": case["case_id"],
+                    "description": f'{case["stage"]}. Attorney-review preparation has not started.',
                     "questions": [],
                 }
             )
