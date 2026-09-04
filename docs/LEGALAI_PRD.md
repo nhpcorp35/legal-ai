@@ -7,6 +7,13 @@
 
 ---
 
+
+### 2026-09-04 — Case-00 workspace completeness
+
+- Restored the protected workspace list to all five existing Case-00 review packets (Q1–Q5).
+- Packets are read only through the existing Gateway and Bridge from fixed B2 object identities, with size/ETag checks at retrieval and a returned SHA-256 verified by the workspace before display.
+- No source documents, candidate content, credentials, access controls, or ChatGPT app configuration changed.
+
 ## Product objective
 
 LegalAI augments **litigation cognition and attorney reasoning** — issue framing, posture, credibility, contradiction, strategy, and evidence-grounded analysis — not generic legal search or drafting-as-a-service.
