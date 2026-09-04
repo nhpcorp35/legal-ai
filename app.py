@@ -1996,6 +1996,26 @@ def load_case00_review_packet(question_id):
     return packet
 
 
+
+def load_registered_case_ids():
+    """Read authenticated metadata-only case IDs through the protected gateway."""
+    gateway_url = os.environ.get("LEGALAI_REVIEW_GATEWAY_URL", "").rstrip("/")
+    secret = os.environ.get("LEGALAI_REVIEW_GATEWAY_SECRET", "")
+    if not gateway_url or not secret:
+        return []
+    request_data = urllib.request.Request(
+        f"{gateway_url}/portal/cases/registered",
+        headers={"X-LegalAI-Portal-Secret": secret},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request_data, timeout=30) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, urllib.error.HTTPError, ValueError, UnicodeDecodeError):
+        return []
+    case_ids = result.get("case_ids") if isinstance(result, dict) else None
+    return [case_id for case_id in case_ids if isinstance(case_id, str)] if isinstance(case_ids, list) else []
+
 def load_szymczyk_review_packet():
     """Prefer the promoted B2 packet; retain the legacy config packet as fallback."""
     promoted = read_current_szymczyk_review_packet()
@@ -2387,6 +2407,16 @@ def attorney_workspace():
                 "questions": case00_questions,
             }
         )
+    known_case_ids = {"NY-NewYork-158068-2018-Szymczyk-v-Hudson-36-37"}
+    for case_id in load_registered_case_ids():
+        if case_id not in known_case_ids:
+            matters.append(
+                {
+                    "name": case_id,
+                    "description": "Registered source matter. Verification and review preparation are in progress.",
+                    "questions": [],
+                }
+            )
     if load_szymczyk_review_packet() is not None:
         matters.append(
             {
