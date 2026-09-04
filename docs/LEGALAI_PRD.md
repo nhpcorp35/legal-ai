@@ -214,4 +214,7 @@ judgment.
   `8148b0ccf85e5ad84557214af2b09db7bbe0446b`,
   `d47e1f9c3223bbfb63f89a21f376e539501d69c0`, and
   `6e76eaf77984777655a69048b064a18e842965ba`.
+- Added focused fail-closed tests for the generic manifest verifier at
+  `20ab25b699e608060b2035e00c7f1154a880ea43`: a valid verified ZIP is
+  accepted, while a changed PDF or mismatched case identity is rejected.
 
