@@ -2113,6 +2113,32 @@ def load_draft_requests(case_id):
         and item.get("status") == "DRAFT"
     ]
 
+
+def open_indexed_case_pdf(case_id, filename):
+    """Retrieve one verified PDF through the protected gateway."""
+    gateway_url = os.environ.get("LEGALAI_REVIEW_GATEWAY_URL", "").rstrip("/")
+    secret = os.environ.get("LEGALAI_REVIEW_GATEWAY_SECRET", "")
+    if not gateway_url or not secret:
+        return None
+    payload = json.dumps({"document_name": filename}).encode("utf-8")
+    request_data = urllib.request.Request(
+        f"{gateway_url}/portal/cases/{urllib.parse.quote(case_id, safe='')}/pdf",
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "X-LegalAI-Portal-Secret": secret,
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request_data, timeout=120) as response:
+            content = response.read()
+            if response.headers.get_content_type() != "application/pdf":
+                return None
+    except (urllib.error.URLError, urllib.error.HTTPError):
+        return None
+    return content if 0 < len(content) <= 32 * 1024 * 1024 else None
+
 def create_draft_request(case_id, question, reviewer):
     """Create an internal-only attorney-review question request."""
     gateway_url = os.environ.get("LEGALAI_REVIEW_GATEWAY_URL", "").rstrip("/")
@@ -2616,6 +2642,28 @@ def workspace_indexed_case_search(case_id):
     )
 
 
+@app.route("/workspace/matters/<path:case_id>/pdf/<path:filename>")
+def workspace_matter_pdf(case_id, filename):
+    """Serve one verified source PDF after existing workspace authentication."""
+    if basic_review_user() is None:
+        return basic_auth_required_response()
+    registered = {item["case_id"]: item["stage"] for item in load_registered_cases()}
+    if registered.get(case_id) != "Verified source indexed":
+        abort(404)
+    document_name = clean_text(filename)
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._ -]{0,180}\\.pdf", document_name):
+        abort(404)
+    pdf = open_indexed_case_pdf(case_id, document_name)
+    if pdf is None:
+        abort(404)
+    return send_file(
+        BytesIO(pdf),
+        mimetype="application/pdf",
+        as_attachment=False,
+        download_name=document_name,
+    )
+
+
 @app.route("/workspace/matters/<path:case_id>/sources")
 def workspace_matter_sources(case_id):
     """Display the bounded, read-only verified source map for an indexed matter."""
@@ -2629,7 +2677,7 @@ def workspace_matter_sources(case_id):
     if documents is None:
         abort(502)
     return render_template_string(
-        """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Verified Record Map</title><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:940px;margin:0 auto;padding:42px 24px 64px}a{color:#123f63}h1{margin:0 0 8px;font-size:clamp(2rem,5vw,3rem)}p{font-size:1.05rem;line-height:1.55}.meta{color:#52606d}.panel{background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:22px;margin-top:26px;box-shadow:0 2px 8px #0f172a10}table{width:100%;border-collapse:collapse;margin-top:14px}th,td{text-align:left;padding:10px;border-bottom:1px solid #e2e8f0;vertical-align:top}th{color:#52606d}.filename{overflow-wrap:anywhere}</style></head><body><main><p><a href="/workspace">← Attorney workspace</a></p><h1>Verified record map</h1><p class="meta">{{ case_id }}</p><p>This is a read-only inventory of the verified record. It does not contain legal conclusions or replace attorney review.</p><section class="panel"><strong>{{ documents|length }} verified document{{ "" if documents|length == 1 else "s" }}</strong><table><thead><tr><th>Document</th><th>Pages</th></tr></thead><tbody>{% for document in documents %}<tr><td class="filename">{{ document.filename }}</td><td>{{ document.pages }}</td></tr>{% endfor %}</tbody></table></section></main></body></html>""",
+        """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Verified Record Map</title><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:940px;margin:0 auto;padding:42px 24px 64px}a{color:#123f63}h1{margin:0 0 8px;font-size:clamp(2rem,5vw,3rem)}p{font-size:1.05rem;line-height:1.55}.meta{color:#52606d}.panel{background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:22px;margin-top:26px;box-shadow:0 2px 8px #0f172a10}table{width:100%;border-collapse:collapse;margin-top:14px}th,td{text-align:left;padding:10px;border-bottom:1px solid #e2e8f0;vertical-align:top}th{color:#52606d}.filename{overflow-wrap:anywhere}</style></head><body><main><p><a href="/workspace">← Attorney workspace</a></p><h1>Verified record map</h1><p class="meta">{{ case_id }}</p><p>This is a read-only inventory of the verified record. It does not contain legal conclusions or replace attorney review.</p><section class="panel"><strong>{{ documents|length }} verified document{{ "" if documents|length == 1 else "s" }}</strong><table><thead><tr><th>Document</th><th>Pages</th></tr></thead><tbody>{% for document in documents %}<tr><td class="filename"><a href="{{ url_for('workspace_matter_pdf', case_id=case_id, filename=document.filename) }}" target="_blank" rel="noopener">{{ document.filename }}</a></td><td>{{ document.pages }}</td></tr>{% endfor %}</tbody></table></section></main></body></html>""",
         case_id=case_id,
         documents=documents,
     )
