@@ -2568,6 +2568,7 @@ def szymczyk_review():
         <main><h1>Szymczyk Attorney Review</h1><p>Signed in as {{ reviewer }}.</p>
         <p><strong>Candidate only - not attorney-approved.</strong></p>
         <p><a href=\"/workspace/szymczyk\">Search the verified record and open source PDFs →</a></p>
+        <p>Each bold PDF citation below opens the original document at its cited page. Review the candidate against those sources, then select a decision and add any notes.</p>
         <section><pre style=\"white-space:pre-wrap;overflow-wrap:anywhere\">{{ packet_html }}</pre></section>
         {% if submitted %}<p><strong>Feedback archived and verified.</strong></p>{% endif %}{% if error %}<p role=\"alert\">{{ error }}</p>{% endif %}
         <form method=\"post\"><fieldset><legend>Attorney decision</legend><label><input type=\"radio\" name=\"decision\" value=\"accept\" required> Accept</label><label><input type=\"radio\" name=\"decision\" value=\"revise\"> Revise</label><label><input type=\"radio\" name=\"decision\" value=\"reject\"> Reject</label><label><input type=\"radio\" name=\"decision\" value=\"investigate_further\"> Investigate further</label><p><textarea name=\"notes\" rows=\"8\" cols=\"80\" maxlength=\"12000\"></textarea></p><button type=\"submit\">Archive feedback</button></fieldset></form></main>""",
