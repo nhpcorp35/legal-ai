@@ -2583,7 +2583,12 @@ def attorney_workspace():
             matters.append(
                 {
                     "name": case["case_id"],
-                    "description": f'{case["stage"]}. Attorney-review preparation has not started.',
+                    "description": (
+                        "Verified record ready for review. Search or open the source record, "
+                        "then add the attorney-selected question for an internal draft."
+                        if case["stage"] == "Verified source indexed"
+                        else f'{case["stage"]}. Verification and review preparation are in progress.'
+                    ),
                     "questions": questions,
                 }
             )
