@@ -2024,6 +2024,32 @@ def load_registered_cases():
         and isinstance(item.get("stage"), str)
     ]
 
+
+def create_draft_request(case_id, question, reviewer):
+    """Create an internal-only attorney-review question request."""
+    gateway_url = os.environ.get("LEGALAI_REVIEW_GATEWAY_URL", "").rstrip("/")
+    secret = os.environ.get("LEGALAI_REVIEW_GATEWAY_SECRET", "")
+    if not gateway_url or not secret:
+        return None
+    payload = json.dumps(
+        {"case_id": case_id, "question": question, "requested_by": reviewer}
+    ).encode("utf-8")
+    request_data = urllib.request.Request(
+        f"{gateway_url}/portal/cases/draft-request",
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "X-LegalAI-Portal-Secret": secret,
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request_data, timeout=30) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, urllib.error.HTTPError, ValueError, UnicodeDecodeError):
+        return None
+    return result if isinstance(result, dict) and result.get("ok") else None
+
 def load_szymczyk_review_packet():
     """Prefer the promoted B2 packet; retain the legacy config packet as fallback."""
     promoted = read_current_szymczyk_review_packet()
@@ -2418,11 +2444,20 @@ def attorney_workspace():
     known_case_ids = {"NY-NewYork-158068-2018-Szymczyk-v-Hudson-36-37"}
     for case in load_registered_cases():
         if case["case_id"] not in known_case_ids:
+            questions = []
+            if case["stage"] == "Verified source indexed":
+                questions.append(
+                    {
+                        "id": "Prepare",
+                        "label": "Choose attorney-review question",
+                        "url": f'/workspace/matters/{urllib.parse.quote(case["case_id"], safe="")}/draft',
+                    }
+                )
             matters.append(
                 {
                     "name": case["case_id"],
                     "description": f'{case["stage"]}. Attorney-review preparation has not started.',
-                    "questions": [],
+                    "questions": questions,
                 }
             )
     if load_szymczyk_review_packet() is not None:
@@ -2448,6 +2483,38 @@ def attorney_workspace():
         """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>LegalAI Attorney Workspace</title><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:940px;margin:0 auto;padding:48px 24px 64px}header{border-bottom:1px solid #cbd5e1;padding-bottom:24px;margin-bottom:30px}h1{margin:0 0 10px;font-size:clamp(2rem,5vw,3.25rem)}h2{margin:0 0 9px;font-size:1.4rem}p{font-size:1.05rem;line-height:1.55}.meta{color:#52606d;font-size:.96rem}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(275px,1fr));gap:20px}article,.empty{background:white;border:1px solid #cbd5e1;border-radius:10px;padding:24px;box-shadow:0 2px 8px #0f172a10}ul{padding-left:0;list-style:none;margin:20px 0 0}li+li{margin-top:10px}a{display:block;border:1px solid #245b83;border-radius:6px;color:#123f63;font-weight:bold;padding:10px 12px;text-decoration:none}a:hover,a:focus{background:#e6f1f8}</style></head><body><main><header><h1>LegalAI Attorney Workspace</h1><p class="meta">Signed in as {{ reviewer }}.</p><p>Select a prepared matter. Each question opens a source-supported candidate for your review; your decision and notes are then archived.</p></header>{% if matters %}<section class="grid" aria-label="Prepared matters">{% for matter in matters %}<article><h2>{{ matter.name }}</h2><p>{{ matter.description }}</p><ul>{% for question in matter.questions %}<li><a href="{{ question.url }}">{{ question.id }} — {{ question.label }}</a></li>{% endfor %}</ul></article>{% endfor %}</section>{% else %}<section class="empty"><h2>No prepared matters are available</h2><p>Please try again later.</p></section>{% endif %}</main></body></html>""",
         reviewer=reviewer,
         matters=matters,
+    )
+
+
+@app.route("/workspace/matters/<path:case_id>/draft", methods=["GET", "POST"])
+def workspace_matter_draft(case_id):
+    """Start an internal-only, attorney-selected review question for one indexed matter."""
+    reviewer = basic_review_user()
+    if reviewer is None:
+        return basic_auth_required_response()
+    registered = {
+        item["case_id"]: item["stage"]
+        for item in load_registered_cases()
+    }
+    if registered.get(case_id) != "Verified source indexed":
+        abort(404)
+    question = ""
+    confirmation = None
+    error = None
+    if request.method == "POST":
+        question = clean_text(request.form.get("question", ""))
+        if not question or len(question) > 1000:
+            error = "Enter a focused review question (up to 1,000 characters)."
+        else:
+            confirmation = create_draft_request(case_id, question, reviewer)
+            if confirmation is None:
+                error = "The internal draft request could not be saved. Please try again."
+    return render_template_string(
+        """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Prepare Internal Draft</title><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:820px;margin:0 auto;padding:42px 24px 64px}a{color:#123f63}h1{margin:0 0 8px;font-size:clamp(2rem,5vw,3rem)}p{font-size:1.05rem;line-height:1.55}.meta{color:#52606d}.panel{background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:22px;margin-top:26px;box-shadow:0 2px 8px #0f172a10}label{display:block;font-weight:bold;margin-bottom:8px}textarea{box-sizing:border-box;width:100%;font:inherit;line-height:1.45;padding:12px;border:1px solid #64748b;border-radius:6px}button{margin-top:12px;background:#123f63;color:#fff;border:0;border-radius:6px;padding:11px 15px;font:inherit;font-weight:bold;cursor:pointer}.notice{border-left:4px solid #b45309;padding:12px 14px;background:#fffbeb}.success{border-left-color:#15803d;background:#f0fdf4}</style></head><body><main><p><a href="/workspace">← Attorney workspace</a></p><h1>Prepare internal review draft</h1><p class="meta">{{ case_id }}</p><p>This records a review question for internal draft preparation only. It does not send anything to the attorney or create an approved legal conclusion.</p>{% if confirmation %}<section class="panel success"><strong>Draft request saved.</strong><p>Request {{ confirmation.request_id }} is now in the internal DRAFT queue.</p></section>{% else %}<section class="panel"><form method="post"><label for="question">What should the attorney-review draft address?</label><textarea id="question" name="question" rows="5" maxlength="1000" required placeholder="Example: What relief is requested in the verified complaint, and what support is present in the record?">{{ question }}</textarea><button type="submit">Create internal draft request</button></form></section>{% endif %}{% if error %}<p class="notice" role="alert">{{ error }}</p>{% endif %}</main></body></html>""",
+        case_id=case_id,
+        question=question,
+        confirmation=confirmation,
+        error=error,
     )
 
 
