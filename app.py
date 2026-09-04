@@ -2215,6 +2215,49 @@ def notify_operator_attention(kind, message):
         return False
 
 
+def search_szymczyk_verified_pages(query):
+    """Search the fixed verified Szymczyk page index through the portal relay."""
+    query = clean_text(query)
+    gateway_url = os.environ.get("LEGALAI_REVIEW_GATEWAY_URL", "").rstrip("/")
+    secret = os.environ.get("LEGALAI_REVIEW_GATEWAY_SECRET", "")
+    if not gateway_url or not secret:
+        return None, "Verified search is temporarily unavailable."
+    if not query:
+        return [], None
+    if len(query) > 500:
+        return None, "Keep the question under 500 characters."
+    payload = json.dumps({"query": query}).encode("utf-8")
+    request_data = urllib.request.Request(
+        f"{gateway_url}/portal/szymczyk/verified-search",
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "X-LegalAI-Portal-Secret": secret,
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request_data, timeout=45) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, urllib.error.HTTPError, ValueError, UnicodeDecodeError):
+        return None, "Verified search is temporarily unavailable."
+    if not isinstance(result, dict) or not result.get("ok"):
+        return None, "Verified search could not complete. Try a shorter, more specific question."
+    raw_results = result.get("results")
+    if not isinstance(raw_results, list):
+        return None, "Verified search returned an invalid result."
+    results = []
+    for item in raw_results[:12]:
+        if not isinstance(item, dict):
+            continue
+        filename = clean_text(item.get("filename", ""))
+        snippet = clean_text(item.get("snippet", ""))
+        page_number = item.get("page_number")
+        if filename and snippet and isinstance(page_number, int) and page_number > 0:
+            results.append({"filename": filename, "page_number": page_number, "snippet": snippet})
+    return results, None
+
+
 @app.route("/internal/operator-attention", methods=["POST"])
 def operator_attention():
     """Authenticated internal bridge for Codex approval/decision notifications."""
@@ -2269,6 +2312,11 @@ def attorney_workspace():
                 "description": "Revised candidate following attorney feedback, with verified-source support.",
                 "questions": [
                     {
+                        "id": "Search",
+                        "label": "Search verified case pages",
+                        "url": "/workspace/szymczyk",
+                    },
+                    {
                         "id": "Review",
                         "label": "Revised candidate for attorney review",
                         "url": "/szymczyk/review",
@@ -2280,6 +2328,27 @@ def attorney_workspace():
         """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>LegalAI Attorney Workspace</title><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:940px;margin:0 auto;padding:48px 24px 64px}header{border-bottom:1px solid #cbd5e1;padding-bottom:24px;margin-bottom:30px}h1{margin:0 0 10px;font-size:clamp(2rem,5vw,3.25rem)}h2{margin:0 0 9px;font-size:1.4rem}p{font-size:1.05rem;line-height:1.55}.meta{color:#52606d;font-size:.96rem}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(275px,1fr));gap:20px}article,.empty{background:white;border:1px solid #cbd5e1;border-radius:10px;padding:24px;box-shadow:0 2px 8px #0f172a10}ul{padding-left:0;list-style:none;margin:20px 0 0}li+li{margin-top:10px}a{display:block;border:1px solid #245b83;border-radius:6px;color:#123f63;font-weight:bold;padding:10px 12px;text-decoration:none}a:hover,a:focus{background:#e6f1f8}</style></head><body><main><header><h1>LegalAI Attorney Workspace</h1><p class="meta">Signed in as {{ reviewer }}.</p><p>Select a prepared matter. Each question opens a source-supported candidate for your review; your decision and notes are then archived.</p></header>{% if matters %}<section class="grid" aria-label="Prepared matters">{% for matter in matters %}<article><h2>{{ matter.name }}</h2><p>{{ matter.description }}</p><ul>{% for question in matter.questions %}<li><a href="{{ question.url }}">{{ question.id }} — {{ question.label }}</a></li>{% endfor %}</ul></article>{% endfor %}</section>{% else %}<section class="empty"><h2>No prepared matters are available</h2><p>Please try again later.</p></section>{% endif %}</main></body></html>""",
         reviewer=reviewer,
         matters=matters,
+    )
+
+
+@app.route("/workspace/szymczyk", methods=["GET", "POST"])
+def workspace_szymczyk_search():
+    """Protected, read-only verified-page search for the prepared Szymczyk matter."""
+    reviewer = basic_review_user()
+    if reviewer is None:
+        return basic_auth_required_response()
+    query = ""
+    results = None
+    error = None
+    if request.method == "POST":
+        query = clean_text(request.form.get("query", ""))
+        results, error = search_szymczyk_verified_pages(query)
+    return render_template_string(
+        """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Szymczyk Verified Page Search</title><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:940px;margin:0 auto;padding:42px 24px 64px}a{color:#123f63}h1{margin:0 0 8px;font-size:clamp(2rem,5vw,3.1rem)}p{font-size:1.05rem;line-height:1.55}.meta{color:#52606d}.panel,.result{background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:22px;box-shadow:0 2px 8px #0f172a10}.panel{margin:26px 0}.result+ .result{margin-top:14px}label{display:block;font-weight:bold;margin-bottom:8px}textarea{box-sizing:border-box;width:100%;font:inherit;line-height:1.45;padding:12px;border:1px solid #64748b;border-radius:6px}button{margin-top:12px;background:#123f63;color:#fff;border:0;border-radius:6px;padding:11px 15px;font:inherit;font-weight:bold;cursor:pointer}.citation{font-weight:bold;color:#245b83}.snippet{white-space:pre-wrap;overflow-wrap:anywhere}.notice{border-left:4px solid #b45309;padding:12px 14px;background:#fffbeb}.actions{display:flex;gap:16px;flex-wrap:wrap;margin-top:28px}</style></head><body><main><p><a href="/workspace">← Attorney workspace</a></p><h1>Szymczyk Verified Page Search</h1><p class="meta">Signed in as {{ reviewer }}. Results are exact excerpts from the fixed verified record; they are not legal conclusions.</p><section class="panel"><form method="post"><label for="query">What would you like to find in the verified record?</label><textarea id="query" name="query" rows="3" maxlength="500" required placeholder="Example: What does the answer say about contribution?">{{ query }}</textarea><button type="submit">Search verified pages</button></form></section>{% if error %}<p class="notice" role="alert">{{ error }}</p>{% endif %}{% if results is not none %}<h2>Results{% if results %} ({{ results|length }}){% endif %}</h2>{% if results %}{% for result in results %}<article class="result"><p class="citation">{{ result.filename }} — PDF page {{ result.page_number }}</p><p class="snippet">{{ result.snippet }}</p></article>{% endfor %}{% else %}<p class="notice">No verified page matched that question. Try different terms.</p>{% endif %}{% endif %}<p class="actions"><a href="/szymczyk/review">Open the revised candidate for attorney review →</a><a href="/szymczyk/feedback/latest">View archived attorney feedback →</a></p></main></body></html>""",
+        reviewer=reviewer,
+        query=query,
+        results=results,
+        error=error,
     )
 
 
