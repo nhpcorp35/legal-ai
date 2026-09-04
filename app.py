@@ -2547,6 +2547,24 @@ def attorney_workspace():
         for question_id in available_case00_review_questions()
     ]
     matters = []
+    gateway_url = os.environ.get("LEGALAI_REVIEW_GATEWAY_URL", "").rstrip("/")
+    if gateway_url:
+        matters.append(
+            {
+                "name": "New verified matter",
+                "description": (
+                    "Administrator intake for a new case source ZIP and its JSON hash manifest. "
+                    "Every listed PDF is verified before the matter becomes searchable."
+                ),
+                "questions": [
+                    {
+                        "id": "Intake",
+                        "label": "Upload and verify a new source matter",
+                        "url": f"{gateway_url}/intake",
+                    }
+                ],
+            }
+        )
     if case00_questions:
         matters.append(
             {
