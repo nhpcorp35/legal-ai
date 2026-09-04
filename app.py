@@ -2068,7 +2068,7 @@ def packet_for_review_display(packet):
 
 
 _PACKET_CITATION_RE = re.compile(
-    r"\*\*([A-Za-z0-9][A-Za-z0-9._ -]{0,180}\\.pdf), PDF page ([1-9]\\d{0,3})\*\*"
+    r"\*\*([A-Za-z0-9][A-Za-z0-9._ -]{0,180}\.pdf), PDF page ([1-9]\d{0,3})\*\*"
 )
 
 
