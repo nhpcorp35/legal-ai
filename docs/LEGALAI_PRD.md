@@ -183,3 +183,18 @@ judgment.
 - ChatGPT custom-app catalog work remains paused pending the existing Support
   resolution; no new Gateway app was created.
 
+
+### 2026-09-04
+
+- Completed the protected verified-source review workflow: search returns exact
+  cited pages, every result can open its original PDF at the cited page, and
+  the review page links directly back to the source search.
+- Added keyboard submission for the verified-page search (Enter searches;
+  Shift+Enter inserts a line break).
+- Made source citations in the protected review packet directly open the
+  corresponding original PDF page and added an archived-feedback confirmation
+  link after submission.
+- Verified the related production deployments completed successfully. The
+  verified source, existing review packet, authentication, and ChatGPT app
+  configuration were not changed.
+
