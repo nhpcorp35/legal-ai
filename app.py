@@ -2577,8 +2577,17 @@ def attorney_workspace():
     for case in load_registered_cases():
         if case["case_id"] not in known_case_ids:
             questions = []
+            matter_url = urllib.parse.quote(case["case_id"], safe="")
+            gateway_url = os.environ.get("LEGALAI_REVIEW_GATEWAY_URL", "").rstrip("/")
+            if case["stage"] == "Registered" and gateway_url:
+                questions.append(
+                    {
+                        "id": "Intake",
+                        "label": "Add verified source ZIP and manifest",
+                        "url": f"{gateway_url}/intake?case_id={matter_url}",
+                    }
+                )
             if case["stage"] == "Verified source indexed":
-                matter_url = urllib.parse.quote(case["case_id"], safe="")
                 questions.extend(
                     [
                         {
