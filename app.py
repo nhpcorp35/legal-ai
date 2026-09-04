@@ -12,6 +12,7 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
+from functools import lru_cache
 from types import SimpleNamespace
 
 from matter_builder import get_matter
@@ -32,6 +33,9 @@ PREFERRED_CSV_PATHS = [
 
 PER_PAGE = 10
 CASE00_REVIEW_QUESTIONS = {
+    "Q1": "Question 1",
+    "Q2": "Question 2",
+    "Q3": "Question 3",
     "Q4": "Coverage positions and defenses",
     "Q5": "Attorney review",
 }
@@ -1944,11 +1948,38 @@ def basic_auth_required_response():
     )
 
 
+@lru_cache(maxsize=5)
 def load_case00_review_packet(question_id):
-    """Load one B2-verified packet from Railway secrets; never from Git."""
+    """Load one fixed, integrity-checked Case-00 packet; never from Git."""
     question_id = question_id.upper()
     if question_id not in CASE00_REVIEW_QUESTIONS:
         return None
+    gateway_url = os.environ.get("LEGALAI_REVIEW_GATEWAY_URL", "").rstrip("/")
+    secret = os.environ.get("LEGALAI_REVIEW_GATEWAY_SECRET", "")
+    if gateway_url and secret:
+        payload = json.dumps({"question_id": question_id}).encode("utf-8")
+        request_data = urllib.request.Request(
+            f"{gateway_url}/portal/case-00/{question_id.lower()}/packet",
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "X-LegalAI-Portal-Secret": secret,
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request_data, timeout=30) as response:
+                result = json.loads(response.read().decode("utf-8"))
+            packet = result.get("packet_markdown") if isinstance(result, dict) else None
+            expected_sha = result.get("sha256", "") if isinstance(result, dict) else ""
+            if isinstance(packet, str) and re.fullmatch(r"[0-9a-f]{64}", str(expected_sha)):
+                actual_sha = hashlib.sha256(packet.encode("utf-8")).hexdigest()
+                if hmac.compare_digest(actual_sha, str(expected_sha)):
+                    return packet
+        except (urllib.error.URLError, urllib.error.HTTPError, ValueError, UnicodeDecodeError):
+            pass
+
+    # Legacy deployment fallback for the two previously configured packets.
     encoded = os.environ.get(f"LEGALAI_CASE00_{question_id}_PACKET_B64", "")
     expected_sha = os.environ.get(
         f"LEGALAI_CASE00_{question_id}_PACKET_SHA256", ""
