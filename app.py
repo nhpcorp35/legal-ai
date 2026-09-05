@@ -2071,9 +2071,15 @@ def load_case_source_map(case_id):
     if not isinstance(documents, list):
         return None
     return [
-        {"filename": item["filename"], "pages": item["pages"]}
+        {
+            "source_sha256": item["source_sha256"],
+            "filename": item["filename"],
+            "pages": item["pages"],
+        }
         for item in documents
         if isinstance(item, dict)
+        and isinstance(item.get("source_sha256"), str)
+        and re.fullmatch(r"[0-9a-f]{64}", item["source_sha256"])
         and isinstance(item.get("filename"), str)
         and isinstance(item.get("pages"), int)
     ]
@@ -2114,13 +2120,17 @@ def load_draft_requests(case_id):
     ]
 
 
-def open_indexed_case_pdf(case_id, filename):
-    """Retrieve one verified PDF through the protected gateway."""
+def open_indexed_case_pdf(case_id, source_sha256, filename):
+    """Retrieve one source-cited verified PDF through the protected gateway."""
     gateway_url = os.environ.get("LEGALAI_REVIEW_GATEWAY_URL", "").rstrip("/")
     secret = os.environ.get("LEGALAI_REVIEW_GATEWAY_SECRET", "")
     if not gateway_url or not secret:
         return None
-    payload = json.dumps({"document_name": filename}).encode("utf-8")
+    if not re.fullmatch(r"[0-9a-f]{64}", str(source_sha256 or "")):
+        return None
+    payload = json.dumps(
+        {"source_sha256": source_sha256, "document_name": filename}
+    ).encode("utf-8")
     request_data = urllib.request.Request(
         f"{gateway_url}/portal/cases/{urllib.parse.quote(case_id, safe='')}/pdf",
         data=payload,
@@ -2666,7 +2676,7 @@ def workspace_indexed_case_search(case_id):
             if results is None:
                 error = "The verified-record search is temporarily unavailable."
     return render_template_string(
-        """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Verified Record Search</title><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:940px;margin:0 auto;padding:42px 24px 64px}a{color:#123f63}h1{margin:0 0 8px;font-size:clamp(2rem,5vw,3rem)}p{font-size:1.05rem;line-height:1.55}.meta{color:#52606d}.panel,.result{background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:22px;margin-top:20px;box-shadow:0 2px 8px #0f172a10}label{display:block;font-weight:bold;margin-bottom:8px}textarea{box-sizing:border-box;width:100%;font:inherit;line-height:1.45;padding:12px;border:1px solid #64748b;border-radius:6px}button{margin-top:12px;background:#123f63;color:#fff;border:0;border-radius:6px;padding:11px 15px;font:inherit;font-weight:bold;cursor:pointer}.citation{font-weight:bold;color:#245b83}.snippet{white-space:pre-wrap;overflow-wrap:anywhere}.notice{border-left:4px solid #b45309;padding:12px 14px;background:#fffbeb}</style></head><body><main><p><a href="/workspace">← Attorney workspace</a></p><h1>Verified record search</h1><p class="meta">{{ case_id }}</p><p>Results are source excerpts only, not legal conclusions.</p><section class="panel"><form method="post"><label for="query">Search the verified record</label><textarea id="query" name="query" rows="3" maxlength="500" required placeholder="Example: contribution">{{ query }}</textarea><button type="submit">Search verified record</button></form></section><script>document.getElementById("query").addEventListener("keydown",function(event){if(event.key==="Enter"&&!event.shiftKey){event.preventDefault();this.form.requestSubmit();}});</script>{% if error %}<p class="notice" role="alert">{{ error }}</p>{% endif %}{% if results is not none %}<h2>Results{% if results %} ({{ results|length }}){% endif %}</h2>{% if results %}{% for result in results %}<article class="result"><p class="citation">{{ result.filename }} — PDF page {{ result.page_number }}</p><p class="snippet">{{ result.snippet }}</p><p><a href="{{ url_for('workspace_matter_pdf', case_id=case_id, filename=result.filename) }}#page={{ result.page_number }}" target="_blank" rel="noopener">Open source PDF at cited page →</a></p></article>{% endfor %}{% else %}<p class="notice">No matching verified pages were found.</p>{% endif %}{% endif %}</main></body></html>""",
+        """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Verified Record Search</title><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:940px;margin:0 auto;padding:42px 24px 64px}a{color:#123f63}h1{margin:0 0 8px;font-size:clamp(2rem,5vw,3rem)}p{font-size:1.05rem;line-height:1.55}.meta{color:#52606d}.panel,.result{background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:22px;margin-top:20px;box-shadow:0 2px 8px #0f172a10}label{display:block;font-weight:bold;margin-bottom:8px}textarea{box-sizing:border-box;width:100%;font:inherit;line-height:1.45;padding:12px;border:1px solid #64748b;border-radius:6px}button{margin-top:12px;background:#123f63;color:#fff;border:0;border-radius:6px;padding:11px 15px;font:inherit;font-weight:bold;cursor:pointer}.citation{font-weight:bold;color:#245b83}.snippet{white-space:pre-wrap;overflow-wrap:anywhere}.notice{border-left:4px solid #b45309;padding:12px 14px;background:#fffbeb}</style></head><body><main><p><a href="/workspace">← Attorney workspace</a></p><h1>Verified record search</h1><p class="meta">{{ case_id }}</p><p>Results are source excerpts only, not legal conclusions.</p><section class="panel"><form method="post"><label for="query">Search the verified record</label><textarea id="query" name="query" rows="3" maxlength="500" required placeholder="Example: contribution">{{ query }}</textarea><button type="submit">Search verified record</button></form></section><script>document.getElementById("query").addEventListener("keydown",function(event){if(event.key==="Enter"&&!event.shiftKey){event.preventDefault();this.form.requestSubmit();}});</script>{% if error %}<p class="notice" role="alert">{{ error }}</p>{% endif %}{% if results is not none %}<h2>Results{% if results %} ({{ results|length }}){% endif %}</h2>{% if results %}{% for result in results %}<article class="result"><p class="citation">{{ result.filename }} — PDF page {{ result.page_number }}<br><span class="meta">Source {{ result.source_sha256[:12] }}</span></p><p class="snippet">{{ result.snippet }}</p><p><a href="{{ url_for('workspace_matter_pdf', case_id=case_id, filename=result.filename, source_sha256=result.source_sha256) }}#page={{ result.page_number }}" target="_blank" rel="noopener">Open source PDF at cited page →</a></p></article>{% endfor %}{% else %}<p class="notice">No matching verified pages were found.</p>{% endif %}{% endif %}</main></body></html>""",
         case_id=case_id,
         query=query,
         results=results,
@@ -2683,9 +2693,12 @@ def workspace_matter_pdf(case_id, filename):
     if registered.get(case_id) != "Verified source indexed":
         abort(404)
     document_name = clean_text(filename)
+    source_sha256 = clean_text(request.args.get("source_sha256", ""))
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._ -]{0,180}\\.pdf", document_name):
         abort(404)
-    pdf = open_indexed_case_pdf(case_id, document_name)
+    if not re.fullmatch(r"[0-9a-f]{64}", source_sha256):
+        abort(404)
+    pdf = open_indexed_case_pdf(case_id, source_sha256, document_name)
     if pdf is None:
         abort(404)
     return send_file(
@@ -2709,7 +2722,7 @@ def workspace_matter_sources(case_id):
     if documents is None:
         abort(502)
     return render_template_string(
-        """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Verified Record Map</title><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:940px;margin:0 auto;padding:42px 24px 64px}a{color:#123f63}h1{margin:0 0 8px;font-size:clamp(2rem,5vw,3rem)}p{font-size:1.05rem;line-height:1.55}.meta{color:#52606d}.panel{background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:22px;margin-top:26px;box-shadow:0 2px 8px #0f172a10}table{width:100%;border-collapse:collapse;margin-top:14px}th,td{text-align:left;padding:10px;border-bottom:1px solid #e2e8f0;vertical-align:top}th{color:#52606d}.filename{overflow-wrap:anywhere}</style></head><body><main><p><a href="/workspace">← Attorney workspace</a></p><h1>Verified record map</h1><p class="meta">{{ case_id }}</p><p>This is a read-only inventory of the verified record. It does not contain legal conclusions or replace attorney review.</p><section class="panel"><strong>{{ documents|length }} verified document{{ "" if documents|length == 1 else "s" }}</strong><table><thead><tr><th>Document</th><th>Pages</th></tr></thead><tbody>{% for document in documents %}<tr><td class="filename"><a href="{{ url_for('workspace_matter_pdf', case_id=case_id, filename=document.filename) }}" target="_blank" rel="noopener">{{ document.filename }}</a></td><td>{{ document.pages }}</td></tr>{% endfor %}</tbody></table></section></main></body></html>""",
+        """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Verified Record Map</title><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:940px;margin:0 auto;padding:42px 24px 64px}a{color:#123f63}h1{margin:0 0 8px;font-size:clamp(2rem,5vw,3rem)}p{font-size:1.05rem;line-height:1.55}.meta{color:#52606d}.panel{background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:22px;margin-top:26px;box-shadow:0 2px 8px #0f172a10}table{width:100%;border-collapse:collapse;margin-top:14px}th,td{text-align:left;padding:10px;border-bottom:1px solid #e2e8f0;vertical-align:top}th{color:#52606d}.filename{overflow-wrap:anywhere}</style></head><body><main><p><a href="/workspace">← Attorney workspace</a></p><h1>Verified record map</h1><p class="meta">{{ case_id }}</p><p>This is a read-only inventory of the verified record. It does not contain legal conclusions or replace attorney review.</p><section class="panel"><strong>{{ documents|length }} verified document{{ "" if documents|length == 1 else "s" }}</strong><table><thead><tr><th>Document</th><th>Pages</th><th>Source</th></tr></thead><tbody>{% for document in documents %}<tr><td class="filename"><a href="{{ url_for('workspace_matter_pdf', case_id=case_id, filename=document.filename, source_sha256=document.source_sha256) }}" target="_blank" rel="noopener">{{ document.filename }}</a></td><td>{{ document.pages }}</td><td class="meta">{{ document.source_sha256[:12] }}</td></tr>{% endfor %}</tbody></table></section></main></body></html>""",
         case_id=case_id,
         documents=documents,
     )
