@@ -231,3 +231,13 @@ judgment.
 - Added focused fail-closed tests for the generic manifest verifier at
   `20ab25b699e608060b2035e00c7f1154a880ea43`: a valid verified ZIP is
   accepted, while a changed PDF or mismatched case identity is rejected.
+
+### 2026-09-05
+
+- Corrected the workspace’s stale legacy matter alias so it resolves to the
+  existing canonical verified record instead of displaying a separate
+  incomplete placeholder. The immutable source and attorney-review materials
+  were not changed.
+- Added focused coverage for that alias and verified the workspace source-link
+  filename validation. Production deployment completed from
+  `e40449b423fc20afd8905ec8ee921febaa8beefc`.
