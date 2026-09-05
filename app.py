@@ -2753,7 +2753,7 @@ def attorney_workspace():
                         },
                         {
                             "id": "Prepare",
-                            "label": "Choose attorney-review question",
+                            "label": "Ask a new review question",
                             "url": f"/workspace/matters/{matter_url}/draft",
                         },
                     ]
