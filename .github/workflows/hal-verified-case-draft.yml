@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       request_id:
-        required: true
+        required: false
         type: string
 
 permissions:
@@ -38,4 +38,12 @@ jobs:
           cache: pip
       - run: python -m pip install -r requirements.txt boto3
       - name: Generate bounded internal draft
-        run: python scripts/run_verified_case_draft.py --case-id "${{ inputs.case_id }}" --request-id "${{ inputs.request_id }}"
+        env:
+          CASE_ID: ${{ inputs.case_id }}
+          REQUEST_ID: ${{ inputs.request_id }}
+        run: |
+          if [ -n "$REQUEST_ID" ]; then
+            python scripts/run_verified_case_draft.py --case-id "$CASE_ID" --request-id "$REQUEST_ID"
+          else
+            python scripts/run_verified_case_draft.py --case-id "$CASE_ID"
+          fi
