@@ -2625,8 +2625,9 @@ def attorney_workspace():
                 "questions": case00_questions,
             }
         )
-    known_case_ids = {"NY-NewYork-158068-2018-Szymczyk-v-Hudson-36-37"}
-    for case in load_registered_cases():
+    known_case_ids = set()
+    registered_cases = load_registered_cases()
+    for case in registered_cases:
         if case["case_id"] not in known_case_ids:
             questions = []
             matter_url = urllib.parse.quote(case["case_id"], safe="")
@@ -2659,6 +2660,17 @@ def attorney_workspace():
                         },
                     ]
                 )
+                if (
+                    case["case_id"] == "NY-NewYork-158068-2018-Szymczyk-v-Hudson-36-37"
+                    and load_szymczyk_review_packet() is not None
+                ):
+                    questions.append(
+                        {
+                            "id": "Review",
+                            "label": "Revised candidate for attorney review",
+                            "url": "/szymczyk/review",
+                        }
+                    )
             matters.append(
                 {
                     "name": case["case_id"],
@@ -2671,7 +2683,14 @@ def attorney_workspace():
                     "questions": questions,
                 }
             )
-    if load_szymczyk_review_packet() is not None:
+    if (
+        load_szymczyk_review_packet() is not None
+        and not any(
+            case["case_id"] == "NY-NewYork-158068-2018-Szymczyk-v-Hudson-36-37"
+            and case["stage"] == "Verified source indexed"
+            for case in registered_cases
+        )
+    ):
         matters.append(
             {
                 "name": "Szymczyk v. Hudson 36 / Hudson 37",
