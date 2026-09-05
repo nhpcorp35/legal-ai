@@ -31,7 +31,10 @@ def read_request(s3, case_id, request_id):
     if not isinstance(item, dict) or item.get("schema_version") != "legalai-draft-request.v1" or item.get("case_id") != case_id or item.get("external_communication") is not False:
         raise ValueError("invalid request")
     question = item.get("question")
-    if not isinstance(question, str) or not question.strip() or len(question) > 1000: raise ValueError("def verified_sources(s3, case_id):
+    if not isinstance(question, str) or not question.strip() or len(question) > 1000: raise ValueError("invalid question")
+    return question
+
+def verified_sources(s3, case_id):
     """Read the canonical immutable-original/additive source-set pointer."""
     identity_key = f"cases/{case_id}/intake/case_identity.json"
     identity = json.loads(s3.get_object(Bucket=os.environ["B2_BUCKET"], Key=identity_key)["Body"].read().decode())
@@ -63,14 +66,14 @@ def evidence(s3, case_id, question):
             if score:
                 rows.append((score,filename,page,source,candidate))
             else:
+                # A valid, bounded fallback keeps unusual terminology or OCR gaps
+                # from preventing an otherwise verified internal review draft.
                 fallback_rows.append((0,filename,page,source,candidate))
     selected=[]; total=0
     for _,_,_,_,item in sorted(rows or fallback_rows,key=lambda x:(-x[0],x[1].casefold(),x[2])):
         if total+len(item["text"])>MAX_CONTEXT_CHARS or len(selected)>=MAX_PAGES: continue
         selected.append(item); total+=len(item["text"])
     if not selected: raise ValueError("no matching verified evidence")
-    return selected
-verified evidence")
     return selected
 
 def generate(question, pages):
