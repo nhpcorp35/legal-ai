@@ -2114,6 +2114,12 @@ def load_draft_requests(case_id):
             "status": item["status"],
             "created_at": item["created_at"],
             "draft": item.get("draft") if isinstance(item.get("draft"), dict) else None,
+            "failure_code": (
+                item.get("failure_code")
+                if isinstance(item.get("failure_code"), str)
+                and re.fullmatch(r"[a-z_]{1,40}", item["failure_code"])
+                else None
+            ),
         }
         for item in entries
         if isinstance(item, dict)
@@ -2470,7 +2476,9 @@ def _monitor_verified_draft_statuses():
                 if marker in _draft_alerted:
                     continue
                 _draft_alerted.add(marker)
-                notify_operator_attention("decision", f"Internal draft {status.lower()}: {case_id} / {request_id}")
+                failure_code = job.get("failure_code")
+                suffix = f" ({failure_code})" if isinstance(failure_code, str) else ""
+                notify_operator_attention("decision", f"Internal draft {status.lower()}{suffix}: {case_id} / {request_id}")
     finally:
         timer = threading.Timer(120.0, _monitor_verified_draft_statuses)
         timer.daemon = True
