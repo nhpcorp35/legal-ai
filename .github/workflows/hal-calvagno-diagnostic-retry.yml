@@ -1,4 +1,4 @@
-name: HAL Calvagno Diagnostic Retry
+name: HAL Calvagno Diagnostic Retry 2
 on:
   push:
     branches: [main]
