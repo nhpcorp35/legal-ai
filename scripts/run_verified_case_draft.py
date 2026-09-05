@@ -78,9 +78,14 @@ def validate(result, pages):
     return result
 
 def main():
-    parser=argparse.ArgumentParser(); parser.add_argument("--case-id",required=True); parser.add_argument("--request-id",required=True); args=parser.parse_args()
-    if not CASE_RE.fullmatch(args.case_id) or not re.fullmatch(r"draft-[0-9]+-[0-9a-f]{12}",args.request_id): raise SystemExit("invalid identifier")
+    parser=argparse.ArgumentParser(); parser.add_argument("--case-id",required=True); parser.add_argument("--request-id"); args=parser.parse_args()
+    if not CASE_RE.fullmatch(args.case_id): raise SystemExit("invalid case identifier")
     s3=client(); now=lambda: datetime.now(timezone.utc).isoformat()
+    if not args.request_id:
+        keys = s3.list_objects_v2(Bucket=os.environ["B2_BUCKET"], Prefix=f"cases/{args.case_id}/derived/draft-requests/", MaxKeys=100).get("Contents", [])
+        pending = [str(item.get("Key", "")).rsplit("/", 1)[-1].removesuffix(".json") for item in keys if str(item.get("Key", "")).endswith(".json")]
+        args.request_id = sorted(pending)[-1] if pending else ""
+    if not re.fullmatch(r"draft-[0-9]+-[0-9a-f]{12}", args.request_id or ""): raise SystemExit("invalid request identifier")
     put(s3,args.case_id,args.request_id,"status.json",{"schema_version":"legalai-internal-draft-status.v1","case_id":args.case_id,"request_id":args.request_id,"status":"RUNNING","updated_at":now()})
     try:
         question=read_request(s3,args.case_id,args.request_id); pages=evidence(s3,args.case_id,question); result=validate(generate(question,pages),pages)
@@ -93,4 +98,3 @@ def main():
         raise
 
 if __name__ == "__main__": main()
-￿￿￿
