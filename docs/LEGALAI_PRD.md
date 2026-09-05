@@ -1,11 +1,25 @@
 # LegalAI PRD (Living)
 
 **Status:** Active  
-**Last updated:** 2026-09-04  
+**Last updated:** 2026-09-05
 **Authority:** Canonical product requirements and milestone register for LegalAI.  
 **Related (unchanged scopes):** `docs/HAL_CONTROL_ROOM.md` (orchestration contract); `docs/MISSION_CONTROL_OPTIMIZATION_AUTHORITY.md` (Mission Control cost/reliability register).
 
 ---
+
+### 2026-09-05 — Source-bound verified workspace citations
+
+- Updated the internal verified-matter workspace to retain the exact
+  `source_sha256` for every search result and document-map row.
+- Opening a cited PDF now requires that source identity and forwards it to the
+  protected Gateway, preventing an identically named document in a future
+  supplement ZIP from being confused with the immutable original ZIP.
+- Added focused Flask workspace tests for source-bound links and fail-closed
+  missing-source behavior. The repository checkout lacks Flask, so those tests
+  are queued for Railway’s normal dependency-installed build environment;
+  `python -m py_compile app.py` passed locally.
+- No case content, B2 objects, attorney packet, recipient, ChatGPT app, or
+  OAuth configuration changed.
 
 
 ### 2026-09-04 — Case-00 workspace completeness
@@ -217,4 +231,3 @@ judgment.
 - Added focused fail-closed tests for the generic manifest verifier at
   `20ab25b699e608060b2035e00c7f1154a880ea43`: a valid verified ZIP is
   accepted, while a changed PDF or mismatched case identity is rejected.
-
