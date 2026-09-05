@@ -12,6 +12,8 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
+import threading
+import time
 from functools import lru_cache
 from types import SimpleNamespace
 
@@ -2447,6 +2449,37 @@ def notify_operator_attention(kind, message):
             return 200 <= response.status < 300
     except (urllib.error.URLError, urllib.error.HTTPError):
         return False
+
+
+_draft_alerted: set[tuple[str, str, str]] = set()
+
+
+def _monitor_verified_draft_statuses():
+    """Alert once per process for terminal internal-draft state; no source text."""
+    try:
+        for matter in load_registered_cases():
+            case_id = matter.get("case_id")
+            if not isinstance(case_id, str):
+                continue
+            for job in load_draft_requests(case_id) or []:
+                status = job.get("status")
+                request_id = job.get("request_id")
+                if status not in {"READY", "FAILED"} or not isinstance(request_id, str):
+                    continue
+                marker = (case_id, request_id, status)
+                if marker in _draft_alerted:
+                    continue
+                _draft_alerted.add(marker)
+                notify_operator_attention("decision", f"Internal draft {status.lower()}: {case_id} / {request_id}")
+    finally:
+        timer = threading.Timer(120.0, _monitor_verified_draft_statuses)
+        timer.daemon = True
+        timer.start()
+
+
+_status_monitor_timer = threading.Timer(30.0, _monitor_verified_draft_statuses)
+_status_monitor_timer.daemon = True
+_status_monitor_timer.start()
 
 
 def search_szymczyk_verified_pages(query):
