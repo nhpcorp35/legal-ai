@@ -19,10 +19,11 @@ SPEC.loader.exec_module(WORKER)
 class FakeS3:
     source = "a" * 64
 
-    def list_objects_v2(self, **_kwargs):
-        return {"Contents": [{"Key": f"cases/NY-Suffolk-600371-2021-DeSousa-v-Calvagno-II-Karcher/intake/{self.source}/page_records.jsonl"}]}
-
-    def get_object(self, **_kwargs):
+    def get_object(self, **kwargs):
+        if kwargs["Key"].endswith("case_identity.json"):
+            return {"Body": io.BytesIO(json.dumps({"source_sha256": self.source}).encode())}
+        if kwargs["Key"].endswith("source_set.json"):
+            raise RuntimeError("legacy original-only source set")
         pages = [
             {"filename": "B Filing.pdf", "page_number": 2, "text": "Unusual record language without the request terms."},
             {"filename": "A Filing.pdf", "page_number": 1, "text": "Another verified page with OCR variation."},
