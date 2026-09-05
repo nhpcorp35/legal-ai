@@ -34,7 +34,7 @@ def read_request(s3, case_id, request_id):
     return question
 
 def evidence(s3, case_id, question):
-    rows=[]; terms=words(question)
+    rows=[]; fallback_rows=[]; terms=words(question)
     listed=s3.list_objects_v2(Bucket=os.environ["B2_BUCKET"], Prefix=f"cases/{case_id}/intake/", MaxKeys=1000)
     for obj in listed.get("Contents",[]):
         object_key=str(obj.get("Key",""))
@@ -47,9 +47,14 @@ def evidence(s3, case_id, question):
             if not text or not isinstance(filename,str) or not isinstance(page,int) or page < 1: continue
             lowered=text.casefold(); score=sum(lowered.count(term) for term in terms)
             score += 2 if any(term in filename.casefold() for term in terms) else 0
-            if score: rows.append((score,filename,page,source,{"source_sha256":source,"filename":filename,"page_number":page,"text":text[:MAX_PAGE_CHARS]}))
+            candidate={"source_sha256":source,"filename":filename,"page_number":page,"text":text[:MAX_PAGE_CHARS]}
+            if score:
+                rows.append((score,filename,page,source,candidate))
+            else:
+                # Preserve a bounded verified fallback for OCR gaps or unusual terminology.
+                fallback_rows.append((0,filename,page,source,candidate))
     selected=[]; total=0
-    for _,_,_,_,item in sorted(rows,key=lambda x:(-x[0],x[1].casefold(),x[2])):
+    for _,_,_,_,item in sorted(rows or fallback_rows,key=lambda x:(-x[0],x[1].casefold(),x[2])):
         if total+len(item["text"])>MAX_CONTEXT_CHARS or len(selected)>=MAX_PAGES: continue
         selected.append(item); total+=len(item["text"])
     if not selected: raise ValueError("no matching verified evidence")
