@@ -93,8 +93,12 @@ def main():
         put(s3,args.case_id,args.request_id,"draft.json",draft)
         put(s3,args.case_id,args.request_id,"input_audit.json",{"schema_version":"legalai-internal-draft-audit.v1","case_id":args.case_id,"request_id":args.request_id,"question_sha256":hashlib.sha256(question.encode()).hexdigest(),"retrieval_citations":[{k:p[k] for k in ("source_sha256","filename","page_number")} for p in pages],"generated_at":now()})
         put(s3,args.case_id,args.request_id,"status.json",{"schema_version":"legalai-internal-draft-status.v1","case_id":args.case_id,"request_id":args.request_id,"status":"READY","updated_at":now()})
-    except Exception:
-        put(s3,args.case_id,args.request_id,"status.json",{"schema_version":"legalai-internal-draft-status.v1","case_id":args.case_id,"request_id":args.request_id,"status":"FAILED","updated_at":now()})
+    except Exception as exc:
+        # Persist only a bounded operational code, never source/model text.
+        code = exc.__class__.__name__.lower()
+        if code not in {"valueerror", "runtimeerror", "httperror", "urlerror", "clienterror"}:
+            code = "internal_error"
+        put(s3,args.case_id,args.request_id,"status.json",{"schema_version":"legalai-internal-draft-status.v1","case_id":args.case_id,"request_id":args.request_id,"status":"FAILED","failure_code":code,"updated_at":now()})
         raise
 
 if __name__ == "__main__": main()
