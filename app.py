@@ -2018,19 +2018,27 @@ def load_registered_cases():
     cases = result.get("cases") if isinstance(result, dict) else None
     if not isinstance(cases, list):
         return []
-    normalized = [
-        {"case_id": item["case_id"], "stage": item["stage"]}
-        for item in cases
-        if isinstance(item, dict)
-        and isinstance(item.get("case_id"), str)
-        and isinstance(item.get("stage"), str)
-    ]
-    # Rennick was promoted into the immutable canonical layout before its
-    # registry source-set metadata existed. Its index is verified by the
-    # protected bridge; expose it through the standard workspace actions.
-    for item in normalized:
-        if item["case_id"] == "NY-Nassau-613561-2026-Desousa-v-Rennick":
-            item["stage"] = "Verified source indexed"
+    canonical_rennick_id = "NY-Nassau-613561-2026-Desousa-v-Rennick"
+    legacy_rennick_id = "NY-Nassau-613561-2026-Rennick"
+    normalized = []
+    seen_case_ids = set()
+    for item in cases:
+        if not (
+            isinstance(item, dict)
+            and isinstance(item.get("case_id"), str)
+            and isinstance(item.get("stage"), str)
+        ):
+            continue
+        case_id = item["case_id"]
+        # The old empty intake placeholder is not a separate matter.  Route it
+        # to the immutable, verified canonical Rennick record so the workspace
+        # exposes the same source-backed actions as the bridge.
+        if case_id == legacy_rennick_id:
+            case_id = canonical_rennick_id
+        stage = "Verified source indexed" if case_id == canonical_rennick_id else item["stage"]
+        if case_id not in seen_case_ids:
+            normalized.append({"case_id": case_id, "stage": stage})
+            seen_case_ids.add(case_id)
     return normalized
 
 
@@ -2120,7 +2128,7 @@ def load_case00_verified_pages():
                 text = " ".join(str(item.get("text", "")).split())
                 if (
                     isinstance(filename, str)
-                    and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._ -]{0,180}\\.pdf", filename)
+                    and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._ -]{0,180}\.pdf", filename)
                     and isinstance(page_number, int)
                     and page_number > 0
                     and text
@@ -2155,7 +2163,7 @@ def load_case00_source_map():
 
 
 def open_case00_source_pdf(filename):
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._ -]{0,180}\\.pdf", filename):
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._ -]{0,180}\.pdf", filename):
         return None
     if filename not in {item["filename"] for item in load_case00_source_map() or []}:
         return None
@@ -2887,7 +2895,7 @@ def workspace_matter_pdf(case_id, filename):
         abort(404)
     document_name = clean_text(filename)
     source_sha256 = clean_text(request.args.get("source_sha256", ""))
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._ -]{0,180}\\.pdf", document_name):
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._ -]{0,180}\.pdf", document_name):
         abort(404)
     if not re.fullmatch(r"[0-9a-f]{64}", source_sha256):
         abort(404)
