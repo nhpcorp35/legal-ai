@@ -10,6 +10,7 @@ import boto3
 
 MAX_PAGES, MAX_PAGE_CHARS, MAX_CONTEXT_CHARS = 30, 2200, 50000
 CASE_RE = re.compile(r"NY-[A-Za-z]+-[0-9]{6}-[0-9]{4}-[A-Za-z0-9-]{2,80}$")
+SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
 def client():
     return boto3.client("s3", endpoint_url=os.environ["B2_ENDPOINT"].rstrip("/"), region_name=os.environ["B2_REGION"], aws_access_key_id=os.environ["B2_KEY_ID"], aws_secret_access_key=os.environ["B2_APPLICATION_KEY"])
@@ -30,17 +31,28 @@ def read_request(s3, case_id, request_id):
     if not isinstance(item, dict) or item.get("schema_version") != "legalai-draft-request.v1" or item.get("case_id") != case_id or item.get("external_communication") is not False:
         raise ValueError("invalid request")
     question = item.get("question")
-    if not isinstance(question, str) or not question.strip() or len(question) > 1000: raise ValueError("invalid question")
-    return question
+    if not isinstance(question, str) or not question.strip() or len(question) > 1000: raise ValueError("def verified_sources(s3, case_id):
+    """Read the canonical immutable-original/additive source-set pointer."""
+    identity_key = f"cases/{case_id}/intake/case_identity.json"
+    identity = json.loads(s3.get_object(Bucket=os.environ["B2_BUCKET"], Key=identity_key)["Body"].read().decode())
+    original = identity.get("source_sha256") if isinstance(identity, dict) else None
+    if not isinstance(original, str) or not SHA256_RE.fullmatch(original):
+        raise ValueError("invalid verified source identity")
+    try:
+        source_set = json.loads(s3.get_object(Bucket=os.environ["B2_BUCKET"], Key=f"cases/{case_id}/intake/source_set.json")["Body"].read().decode())
+    except Exception:
+        return [original]
+    sources = source_set.get("sources") if isinstance(source_set, dict) and source_set.get("case_id") == case_id else None
+    digests = [item.get("source_sha256") for item in sources] if isinstance(sources, list) else []
+    if not digests or any(not isinstance(digest, str) or not SHA256_RE.fullmatch(digest) for digest in digests) or len(set(digests)) != len(digests) or original not in digests:
+        raise ValueError("invalid verified source set")
+    return digests
+
 
 def evidence(s3, case_id, question):
     rows=[]; fallback_rows=[]; terms=words(question)
-    listed=s3.list_objects_v2(Bucket=os.environ["B2_BUCKET"], Prefix=f"cases/{case_id}/intake/", MaxKeys=1000)
-    for obj in listed.get("Contents",[]):
-        object_key=str(obj.get("Key",""))
-        if not object_key.endswith("/page_records.jsonl"): continue
-        source=object_key.split("/")[3] if len(object_key.split("/")) > 3 else ""
-        if not re.fullmatch(r"[0-9a-f]{64}",source): continue
+    for source in verified_sources(s3, case_id):
+        object_key=f"cases/{case_id}/intake/source/{source}/page_records.jsonl"
         raw=s3.get_object(Bucket=os.environ["B2_BUCKET"],Key=object_key)["Body"].read().decode()
         for line in raw.splitlines():
             item=json.loads(line); text=" ".join(str(item.get("text","")).split()); filename=item.get("filename"); page=item.get("page_number")
@@ -51,13 +63,14 @@ def evidence(s3, case_id, question):
             if score:
                 rows.append((score,filename,page,source,candidate))
             else:
-                # Preserve a bounded verified fallback for OCR gaps or unusual terminology.
                 fallback_rows.append((0,filename,page,source,candidate))
     selected=[]; total=0
     for _,_,_,_,item in sorted(rows or fallback_rows,key=lambda x:(-x[0],x[1].casefold(),x[2])):
         if total+len(item["text"])>MAX_CONTEXT_CHARS or len(selected)>=MAX_PAGES: continue
         selected.append(item); total+=len(item["text"])
     if not selected: raise ValueError("no matching verified evidence")
+    return selected
+verified evidence")
     return selected
 
 def generate(question, pages):
