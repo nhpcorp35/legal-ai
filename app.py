@@ -2087,6 +2087,75 @@ def load_case_source_map(case_id):
     ]
 
 
+CASE00_ID = "Case-00-Triborough"
+CASE00_DATA_ROOT = os.path.join(BASE_DIR, "data", "case-00-triborough")
+CASE00_PAGE_RECORDS_PATH = os.path.join(
+    CASE00_DATA_ROOT, "derived", "page-extraction", "canonical_page_records.jsonl"
+)
+CASE00_SOURCE_DIRECTORY = os.path.join(
+    CASE00_DATA_ROOT, "source-pdfs", "original:", "Tribrough Full Docket"
+)
+
+
+def load_case00_verified_pages():
+    """Read the bounded, canonical legacy Case-00 page index without mutation."""
+    try:
+        if not os.path.isfile(CASE00_PAGE_RECORDS_PATH):
+            return None
+        if not 0 < os.path.getsize(CASE00_PAGE_RECORDS_PATH) <= 8 * 1024 * 1024:
+            return None
+        pages = []
+        with open(CASE00_PAGE_RECORDS_PATH, encoding="utf-8") as records:
+            for line in records:
+                item = json.loads(line)
+                filename = item.get("source_filename")
+                page_number = item.get("page_number")
+                text = " ".join(str(item.get("text", "")).split())
+                if (
+                    isinstance(filename, str)
+                    and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._ -]{0,180}\\.pdf", filename)
+                    and isinstance(page_number, int)
+                    and page_number > 0
+                    and text
+                ):
+                    pages.append({"filename": filename, "page_number": page_number, "text": text[:2200]})
+        return pages
+    except (OSError, UnicodeDecodeError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def search_case00_verified_pages(query):
+    pages = load_case00_verified_pages()
+    terms = {term for term in re.findall(r"[a-z0-9]{3,}", query.casefold())}
+    if pages is None or not terms:
+        return None
+    ranked = []
+    for page in pages:
+        score = sum(page["text"].casefold().count(term) for term in terms)
+        if score:
+            ranked.append((score, page))
+    return [page for _, page in sorted(ranked, key=lambda item: (-item[0], item[1]["filename"].casefold(), item[1]["page_number"]))[:20]]
+
+
+def load_case00_source_map():
+    pages = load_case00_verified_pages()
+    if pages is None:
+        return None
+    counts = {}
+    for page in pages:
+        counts[page["filename"]] = max(counts.get(page["filename"], 0), page["page_number"])
+    return [{"filename": filename, "pages": counts[filename]} for filename in sorted(counts, key=str.casefold)]
+
+
+def open_case00_source_pdf(filename):
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._ -]{0,180}\\.pdf", filename):
+        return None
+    if filename not in {item["filename"] for item in load_case00_source_map() or []}:
+        return None
+    path = os.path.join(CASE00_SOURCE_DIRECTORY, filename)
+    return path if os.path.isfile(path) else None
+
+
 def load_draft_requests(case_id):
     """Read internal-only draft request metadata for one indexed matter."""
     gateway_url = os.environ.get("LEGALAI_REVIEW_GATEWAY_URL", "").rstrip("/")
@@ -2598,6 +2667,20 @@ def attorney_workspace():
         }
         for question_id in available_case00_review_questions()
     ]
+    if load_case00_source_map() is not None:
+        case00_questions = [
+            {
+                "id": "Search",
+                "label": "Search verified record",
+                "url": "/workspace/case-00/search",
+            },
+            {
+                "id": "Source map",
+                "label": "View verified record map",
+                "url": "/workspace/case-00/sources",
+            },
+            *case00_questions,
+        ]
     matters = []
     gateway_url = os.environ.get("LEGALAI_REVIEW_GATEWAY_URL", "").rstrip("/")
     if gateway_url:
@@ -2714,6 +2797,48 @@ def attorney_workspace():
         reviewer=reviewer,
         matters=matters,
     )
+
+
+@app.route("/workspace/case-00/search", methods=["GET", "POST"])
+def workspace_case00_search():
+    if basic_review_user() is None:
+        return basic_auth_required_response()
+    query, results, error = "", None, None
+    if request.method == "POST":
+        query = clean_text(request.form.get("query", ""))
+        if not query or len(query) > 500:
+            error = "Enter a verified-record search of up to 500 characters."
+        else:
+            results = search_case00_verified_pages(query)
+            if results is None:
+                error = "The verified Case-00 record is temporarily unavailable."
+    return render_template_string(
+        """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Case-00 Verified Record Search</title><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:940px;margin:0 auto;padding:42px 24px 64px}a{color:#123f63}p{font-size:1.05rem;line-height:1.55}.meta{color:#52606d}.panel,.result{background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:22px;margin-top:20px}textarea{box-sizing:border-box;width:100%;font:inherit;padding:12px}button{margin-top:12px;background:#123f63;color:#fff;border:0;border-radius:6px;padding:11px 15px;font:inherit;font-weight:bold}.notice{border-left:4px solid #b45309;padding:12px;background:#fffbeb}.snippet{white-space:pre-wrap;overflow-wrap:anywhere}</style></head><body><main><p><a href="/workspace">← Attorney workspace</a></p><h1>Verified record search</h1><p class="meta">Case-00 Triborough</p><p>Results are source excerpts only, not legal conclusions.</p><section class="panel"><form method="post"><label for="query">Search the verified record</label><textarea id="query" name="query" rows="3" maxlength="500" required>{{ query }}</textarea><button type="submit">Search verified record</button></form></section>{% if error %}<p class="notice">{{ error }}</p>{% endif %}{% if results is not none %}<h2>Results ({{ results|length }})</h2>{% for result in results %}<article class="result"><strong>{{ result.filename }} — PDF page {{ result.page_number }}</strong><p class="snippet">{{ result.text }}</p><a href="{{ url_for('workspace_case00_pdf', filename=result.filename) }}#page={{ result.page_number }}" target="_blank" rel="noopener">Open source PDF at cited page →</a></article>{% endfor %}{% endif %}</main></body></html>""",
+        query=query, results=results, error=error,
+    )
+
+
+@app.route("/workspace/case-00/sources")
+def workspace_case00_sources():
+    if basic_review_user() is None:
+        return basic_auth_required_response()
+    documents = load_case00_source_map()
+    if documents is None:
+        abort(502)
+    return render_template_string(
+        """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Case-00 Verified Record Map</title><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:940px;margin:0 auto;padding:42px 24px 64px}a{color:#123f63}p,td{font-size:1.05rem;line-height:1.55}.panel{background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:22px;margin-top:20px}table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:10px;border-bottom:1px solid #e2e8f0}.filename{overflow-wrap:anywhere}</style></head><body><main><p><a href="/workspace">← Attorney workspace</a></p><h1>Verified record map</h1><p>Case-00 Triborough — read-only source inventory.</p><section class="panel"><strong>{{ documents|length }} verified documents</strong><table><thead><tr><th>Document</th><th>Pages</th></tr></thead><tbody>{% for document in documents %}<tr><td class="filename"><a href="{{ url_for('workspace_case00_pdf', filename=document.filename) }}" target="_blank" rel="noopener">{{ document.filename }}</a></td><td>{{ document.pages }}</td></tr>{% endfor %}</tbody></table></section></main></body></html>""",
+        documents=documents,
+    )
+
+
+@app.route("/workspace/case-00/pdf/<path:filename>")
+def workspace_case00_pdf(filename):
+    if basic_review_user() is None:
+        return basic_auth_required_response()
+    path = open_case00_source_pdf(clean_text(filename))
+    if path is None:
+        abort(404)
+    return send_file(path, mimetype="application/pdf", conditional=True)
 
 
 @app.route("/workspace/matters/<path:case_id>/search", methods=["GET", "POST"])
