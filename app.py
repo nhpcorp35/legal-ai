@@ -35,11 +35,11 @@ PREFERRED_CSV_PATHS = [
 
 PER_PAGE = 10
 CASE00_REVIEW_QUESTIONS = {
-    "Q1": "Question 1",
-    "Q2": "Question 2",
-    "Q3": "Question 3",
-    "Q4": "Coverage positions and defenses",
-    "Q5": "Attorney review",
+    "Q1": "Who are the parties, and what role does each party allegedly have in the underlying insurance dispute?",
+    "Q2": "What declarations, causes of action, and other relief does the complaint request?",
+    "Q3": "Which insurance policies are at issue, and what relevant policy periods, coverage provisions, endorsements, exclusions, or conditions are identified in the record?",
+    "Q4": "What grounds do the insurers assert for denying, limiting, or contesting coverage, and what positions or defenses do the interested parties assert in response?",
+    "Q5": "What record evidence most strongly supports and contradicts each side's material positions, and what important factual or legal issues remain unresolved?",
 }
 
 
@@ -2905,7 +2905,7 @@ def workspace_case00_answered():
         for question_id in available_case00_review_questions()
     ]
     return render_template_string(
-        """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Answered Questions</title><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:900px;margin:0 auto;padding:42px 24px 64px}a{color:#123f63}h1{margin:0 0 8px;font-size:clamp(2rem,5vw,3rem)}p{font-size:1.05rem;line-height:1.55}.question{display:block;background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:20px;margin-top:16px;box-shadow:0 2px 8px #0f172a10;text-decoration:none;color:#172331}.question:hover{border-color:#123f63}.question strong{color:#123f63}</style></head><body><main><p><a href="/workspace">← Attorney workspace</a></p><h1>Answered questions</h1><p>Case-00 Triborough</p>{% for question in questions %}<a class="question" href="/case-00/review?question={{ question.id }}"><strong>{{ question.id }}</strong><p>{{ question.label }}</p><span>Open answer →</span></a>{% endfor %}</main></body></html>""",
+        """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Answered Questions</title><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:900px;margin:0 auto;padding:42px 24px 64px}a{color:#123f63}h1{margin:0 0 8px;font-size:clamp(2rem,5vw,3rem)}p{font-size:1.05rem;line-height:1.55}.question{display:block;background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:20px;margin-top:16px;box-shadow:0 2px 8px #0f172a10;text-decoration:none;color:#172331}.question:hover{border-color:#123f63}.question strong{display:block;color:#123f63;font-size:1.12rem;line-height:1.45}.question span{display:block;margin-top:14px}</style></head><body><main><p><a href="/workspace">← Attorney workspace</a></p><h1>Answered questions</h1><p>Case-00 Triborough</p>{% for question in questions %}<a class="question" href="/case-00/review?question={{ question.id }}"><strong>{{ question.id }} — {{ question.label }}</strong><span>Open answer →</span></a>{% endfor %}</main></body></html>""",
         questions=questions,
     )
 
