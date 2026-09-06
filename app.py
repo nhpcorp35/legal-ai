@@ -2760,6 +2760,9 @@ def attorney_workspace():
                     }
                 )
             if case["stage"] == "Verified source indexed":
+                draft_requests = load_draft_requests(case["case_id"]) or []
+                answered_count = sum(item["status"] == "READY" for item in draft_requests)
+                processing_count = sum(item["status"] in {"QUEUED", "RUNNING"} for item in draft_requests)
                 questions.extend(
                     [
                         {
@@ -2779,6 +2782,22 @@ def attorney_workspace():
                         },
                     ]
                 )
+                if answered_count:
+                    questions.append(
+                        {
+                            "id": "Answered",
+                            "label": f"Answered questions ({answered_count})",
+                            "url": f"/workspace/matters/{matter_url}/drafts",
+                        }
+                    )
+                if processing_count:
+                    questions.append(
+                        {
+                            "id": "Processing",
+                            "label": f"Questions processing ({processing_count})",
+                            "url": f"/workspace/matters/{matter_url}/draft",
+                        }
+                    )
                 if (
                     case["case_id"] == "NY-NewYork-158068-2018-Szymczyk-v-Hudson-36-37"
                     and load_szymczyk_review_packet() is not None
@@ -2966,7 +2985,10 @@ def workspace_matter_draft(case_id):
     confirmation = None
     error = None
     discarded = False
-    queued_requests = load_draft_requests(case_id)
+    queued_requests = [
+        item for item in (load_draft_requests(case_id) or [])
+        if item["status"] in {"QUEUED", "RUNNING", "FAILED"}
+    ]
     submitted_request_id = clean_text(request.args.get("submitted", ""))
     reused = request.args.get("reused") == "1"
     if re.fullmatch(r"draft-[0-9]+-[0-9a-f]{12}", submitted_request_id):
@@ -2995,15 +3017,50 @@ def workspace_matter_draft(case_id):
                         ),
                         code=303,
                     )
-        queued_requests = load_draft_requests(case_id)
+        queued_requests = [
+            item for item in (load_draft_requests(case_id) or [])
+            if item["status"] in {"QUEUED", "RUNNING", "FAILED"}
+        ]
     return render_template_string(
-        """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Prepare Internal Draft</title><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:820px;margin:0 auto;padding:42px 24px 64px}a{color:#123f63}h1{margin:0 0 8px;font-size:clamp(2rem,5vw,3rem)}p,li{font-size:1.05rem;line-height:1.55}.meta{color:#52606d}.panel{background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:22px;margin-top:26px;box-shadow:0 2px 8px #0f172a10}label{display:block;font-weight:bold;margin-bottom:8px}textarea{box-sizing:border-box;width:100%;font:inherit;line-height:1.45;padding:12px;border:1px solid #64748b;border-radius:6px}button{margin-top:12px;background:#123f63;color:#fff;border:0;border-radius:6px;padding:11px 15px;font:inherit;font-weight:bold;cursor:pointer}.secondary{background:#fff;color:#123f63;border:1px solid #123f63}.notice{border-left:4px solid #b45309;padding:12px 14px;background:#fffbeb}.success{border-left-color:#15803d;background:#f0fdf4}.draft{white-space:pre-wrap}.citation-list{list-style:none;margin:7px 0 0;padding:0}.citation-list li{font-size:.9rem;line-height:1.35;margin:4px 0}.citation-list a{overflow-wrap:anywhere}</style></head><body><main><p><a href="/workspace">← Attorney workspace</a></p><h1>Prepare internal review draft</h1><p class="meta">{{ case_id }}</p><p>Questions are processed automatically from the verified record. Results are internal attorney-review drafts only; nothing is sent to an attorney and no legal conclusion is approved.</p>{% if queued_requests is not none %}<section class="panel"><strong>Internal draft status</strong>{% if queued_requests %}{% for item in queued_requests %}<article><p><strong>{{ item.status }}</strong> — {{ item.question }}<br><span class="meta">Requested by {{ item.requested_by }}</span></p>{% if item.question|lower|trim == 'is this a test?' %}<form method="post"><input type="hidden" name="action" value="discard-test"><input type="hidden" name="request_id" value="{{ item.request_id }}"><button class="secondary" type="submit">Remove temporary test</button></form>{% endif %}{% if item.draft %}<p><strong>Attorney review required.</strong> {{ item.draft.summary }}</p><ul>{% for finding in item.draft.findings %}<li>{{ finding.statement }}{% if finding.citations %}<ul class="citation-list">{% for cite in finding.citations %}<li><a href="{{ url_for('workspace_matter_pdf', case_id=case_id, filename=cite.filename, source_sha256=cite.source_sha256) }}#page={{ cite.page_number }}" target="_blank" rel="noopener">Open verified source — p. {{ cite.page_number }} · {{ cite.filename|truncate(72, True, '…') }}</a></li>{% endfor %}</ul>{% endif %}</li>{% endfor %}</ul>{% if item.draft.missing_information %}<p><strong>Missing information:</strong> {{ item.draft.missing_information|join('; ') }}</p>{% endif %}{% endif %}</article>{% endfor %}{% else %}<p>No internal draft requests yet.</p>{% endif %}</section>{% endif %}{% if confirmation %}<section class="panel success"><strong>{% if confirmation.reused %}Existing internal draft shown.{% else %}Automatic draft job queued.{% endif %}</strong><p>{% if confirmation.reused %}This identical question already has an internal draft request, so no duplicate was created.{% else %}Request {{ confirmation.request_id }} will search the verified record and appear here when its citation checks complete.{% endif %}</p></section>{% endif %}{% if discarded %}<section class="panel success"><strong>Temporary test removed from the workspace.</strong><p>Its internal audit record remains preserved; no source material or attorney packet changed.</p></section>{% endif %}<section class="panel"><form method="post"><label for="question">What should the attorney-review draft address?</label><textarea id="question" name="question" rows="5" maxlength="1000" required placeholder="Example: What relief is requested in the verified complaint, and what support is present in the record?"></textarea><button type="submit">{% if confirmation %}Ask another question{% else %}Generate internal review draft{% endif %}</button></form></section>{% if error %}<p class="notice" role="alert">{{ error }}</p>{% endif %}</main></body></html>""",
+        """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Prepare Internal Draft</title><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:820px;margin:0 auto;padding:42px 24px 64px}a{color:#123f63}h1{margin:0 0 8px;font-size:clamp(2rem,5vw,3rem)}p{font-size:1.05rem;line-height:1.55}.meta{color:#52606d}.panel{background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:22px;margin-top:26px;box-shadow:0 2px 8px #0f172a10}label{display:block;font-weight:bold;margin-bottom:8px}textarea{box-sizing:border-box;width:100%;font:inherit;line-height:1.45;padding:12px;border:1px solid #64748b;border-radius:6px}button{margin-top:12px;background:#123f63;color:#fff;border:0;border-radius:6px;padding:11px 15px;font:inherit;font-weight:bold;cursor:pointer}.secondary{background:#fff;color:#123f63;border:1px solid #123f63}.notice{border-left:4px solid #b45309;padding:12px 14px;background:#fffbeb}.success{border-left-color:#15803d;background:#f0fdf4}</style></head><body><main><p><a href="/workspace">← Attorney workspace</a></p><h1>Prepare internal review draft</h1><p class="meta">{{ case_id }}</p><p>Questions are processed automatically from the verified record. Results are internal attorney-review drafts only; nothing is sent to an attorney and no legal conclusion is approved.</p>{% if queued_requests %}<section class="panel"><strong>Questions processing</strong>{% for item in queued_requests %}<p><strong>{{ item.status }}</strong> — {{ item.question }}<br><span class="meta">Requested by {{ item.requested_by }}</span></p>{% if item.question|lower|trim == 'is this a test?' %}<form method="post"><input type="hidden" name="action" value="discard-test"><input type="hidden" name="request_id" value="{{ item.request_id }}"><button class="secondary" type="submit">Remove temporary test</button></form>{% endif %}{% endfor %}</section>{% endif %}{% if confirmation %}<section class="panel success"><strong>{% if confirmation.reused %}Existing internal draft shown.{% else %}Automatic draft job queued.{% endif %}</strong><p>{% if confirmation.reused %}This identical question already has an internal draft request, so no duplicate was created.{% else %}Your question will appear under Answered questions when its citation checks complete.{% endif %}</p></section>{% endif %}{% if discarded %}<section class="panel success"><strong>Temporary test removed from the workspace.</strong><p>Its internal audit record remains preserved; no source material or attorney packet changed.</p></section>{% endif %}<section class="panel"><form method="post"><label for="question">What should the attorney-review draft address?</label><textarea id="question" name="question" rows="5" maxlength="1000" required placeholder="Example: What relief is requested in the verified complaint, and what support is present in the record?"></textarea><button type="submit">Ask a new review question</button></form></section>{% if error %}<p class="notice" role="alert">{{ error }}</p>{% endif %}</main></body></html>""",
         case_id=case_id,
         question=question,
         confirmation=confirmation,
         discarded=discarded,
         error=error,
         queued_requests=queued_requests,
+    )
+
+
+@app.route("/workspace/matters/<path:case_id>/drafts")
+def workspace_matter_drafts(case_id):
+    """List completed internal answers without expanding them in the workspace."""
+    if basic_review_user() is None:
+        return basic_auth_required_response()
+    if {item["case_id"]: item["stage"] for item in load_registered_cases()}.get(case_id) != "Verified source indexed":
+        abort(404)
+    answered = [item for item in (load_draft_requests(case_id) or []) if item["status"] == "READY" and item["draft"]]
+    return render_template_string(
+        """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Answered Questions</title><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:900px;margin:0 auto;padding:42px 24px 64px}a{color:#123f63}h1{margin:0 0 8px;font-size:clamp(2rem,5vw,3rem)}p{font-size:1.05rem;line-height:1.55}.meta{color:#52606d}.question{display:block;background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:20px;margin-top:16px;box-shadow:0 2px 8px #0f172a10;text-decoration:none;color:#172331}.question:hover{border-color:#123f63}.question strong{color:#123f63}</style></head><body><main><p><a href="/workspace">← Attorney workspace</a> · <a href="{{ url_for('workspace_matter_draft', case_id=case_id) }}">Ask a new review question</a></p><h1>Answered questions</h1><p class="meta">{{ case_id }}</p>{% if answered %}{% for item in answered %}<a class="question" href="{{ url_for('workspace_matter_draft_detail', case_id=case_id, request_id=item.request_id) }}"><strong>Answered</strong><p>{{ item.question }}</p><span class="meta">Requested by {{ item.requested_by }} · Open answer →</span></a>{% endfor %}{% else %}<p>No answered questions yet.</p>{% endif %}</main></body></html>""",
+        case_id=case_id,
+        answered=answered,
+    )
+
+
+@app.route("/workspace/matters/<path:case_id>/drafts/<request_id>")
+def workspace_matter_draft_detail(case_id, request_id):
+    """Show one saved internal answer and its source citations."""
+    if basic_review_user() is None:
+        return basic_auth_required_response()
+    if not re.fullmatch(r"draft-[0-9]+-[0-9a-f]{12}", request_id):
+        abort(404)
+    item = next((entry for entry in (load_draft_requests(case_id) or []) if entry["request_id"] == request_id and entry["status"] == "READY" and entry["draft"]), None)
+    if item is None:
+        abort(404)
+    return render_template_string(
+        """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Answered Question</title><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:900px;margin:0 auto;padding:42px 24px 64px}a{color:#123f63}h1{margin:0 0 8px;font-size:clamp(2rem,5vw,3rem)}p,li{font-size:1.05rem;line-height:1.55}.meta{color:#52606d}.panel{background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:22px;margin-top:26px;box-shadow:0 2px 8px #0f172a10}.citation-list{list-style:none;margin:7px 0 0;padding:0}.citation-list li{font-size:.9rem;line-height:1.35;margin:4px 0}.citation-list a{overflow-wrap:anywhere}</style></head><body><main><p><a href="{{ url_for('workspace_matter_drafts', case_id=case_id) }}">← Answered questions</a></p><h1>Answered question</h1><p class="meta">{{ case_id }}</p><section class="panel"><p><strong>Question</strong><br>{{ item.question }}</p><p><strong>Attorney review required.</strong> {{ item.draft.summary }}</p><ul>{% for finding in item.draft.findings %}<li>{{ finding.statement }}{% if finding.citations %}<ul class="citation-list">{% for cite in finding.citations %}<li><a href="{{ url_for('workspace_matter_pdf', case_id=case_id, filename=cite.filename, source_sha256=cite.source_sha256) }}#page={{ cite.page_number }}" target="_blank" rel="noopener">Open verified source — p. {{ cite.page_number }} · {{ cite.filename|truncate(72, True, '…') }}</a></li>{% endfor %}</ul>{% endif %}</li>{% endfor %}</ul>{% if item.draft.missing_information %}<p><strong>Missing information:</strong> {{ item.draft.missing_information|join('; ') }}</p>{% endif %}</section></main></body></html>""",
+        case_id=case_id,
+        item=item,
     )
 
 
