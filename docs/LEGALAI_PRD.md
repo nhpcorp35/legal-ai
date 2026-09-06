@@ -1,9 +1,30 @@
 # LegalAI PRD (Living)
 
 **Status:** Active  
-**Last updated:** 2026-09-05
+**Last updated:** 2026-09-06
 **Authority:** Canonical product requirements and milestone register for LegalAI.  
 **Related (unchanged scopes):** `docs/HAL_CONTROL_ROOM.md` (orchestration contract); `docs/MISSION_CONTROL_OPTIMIZATION_AUTHORITY.md` (Mission Control cost/reliability register).
+
+---
+
+### 2026-09-06 — Case-00 attorney workspace production verification
+
+- Verified the protected Case-00 attorney workflow in production: the
+  workspace exposes source search, the verified-record map, a new-review
+  question entry point, and compact answered-question history.
+- Confirmed a mapped source document opens through the protected PDF relay.
+  The relay is bound to the immutable source identity and reads the canonical
+  source only through the existing Gateway/Bridge boundary.
+- Confirmed the answered-question history displays each fixed Q1–Q5 question
+  label and opens its existing review packet; no packet, candidate answer, or
+  original source document was modified.
+- Confirmed the duplicate-submission guard preserves previously answered
+  questions while allowing a distinct new request to be queued.
+- Production verification followed LegalAI commit
+  `a1e65abf6f42353bea8be23e2209cf1d91bb798e`; Railway deployment
+  `7b308c34-2b44-43d1-8a2d-624bbe97ca4a` completed successfully.
+- No credentials, authentication configuration, B2 objects, attorney
+  communications, or ChatGPT app/OAuth configuration changed.
 
 ---
 
