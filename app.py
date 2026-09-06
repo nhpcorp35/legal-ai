@@ -2709,6 +2709,11 @@ def attorney_workspace():
                 "label": "View verified record map",
                 "url": "/workspace/case-00/sources",
             },
+            {
+                "id": "Prepare",
+                "label": "Ask a new review question",
+                "url": "/workspace/case-00/draft",
+            },
         ]
     if case00_answered:
         case00_questions.append(
@@ -2986,6 +2991,7 @@ def workspace_matter_sources(case_id):
 
 
 @app.route("/workspace/matters/<path:case_id>/draft", methods=["GET", "POST"])
+@app.route("/workspace/case-00/draft", methods=["GET", "POST"], defaults={"case_id": CASE00_ID})
 def workspace_matter_draft(case_id):
     """Start an internal-only, attorney-selected review question for one indexed matter."""
     reviewer = basic_review_user()
@@ -2995,7 +3001,7 @@ def workspace_matter_draft(case_id):
         item["case_id"]: item["stage"]
         for item in load_registered_cases()
     }
-    if registered.get(case_id) != "Verified source indexed":
+    if case_id != CASE00_ID and registered.get(case_id) != "Verified source indexed":
         abort(404)
     question = ""
     confirmation = None
@@ -3049,11 +3055,12 @@ def workspace_matter_draft(case_id):
 
 
 @app.route("/workspace/matters/<path:case_id>/drafts")
+@app.route("/workspace/case-00/drafts", defaults={"case_id": CASE00_ID})
 def workspace_matter_drafts(case_id):
     """List completed internal answers without expanding them in the workspace."""
     if basic_review_user() is None:
         return basic_auth_required_response()
-    if {item["case_id"]: item["stage"] for item in load_registered_cases()}.get(case_id) != "Verified source indexed":
+    if case_id != CASE00_ID and {item["case_id"]: item["stage"] for item in load_registered_cases()}.get(case_id) != "Verified source indexed":
         abort(404)
     answered = [item for item in (load_draft_requests(case_id) or []) if item["status"] == "READY" and item["draft"]]
     return render_template_string(
@@ -3064,6 +3071,7 @@ def workspace_matter_drafts(case_id):
 
 
 @app.route("/workspace/matters/<path:case_id>/drafts/<request_id>")
+@app.route("/workspace/case-00/drafts/<request_id>", defaults={"case_id": CASE00_ID})
 def workspace_matter_draft_detail(case_id, request_id):
     """Show one saved internal answer and its source citations."""
     if basic_review_user() is None:
@@ -3074,9 +3082,10 @@ def workspace_matter_draft_detail(case_id, request_id):
     if item is None:
         abort(404)
     return render_template_string(
-        """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Answered Question</title><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:900px;margin:0 auto;padding:42px 24px 64px}a{color:#123f63}h1{margin:0 0 8px;font-size:clamp(2rem,5vw,3rem)}p,li{font-size:1.05rem;line-height:1.55}.meta{color:#52606d}.panel{background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:22px;margin-top:26px;box-shadow:0 2px 8px #0f172a10}.citation-list{list-style:none;margin:7px 0 0;padding:0}.citation-list li{font-size:.9rem;line-height:1.35;margin:4px 0}.citation-list a{overflow-wrap:anywhere}</style></head><body><main><p><a href="{{ url_for('workspace_matter_drafts', case_id=case_id) }}">← Answered questions</a></p><h1>Answered question</h1><p class="meta">{{ case_id }}</p><section class="panel"><p><strong>Question</strong><br>{{ item.question }}</p><p><strong>Attorney review required.</strong> {{ item.draft.summary }}</p><ul>{% for finding in item.draft.findings %}<li>{{ finding.statement }}{% if finding.citations %}<ul class="citation-list">{% for cite in finding.citations %}<li><a href="{{ url_for('workspace_matter_pdf', case_id=case_id, filename=cite.filename, source_sha256=cite.source_sha256) }}#page={{ cite.page_number }}" target="_blank" rel="noopener">Open verified source — p. {{ cite.page_number }} · {{ cite.filename|truncate(72, True, '…') }}</a></li>{% endfor %}</ul>{% endif %}</li>{% endfor %}</ul>{% if item.draft.missing_information %}<p><strong>Missing information:</strong> {{ item.draft.missing_information|join('; ') }}</p>{% endif %}</section></main></body></html>""",
+        """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Answered Question</title><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:900px;margin:0 auto;padding:42px 24px 64px}a{color:#123f63}h1{margin:0 0 8px;font-size:clamp(2rem,5vw,3rem)}p,li{font-size:1.05rem;line-height:1.55}.meta{color:#52606d}.panel{background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:22px;margin-top:26px;box-shadow:0 2px 8px #0f172a10}.citation-list{list-style:none;margin:7px 0 0;padding:0}.citation-list li{font-size:.9rem;line-height:1.35;margin:4px 0}.citation-list a{overflow-wrap:anywhere}</style></head><body><main><p><a href="{{ url_for('workspace_matter_drafts', case_id=case_id) }}">← Answered questions</a></p><h1>Answered question</h1><p class="meta">{{ case_id }}</p><section class="panel"><p><strong>Question</strong><br>{{ item.question }}</p><p><strong>Attorney review required.</strong> {{ item.draft.summary }}</p><ul>{% for finding in item.draft.findings %}<li>{{ finding.statement }}{% if finding.citations %}<ul class="citation-list">{% for cite in finding.citations %}<li>{% if case_id == case00_id %}<a href="{{ url_for('workspace_case00_pdf', filename=cite.filename) }}#page={{ cite.page_number }}" target="_blank" rel="noopener">Open verified source — p. {{ cite.page_number }} · {{ cite.filename|truncate(72, True, '…') }}</a>{% else %}<a href="{{ url_for('workspace_matter_pdf', case_id=case_id, filename=cite.filename, source_sha256=cite.source_sha256) }}#page={{ cite.page_number }}" target="_blank" rel="noopener">Open verified source — p. {{ cite.page_number }} · {{ cite.filename|truncate(72, True, '…') }}</a>{% endif %}</li>{% endfor %}</ul>{% endif %}</li>{% endfor %}</ul>{% if item.draft.missing_information %}<p><strong>Missing information:</strong> {{ item.draft.missing_information|join('; ') }}</p>{% endif %}</section></main></body></html>""",
         case_id=case_id,
         item=item,
+        case00_id=CASE00_ID,
     )
 
 
