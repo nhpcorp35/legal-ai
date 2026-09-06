@@ -2696,25 +2696,26 @@ def attorney_workspace():
     if reviewer is None:
         return basic_auth_required_response()
     case00_answered = available_case00_review_questions()
-    case00_questions = []
-    if load_case00_source_map() is not None:
-        case00_questions = [
-            {
-                "id": "Search",
-                "label": "Search verified record",
-                "url": "/workspace/case-00/search",
-            },
-            {
-                "id": "Source map",
-                "label": "View verified record map",
-                "url": "/workspace/case-00/sources",
-            },
-            {
-                "id": "Prepare",
-                "label": "Ask a new review question",
-                "url": "/workspace/case-00/draft",
-            },
-        ]
+    # A new internal-draft request is independently sourced by the controlled
+    # B2-backed workflow.  Do not hide that route merely because the optional
+    # legacy in-app source-map cache is unavailable at web-process startup.
+    case00_questions = [
+        {
+            "id": "Search",
+            "label": "Search verified record",
+            "url": "/workspace/case-00/search",
+        },
+        {
+            "id": "Source map",
+            "label": "View verified record map",
+            "url": "/workspace/case-00/sources",
+        },
+        {
+            "id": "Prepare",
+            "label": "Ask a new review question",
+            "url": "/workspace/case-00/draft",
+        },
+    ]
     if case00_answered:
         case00_questions.append(
             {
