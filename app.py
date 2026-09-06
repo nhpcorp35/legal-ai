@@ -2695,14 +2695,8 @@ def attorney_workspace():
     reviewer = basic_review_user()
     if reviewer is None:
         return basic_auth_required_response()
-    case00_questions = [
-        {
-            "id": question_id,
-            "label": CASE00_REVIEW_QUESTIONS[question_id],
-            "url": f"/case-00/review?question={question_id}",
-        }
-        for question_id in available_case00_review_questions()
-    ]
+    case00_answered = available_case00_review_questions()
+    case00_questions = []
     if load_case00_source_map() is not None:
         case00_questions = [
             {
@@ -2715,8 +2709,15 @@ def attorney_workspace():
                 "label": "View verified record map",
                 "url": "/workspace/case-00/sources",
             },
-            *case00_questions,
         ]
+    if case00_answered:
+        case00_questions.append(
+            {
+                "id": "Answered",
+                "label": f"Answered questions ({len(case00_answered)})",
+                "url": "/workspace/case-00/answered",
+            }
+        )
     matters = []
     gateway_url = os.environ.get("LEGALAI_REVIEW_GATEWAY_URL", "").rstrip("/")
     if gateway_url:
@@ -2870,6 +2871,21 @@ def workspace_case00_search():
     return render_template_string(
         """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Case-00 Verified Record Search</title><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:940px;margin:0 auto;padding:42px 24px 64px}a{color:#123f63}p{font-size:1.05rem;line-height:1.55}.meta{color:#52606d}.panel,.result{background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:22px;margin-top:20px}textarea{box-sizing:border-box;width:100%;font:inherit;padding:12px}button{margin-top:12px;background:#123f63;color:#fff;border:0;border-radius:6px;padding:11px 15px;font:inherit;font-weight:bold}.notice{border-left:4px solid #b45309;padding:12px;background:#fffbeb}.snippet{white-space:pre-wrap;overflow-wrap:anywhere}</style></head><body><main><p><a href="/workspace">← Attorney workspace</a></p><h1>Verified record search</h1><p class="meta">Case-00 Triborough</p><p>Results are source excerpts only, not legal conclusions.</p><section class="panel"><form method="post"><label for="query">Search the verified record</label><textarea id="query" name="query" rows="3" maxlength="500" required>{{ query }}</textarea><button type="submit">Search verified record</button></form></section>{% if error %}<p class="notice">{{ error }}</p>{% endif %}{% if results is not none %}<h2>Results ({{ results|length }})</h2>{% for result in results %}<article class="result"><strong>{{ result.filename }} — PDF page {{ result.page_number }}</strong><p class="snippet">{{ result.text }}</p><a href="{{ url_for('workspace_case00_pdf', filename=result.filename) }}#page={{ result.page_number }}" target="_blank" rel="noopener">Open source PDF at cited page →</a></article>{% endfor %}{% endif %}</main></body></html>""",
         query=query, results=results, error=error,
+    )
+
+
+@app.route("/workspace/case-00/answered")
+def workspace_case00_answered():
+    """Present legacy Triborough answers in the same compact history pattern."""
+    if basic_review_user() is None:
+        return basic_auth_required_response()
+    questions = [
+        {"id": question_id, "label": CASE00_REVIEW_QUESTIONS[question_id]}
+        for question_id in available_case00_review_questions()
+    ]
+    return render_template_string(
+        """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Answered Questions</title><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:900px;margin:0 auto;padding:42px 24px 64px}a{color:#123f63}h1{margin:0 0 8px;font-size:clamp(2rem,5vw,3rem)}p{font-size:1.05rem;line-height:1.55}.question{display:block;background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:20px;margin-top:16px;box-shadow:0 2px 8px #0f172a10;text-decoration:none;color:#172331}.question:hover{border-color:#123f63}.question strong{color:#123f63}</style></head><body><main><p><a href="/workspace">← Attorney workspace</a></p><h1>Answered questions</h1><p>Case-00 Triborough</p>{% for question in questions %}<a class="question" href="/case-00/review?question={{ question.id }}"><strong>{{ question.id }}</strong><p>{{ question.label }}</p><span>Open answer →</span></a>{% endfor %}</main></body></html>""",
+        questions=questions,
     )
 
 
