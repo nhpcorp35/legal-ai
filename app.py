@@ -2011,7 +2011,10 @@ def load_registered_cases():
         method="GET",
     )
     try:
-        with urllib.request.urlopen(request_data, timeout=30) as response:
+        # The first Case-00 request may warm the protected B2-derived cache.
+        # Keep the browser request bounded, but allow that one-time work to
+        # complete rather than reporting the record as unavailable.
+        with urllib.request.urlopen(request_data, timeout=120) as response:
             result = json.loads(response.read().decode("utf-8"))
     except (urllib.error.URLError, urllib.error.HTTPError, ValueError, UnicodeDecodeError):
         return []
@@ -2061,7 +2064,7 @@ def search_indexed_case(case_id, query):
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request_data, timeout=30) as response:
+        with urllib.request.urlopen(request_data, timeout=120) as response:
             result = json.loads(response.read().decode("utf-8"))
     except (urllib.error.URLError, urllib.error.HTTPError, ValueError, UnicodeDecodeError):
         return None
@@ -2080,7 +2083,7 @@ def load_case_source_map(case_id):
         method="GET",
     )
     try:
-        with urllib.request.urlopen(request_data, timeout=30) as response:
+        with urllib.request.urlopen(request_data, timeout=120) as response:
             result = json.loads(response.read().decode("utf-8"))
     except (urllib.error.URLError, urllib.error.HTTPError, ValueError, UnicodeDecodeError):
         return None
@@ -2141,9 +2144,14 @@ def load_case00_verified_pages():
 
 def search_case00_verified_pages(query):
     pages = load_case00_verified_pages()
+    if pages is None:
+        # The full legacy corpus remains canonical in B2, not in this web
+        # container.  Use the authenticated Gateway cache when the optional
+        # local derived file is not present.
+        return search_indexed_case(CASE00_ID, query)
     terms = {term for term in re.findall(r"[a-z0-9]{3,}", query.casefold())}
-    if pages is None or not terms:
-        return None
+    if not terms:
+        return []
     ranked = []
     for page in pages:
         score = sum(page["text"].casefold().count(term) for term in terms)
@@ -2155,7 +2163,7 @@ def search_case00_verified_pages(query):
 def load_case00_source_map():
     pages = load_case00_verified_pages()
     if pages is None:
-        return None
+        return load_case_source_map(CASE00_ID)
     counts = {}
     for page in pages:
         counts[page["filename"]] = max(counts.get(page["filename"], 0), page["page_number"])
@@ -2165,10 +2173,17 @@ def load_case00_source_map():
 def open_case00_source_pdf(filename):
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._ -]{0,180}\.pdf", filename):
         return None
-    if filename not in {item["filename"] for item in load_case00_source_map() or []}:
+    documents = load_case00_source_map() or []
+    source = next((item for item in documents if item["filename"] == filename), None)
+    if source is None:
         return None
     path = os.path.join(CASE00_SOURCE_DIRECTORY, filename)
-    return path if os.path.isfile(path) else None
+    if os.path.isfile(path):
+        return path
+    # Canonical Case-00 originals live in B2.  Retrieve one explicitly cited
+    # PDF through the existing authenticated portal boundary; never copy the
+    # corpus or expose B2 credentials to the browser.
+    return open_indexed_case_pdf(CASE00_ID, source["source_sha256"], filename)
 
 
 def load_draft_requests(case_id):
@@ -2912,10 +2927,12 @@ def workspace_case00_sources():
 def workspace_case00_pdf(filename):
     if basic_review_user() is None:
         return basic_auth_required_response()
-    path = open_case00_source_pdf(clean_text(filename))
-    if path is None:
+    source = open_case00_source_pdf(clean_text(filename))
+    if source is None:
         abort(404)
-    return send_file(path, mimetype="application/pdf", conditional=True)
+    if isinstance(source, bytes):
+        return send_file(BytesIO(source), mimetype="application/pdf", download_name=clean_text(filename))
+    return send_file(source, mimetype="application/pdf", conditional=True)
 
 
 @app.route("/workspace/matters/<path:case_id>/search", methods=["GET", "POST"])
