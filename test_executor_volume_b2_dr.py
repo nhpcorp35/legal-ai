@@ -256,24 +256,36 @@ class StartupGatingTests(unittest.TestCase):
         thread.join(timeout=1.0)
         dr._daemon_thread = None
 
-    def test_app_startup_wiring_calls_volume_dr_helper(self) -> None:
+    def test_requirements_include_boto3(self) -> None:
+        requirements = Path("requirements.txt").read_text(encoding="utf-8")
+        packages = {
+            line.strip().split("==", 1)[0].split(">=", 1)[0].strip().lower()
+            for line in requirements.splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        }
+        self.assertIn("boto3", packages)
+
+    def test_procfile_starts_b2_dr_daemon_gated_with_gunicorn_exec(self) -> None:
+        procfile = Path("Procfile").read_text(encoding="utf-8")
+        self.assertIn("LEGALAI_EXECUTOR_VOLUME_B2_DR_ENABLED", procfile)
+        self.assertIn("executor_volume_b2_dr.py daemon", procfile)
+        self.assertIn("exec gunicorn --timeout 150 app:app", procfile)
+        self.assertRegex(
+            procfile,
+            r"case\s+\"\$enabled\"\s+in\s+1\|true\|yes\|on\)",
+        )
+        # Background daemon (&) must precede foreground gunicorn exec.
+        daemon_at = procfile.index("executor_volume_b2_dr.py daemon")
+        amp_at = procfile.index("&", daemon_at)
+        exec_at = procfile.index("exec gunicorn --timeout 150 app:app")
+        self.assertLess(amp_at, exec_at)
+
+    def test_app_request_path_does_not_start_volume_b2_dr(self) -> None:
         source = Path("app.py").read_text(encoding="utf-8")
-        self.assertIn("def _ensure_volume_b2_dr_started", source)
-        self.assertIn("_ensure_volume_b2_dr_started()", source)
-        self.assertIn("LEGALAI_EXECUTOR_VOLUME_B2_DR_ENABLED", source)
-
-    def test_ensure_volume_b2_dr_started_is_gated_and_idempotent(self) -> None:
-        import app as app_module
-
-        app_module._volume_b2_dr_started = False
-        with mock.patch.dict("os.environ", {dr.ENABLED_ENV: ""}, clear=False):
-            with mock.patch(
-                "executor_volume_b2_dr.maybe_start_daemon_thread"
-            ) as start:
-                app_module._ensure_volume_b2_dr_started()
-                app_module._ensure_volume_b2_dr_started()
-                start.assert_called_once()
-        app_module._volume_b2_dr_started = False
+        self.assertNotIn("def _ensure_volume_b2_dr_started", source)
+        self.assertNotIn("_ensure_volume_b2_dr_started()", source)
+        self.assertNotIn("maybe_start_daemon_thread", source)
+        self.assertNotIn("_volume_b2_dr_started", source)
 
 
 class LabelTests(unittest.TestCase):

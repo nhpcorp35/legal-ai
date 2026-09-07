@@ -1,1 +1,1 @@
-web: gunicorn --timeout 150 app:app
+web: sh -c 'enabled=$(printf %s "${LEGALAI_EXECUTOR_VOLUME_B2_DR_ENABLED:-}" | tr "[:upper:]" "[:lower:]"); case "$enabled" in 1|true|yes|on) python executor_volume_b2_dr.py daemon & ;; esac; exec gunicorn --timeout 150 app:app'

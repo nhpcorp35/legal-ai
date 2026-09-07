@@ -2835,26 +2835,6 @@ def _monitor_verified_draft_statuses():
 
 
 _monitor_initialized = False
-_volume_b2_dr_started = False
-
-
-def _ensure_volume_b2_dr_started():
-    """Start the gated volume B2 DR daemon in the current worker process.
-
-    Enabled only when LEGALAI_EXECUTOR_VOLUME_B2_DR_ENABLED=true. Failures must
-    never change primary executor request handling.
-    """
-    global _volume_b2_dr_started
-    if _volume_b2_dr_started:
-        return
-    _volume_b2_dr_started = True
-    try:
-        from executor_volume_b2_dr import maybe_start_daemon_thread
-
-        maybe_start_daemon_thread()
-    except Exception:
-        # Backup startup is best-effort; the attorney workspace must stay up.
-        pass
 
 
 def _ensure_monitor_started():
@@ -2872,7 +2852,6 @@ def _ensure_monitor_started():
     timer = threading.Timer(30.0, _monitor_verified_draft_statuses)
     timer.daemon = True
     timer.start()
-    _ensure_volume_b2_dr_started()
 
 
 def search_szymczyk_verified_pages(query):
