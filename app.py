@@ -2790,28 +2790,8 @@ def attorney_workspace():
             }
         )
     matters = []
-    try:
-        gateway_url, _secret = _review_gateway_credentials()
-    except GatewayUnavailableError as exc:
-        gateway_error = gateway_error or str(exc)
-        gateway_url = ""
-    if gateway_url:
-        matters.append(
-            {
-                "name": "New verified matter",
-                "description": (
-                    "Administrator intake for a new case source ZIP and its JSON hash manifest. "
-                    "Every listed PDF is verified before the matter becomes searchable."
-                ),
-                "questions": [
-                    {
-                        "id": "Intake",
-                        "label": "Upload and verify a new source matter",
-                        "url": f"{gateway_url}/intake",
-                    }
-                ],
-            }
-        )
+    # Admin GitHub-OAuth Gateway /intake stays available for internal use, but is
+    # intentionally omitted from the attorney-facing Basic-Auth workspace.
     if case00_questions:
         matters.append(
             {
@@ -2830,14 +2810,6 @@ def attorney_workspace():
         if case["case_id"] not in known_case_ids:
             questions = []
             matter_url = urllib.parse.quote(case["case_id"], safe="")
-            if case["stage"] == "Registered" and gateway_url:
-                questions.append(
-                    {
-                        "id": "Intake",
-                        "label": "Add verified source ZIP and manifest",
-                        "url": f"{gateway_url}/intake?case_id={matter_url}",
-                    }
-                )
             if case["stage"] == "Verified source indexed":
                 draft_requests = load_draft_requests(case["case_id"]) or []
                 answered_count = sum(item["status"] == "READY" for item in draft_requests)
@@ -2893,6 +2865,8 @@ def attorney_workspace():
                             "url": "/szymczyk/review",
                         }
                     )
+            if not questions:
+                continue
             matters.append(
                 {
                     "name": case["case_id"],
