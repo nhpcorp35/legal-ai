@@ -3253,6 +3253,9 @@ def workspace_szymczyk_search():
 
 @app.route("/", methods=["GET", "POST"])
 def index():
+    reviewer = basic_review_user()
+    if reviewer is None:
+        return basic_auth_required_response()
     try:
         page = int(request.args.get("page", 1))
     except ValueError:
@@ -3315,6 +3318,9 @@ def index():
 
 @app.route("/matter", methods=["GET", "POST"])
 def matter():
+    reviewer = basic_review_user()
+    if reviewer is None:
+        return basic_auth_required_response()
     cases = load_cases()
 
     case_id = clean_text(request.args.get("case_id", ""))
@@ -3461,11 +3467,17 @@ def case00_q5_feedback_pdf():
 
 @app.route("/pdf/<path:filename>")
 def serve_pdf(filename):
+    reviewer = basic_review_user()
+    if reviewer is None:
+        return basic_auth_required_response()
     return send_from_directory(os.path.join(BASE_DIR, "data", "pdfs"), filename)
 
 
 @app.route("/case/<path:case_id>")
 def case_detail(case_id):
+    reviewer = basic_review_user()
+    if reviewer is None:
+        return basic_auth_required_response()
     cases = load_cases()
     case = find_case_by_id(case_id, cases)
     if not case:
