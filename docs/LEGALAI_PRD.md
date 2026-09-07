@@ -1,9 +1,54 @@
 # LegalAI PRD (Living)
 
 **Status:** Active  
-**Last updated:** 2026-09-06
+**Last updated:** 2026-09-07
 **Authority:** Canonical product requirements and milestone register for LegalAI.  
 **Related (unchanged scopes):** `docs/HAL_CONTROL_ROOM.md` (orchestration contract); `docs/MISSION_CONTROL_OPTIMIZATION_AUTHORITY.md` (Mission Control cost/reliability register).
+
+---
+
+### 2026-09-07 — Final LegalAI MVP production acceptance
+
+- **Result:** Technical MVP acceptance **PASSED** for the production attorney
+  workspace path on main commit
+  `51176171da8ce106858f612deaef953c2c14e27b` (no new paid legal-analysis run;
+  no attorney communication; no B2/case/source mutation during this acceptance).
+- **Railway / deploy:** GitHub Deployment `6312225410` → Legal-AI / production
+  success; Railway deployment id
+  `c8e21ab0-b626-4869-8af2-9129f4c0fb4e` (healthy at `www.serverdeath.com`).
+  Companion Infrastructure executor deploy id
+  `cf5a1a6c-e761-4c7e-965e-846eddfde913` (healthy at
+  `legal-ai-executor-production.up.railway.app`). Unauthenticated `/workspace`
+  and `/case-00/review` return HTTP 401 fail-closed.
+- **Authoritative Q1 production run:** mission
+  `case00-q1-mvp-hardening-retry-20260907` / GitHub Actions run `34138599853`
+  (success) at immutable generation commit
+  `8b96c3da3c8cc012f1a1aa605ac87ab0c3d47276` (parent of acceptance deploy
+  commit `51176171…`).
+- **Durable B2 artifacts (HEAD + SHA-256 verified under**
+  `…/q1-candidate-20260907T153435Z/`**):**
+  `Q1_candidate_answer.json`, `Q1_candidate_answer.md`,
+  `generation_manifest.json`, `model_input_audit.json`, plus
+  `case00_attorney_review_packet.md`. Manifest ties
+  `generation_commit` / checkout / `origin_main_commit` to `8b96c3da…` and
+  acceptance-contract `v1.0.4` object
+  `Benchmarks/acceptance-contracts/case-00-triborough/Q1/case00-triborough-q1-party-scope-amendment/v1.0.4/acceptance_contract.json`.
+- **Four audit `c6adffe6-4345-4f14-b256-83b4068a45a8` release blockers — cleared:**
+  1. Private Q1 acceptance-contract object + pins provisioned (mission
+     `legalai-q1-acceptance-contract-setup-20260907` / run `aa74833e-…`).
+  2. Four durable Q1 B2 artifacts verified for the designated production run
+     above (supersedes stale M-07 pin-only gap).
+  3. Gateway registered-case/packet failures no longer convert to empty
+     success (`GatewayUnavailableError` on `51176171…`).
+  4. Internal-draft no-match retrieval fail-closed (no arbitrary page
+     fallback) on `51176171…`.
+- **Focused non-paid checks this acceptance:** 16 unittest OK —
+  `test_workspace_gateway_errors`, `test_verified_case_draft`,
+  `test_workspace_source_citations`, `test_workspace_rennick_alias`,
+  `test_active_matter_review`.
+- **Explicit non-claims:** Technical MVP acceptance ≠ attorney/substantive
+  approval (M-08 remains open). No new OpenAI/paid generation and no contact
+  with attorney John during this acceptance record.
 
 ---
 
@@ -132,9 +177,9 @@ Statuses: **Planned** | **Active** | **Blocked** | **Verified**
 | M-04 | Q1 structure-map v2 | Generator/rebuild emit/consume `complaint_structure_map.v2` | Verified | `complaint_structure.py` (`SCHEMA_VERSION`); structure-map tests |
 | M-05 | Final-prose roadmap enforcement | Candidate final prose must cover canonical roadmap sections; gaps fail closed | Verified | `test_complaint_roadmap_final_prose_phase2.py`; drafting-engine coverage checks |
 | M-06 | Stale-context fallback fix | Stale/invalid structure-map schema triggers explicit fallback reason; no silent use of bad context | Verified | `test_complaint_structure_stale_context_fallback.py`; stale/invalid schema reasons |
-| M-06b | Acceptance-contract enforcement (generic) | Versioned private acceptance-contract load/authenticate + final-answer validation + production B2 client wiring; Q1 workflow requires external object-key/SHA-256/benchmark pins and fails closed pre-generation on absent/invalid/identity/hash mismatch; audit/manifest expose safe provenance only | Verified (generic) | `acceptance_contract/`; generator + `run_case00_b2_q1.py` wiring; `test_acceptance_contract.py`; `test_acceptance_contract_production_wiring.py`. **Private Q1 contract object provisioning and live validation remain pending** (not claimed here) |
-| M-07 | Live Q1 rerun @ pinned commit | Rerun live Q1 workflow at commit `1597db24ec7885b00235520f38d7767819264120`; produce and verify the four canonical B2 artifacts; then compare substance to the **privately held** attorney-approved benchmark (out of band) | **Active** | Pin: `1597db24ec7885b00235520f38d7767819264120`. Technical artifact verification pending live rerun. Substantive compare is private and **not** recorded here. Blocked on private Q1 acceptance-contract provisioning for fail-closed production runs |
-| M-08 | Attorney / substantive approval gate | Human attorney acceptance of Q1 substance against approved benchmark | Planned | Blocked on M-07 technical + private substantive compare. **Technical success ≠ attorney/substantive approval**. Existing attorney approval remains limited to the single previously approved review packet; this milestone does **not** claim further attorney approval |
+| M-06b | Acceptance-contract enforcement (generic) | Versioned private acceptance-contract load/authenticate + final-answer validation + production B2 client wiring; Q1 workflow requires external object-key/SHA-256/benchmark pins and fails closed pre-generation on absent/invalid/identity/hash mismatch; audit/manifest expose safe provenance only | Verified | Generic wiring + private Q1 contract object/pins verified (mission `legalai-q1-acceptance-contract-setup-20260907`; live GHA Q1 run `34138599853` loaded contract `v1.0.4`) |
+| M-07 | Live Q1 technical artifact verification | Produce and verify the four canonical B2 artifacts for an authoritative production Case-00 Q1 run; then compare substance to the **privately held** attorney-approved benchmark (out of band) | Verified (technical) | Authoritative run: mission `case00-q1-mvp-hardening-retry-20260907` / GHA `34138599853` @ `8b96c3da3c8cc012f1a1aa605ac87ab0c3d47276`; B2 prefix `q1-candidate-20260907T153435Z/` (four canonical artifacts + review packet HEAD/SHA-256 verified 2026-09-07). Substantive/attorney compare remains private and **not** claimed here |
+| M-08 | Attorney / substantive approval gate | Human attorney acceptance of Q1 substance against approved benchmark | Planned | Technical M-07 cleared; substantive compare + attorney acceptance still required. **Technical success ≠ attorney/substantive approval**. Existing attorney approval remains limited to the single previously approved review packet; this milestone does **not** claim further attorney approval |
 
 ---
 
@@ -150,22 +195,21 @@ Passing generation, upload `head_object` checks, unit tests, or Mission Control 
 
 | Item | Type | Notes |
 |------|------|-------|
-| M-07 live Q1 rerun not yet verified at pin | Blocker | Must run at `1597db24ec7885b00235520f38d7767819264120` and verify four B2 artifacts |
-| Private Q1 acceptance-contract provisioning | Blocker | Generic enforcement/wiring is implemented (M-06b); private contract object + SHA-256 secret pins and live validation are still pending |
+| M-08 attorney / substantive approval | Gate | Technical MVP acceptance recorded 2026-09-07; attorney benchmark compare + approval still required before claiming substantive acceptance |
 | Private benchmark compare | Process | Held privately; do not paste benchmark text, party/attorney identifiers, or legal source contents into GitHub docs or commits |
 | Ephemeral scratch mistaken for durable handoff | Risk | `/tmp` and executor workspaces are non-canonical; only verified B2 keys count |
 | Mission Control cost/timeout loops | Risk | Tracked in `docs/MISSION_CONTROL_OPTIMIZATION_AUTHORITY.md`; optimization implementation gated on Case-00 attorney approval |
 | Contaminating eval with gold during generation | Risk | Generation-only path must not read gold/eval answers |
 
+**Cleared 2026-09-07 (audit `c6adffe6-4345-4f14-b256-83b4068a45a8`):** private Q1 acceptance-contract pins; four durable Q1 B2 artifacts for designated production run; Gateway empty-success degradation; internal-draft no-match arbitrary-page fallback.
+
 ---
 
 ## Next action
 
-1. Provision the private Q1 acceptance-contract object + SHA-256 / benchmark pins in secrets (out of band; do not commit values).
-2. Rerun the live Q1 workflow at commit `1597db24ec7885b00235520f38d7767819264120` (or a later main commit that includes M-06b wiring once chosen).
-3. Verify the four canonical artifacts on B2 (`head_object` / durable key verification).
-4. Compare substance out of band to the privately held attorney-approved benchmark.
-5. Record technical evidence (safe commit + technical run IDs only) in this PRD; do **not** mark attorney approval from technical pass alone.
+1. Out-of-band private substantive compare of the verified Q1 candidate (`q1-candidate-20260907T153435Z/`) to the attorney-approved benchmark.
+2. Attorney acceptance gate (M-08) — do **not** mark from technical pass alone.
+3. Keep Mission Control optimization implementation gated on Case-00 attorney approval per `docs/MISSION_CONTROL_OPTIMIZATION_AUTHORITY.md`.
 
 ---
 
@@ -179,6 +223,7 @@ Passing generation, upload `head_object` checks, unit tests, or Mission Control 
 | 2026-08-11 | Active milestone M-07: live Q1 at `1597db24ec7885b00235520f38d7767819264120` → four artifacts → private substantive compare. |
 | 2026-08-11 | Explicit rule: technical success ≠ attorney/substantive approval. |
 | 2026-08-11 | M-06b: generic acceptance-contract enforcement + production B2/Q1 wiring verified in code/tests; private Q1 contract provisioning and live validation remain pending. No additional attorney approval claimed beyond the existing single approved packet. |
+| 2026-09-07 | Technical MVP acceptance PASSED on deploy `51176171…` / Railway `c8e21ab0-…` (+ executor `cf5a1a6c-…`); Q1 GHA `34138599853` / mission `case00-q1-mvp-hardening-retry-20260907`; four audit blockers cleared. No attorney approval claimed; no new paid run or attorney contact during acceptance. |
 
 ---
 
@@ -262,3 +307,17 @@ judgment.
 - Added focused coverage for that alias and verified the workspace source-link
   filename validation. Production deployment completed from
   `e40449b423fc20afd8905ec8ee921febaa8beefc`.
+
+### 2026-09-07
+
+- Recorded final technical MVP production acceptance on main
+  `51176171da8ce106858f612deaef953c2c14e27b` (Railway Legal-AI deploy
+  `c8e21ab0-b626-4869-8af2-9129f4c0fb4e`; executor
+  `cf5a1a6c-e761-4c7e-965e-846eddfde913`).
+- Confirmed authoritative Q1 durable artifacts from mission
+  `case00-q1-mvp-hardening-retry-20260907` / Actions run `34138599853` under
+  B2 `q1-candidate-20260907T153435Z/` (candidate JSON/MD, generation_manifest,
+  model_input_audit, review packet).
+- Cleared the four release blockers from audit
+  `c6adffe6-4345-4f14-b256-83b4068a45a8`. No new paid legal-analysis run and no
+  attorney communication during this acceptance.
