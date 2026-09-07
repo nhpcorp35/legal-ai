@@ -3,37 +3,56 @@
 <head>
     <title>Matter Builder</title>
     <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/static/attorney_workspace.css">
     <style>
         body {
-            font-family: Arial, sans-serif;
-            margin: 32px;
-            color: #111;
+            font-family: Georgia, "Times New Roman", serif;
+            margin: 0;
+            color: #172331;
+            background: #f6f8fb;
         }
 
         a {
             text-decoration: none;
+            color: #123f63;
         }
 
         .page-title {
-            font-size: 30px;
-            font-weight: 800;
+            font-size: clamp(2rem, 5vw, 3.25rem);
+            font-weight: 700;
             margin-top: 28px;
             margin-bottom: 10px;
+            max-width: 940px;
+            margin-left: auto;
+            margin-right: auto;
+            padding: 0 24px;
         }
 
         .subtitle {
-            font-size: 18px;
-            color: #555;
-            line-height: 1.5;
-            max-width: 1200px;
-            margin-bottom: 28px;
+            font-size: 1.05rem;
+            color: #52606d;
+            line-height: 1.55;
+            max-width: 940px;
+            margin: 0 auto 28px;
+            padding: 0 24px;
         }
 
         .panel {
-            border: 1px solid #e3e3e3;
+            border: 1px solid #cbd5e1;
             border-radius: 10px;
             padding: 22px;
-            margin-bottom: 26px;
+            margin: 0 auto 26px;
+            max-width: 940px;
+            background: #fff;
+            box-shadow: 0 2px 8px #0f172a10;
+            box-sizing: border-box;
+        }
+
+        body > a[href="/"] {
+            display: inline-block;
+            margin: 12px auto 0;
+            max-width: 940px;
+            padding: 0 24px;
         }
 
         .selected-case-panel {
@@ -371,7 +390,7 @@
     <div class="page-title">Matter Builder</div>
 
     <div class="subtitle">
-        Matter Builder v3 architecture with isolated litigation issue analysis engine and source-traceable attorney reasoning.
+        Build a matter view from the selected case with source-traceable litigation issues and attorney reasoning.
     </div>
 
     {% if matter.selected_case %}
@@ -437,8 +456,8 @@
             </div>
 
             <div class="box">
-                <div class="label">Version</div>
-                <div class="value">v3.4</div>
+                <div class="label">View</div>
+                <div class="value">Attorney matter view</div>
             </div>
 
             <div class="box">
@@ -455,7 +474,7 @@
 
     <div class="panel issue-panel">
         <div class="panel-title">Core Litigation Issues</div>
-        <div class="issue-badge">{{ matter.issue_packet.engine or "Issue Engine v3.4" }}</div>
+        <div class="issue-badge">Source-traceable issue analysis</div>
 
         {% if matter.issue_packet %}
             <div class="issue-grid">
@@ -751,7 +770,7 @@
             </div>
         {% else %}
             <div class="empty">
-                Issue Engine packet not available.
+                Issue analysis is not available for this matter.
             </div>
         {% endif %}
     </div>
