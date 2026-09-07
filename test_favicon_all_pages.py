@@ -89,7 +89,9 @@ class FaviconCoverageTests(unittest.TestCase):
             legalai, "get_similar_cases", return_value=[]
         ):
             for path in ("/", "/matter", "/case/2025-06955"):
-                _assert_favicon(self, self.client.get(path), path)
+                _assert_favicon(
+                    self, self.client.get(path, headers=_auth_headers()), path
+                )
 
     def test_workspace_and_review_html_pages_include_favicon(self):
         registered = [{"case_id": CASE_ID, "stage": "Verified source indexed"}]
