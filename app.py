@@ -2271,6 +2271,51 @@ def open_case00_source_pdf(filename):
     return open_indexed_case_pdf(CASE00_ID, source["source_sha256"], filename)
 
 
+# Past the Bridge's sole QUEUED recovery dispatch (120s, max 2 attempts) and the
+# duplicate-reuse window. Stale QUEUED is surfaced as retryable FAILED without
+# redispatch or mutation of canonical B2 request objects from this web process.
+DEFAULT_STALE_QUEUED_AFTER_SECONDS = 600
+STALE_QUEUED_FAILURE_CODE = "stale_queued"
+
+
+def stale_queued_after_seconds():
+    """Return the bounded age after which a QUEUED draft is treated as stale."""
+    raw = os.environ.get("LEGALAI_STALE_QUEUED_AFTER_SECONDS", "")
+    if not raw:
+        return DEFAULT_STALE_QUEUED_AFTER_SECONDS
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_STALE_QUEUED_AFTER_SECONDS
+    return value if value > 0 else DEFAULT_STALE_QUEUED_AFTER_SECONDS
+
+
+def is_stale_queued_draft(item, now=None):
+    """True when a draft remains QUEUED past the bounded lifecycle threshold."""
+    if not isinstance(item, dict) or item.get("status") != "QUEUED":
+        return False
+    created_at = item.get("created_at")
+    if not isinstance(created_at, int):
+        return False
+    if now is None:
+        now = int(time.time())
+    return now - created_at >= stale_queued_after_seconds()
+
+
+def reconcile_draft_request_lifecycle(item, now=None):
+    """Map stale QUEUED drafts to explicit retryable FAILED; leave others intact.
+
+    This is an application-layer lifecycle bound. It does not redispatch work and
+    does not rewrite B2 request, source, or attorney-packet records.
+    """
+    if not is_stale_queued_draft(item, now=now):
+        return item
+    reconciled = dict(item)
+    reconciled["status"] = "FAILED"
+    reconciled["failure_code"] = STALE_QUEUED_FAILURE_CODE
+    return reconciled
+
+
 def load_draft_requests(case_id):
     """Read internal-only draft request metadata for one indexed matter."""
     gateway_url = os.environ.get("LEGALAI_REVIEW_GATEWAY_URL", "").rstrip("/")
@@ -2290,21 +2335,25 @@ def load_draft_requests(case_id):
     entries = result.get("requests") if isinstance(result, dict) else None
     if not isinstance(entries, list):
         return None
+    now = int(time.time())
     return [
-        {
-            "request_id": item["request_id"],
-            "question": item["question"],
-            "requested_by": item["requested_by"],
-            "status": item["status"],
-            "created_at": item["created_at"],
-            "draft": item.get("draft") if isinstance(item.get("draft"), dict) else None,
-            "failure_code": (
-                item.get("failure_code")
-                if isinstance(item.get("failure_code"), str)
-                and re.fullmatch(r"[a-z_]{1,40}", item["failure_code"])
-                else None
-            ),
-        }
+        reconcile_draft_request_lifecycle(
+            {
+                "request_id": item["request_id"],
+                "question": item["question"],
+                "requested_by": item["requested_by"],
+                "status": item["status"],
+                "created_at": item["created_at"],
+                "draft": item.get("draft") if isinstance(item.get("draft"), dict) else None,
+                "failure_code": (
+                    item.get("failure_code")
+                    if isinstance(item.get("failure_code"), str)
+                    and re.fullmatch(r"[a-z_]{1,40}", item["failure_code"])
+                    else None
+                ),
+            },
+            now=now,
+        )
         for item in entries
         if isinstance(item, dict)
         and all(isinstance(item.get(key), str) for key in ("request_id", "question", "requested_by", "status"))
@@ -2669,7 +2718,11 @@ _draft_alerted: set[tuple[str, str, str]] = set()
 
 
 def _monitor_verified_draft_statuses():
-    """Alert once per process for terminal internal-draft state; no source text."""
+    """Alert once per process for terminal internal-draft state; no source text.
+
+    ``load_draft_requests`` already reconciles stale QUEUED into retryable
+    FAILED, so stalled queue rows surface here without uncontrolled redispatch.
+    """
     try:
         try:
             matters = load_registered_cases()
