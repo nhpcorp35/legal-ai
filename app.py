@@ -1950,14 +1950,47 @@ def basic_auth_required_response():
     )
 
 
+class GatewayUnavailableError(RuntimeError):
+    """Explicit Gateway failure with a non-secret operator/UI message."""
+
+    DEFAULT_MESSAGE = "The review gateway is temporarily unavailable."
+    CONFIG_MESSAGE = "The review gateway is not configured correctly."
+
+    def __init__(self, message=None):
+        super().__init__(message or self.DEFAULT_MESSAGE)
+
+
+def gateway_unavailable_response(exc=None):
+    """Return a bounded 503 response; never include transport/auth payloads."""
+    message = GatewayUnavailableError.DEFAULT_MESSAGE
+    if isinstance(exc, GatewayUnavailableError):
+        message = str(exc) or GatewayUnavailableError.DEFAULT_MESSAGE
+    return Response(message, status=503, content_type="text/plain; charset=utf-8")
+
+
+def _review_gateway_credentials():
+    """Return (url, secret), empty strings when unset, or raise on partial config."""
+    gateway_url = os.environ.get("LEGALAI_REVIEW_GATEWAY_URL", "").rstrip("/")
+    secret = os.environ.get("LEGALAI_REVIEW_GATEWAY_SECRET", "")
+    if gateway_url and secret:
+        return gateway_url, secret
+    if gateway_url or secret:
+        raise GatewayUnavailableError(GatewayUnavailableError.CONFIG_MESSAGE)
+    return "", ""
+
+
 @lru_cache(maxsize=5)
 def load_case00_review_packet(question_id):
-    """Load one fixed, integrity-checked Case-00 packet; never from Git."""
+    """Load one fixed, integrity-checked Case-00 packet; never from Git.
+
+    Returns None only when the packet is legitimately missing. Gateway
+    transport/auth/parse/config failures raise GatewayUnavailableError instead
+    of collapsing into a missing-packet success state.
+    """
     question_id = question_id.upper()
     if question_id not in CASE00_REVIEW_QUESTIONS:
         return None
-    gateway_url = os.environ.get("LEGALAI_REVIEW_GATEWAY_URL", "").rstrip("/")
-    secret = os.environ.get("LEGALAI_REVIEW_GATEWAY_SECRET", "")
+    gateway_url, secret = _review_gateway_credentials()
     if gateway_url and secret:
         payload = json.dumps({"question_id": question_id}).encode("utf-8")
         request_data = urllib.request.Request(
@@ -1972,14 +2005,15 @@ def load_case00_review_packet(question_id):
         try:
             with urllib.request.urlopen(request_data, timeout=30) as response:
                 result = json.loads(response.read().decode("utf-8"))
-            packet = result.get("packet_markdown") if isinstance(result, dict) else None
-            expected_sha = result.get("sha256", "") if isinstance(result, dict) else ""
-            if isinstance(packet, str) and re.fullmatch(r"[0-9a-f]{64}", str(expected_sha)):
-                actual_sha = hashlib.sha256(packet.encode("utf-8")).hexdigest()
-                if hmac.compare_digest(actual_sha, str(expected_sha)):
-                    return packet
-        except (urllib.error.URLError, urllib.error.HTTPError, ValueError, UnicodeDecodeError):
-            pass
+        except (urllib.error.URLError, urllib.error.HTTPError, ValueError, UnicodeDecodeError) as exc:
+            raise GatewayUnavailableError() from exc
+        packet = result.get("packet_markdown") if isinstance(result, dict) else None
+        expected_sha = result.get("sha256", "") if isinstance(result, dict) else ""
+        if isinstance(packet, str) and re.fullmatch(r"[0-9a-f]{64}", str(expected_sha)):
+            actual_sha = hashlib.sha256(packet.encode("utf-8")).hexdigest()
+            if hmac.compare_digest(actual_sha, str(expected_sha)):
+                return packet
+        # Gateway answered without a verified packet — try legacy env next.
 
     # Legacy deployment fallback for the two previously configured packets.
     encoded = os.environ.get(f"LEGALAI_CASE00_{question_id}_PACKET_B64", "")
@@ -2000,9 +2034,13 @@ def load_case00_review_packet(question_id):
 
 
 def load_registered_cases():
-    """Read authenticated readiness metadata through the protected gateway."""
-    gateway_url = os.environ.get("LEGALAI_REVIEW_GATEWAY_URL", "").rstrip("/")
-    secret = os.environ.get("LEGALAI_REVIEW_GATEWAY_SECRET", "")
+    """Read authenticated readiness metadata through the protected gateway.
+
+    A successful Gateway response with an empty cases list is a legitimate
+    empty result. Transport/auth/parse/config failures raise
+    GatewayUnavailableError and must not be reported as an empty workspace.
+    """
+    gateway_url, secret = _review_gateway_credentials()
     if not gateway_url or not secret:
         return []
     request_data = urllib.request.Request(
@@ -2016,11 +2054,11 @@ def load_registered_cases():
         # complete rather than reporting the record as unavailable.
         with urllib.request.urlopen(request_data, timeout=120) as response:
             result = json.loads(response.read().decode("utf-8"))
-    except (urllib.error.URLError, urllib.error.HTTPError, ValueError, UnicodeDecodeError):
-        return []
+    except (urllib.error.URLError, urllib.error.HTTPError, ValueError, UnicodeDecodeError) as exc:
+        raise GatewayUnavailableError() from exc
     cases = result.get("cases") if isinstance(result, dict) else None
     if not isinstance(cases, list):
-        return []
+        raise GatewayUnavailableError()
     canonical_rennick_id = "NY-Nassau-613561-2026-Desousa-v-Rennick"
     legacy_rennick_id = "NY-Nassau-613561-2026-Rennick"
     normalized = []
@@ -2304,7 +2342,11 @@ def discard_temporary_draft_request(case_id, request_id):
     return isinstance(result, dict) and result.get("ok") is True and result.get("discarded") is True
 
 def load_szymczyk_review_packet():
-    """Prefer the promoted B2 packet; retain the legacy config packet as fallback."""
+    """Prefer the promoted B2 packet; retain the legacy config packet as fallback.
+
+    Gateway failures raise GatewayUnavailableError; None means the packet is
+    legitimately missing after a successful or unconfigured lookup.
+    """
     promoted = read_current_szymczyk_review_packet()
     if promoted is not None:
         return promoted
@@ -2322,8 +2364,7 @@ def load_szymczyk_review_packet():
 
 def read_current_szymczyk_review_packet():
     """Read the SHA-verified B2 promotion through the existing server-only gateway."""
-    gateway_url = os.environ.get("LEGALAI_REVIEW_GATEWAY_URL", "").rstrip("/")
-    secret = os.environ.get("LEGALAI_REVIEW_GATEWAY_SECRET", "")
+    gateway_url, secret = _review_gateway_credentials()
     if not gateway_url or not secret:
         return None
     request_data = urllib.request.Request(
@@ -2333,8 +2374,8 @@ def read_current_szymczyk_review_packet():
     try:
         with urllib.request.urlopen(request_data, timeout=30) as response:
             result = json.loads(response.read().decode("utf-8"))
-    except (urllib.error.URLError, urllib.error.HTTPError, ValueError, UnicodeDecodeError):
-        return None
+    except (urllib.error.URLError, urllib.error.HTTPError, ValueError, UnicodeDecodeError) as exc:
+        raise GatewayUnavailableError() from exc
     if not isinstance(result, dict) or not result.get("ok"):
         return None
     packet = result.get("review_packet_markdown")
@@ -2583,7 +2624,11 @@ _draft_alerted: set[tuple[str, str, str]] = set()
 def _monitor_verified_draft_statuses():
     """Alert once per process for terminal internal-draft state; no source text."""
     try:
-        for matter in load_registered_cases():
+        try:
+            matters = load_registered_cases()
+        except GatewayUnavailableError:
+            matters = []
+        for matter in matters:
             case_id = matter.get("case_id")
             if not isinstance(case_id, str):
                 continue
@@ -2710,7 +2755,12 @@ def attorney_workspace():
     reviewer = basic_review_user()
     if reviewer is None:
         return basic_auth_required_response()
-    case00_answered = available_case00_review_questions()
+    gateway_error = None
+    try:
+        case00_answered = available_case00_review_questions()
+    except GatewayUnavailableError as exc:
+        gateway_error = str(exc)
+        case00_answered = []
     # A new internal-draft request is independently sourced by the controlled
     # B2-backed workflow.  Do not hide that route merely because the optional
     # legacy in-app source-map cache is unavailable at web-process startup.
@@ -2740,7 +2790,11 @@ def attorney_workspace():
             }
         )
     matters = []
-    gateway_url = os.environ.get("LEGALAI_REVIEW_GATEWAY_URL", "").rstrip("/")
+    try:
+        gateway_url, _secret = _review_gateway_credentials()
+    except GatewayUnavailableError as exc:
+        gateway_error = gateway_error or str(exc)
+        gateway_url = ""
     if gateway_url:
         matters.append(
             {
@@ -2767,12 +2821,15 @@ def attorney_workspace():
             }
         )
     known_case_ids = set()
-    registered_cases = load_registered_cases()
+    try:
+        registered_cases = load_registered_cases()
+    except GatewayUnavailableError as exc:
+        gateway_error = gateway_error or str(exc)
+        registered_cases = []
     for case in registered_cases:
         if case["case_id"] not in known_case_ids:
             questions = []
             matter_url = urllib.parse.quote(case["case_id"], safe="")
-            gateway_url = os.environ.get("LEGALAI_REVIEW_GATEWAY_URL", "").rstrip("/")
             if case["stage"] == "Registered" and gateway_url:
                 questions.append(
                     {
@@ -2820,10 +2877,15 @@ def attorney_workspace():
                             "url": f"/workspace/matters/{matter_url}/draft",
                         }
                     )
-                if (
-                    case["case_id"] == "NY-NewYork-158068-2018-Szymczyk-v-Hudson-36-37"
-                    and load_szymczyk_review_packet() is not None
-                ):
+                try:
+                    szymczyk_packet_ready = (
+                        case["case_id"] == "NY-NewYork-158068-2018-Szymczyk-v-Hudson-36-37"
+                        and load_szymczyk_review_packet() is not None
+                    )
+                except GatewayUnavailableError as exc:
+                    gateway_error = gateway_error or str(exc)
+                    szymczyk_packet_ready = False
+                if szymczyk_packet_ready:
                     questions.append(
                         {
                             "id": "Review",
@@ -2843,8 +2905,13 @@ def attorney_workspace():
                     "questions": questions,
                 }
             )
+    try:
+        szymczyk_standalone = load_szymczyk_review_packet() is not None
+    except GatewayUnavailableError as exc:
+        gateway_error = gateway_error or str(exc)
+        szymczyk_standalone = False
     if (
-        load_szymczyk_review_packet() is not None
+        szymczyk_standalone
         and not any(
             case["case_id"] == "NY-NewYork-158068-2018-Szymczyk-v-Hudson-36-37"
             and case["stage"] == "Verified source indexed"
@@ -2870,9 +2937,10 @@ def attorney_workspace():
             }
         )
     return render_template_string(
-        """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>LegalAI Attorney Workspace</title><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:940px;margin:0 auto;padding:48px 24px 64px}header{border-bottom:1px solid #cbd5e1;padding-bottom:24px;margin-bottom:30px}h1{margin:0 0 10px;font-size:clamp(2rem,5vw,3.25rem)}h2{margin:0 0 9px;font-size:1.4rem}p{font-size:1.05rem;line-height:1.55}.meta{color:#52606d;font-size:.96rem}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(275px,1fr));gap:20px}article,.empty{background:white;border:1px solid #cbd5e1;border-radius:10px;padding:24px;box-shadow:0 2px 8px #0f172a10}ul{padding-left:0;list-style:none;margin:20px 0 0}li+li{margin-top:10px}a{display:block;border:1px solid #245b83;border-radius:6px;color:#123f63;font-weight:bold;padding:10px 12px;text-decoration:none}a:hover,a:focus{background:#e6f1f8}</style></head><body><main><header><h1>LegalAI Attorney Workspace</h1><p class="meta">Signed in as {{ reviewer }}.</p><p>Select a prepared matter. Each question opens a source-supported candidate for your review; your decision and notes are then archived.</p></header>{% if matters %}<section class="grid" aria-label="Prepared matters">{% for matter in matters %}<article><h2>{{ matter.name }}</h2><p>{{ matter.description }}</p><ul>{% for question in matter.questions %}<li><a href="{{ question.url }}">{{ question.id }} — {{ question.label }}</a></li>{% endfor %}</ul></article>{% endfor %}</section>{% else %}<section class="empty"><h2>No prepared matters are available</h2><p>Please try again later.</p></section>{% endif %}</main></body></html>""",
+        """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>LegalAI Attorney Workspace</title><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:940px;margin:0 auto;padding:48px 24px 64px}header{border-bottom:1px solid #cbd5e1;padding-bottom:24px;margin-bottom:30px}h1{margin:0 0 10px;font-size:clamp(2rem,5vw,3.25rem)}h2{margin:0 0 9px;font-size:1.4rem}p{font-size:1.05rem;line-height:1.55}.meta{color:#52606d;font-size:.96rem}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(275px,1fr));gap:20px}article,.empty,.notice{background:white;border:1px solid #cbd5e1;border-radius:10px;padding:24px;box-shadow:0 2px 8px #0f172a10}.notice{border-left:4px solid #b45309;background:#fffbeb;margin-bottom:20px}ul{padding-left:0;list-style:none;margin:20px 0 0}li+li{margin-top:10px}a{display:block;border:1px solid #245b83;border-radius:6px;color:#123f63;font-weight:bold;padding:10px 12px;text-decoration:none}a:hover,a:focus{background:#e6f1f8}</style></head><body><main><header><h1>LegalAI Attorney Workspace</h1><p class="meta">Signed in as {{ reviewer }}.</p><p>Select a prepared matter. Each question opens a source-supported candidate for your review; your decision and notes are then archived.</p></header>{% if gateway_error %}<section class="notice" role="alert"><h2>Review gateway unavailable</h2><p>{{ gateway_error }}</p></section>{% endif %}{% if matters %}<section class="grid" aria-label="Prepared matters">{% for matter in matters %}<article><h2>{{ matter.name }}</h2><p>{{ matter.description }}</p><ul>{% for question in matter.questions %}<li><a href="{{ question.url }}">{{ question.id }} — {{ question.label }}</a></li>{% endfor %}</ul></article>{% endfor %}</section>{% elif not gateway_error %}<section class="empty"><h2>No prepared matters are available</h2><p>Please try again later.</p></section>{% endif %}</main></body></html>""",
         reviewer=reviewer,
         matters=matters,
+        gateway_error=gateway_error,
     )
 
 
@@ -2941,7 +3009,10 @@ def workspace_indexed_case_search(case_id):
     reviewer = basic_review_user()
     if reviewer is None:
         return basic_auth_required_response()
-    registered = {item["case_id"]: item["stage"] for item in load_registered_cases()}
+    try:
+        registered = {item["case_id"]: item["stage"] for item in load_registered_cases()}
+    except GatewayUnavailableError as exc:
+        return gateway_unavailable_response(exc)
     if registered.get(case_id) != "Verified source indexed":
         abort(404)
     query = ""
@@ -2969,7 +3040,10 @@ def workspace_matter_pdf(case_id, filename):
     """Serve one verified source PDF after existing workspace authentication."""
     if basic_review_user() is None:
         return basic_auth_required_response()
-    registered = {item["case_id"]: item["stage"] for item in load_registered_cases()}
+    try:
+        registered = {item["case_id"]: item["stage"] for item in load_registered_cases()}
+    except GatewayUnavailableError as exc:
+        return gateway_unavailable_response(exc)
     if registered.get(case_id) != "Verified source indexed":
         abort(404)
     document_name = clean_text(filename)
@@ -2995,7 +3069,10 @@ def workspace_matter_sources(case_id):
     reviewer = basic_review_user()
     if reviewer is None:
         return basic_auth_required_response()
-    registered = {item["case_id"]: item["stage"] for item in load_registered_cases()}
+    try:
+        registered = {item["case_id"]: item["stage"] for item in load_registered_cases()}
+    except GatewayUnavailableError as exc:
+        return gateway_unavailable_response(exc)
     if registered.get(case_id) != "Verified source indexed":
         abort(404)
     documents = load_case_source_map(case_id)
@@ -3015,10 +3092,13 @@ def workspace_matter_draft(case_id):
     reviewer = basic_review_user()
     if reviewer is None:
         return basic_auth_required_response()
-    registered = {
-        item["case_id"]: item["stage"]
-        for item in load_registered_cases()
-    }
+    try:
+        registered = {
+            item["case_id"]: item["stage"]
+            for item in load_registered_cases()
+        }
+    except GatewayUnavailableError as exc:
+        return gateway_unavailable_response(exc)
     if case_id != CASE00_ID and registered.get(case_id) != "Verified source indexed":
         abort(404)
     question = ""
@@ -3078,8 +3158,13 @@ def workspace_matter_drafts(case_id):
     """List completed internal answers without expanding them in the workspace."""
     if basic_review_user() is None:
         return basic_auth_required_response()
-    if case_id != CASE00_ID and {item["case_id"]: item["stage"] for item in load_registered_cases()}.get(case_id) != "Verified source indexed":
-        abort(404)
+    if case_id != CASE00_ID:
+        try:
+            registered = {item["case_id"]: item["stage"] for item in load_registered_cases()}
+        except GatewayUnavailableError as exc:
+            return gateway_unavailable_response(exc)
+        if registered.get(case_id) != "Verified source indexed":
+            abort(404)
     answered = [item for item in (load_draft_requests(case_id) or []) if item["status"] == "READY" and item["draft"]]
     return render_template_string(
         """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Answered Questions</title><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:900px;margin:0 auto;padding:42px 24px 64px}a{color:#123f63}h1{margin:0 0 8px;font-size:clamp(2rem,5vw,3rem)}p{font-size:1.05rem;line-height:1.55}.meta{color:#52606d}.question{display:block;background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:20px;margin-top:16px;box-shadow:0 2px 8px #0f172a10;text-decoration:none;color:#172331}.question:hover{border-color:#123f63}.question strong{color:#123f63}</style></head><body><main><p><a href="/workspace">← Attorney workspace</a> · <a href="{{ url_for('workspace_matter_draft', case_id=case_id) }}">Ask a new review question</a></p><h1>Answered questions</h1><p class="meta">{{ case_id }}</p>{% if answered %}{% for item in answered %}<a class="question" href="{{ url_for('workspace_matter_draft_detail', case_id=case_id, request_id=item.request_id) }}"><strong>Answered</strong><p>{{ item.question }}</p><span class="meta">Requested by {{ item.requested_by }} · Open answer →</span></a>{% endfor %}{% else %}<p>No answered questions yet.</p>{% endif %}</main></body></html>""",
@@ -3230,12 +3315,19 @@ def case00_review():
     reviewer = basic_review_user()
     if reviewer is None:
         return basic_auth_required_response()
-    question_id = selected_case00_review_question()
-    if question_id is None:
-        abort(503)
-    packet = load_case00_review_packet(question_id)
+    try:
+        question_id = selected_case00_review_question()
+        if question_id is None:
+            abort(503)
+        packet = load_case00_review_packet(question_id)
+    except GatewayUnavailableError as exc:
+        return gateway_unavailable_response(exc)
     if packet is None:
-        abort(503)
+        return Response(
+            "The review packet is not available.",
+            status=503,
+            content_type="text/plain; charset=utf-8",
+        )
     submitted = False
     error = None
     if request.method == "POST":
@@ -3271,9 +3363,16 @@ def szymczyk_review():
     reviewer = basic_review_user()
     if reviewer is None:
         return basic_auth_required_response()
-    packet = load_szymczyk_review_packet()
+    try:
+        packet = load_szymczyk_review_packet()
+    except GatewayUnavailableError as exc:
+        return gateway_unavailable_response(exc)
     if packet is None:
-        abort(503)
+        return Response(
+            "The review packet is not available.",
+            status=503,
+            content_type="text/plain; charset=utf-8",
+        )
     submitted = False
     error = None
     if request.method == "POST":

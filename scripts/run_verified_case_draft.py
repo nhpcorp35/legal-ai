@@ -53,7 +53,7 @@ def verified_sources(s3, case_id):
 
 
 def evidence(s3, case_id, question):
-    rows=[]; fallback_rows=[]; terms=words(question)
+    rows=[]; terms=words(question)
     for source in verified_sources(s3, case_id):
         object_key=f"cases/{case_id}/intake/source/{source}/page_records.jsonl"
         raw=s3.get_object(Bucket=os.environ["B2_BUCKET"],Key=object_key)["Body"].read().decode()
@@ -65,12 +65,8 @@ def evidence(s3, case_id, question):
             candidate={"source_sha256":source,"filename":filename,"page_number":page,"text":text[:MAX_PAGE_CHARS]}
             if score:
                 rows.append((score,filename,page,source,candidate))
-            else:
-                # A valid, bounded fallback keeps unusual terminology or OCR gaps
-                # from preventing an otherwise verified internal review draft.
-                fallback_rows.append((0,filename,page,source,candidate))
     selected=[]; total=0
-    for _,_,_,_,item in sorted(rows or fallback_rows,key=lambda x:(-x[0],x[1].casefold(),x[2])):
+    for _,_,_,_,item in sorted(rows,key=lambda x:(-x[0],x[1].casefold(),x[2])):
         if total+len(item["text"])>MAX_CONTEXT_CHARS or len(selected)>=MAX_PAGES: continue
         selected.append(item); total+=len(item["text"])
     if not selected: raise ValueError("no matching verified evidence")
