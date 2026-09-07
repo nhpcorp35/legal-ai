@@ -42,6 +42,53 @@ CASE00_REVIEW_QUESTIONS = {
     "Q5": "What record evidence most strongly supports and contradicts each side's material positions, and what important factual or legal issues remain unresolved?",
 }
 
+# LegalAI favicon — keep one canonical tag for every full HTML document.
+FAVICON_LINK_TAG = '<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">'
+_FAVICON_LINK_MARKER = 'rel="icon" href="/static/favicon.svg"'
+
+
+def inject_favicon_link(html):
+    """Insert the LegalAI favicon link into a full HTML document if missing."""
+    text = str(html or "")
+    if _FAVICON_LINK_MARKER in text:
+        return text
+    lower = text.lower()
+    title_end = lower.find("</title>")
+    if title_end != -1:
+        at = title_end + len("</title>")
+        return text[:at] + FAVICON_LINK_TAG + text[at:]
+    head_start = lower.find("<head>")
+    if head_start != -1:
+        at = head_start + len("<head>")
+        return text[:at] + FAVICON_LINK_TAG + text[at:]
+    doctype = re.match(r"(?is)<!doctype html[^>]*>", text)
+    if doctype:
+        at = doctype.end()
+        return text[:at] + FAVICON_LINK_TAG + text[at:]
+    return text
+
+
+@app.after_request
+def ensure_html_favicon(response):
+    """Guarantee every HTML response includes the LegalAI favicon link."""
+    content_type = response.headers.get("Content-Type", "")
+    if "text/html" not in content_type or response.direct_passthrough:
+        return response
+    try:
+        html = response.get_data(as_text=True)
+    except (UnicodeDecodeError, RuntimeError, TypeError):
+        return response
+    updated = inject_favicon_link(html)
+    if updated != html:
+        response.set_data(updated)
+    return response
+
+
+@app.route("/favicon.ico")
+def favicon_ico():
+    """Harmless compatibility redirect for browsers that request /favicon.ico."""
+    return redirect("/static/favicon.svg", code=302)
+
 
 # =========================
 # HELPERS
