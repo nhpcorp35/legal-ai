@@ -2697,9 +2697,24 @@ def _monitor_verified_draft_statuses():
         timer.start()
 
 
-_status_monitor_timer = threading.Timer(30.0, _monitor_verified_draft_statuses)
-_status_monitor_timer.daemon = True
-_status_monitor_timer.start()
+_monitor_initialized = False
+
+
+def _ensure_monitor_started():
+    """Start the verified-draft status monitor in the current (worker) process.
+
+    The monitor must be started after Gunicorn forks worker processes, not at
+    module import time in the master process, since daemon threads created
+    before fork() are not inherited by workers. Calling this at the start of
+    the first authenticated request guarantees it runs in a worker.
+    """
+    global _monitor_initialized
+    if _monitor_initialized:
+        return
+    _monitor_initialized = True
+    timer = threading.Timer(30.0, _monitor_verified_draft_statuses)
+    timer.daemon = True
+    timer.start()
 
 
 def search_szymczyk_verified_pages(query):
@@ -2799,6 +2814,7 @@ def operator_attention():
 @app.route("/workspace")
 def attorney_workspace():
     """Protected entry point for prepared attorney-review matters."""
+    _ensure_monitor_started()
     reviewer = basic_review_user()
     if reviewer is None:
         return basic_auth_required_response()
