@@ -1,0 +1,194 @@
+/* Canonical attorney-facing workspace visual system */
+:root {
+  color: #172331;
+  background: #f6f8fb;
+  font-family: Georgia, "Times New Roman", serif;
+}
+
+body {
+  margin: 0;
+  background: #f6f8fb !important;
+  color: #172331 !important;
+  font-family: Georgia, "Times New Roman", serif !important;
+}
+
+.attorney-top-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  max-width: 940px;
+  margin: 0 auto;
+  padding: 18px 24px 0;
+}
+
+.attorney-top-nav a {
+  display: inline-block;
+  box-sizing: border-box;
+  border: 1px solid #245b83;
+  border-radius: 6px;
+  color: #123f63;
+  font-weight: bold;
+  padding: 8px 12px;
+  text-decoration: none;
+  background: #fff;
+}
+
+.attorney-top-nav a:hover,
+.attorney-top-nav a:focus {
+  background: #e6f1f8;
+}
+
+main,
+.attorney-page {
+  max-width: 940px;
+  margin: 0 auto;
+  padding: 42px 24px 64px;
+}
+
+h1,
+.page-title,
+h2:first-of-type {
+  font-family: Georgia, "Times New Roman", serif;
+  font-weight: 700;
+  line-height: 1.2;
+  color: #172331;
+}
+
+h1,
+.page-title {
+  margin: 0 0 10px;
+  font-size: clamp(2rem, 5vw, 3.25rem);
+}
+
+h2 {
+  margin: 0 0 9px;
+  font-size: 1.4rem;
+}
+
+p,
+li,
+td,
+label,
+.subtitle,
+.meta,
+.snippet,
+.details {
+  font-size: 1.05rem;
+  line-height: 1.55;
+}
+
+.meta,
+.subtitle {
+  color: #52606d;
+}
+
+a {
+  color: #123f63;
+}
+
+button,
+.answer-cta,
+.build-button {
+  background: #123f63;
+  color: #fff;
+  border: 0;
+  border-radius: 6px;
+  padding: 11px 15px;
+  font: inherit;
+  font-weight: bold;
+  cursor: pointer;
+  text-decoration: none;
+  display: inline-block;
+}
+
+button.secondary {
+  background: #fff;
+  color: #123f63;
+  border: 1px solid #123f63;
+}
+
+button:hover,
+.answer-cta:hover,
+.build-button:hover,
+button:focus,
+.answer-cta:focus,
+.build-button:focus {
+  filter: brightness(1.05);
+}
+
+.panel,
+.card,
+.article-card,
+.result,
+.question,
+.empty,
+.notice,
+fieldset,
+.case,
+.group-card,
+.trace-card,
+.box {
+  background: #fff;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+}
+
+.panel,
+.card,
+.result,
+.empty,
+.notice,
+fieldset {
+  padding: 22px;
+  margin-top: 20px;
+  box-shadow: 0 2px 8px #0f172a10;
+}
+
+.notice {
+  border-left: 4px solid #b45309;
+  background: #fffbeb;
+}
+
+.success {
+  border-left: 4px solid #15803d;
+  background: #f0fdf4;
+}
+
+.answer-cta {
+  margin-top: 12px;
+  font-size: 1.05rem;
+}
+
+input,
+select,
+textarea {
+  font: inherit;
+  border: 1px solid #64748b;
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+
+/* Home/search pages without a <main> wrapper stay centered */
+body > h2,
+body > form,
+body > .top-actions,
+body > .results-header,
+body > .case,
+body > .pagination,
+body > .empty-state,
+body > .page-title,
+body > .subtitle,
+body > .panel,
+body > a[href="/"] {
+  max-width: 940px;
+  margin-left: auto;
+  margin-right: auto;
+  padding-left: 24px;
+  padding-right: 24px;
+  box-sizing: border-box;
+}
+
+body > .page-title,
+body > h2 {
+  margin-top: 28px;
+}

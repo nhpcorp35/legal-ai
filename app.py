@@ -46,6 +46,21 @@ CASE00_REVIEW_QUESTIONS = {
 FAVICON_LINK_TAG = '<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">'
 _FAVICON_LINK_MARKER = 'rel="icon" href="/static/favicon.svg"'
 
+# Shared attorney-facing navigation + workspace stylesheet (idempotent inject).
+ATTORNEY_UI_STYLESHEET_HREF = "/static/attorney_workspace.css"
+ATTORNEY_UI_STYLESHEET_TAG = (
+    f'<link rel="stylesheet" href="{ATTORNEY_UI_STYLESHEET_HREF}">'
+)
+_ATTORNEY_UI_STYLESHEET_MARKER = f'href="{ATTORNEY_UI_STYLESHEET_HREF}"'
+ATTORNEY_TOP_NAV_MARKER = 'class="attorney-top-nav"'
+ATTORNEY_TOP_NAV_HTML = (
+    '<nav class="attorney-top-nav" aria-label="Attorney navigation">'
+    '<a href="/">Home</a>'
+    '<a href="/workspace">Attorney Workspace</a>'
+    '<a href="/matter">Matter Builder</a>'
+    "</nav>"
+)
+
 
 def inject_favicon_link(html):
     """Insert the LegalAI favicon link into a full HTML document if missing."""
@@ -68,9 +83,77 @@ def inject_favicon_link(html):
     return text
 
 
+def _inject_before_head_close(html, snippet):
+    """Insert snippet late in head so shared CSS can override page-local styles."""
+    text = str(html or "")
+    lower = text.lower()
+    head_end = lower.rfind("</head>")
+    if head_end != -1:
+        return text[:head_end] + snippet + text[head_end:]
+    # Prefer after the last inline </style> so linked CSS wins cascade order.
+    style_end = lower.rfind("</style>")
+    if style_end != -1:
+        at = style_end + len("</style>")
+        return text[:at] + snippet + text[at:]
+    body_match = re.search(r"(?is)<body[^>]*>", text)
+    if body_match:
+        return text[: body_match.start()] + snippet + text[body_match.start() :]
+    main_start = lower.find("<main")
+    if main_start != -1:
+        return text[:main_start] + snippet + text[main_start:]
+    title_end = lower.find("</title>")
+    if title_end != -1:
+        at = title_end + len("</title>")
+        return text[:at] + snippet + text[at:]
+    head_start = lower.find("<head>")
+    if head_start != -1:
+        at = head_start + len("<head>")
+        return text[:at] + snippet + text[at:]
+    doctype = re.match(r"(?is)<!doctype html[^>]*>", text)
+    if doctype:
+        at = doctype.end()
+        return text[:at] + snippet + text[at:]
+    return snippet + text
+
+
+def _inject_after_body_open(html, snippet):
+    """Insert snippet immediately after <body...>, or before <main>/start of document."""
+    text = str(html or "")
+    match = re.search(r"(?is)<body[^>]*>", text)
+    if match:
+        at = match.end()
+        return text[:at] + snippet + text[at:]
+    main_start = text.lower().find("<main")
+    if main_start != -1:
+        return text[:main_start] + snippet + text[main_start:]
+    doctype = re.match(r"(?is)<!doctype html[^>]*>", text)
+    if doctype:
+        at = doctype.end()
+        return text[:at] + snippet + text[at:]
+    return snippet + text
+
+
+def inject_attorney_ui(html):
+    """Insert shared attorney stylesheet and top navigation when missing."""
+    text = str(html or "")
+    lower = text.lower()
+    # Skip non-HTML payloads (e.g. Flask 401 text/plain-ish bodies that default
+    # to a text/html content-type) so auth challenge bodies stay untouched.
+    if not any(
+        marker in lower
+        for marker in ("<!doctype html", "<html", "<head", "<body", "<main", "<title")
+    ):
+        return text
+    if _ATTORNEY_UI_STYLESHEET_MARKER not in text:
+        text = _inject_before_head_close(text, ATTORNEY_UI_STYLESHEET_TAG)
+    if ATTORNEY_TOP_NAV_MARKER not in text:
+        text = _inject_after_body_open(text, ATTORNEY_TOP_NAV_HTML)
+    return text
+
+
 @app.after_request
 def ensure_html_favicon(response):
-    """Guarantee every HTML response includes the LegalAI favicon link."""
+    """Guarantee every HTML response includes favicon + attorney chrome."""
     content_type = response.headers.get("Content-Type", "")
     if "text/html" not in content_type or response.direct_passthrough:
         return response
@@ -79,6 +162,7 @@ def ensure_html_favicon(response):
     except (UnicodeDecodeError, RuntimeError, TypeError):
         return response
     updated = inject_favicon_link(html)
+    updated = inject_attorney_ui(updated)
     if updated != html:
         response.set_data(updated)
     return response
@@ -3193,16 +3277,22 @@ def workspace_matter_draft(case_id):
         abort(404)
     question = ""
     confirmation = None
+    submitted_status = None
     error = None
     discarded = False
+    draft_requests = load_draft_requests(case_id) or []
     queued_requests = [
-        item for item in (load_draft_requests(case_id) or [])
+        item for item in draft_requests
         if item["status"] in {"QUEUED", "RUNNING", "FAILED"}
     ]
     submitted_request_id = clean_text(request.args.get("submitted", ""))
     reused = request.args.get("reused") == "1"
     if re.fullmatch(r"draft-[0-9]+-[0-9a-f]{12}", submitted_request_id):
         confirmation = {"request_id": submitted_request_id, "reused": reused}
+        for item in draft_requests:
+            if item.get("request_id") == submitted_request_id:
+                submitted_status = item.get("status")
+                break
     if request.method == "POST":
         if request.form.get("action") == "discard-test":
             request_id = clean_text(request.form.get("request_id", ""))
@@ -3227,15 +3317,17 @@ def workspace_matter_draft(case_id):
                         ),
                         code=303,
                     )
+        draft_requests = load_draft_requests(case_id) or []
         queued_requests = [
-            item for item in (load_draft_requests(case_id) or [])
+            item for item in draft_requests
             if item["status"] in {"QUEUED", "RUNNING", "FAILED"}
         ]
     return render_template_string(
-        """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Prepare Internal Draft</title><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:820px;margin:0 auto;padding:42px 24px 64px}a{color:#123f63}h1{margin:0 0 8px;font-size:clamp(2rem,5vw,3rem)}p{font-size:1.05rem;line-height:1.55}.meta{color:#52606d}.panel{background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:22px;margin-top:26px;box-shadow:0 2px 8px #0f172a10}label{display:block;font-weight:bold;margin-bottom:8px}textarea{box-sizing:border-box;width:100%;font:inherit;line-height:1.45;padding:12px;border:1px solid #64748b;border-radius:6px}button{margin-top:12px;background:#123f63;color:#fff;border:0;border-radius:6px;padding:11px 15px;font:inherit;font-weight:bold;cursor:pointer}.secondary{background:#fff;color:#123f63;border:1px solid #123f63}.notice{border-left:4px solid #b45309;padding:12px 14px;background:#fffbeb}.success{border-left-color:#15803d;background:#f0fdf4}</style></head><body><main><p><a href="/workspace">← Attorney workspace</a></p><h1>Prepare internal review draft</h1><p class="meta">{{ case_id }}</p><p>Questions are processed automatically from the verified record. Results are internal attorney-review drafts only; nothing is sent to an attorney and no legal conclusion is approved.</p>{% if queued_requests %}<section class="panel"><strong>Questions processing</strong>{% for item in queued_requests %}<p><strong>{{ item.status }}</strong> — {{ item.question }}<br><span class="meta">Requested by {{ item.requested_by }}</span></p>{% if item.question|lower|trim == 'is this a test?' %}<form method="post"><input type="hidden" name="action" value="discard-test"><input type="hidden" name="request_id" value="{{ item.request_id }}"><button class="secondary" type="submit">Remove temporary test</button></form>{% endif %}{% endfor %}</section>{% endif %}{% if confirmation %}<section class="panel success"><strong>{% if confirmation.reused %}Existing internal draft shown.{% else %}Automatic draft job queued.{% endif %}</strong><p>{% if confirmation.reused %}This identical question already has an internal draft request, so no duplicate was created.{% else %}Your question will appear under Answered questions when its citation checks complete.{% endif %}</p></section>{% endif %}{% if discarded %}<section class="panel success"><strong>Temporary test removed from the workspace.</strong><p>Its internal audit record remains preserved; no source material or attorney packet changed.</p></section>{% endif %}<section class="panel"><form method="post"><label for="question">What should the attorney-review draft address?</label><textarea id="question" name="question" rows="5" maxlength="1000" required placeholder="Example: What relief is requested in the verified complaint, and what support is present in the record?"></textarea><button type="submit">Ask a new review question</button></form></section>{% if error %}<p class="notice" role="alert">{{ error }}</p>{% endif %}</main></body></html>""",
+        """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Prepare Internal Draft</title><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:820px;margin:0 auto;padding:42px 24px 64px}a{color:#123f63}h1{margin:0 0 8px;font-size:clamp(2rem,5vw,3rem)}p{font-size:1.05rem;line-height:1.55}.meta{color:#52606d}.panel{background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:22px;margin-top:26px;box-shadow:0 2px 8px #0f172a10}label{display:block;font-weight:bold;margin-bottom:8px}textarea{box-sizing:border-box;width:100%;font:inherit;line-height:1.45;padding:12px;border:1px solid #64748b;border-radius:6px}button{margin-top:12px;background:#123f63;color:#fff;border:0;border-radius:6px;padding:11px 15px;font:inherit;font-weight:bold;cursor:pointer}.secondary{background:#fff;color:#123f63;border:1px solid #123f63}.notice{border-left:4px solid #b45309;padding:12px 14px;background:#fffbeb}.success{border-left-color:#15803d;background:#f0fdf4}.answer-cta{display:inline-block;margin-top:12px;background:#123f63;color:#fff;border-radius:6px;padding:11px 15px;font-weight:bold;text-decoration:none}</style></head><body><main><p><a href="/workspace">← Attorney workspace</a></p><h1>Prepare internal review draft</h1><p class="meta">{{ case_id }}</p><p>Questions are processed automatically from the verified record. Results are internal attorney-review drafts only; nothing is sent to an attorney and no legal conclusion is approved.</p>{% if queued_requests %}<section class="panel"><strong>Questions processing</strong>{% for item in queued_requests %}<p><strong>{{ item.status }}</strong> — {{ item.question }}<br><span class="meta">Requested by {{ item.requested_by }}</span></p>{% if item.question|lower|trim == 'is this a test?' %}<form method="post"><input type="hidden" name="action" value="discard-test"><input type="hidden" name="request_id" value="{{ item.request_id }}"><button class="secondary" type="submit">Remove temporary test</button></form>{% endif %}{% endfor %}</section>{% endif %}{% if confirmation %}<section class="panel success">{% if submitted_status == 'READY' %}<strong>Your answered question is ready.</strong><p><a class="answer-cta" href="{{ url_for('workspace_matter_draft_detail', case_id=case_id, request_id=confirmation.request_id) }}">View answered question →</a></p>{% else %}<strong>{% if confirmation.reused %}Existing internal draft shown.{% else %}Automatic draft job queued.{% endif %}</strong><p>{% if confirmation.reused %}This identical question already has an internal draft request, so no duplicate was created.{% else %}Your question will appear under Answered questions when its citation checks complete.{% endif %}</p>{% endif %}</section>{% endif %}{% if discarded %}<section class="panel success"><strong>Temporary test removed from the workspace.</strong><p>Its internal audit record remains preserved; no source material or attorney packet changed.</p></section>{% endif %}<section class="panel"><form method="post"><label for="question">What should the attorney-review draft address?</label><textarea id="question" name="question" rows="5" maxlength="1000" required placeholder="Example: What relief is requested in the verified complaint, and what support is present in the record?"></textarea><button type="submit">Ask a new review question</button></form></section>{% if error %}<p class="notice" role="alert">{{ error }}</p>{% endif %}</main></body></html>""",
         case_id=case_id,
         question=question,
         confirmation=confirmation,
+        submitted_status=submitted_status,
         discarded=discarded,
         error=error,
         queued_requests=queued_requests,
@@ -3484,14 +3576,13 @@ def szymczyk_review():
             submitted = True
             notify_szymczyk_feedback(reviewer, decision)
     return render_template_string(
-        """<!doctype html><title>Szymczyk Attorney Review</title>
-        <main><h1>Szymczyk Attorney Review</h1><p>Signed in as {{ reviewer }}.</p>
+        """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Szymczyk Attorney Review</title><style>.choices{display:flex;gap:14px;flex-wrap:wrap}pre{font:15px/1.5 Georgia,serif;white-space:pre-wrap;overflow-wrap:anywhere}.card{background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:22px;margin-top:20px}</style></head><body><main><p><a href="/workspace">← Attorney workspace</a></p><h1>Szymczyk Attorney Review</h1><p class="meta">Signed in as {{ reviewer }}.</p>
         <p><strong>Candidate only - not attorney-approved.</strong></p>
-        <p><a href=\"/workspace/szymczyk\">Search the verified record and open source PDFs →</a></p>
+        <p><a href="/workspace/szymczyk">Search the verified record and open source PDFs →</a></p>
         <p>Each bold PDF citation below opens the original document at its cited page. Review the candidate against those sources, then select a decision and add any notes.</p>
-        <section><pre style=\"white-space:pre-wrap;overflow-wrap:anywhere\">{{ packet_html }}</pre></section>
-        {% if submitted %}<p><strong>Feedback archived and verified.</strong> <a href=\"/szymczyk/feedback/latest\">View the archived feedback →</a></p>{% endif %}{% if error %}<p role=\"alert\">{{ error }}</p>{% endif %}
-        <form method=\"post\"><fieldset><legend>Attorney decision</legend><label><input type=\"radio\" name=\"decision\" value=\"accept\" required> Accept</label><label><input type=\"radio\" name=\"decision\" value=\"revise\"> Revise</label><label><input type=\"radio\" name=\"decision\" value=\"reject\"> Reject</label><label><input type=\"radio\" name=\"decision\" value=\"investigate_further\"> Investigate further</label><p><textarea name=\"notes\" rows=\"8\" cols=\"80\" maxlength=\"12000\"></textarea></p><button type=\"submit\">Archive feedback</button></fieldset></form></main>""",
+        <section class="card"><pre>{{ packet_html }}</pre></section>
+        {% if submitted %}<p><strong>Feedback archived and verified.</strong> <a href="/szymczyk/feedback/latest">View the archived feedback →</a></p>{% endif %}{% if error %}<p class="notice" role="alert">{{ error }}</p>{% endif %}
+        <form method="post"><fieldset><legend>Attorney decision</legend><div class="choices"><label><input type="radio" name="decision" value="accept" required> Accept</label><label><input type="radio" name="decision" value="revise"> Revise</label><label><input type="radio" name="decision" value="reject"> Reject</label><label><input type="radio" name="decision" value="investigate_further"> Investigate further</label></div><p><label for="notes">Notes</label><br><textarea id="notes" name="notes" rows="8" cols="80" maxlength="12000"></textarea></p><button type="submit">Archive feedback</button></fieldset></form></main></body></html>""",
         reviewer=reviewer,
         packet_html=packet_for_review_html(packet),
     )
@@ -3505,11 +3596,10 @@ def szymczyk_latest_feedback():
     if feedback is None:
         abort(503)
     return render_template_string(
-        """<!doctype html><title>Szymczyk Attorney Feedback</title>
-        <main><h1>Szymczyk Attorney Feedback</h1>
+        """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Szymczyk Attorney Feedback</title><style>pre{font:15px/1.5 Georgia,serif;white-space:pre-wrap;overflow-wrap:anywhere}.card{background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:22px;margin-top:20px}</style></head><body><main><p><a href="/workspace">← Attorney workspace</a> · <a href="/szymczyk/review">← Review candidate</a></p><h1>Szymczyk Attorney Feedback</h1>
         <p><strong>Archived feedback — read-only.</strong></p>
-        <p>Submitted: {{ submitted_at }}</p>
-        <pre style="white-space:pre-wrap;overflow-wrap:anywhere">{{ feedback_markdown }}</pre></main>""",
+        <p class="meta">Submitted: {{ submitted_at }}</p>
+        <section class="card"><pre>{{ feedback_markdown }}</pre></section></main></body></html>""",
         submitted_at=feedback.get("submitted_at", ""),
         feedback_markdown=feedback.get("feedback_markdown", ""),
     )
