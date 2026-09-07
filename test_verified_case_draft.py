@@ -18,24 +18,44 @@ SPEC.loader.exec_module(WORKER)
 
 class FakeS3:
     source = "a" * 64
+    pages = [
+        {"filename": "B Filing.pdf", "page_number": 2, "text": "Unusual record language without the request terms."},
+        {"filename": "A Filing.pdf", "page_number": 1, "text": "Another verified page with OCR variation."},
+    ]
 
     def get_object(self, **kwargs):
         if kwargs["Key"].endswith("case_identity.json"):
             return {"Body": io.BytesIO(json.dumps({"source_sha256": self.source}).encode())}
         if kwargs["Key"].endswith("source_set.json"):
             raise RuntimeError("legacy original-only source set")
-        pages = [
-            {"filename": "B Filing.pdf", "page_number": 2, "text": "Unusual record language without the request terms."},
-            {"filename": "A Filing.pdf", "page_number": 1, "text": "Another verified page with OCR variation."},
-        ]
-        return {"Body": io.BytesIO(("\n".join(json.dumps(page) for page in pages)).encode())}
+        return {"Body": io.BytesIO(("\n".join(json.dumps(page) for page in self.pages)).encode())}
 
 
-class EvidenceFallbackTests(unittest.TestCase):
-    def test_uses_bounded_verified_fallback_when_no_terms_match(self):
-        pages = WORKER.evidence(FakeS3(), "NY-Suffolk-600371-2021-DeSousa-v-Calvagno-II-Karcher", "What are the claims and defenses?")
-        self.assertEqual([page["filename"] for page in pages], ["A Filing.pdf", "B Filing.pdf"])
+class MatchingEvidenceS3(FakeS3):
+    pages = [
+        {"filename": "Complaint.pdf", "page_number": 3, "text": "The complaint alleges breach of contract claims."},
+        {"filename": "Answer.pdf", "page_number": 1, "text": "Defendant asserts affirmative defenses."},
+    ]
+
+
+class EvidenceFailClosedTests(unittest.TestCase):
+    def test_no_match_does_not_select_arbitrary_verified_pages(self):
+        with self.assertRaisesRegex(ValueError, "no matching verified evidence"):
+            WORKER.evidence(
+                FakeS3(),
+                "NY-Suffolk-600371-2021-DeSousa-v-Calvagno-II-Karcher",
+                "Indemnification escrow schedule details?",
+            )
+
+    def test_matching_retrieval_selects_scored_pages_only(self):
+        pages = WORKER.evidence(
+            MatchingEvidenceS3(),
+            "NY-Suffolk-600371-2021-DeSousa-v-Calvagno-II-Karcher",
+            "What breach of contract claims appear in the complaint?",
+        )
+        self.assertEqual([page["filename"] for page in pages], ["Complaint.pdf"])
         self.assertTrue(all(page["source_sha256"] == "a" * 64 for page in pages))
+        self.assertIn("breach of contract", pages[0]["text"].casefold())
 
 
 if __name__ == "__main__":
