@@ -22,7 +22,7 @@ from pathlib import Path
 import sqlite3
 import tempfile
 import threading
-from typing import Any, BinaryIO, Callable, Iterable, Mapping, Optional
+from typing import Any, BinaryIO, Callable, Iterable, Mapping, Optional, Tuple
 from urllib.parse import quote
 
 logger = logging.getLogger(__name__)
@@ -39,11 +39,29 @@ DEFAULT_SOURCE_ROOT = "/app/data"
 DEFAULT_PREFIX = "disaster-recovery/legal-ai-executor"
 DEFAULT_INTERVAL_SECONDS = 24 * 60 * 60
 DEFAULT_INITIAL_DELAY_SECONDS = 30
+# Initial attempt + len(backoffs) retries; short bounded waits between attempts.
+TRANSIENT_RETRY_BACKOFF_SECONDS: Tuple[float, ...] = (5.0, 15.0)
+MAX_TRANSIENT_ATTEMPTS = 1 + len(TRANSIENT_RETRY_BACKOFF_SECONDS)
 ENABLED_ENV = "LEGALAI_EXECUTOR_VOLUME_B2_DR_ENABLED"
 INTERVAL_ENV = "LEGALAI_EXECUTOR_VOLUME_B2_DR_INTERVAL_SECONDS"
 INITIAL_DELAY_ENV = "LEGALAI_EXECUTOR_VOLUME_B2_DR_INITIAL_DELAY_SECONDS"
 PREFIX_ENV = "LEGALAI_EXECUTOR_VOLUME_B2_DR_PREFIX"
 SOURCE_ENV = "RAILWAY_VOLUME_MOUNT_PATH"
+
+_TRANSIENT_ERROR_TYPE_NAMES = frozenset(
+    {
+        "EndpointConnectionError",
+        "ConnectTimeoutError",
+        "ReadTimeoutError",
+        "ConnectionClosedError",
+        "IncompleteReadError",
+        "ProtocolError",
+        "SSLError",
+        "ProxyConnectionError",
+        "ConnectionResetError",
+        "BrokenPipeError",
+    }
+)
 
 _EXCLUDE_SUFFIXES = (
     ".lock",
@@ -70,6 +88,34 @@ class VolumeBackupError(Exception):
         super().__init__(message)
         self.message = message
         self.details = details
+
+
+def configure_cli_logging() -> None:
+    """Enable INFO logging for standalone CLI/daemon runs only.
+
+    No-op when handlers already exist so importing this module under
+    Flask/Gunicorn does not rewrite application logging configuration.
+    """
+    root = logging.getLogger()
+    if root.handlers:
+        return
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+
+
+def is_transient_daemon_error(exc: BaseException) -> bool:
+    """Return True for transport/network failures eligible for in-cycle retry.
+
+    Deterministic ``VolumeBackupError`` cases (config, integrity, overwrite,
+    hash/size mismatches) must not retry.
+    """
+    if isinstance(exc, VolumeBackupError):
+        return False
+    if isinstance(exc, (TimeoutError, ConnectionError)):
+        return True
+    return type(exc).__name__ in _TRANSIENT_ERROR_TYPE_NAMES
 
 
 @dataclass(frozen=True)
@@ -627,6 +673,61 @@ def verify_recovery_point(
     }
 
 
+def run_backup_cycle_with_retries(
+    *,
+    backup_fn: Callable[..., dict[str, Any]],
+    environ: Mapping[str, str],
+    stop_event: threading.Event,
+    transient_retry_backoffs: Tuple[float, ...] = TRANSIENT_RETRY_BACKOFF_SECONDS,
+) -> None:
+    """Run one scheduled backup with bounded transient retries (no secrets logged).
+
+    Performs an initial attempt plus at most ``len(transient_retry_backoffs)``
+    retries (default 2) for transport/network failures only. Deterministic
+    ``VolumeBackupError`` failures are not retried. After success or exhaustion
+    the caller waits the normal schedule interval.
+    """
+    max_attempts = 1 + len(transient_retry_backoffs)
+    for attempt in range(1, max_attempts + 1):
+        if stop_event.is_set():
+            return
+        try:
+            result = backup_fn(environ=environ)
+            logger.info(
+                "legal-ai-executor volume B2 DR verified rp=%s artifacts=%s",
+                result.get("recovery_point_id"),
+                result.get("artifact_count"),
+            )
+            return
+        except Exception as exc:  # noqa: BLE001 — classify then decide retry
+            error_type = type(exc).__name__
+            if not is_transient_daemon_error(exc):
+                logger.exception(
+                    "legal-ai-executor volume B2 DR failed error_type=%s",
+                    error_type,
+                )
+                return
+            if attempt >= max_attempts:
+                logger.exception(
+                    "legal-ai-executor volume B2 DR failed after %s attempts "
+                    "error_type=%s",
+                    attempt,
+                    error_type,
+                )
+                return
+            delay = float(transient_retry_backoffs[attempt - 1])
+            logger.warning(
+                "legal-ai-executor volume B2 DR transient failure "
+                "attempt=%s/%s error_type=%s retry_in_sec=%s",
+                attempt,
+                max_attempts,
+                error_type,
+                delay,
+            )
+            if stop_event.wait(delay):
+                return
+
+
 def run_daemon(
     *,
     interval_seconds: Optional[float] = None,
@@ -634,6 +735,7 @@ def run_daemon(
     stop_event: Optional[threading.Event] = None,
     environ: Optional[Mapping[str, str]] = None,
     backup_fn: Callable[..., dict[str, Any]] = backup_volume_to_b2,
+    transient_retry_backoffs: Tuple[float, ...] = TRANSIENT_RETRY_BACKOFF_SECONDS,
 ) -> int:
     """Run recurring verified volume backups until stopped."""
     env = os.environ if environ is None else environ
@@ -654,18 +756,12 @@ def run_daemon(
         return 0
 
     while not stopper.is_set():
-        try:
-            result = backup_fn(environ=env)
-            logger.info(
-                "legal-ai-executor volume B2 DR verified rp=%s artifacts=%s",
-                result.get("recovery_point_id"),
-                result.get("artifact_count"),
-            )
-        except Exception as exc:  # noqa: BLE001 — daemon survives transient failures
-            logger.exception(
-                "legal-ai-executor volume B2 DR failed error_type=%s",
-                type(exc).__name__,
-            )
+        run_backup_cycle_with_retries(
+            backup_fn=backup_fn,
+            environ=env,
+            stop_event=stopper,
+            transient_retry_backoffs=transient_retry_backoffs,
+        )
         if stopper.wait(float(interval)):
             break
     return 0
@@ -702,6 +798,7 @@ def maybe_start_daemon_thread(
 
 
 def main(argv: Optional[Iterable[str]] = None) -> int:
+    configure_cli_logging()
     parser = argparse.ArgumentParser(
         description="legal-ai-executor volume disaster-recovery backup to B2",
     )
