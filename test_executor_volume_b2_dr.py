@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import hashlib
 import io
 import json
+import logging
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -303,6 +304,156 @@ class ConfigSafetyTests(unittest.TestCase):
         self.assertNotIn("key-id-secret-value", text)
         self.assertNotIn("app-key-secret-value", text)
         self.assertIn("***", text)
+
+
+class CliLoggingTests(unittest.TestCase):
+    def test_configure_cli_logging_enables_info_when_unconfigured(self) -> None:
+        with mock.patch("logging.basicConfig") as basic_config:
+            with mock.patch.object(logging.getLogger(), "handlers", new=[]):
+                dr.configure_cli_logging()
+        basic_config.assert_called_once()
+        kwargs = basic_config.call_args.kwargs
+        self.assertEqual(kwargs.get("level"), logging.INFO)
+
+    def test_configure_cli_logging_noop_when_handlers_exist(self) -> None:
+        root = logging.getLogger()
+        handler = logging.NullHandler()
+        root.addHandler(handler)
+        try:
+            with mock.patch("logging.basicConfig") as basic_config:
+                dr.configure_cli_logging()
+            basic_config.assert_not_called()
+        finally:
+            root.removeHandler(handler)
+
+    def test_main_configures_cli_logging(self) -> None:
+        with mock.patch.object(dr, "configure_cli_logging") as configure:
+            with mock.patch.object(
+                dr,
+                "backup_volume_to_b2",
+                return_value={
+                    "recovery_point_id": "rp-test",
+                    "artifact_count": 0,
+                    "manifest_object_key": "prefix/manifest.json",
+                },
+            ):
+                with mock.patch("builtins.print"):
+                    code = dr.main(["once"])
+        self.assertEqual(code, 0)
+        configure.assert_called_once_with()
+
+
+class DaemonRetryTests(unittest.TestCase):
+    def test_transient_retries_at_most_twice_then_normal_interval(self) -> None:
+        calls = {"n": 0}
+        waits: list[float] = []
+
+        def flaky_backup(**kwargs):
+            calls["n"] += 1
+            raise ConnectionError("simulated transport failure")
+
+        stop = threading.Event()
+
+        def tracking_wait(timeout=None):
+            waits.append(float(timeout) if timeout is not None else 0.0)
+            # Stop after the post-cycle schedule wait (initial + 2 backoffs exhausted).
+            if len(waits) >= 3:
+                stop.set()
+                return True
+            return False
+
+        stop.wait = tracking_wait  # type: ignore[method-assign]
+
+        code = dr.run_daemon(
+            interval_seconds=3600,
+            initial_delay_seconds=0,
+            stop_event=stop,
+            environ=_b2_env(),
+            backup_fn=flaky_backup,
+            transient_retry_backoffs=(5.0, 15.0),
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(calls["n"], 3)  # initial + 2 retries
+        self.assertEqual(waits, [5.0, 15.0, 3600.0])
+
+    def test_volume_backup_error_does_not_retry(self) -> None:
+        calls = {"n": 0}
+        waits: list[float] = []
+
+        def deterministic_fail(**kwargs):
+            calls["n"] += 1
+            raise dr.VolumeBackupError(
+                "B2 object size mismatch",
+                object_key="disaster-recovery/example",
+            )
+
+        stop = threading.Event()
+
+        def tracking_wait(timeout=None):
+            waits.append(float(timeout) if timeout is not None else 0.0)
+            stop.set()
+            return True
+
+        stop.wait = tracking_wait  # type: ignore[method-assign]
+
+        with self.assertLogs(dr.logger, level="ERROR") as logged:
+            code = dr.run_daemon(
+                interval_seconds=7200,
+                initial_delay_seconds=0,
+                stop_event=stop,
+                environ=_b2_env(),
+                backup_fn=deterministic_fail,
+                transient_retry_backoffs=(5.0, 15.0),
+            )
+        self.assertEqual(code, 0)
+        self.assertEqual(calls["n"], 1)
+        self.assertEqual(waits, [7200.0])
+        joined = "\n".join(logged.output)
+        self.assertIn("VolumeBackupError", joined)
+        self.assertNotIn("key-id-secret-value", joined)
+        self.assertNotIn("app-key-secret-value", joined)
+
+    def test_success_after_retry_uses_normal_interval(self) -> None:
+        calls = {"n": 0}
+        waits: list[float] = []
+
+        def succeed_on_second(**kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise TimeoutError("simulated read timeout")
+            return {
+                "recovery_point_id": "rp-20260908T000000Z",
+                "artifact_count": 2,
+            }
+
+        stop = threading.Event()
+
+        def tracking_wait(timeout=None):
+            waits.append(float(timeout) if timeout is not None else 0.0)
+            if len(waits) >= 2:
+                stop.set()
+                return True
+            return False
+
+        stop.wait = tracking_wait  # type: ignore[method-assign]
+
+        with self.assertLogs(dr.logger, level="INFO") as logged:
+            code = dr.run_daemon(
+                interval_seconds=86400,
+                initial_delay_seconds=0,
+                stop_event=stop,
+                environ=_b2_env(),
+                backup_fn=succeed_on_second,
+                transient_retry_backoffs=(5.0, 15.0),
+            )
+        self.assertEqual(code, 0)
+        self.assertEqual(calls["n"], 2)
+        self.assertEqual(waits, [5.0, 86400.0])
+        joined = "\n".join(logged.output)
+        self.assertIn("rp-20260908T000000Z", joined)
+        self.assertIn("artifacts=2", joined)
+        self.assertNotIn("key-id-secret-value", joined)
+        self.assertNotIn("app-key-secret-value", joined)
 
 
 if __name__ == "__main__":
