@@ -37,6 +37,7 @@ MERITS_PLEADING_PAGE_LIMIT = 45
 MERITS_PLEADING_PAGES_PER_FILING = 3
 # Every mandatory pleading page fits within MAX_CONTEXT_CHARS (45 × 1600).
 MERITS_PLEADING_PAGE_CHARS = 1600
+AFFIRMATIVE_DEFENSES_RE = re.compile(r"\\baffirmative\\s+defen[cs]es?\\b", re.IGNORECASE)
 
 
 def normalized_filename(value: str) -> str:
@@ -99,6 +100,8 @@ def evidence(s3, case_id, question):
             documents.setdefault((source, filename), []).append((page, text))
     for (source, filename), document_pages in documents.items():
         section_start = 1
+        prior_page = None
+        prior_affirmative_defenses = False
         for page, text in sorted(document_pages):
             pleading_filename = normalized_filename(filename)
             merits_pleading = bool(PLEADING_FILENAME_RE.search(pleading_filename))
@@ -109,6 +112,10 @@ def evidence(s3, case_id, question):
                 and PLEADING_SECTION_START_RE.search(text[:700])
             ):
                 section_start = page
+            affirmative_defenses = bool(AFFIRMATIVE_DEFENSES_RE.search(text))
+            affirmative_defense_continuation = (
+                prior_affirmative_defenses and prior_page is not None and page == prior_page + 1
+            )
             lowered=text.casefold(); score=sum(lowered.count(term) for term in terms)
             score += 2 if any(term in filename.casefold() for term in terms) else 0
             candidate_text_limit = (
@@ -124,13 +131,20 @@ def evidence(s3, case_id, question):
                 # claim, defense, or prayer pages.
                 if page == section_start:
                     coverage_score += 8
+                if affirmative_defenses:
+                    coverage_score += 12
+                if affirmative_defense_continuation:
+                    coverage_score += 10
                 if operational_pleading:
                     coverage_score += 6
             if score or coverage_score:
                 rows.append((
                     score + coverage_score, filename, page, source, candidate,
                     merits_pleading, operational_pleading, section_start,
+                    affirmative_defenses, affirmative_defense_continuation,
                 ))
+            prior_page = page
+            prior_affirmative_defenses = affirmative_defenses
     selected=[]; selected_ids=set(); total=0
     ranked = sorted(rows,key=lambda x:(-x[0],x[1].casefold(),x[2]))
     ordered = ranked
@@ -147,6 +161,12 @@ def evidence(s3, case_id, question):
         # First reserve every actual filing/section opening page.
         for row in ranked:
             if row[5] and row[2] == row[7]:
+                reserve(row)
+        # Then preserve affirmative-defense headings and their immediate
+        # continuation before generic operative pleading pages.
+        for row in ranked:
+            section=(row[3],row[1],row[7])
+            if row[5] and (row[8] or row[9]) and per_section.get(section,0) < MERITS_PLEADING_PAGES_PER_FILING:
                 reserve(row)
         # Then retain its operative claim, defense, and prayer pages.
         for row in ranked:
