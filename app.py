@@ -2475,15 +2475,20 @@ def open_indexed_case_pdf(case_id, source_sha256, filename):
         return None
     return content if 0 < len(content) <= 32 * 1024 * 1024 else None
 
-def create_draft_request(case_id, question, reviewer):
-    """Create an internal-only attorney-review question request."""
+def create_draft_request(case_id, question, reviewer, regenerate_from=None):
+    """Create an internal-only attorney-review question request.
+
+    regenerate_from is an explicit completed-request reference; the private
+    Bridge validates it before a fresh immutable request is created.
+    """
     gateway_url = os.environ.get("LEGALAI_REVIEW_GATEWAY_URL", "").rstrip("/")
     secret = os.environ.get("LEGALAI_REVIEW_GATEWAY_SECRET", "")
     if not gateway_url or not secret:
         return None
-    payload = json.dumps(
-        {"case_id": case_id, "question": question, "requested_by": reviewer}
-    ).encode("utf-8")
+    payload = {"case_id": case_id, "question": question, "requested_by": reviewer}
+    if re.fullmatch(r"draft-[0-9]+-[0-9a-f]{12}", str(regenerate_from or "")):
+        payload["regenerate_from_request_id"] = regenerate_from
+    payload = json.dumps(payload).encode("utf-8")
     request_data = urllib.request.Request(
         f"{gateway_url}/portal/cases/draft-request",
         data=payload,
@@ -3294,11 +3299,39 @@ def workspace_matter_draft(case_id):
                 submitted_status = item.get("status")
                 break
     if request.method == "POST":
-        if request.form.get("action") == "discard-test":
+        action = request.form.get("action", "")
+        if action == "discard-test":
             request_id = clean_text(request.form.get("request_id", ""))
             discarded = discard_temporary_draft_request(case_id, request_id)
             if not discarded:
                 error = "That temporary test request could not be removed. Please try again."
+        elif action == "regenerate":
+            prior_id = clean_text(request.form.get("request_id", ""))
+            prior = next((
+                item for item in draft_requests
+                if item.get("request_id") == prior_id
+                and item.get("status") == "READY"
+                and item.get("requested_by") == reviewer
+            ), None)
+            if prior is None:
+                error = "Only your completed internal draft can be regenerated."
+            else:
+                question = prior["question"]
+                confirmation = create_draft_request(
+                    case_id, question, reviewer, regenerate_from=prior_id
+                )
+                if confirmation is None:
+                    error = "The replacement internal draft request could not be saved. Please try again."
+                else:
+                    return redirect(
+                        url_for(
+                            "workspace_matter_draft",
+                            case_id=case_id,
+                            submitted=confirmation["request_id"],
+                            reused="1" if confirmation.get("reused") else "0",
+                        ),
+                        code=303,
+                    )
         else:
             question = clean_text(request.form.get("question", ""))
             if not question or len(question) > 1000:
@@ -3323,7 +3356,7 @@ def workspace_matter_draft(case_id):
             if item["status"] in {"QUEUED", "RUNNING", "FAILED"}
         ]
     return render_template_string(
-        """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Prepare Internal Draft</title><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:820px;margin:0 auto;padding:42px 24px 64px}a{color:#123f63}h1{margin:0 0 8px;font-size:clamp(2rem,5vw,3rem)}p{font-size:1.05rem;line-height:1.55}.meta{color:#52606d}.panel{background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:22px;margin-top:26px;box-shadow:0 2px 8px #0f172a10}label{display:block;font-weight:bold;margin-bottom:8px}textarea{box-sizing:border-box;width:100%;font:inherit;line-height:1.45;padding:12px;border:1px solid #64748b;border-radius:6px}button{margin-top:12px;background:#123f63;color:#fff;border:0;border-radius:6px;padding:11px 15px;font:inherit;font-weight:bold;cursor:pointer}.secondary{background:#fff;color:#123f63;border:1px solid #123f63}.notice{border-left:4px solid #b45309;padding:12px 14px;background:#fffbeb}.success{border-left-color:#15803d;background:#f0fdf4}.answer-cta{display:inline-block;margin-top:12px;background:#123f63;color:#fff;border-radius:6px;padding:11px 15px;font-weight:bold;text-decoration:none}</style></head><body><main><p><a href="/workspace">← Attorney workspace</a></p><h1>Prepare internal review draft</h1><p class="meta">{{ case_id }}</p><p>Questions are processed automatically from the verified record. Results are internal attorney-review drafts only; nothing is sent to an attorney and no legal conclusion is approved.</p>{% if queued_requests %}<section class="panel"><strong>Questions processing</strong>{% for item in queued_requests %}<p><strong>{{ item.status }}</strong> — {{ item.question }}<br><span class="meta">Requested by {{ item.requested_by }}</span></p>{% if item.question|lower|trim == 'is this a test?' %}<form method="post"><input type="hidden" name="action" value="discard-test"><input type="hidden" name="request_id" value="{{ item.request_id }}"><button class="secondary" type="submit">Remove temporary test</button></form>{% endif %}{% endfor %}</section>{% endif %}{% if confirmation %}<section class="panel success">{% if submitted_status == 'READY' %}<strong>Your answered question is ready.</strong><p><a class="answer-cta" href="{{ url_for('workspace_matter_draft_detail', case_id=case_id, request_id=confirmation.request_id) }}">View answered question →</a></p>{% else %}<strong>{% if confirmation.reused %}Existing internal draft shown.{% else %}Automatic draft job queued.{% endif %}</strong><p>{% if confirmation.reused %}This identical question already has an internal draft request, so no duplicate was created.{% else %}Your question will appear under Answered questions when its citation checks complete.{% endif %}</p>{% endif %}</section>{% endif %}{% if discarded %}<section class="panel success"><strong>Temporary test removed from the workspace.</strong><p>Its internal audit record remains preserved; no source material or attorney packet changed.</p></section>{% endif %}<section class="panel"><form method="post"><label for="question">What should the attorney-review draft address?</label><textarea id="question" name="question" rows="5" maxlength="1000" required placeholder="Example: What relief is requested in the verified complaint, and what support is present in the record?"></textarea><button type="submit">Ask a new review question</button></form></section>{% if error %}<p class="notice" role="alert">{{ error }}</p>{% endif %}</main></body></html>""",
+        """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Prepare Internal Draft</title><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:820px;margin:0 auto;padding:42px 24px 64px}a{color:#123f63}h1{margin:0 0 8px;font-size:clamp(2rem,5vw,3rem)}p{font-size:1.05rem;line-height:1.55}.meta{color:#52606d}.panel{background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:22px;margin-top:26px;box-shadow:0 2px 8px #0f172a10}label{display:block;font-weight:bold;margin-bottom:8px}textarea{box-sizing:border-box;width:100%;font:inherit;line-height:1.45;padding:12px;border:1px solid #64748b;border-radius:6px}button{margin-top:12px;background:#123f63;color:#fff;border:0;border-radius:6px;padding:11px 15px;font:inherit;font-weight:bold;cursor:pointer}.secondary{background:#fff;color:#123f63;border:1px solid #123f63}.notice{border-left:4px solid #b45309;padding:12px 14px;background:#fffbeb}.success{border-left-color:#15803d;background:#f0fdf4}.answer-cta{display:inline-block;margin-top:12px;background:#123f63;color:#fff;border-radius:6px;padding:11px 15px;font-weight:bold;text-decoration:none}</style></head><body><main><p><a href="/workspace">← Attorney workspace</a></p><h1>Prepare internal review draft</h1><p class="meta">{{ case_id }}</p><p>Questions are processed automatically from the verified record. Results are internal attorney-review drafts only; nothing is sent to an attorney and no legal conclusion is approved.</p>{% if queued_requests %}<section class="panel"><strong>Questions processing</strong>{% for item in queued_requests %}<p><strong>{{ item.status }}</strong> — {{ item.question }}<br><span class="meta">Requested by {{ item.requested_by }}</span></p>{% if item.question|lower|trim == 'is this a test?' %}<form method="post"><input type="hidden" name="action" value="discard-test"><input type="hidden" name="request_id" value="{{ item.request_id }}"><button class="secondary" type="submit">Remove temporary test</button></form>{% endif %}{% endfor %}</section>{% endif %}{% if confirmation %}<section class="panel success">{% if submitted_status == 'READY' %}<strong>Your answered question is ready.</strong><p><a class="answer-cta" href="{{ url_for('workspace_matter_draft_detail', case_id=case_id, request_id=confirmation.request_id) }}">View answered question →</a></p>{% if confirmation.reused %}<p class="meta">This identical question already exists. To intentionally refresh it after a system update, use the guarded control below; ordinary duplicate submissions remain blocked.</p><form method="post"><input type="hidden" name="action" value="regenerate"><input type="hidden" name="request_id" value="{{ confirmation.request_id }}"><button class="secondary" type="submit">Regenerate this completed draft</button></form>{% endif %}{% else %}<strong>{% if confirmation.reused %}Existing internal draft shown.{% else %}Automatic draft job queued.{% endif %}</strong><p>{% if confirmation.reused %}This identical question already has an internal draft request, so no duplicate was created.{% else %}Your question will appear under Answered questions when its citation checks complete.{% endif %}</p>{% endif %}</section>{% endif %}{% if discarded %}<section class="panel success"><strong>Temporary test removed from the workspace.</strong><p>Its internal audit record remains preserved; no source material or attorney packet changed.</p></section>{% endif %}<section class="panel"><form method="post"><label for="question">What should the attorney-review draft address?</label><textarea id="question" name="question" rows="5" maxlength="1000" required placeholder="Example: What relief is requested in the verified complaint, and what support is present in the record?"></textarea><button type="submit">Ask a new review question</button></form></section>{% if error %}<p class="notice" role="alert">{{ error }}</p>{% endif %}</main></body></html>""",
         case_id=case_id,
         question=question,
         confirmation=confirmation,
