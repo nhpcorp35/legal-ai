@@ -89,7 +89,7 @@ def evidence(s3, case_id, question):
     documents={}
     for source in verified_sources(s3, case_id):
         object_key=f"cases/{case_id}/intake/source/{source}/page_records.jsonl"
-        raw=s3.get_object(Bucket=s3.meta.client.meta.endpoint_url if False else B2_BUCKET,Key=object_key)["Body"].read().decode()
+        raw=s3.get_object(Bucket=os.environ["B2_BUCKET"],Key=object_key)["Body"].read().decode()
         for line in raw.splitlines():
             item=json.loads(line); text=" ".join(str(item.get("text","")).split()); filename=item.get("filename"); page=item.get("page_number")
             if not text or not isinstance(filename,str) or not isinstance(page,int) or page < 1:
