@@ -35,6 +35,8 @@ PLEADING_SECTION_START_RE = re.compile(
 )
 MERITS_PLEADING_PAGE_LIMIT = 45
 MERITS_PLEADING_PAGES_PER_FILING = 3
+# Every mandatory pleading page fits within MAX_CONTEXT_CHARS (45 × 1600).
+MERITS_PLEADING_PAGE_CHARS = 1600
 
 
 def normalized_filename(value: str) -> str:
@@ -109,7 +111,12 @@ def evidence(s3, case_id, question):
                 section_start = page
             lowered=text.casefold(); score=sum(lowered.count(term) for term in terms)
             score += 2 if any(term in filename.casefold() for term in terms) else 0
-            candidate={"source_sha256":source,"filename":filename,"page_number":page,"text":text[:MAX_PAGE_CHARS]}
+            candidate_text_limit = (
+                MERITS_PLEADING_PAGE_CHARS
+                if broad_record_question and merits_pleading
+                else MAX_PAGE_CHARS
+            )
+            candidate={"source_sha256":source,"filename":filename,"page_number":page,"text":text[:candidate_text_limit]}
             coverage_score = 0
             operational_pleading = bool(PLEADING_OPERATIONAL_TEXT_RE.search(text))
             if broad_record_question and merits_pleading:
