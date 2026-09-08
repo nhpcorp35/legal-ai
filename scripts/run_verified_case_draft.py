@@ -8,7 +8,7 @@ from typing import Any
 
 import boto3
 
-MAX_PAGES, MAX_PAGE_CHARS, MAX_CONTEXT_CHARS = 30, 2200, 50000
+MAX_PAGES, MAX_PAGE_CHARS, MAX_CONTEXT_CHARS = 45, 2200, 75000
 CASE_RE = re.compile(r"NY-[A-Za-z]+-[0-9]{6}-[0-9]{4}-[A-Za-z0-9-]{2,80}$")
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
 BROAD_RECORD_TERMS = frozenset({"parties", "claims", "causes", "defenses", "relief"})
