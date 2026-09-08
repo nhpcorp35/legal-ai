@@ -105,17 +105,58 @@ def configure_cli_logging() -> None:
     )
 
 
-def is_transient_daemon_error(exc: BaseException) -> bool:
-    """Return True for transport/network failures eligible for in-cycle retry.
-
-    Deterministic ``VolumeBackupError`` cases (config, integrity, overwrite,
-    hash/size mismatches) must not retry.
-    """
+def _is_recognized_transient_error(exc: BaseException) -> bool:
+    """True when *exc* itself is a known transport/network failure type."""
     if isinstance(exc, VolumeBackupError):
         return False
     if isinstance(exc, (TimeoutError, ConnectionError)):
         return True
     return type(exc).__name__ in _TRANSIENT_ERROR_TYPE_NAMES
+
+
+def _iter_exception_cause_context_chain(
+    exc: BaseException, *, max_depth: int = 8
+) -> Iterable[BaseException]:
+    """Yield *exc* then a bounded ``__cause__`` / ``__context__`` chain.
+
+    Cycle-safe: each object is visited at most once. Depth is capped so a
+    pathological chain cannot loop or grow without bound.
+    """
+    seen: set[int] = set()
+    stack: list[BaseException] = [exc]
+    depth = 0
+    while stack and depth < max_depth:
+        current = stack.pop()
+        cid = id(current)
+        if cid in seen:
+            continue
+        seen.add(cid)
+        depth += 1
+        yield current
+        # Prefer explicit ``raise ... from`` linkage, then implicit context.
+        if current.__cause__ is not None:
+            stack.append(current.__cause__)
+        if current.__context__ is not None:
+            stack.append(current.__context__)
+
+
+def is_transient_daemon_error(exc: BaseException) -> bool:
+    """Return True for transport/network failures eligible for in-cycle retry.
+
+    Deterministic ``VolumeBackupError`` cases (config, integrity, overwrite,
+    hash/size mismatches) must not retry. A ``VolumeBackupError`` is transient
+    only when its bounded cause/context chain contains a recognized
+    transport/network error (``ConnectionClosedError``, ``ProtocolError``,
+    timeouts, connection errors, or the transient type-name allowlist).
+    """
+    if isinstance(exc, VolumeBackupError):
+        for link in _iter_exception_cause_context_chain(exc):
+            if link is exc:
+                continue
+            if _is_recognized_transient_error(link):
+                return True
+        return False
+    return _is_recognized_transient_error(exc)
 
 
 @dataclass(frozen=True)
