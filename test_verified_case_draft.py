@@ -184,5 +184,36 @@ class SzymczykFilenameCoverageTests(unittest.TestCase):
         }.issubset(selected))
 
 
+    def test_late_bundled_section_survives_full_mandatory_context_budget(self):
+        filler = "x" * 2200
+        class FullBudgetS3(FakeS3):
+            pages = [
+                {"filename": f"A{index:02d} Answer.pdf", "page_number": page,
+                 "text": f"{'VERIFIED ANSWER TO COMPLAINT' if page == 1 else 'AS FOR A FIRST AFFIRMATIVE DEFENSE' if page == 2 else 'WHEREFORE defendant requests relief'} {filler}"}
+                for index in range(13) for page in (1, 2, 3)
+            ] + [
+                {"filename": "Z Bundled Answer.pdf", "page_number": 1,
+                 "text": f"VERIFIED ANSWER TO THIRD-PARTY COMPLAINT. Defendant denies. {filler}"},
+                {"filename": "Z Bundled Answer.pdf", "page_number": 15,
+                 "text": f"ANSWER TO THIRD-PARTY COMPLAINT. Third-party defendants answer. {filler}"},
+                {"filename": "Z Bundled Answer.pdf", "page_number": 17,
+                 "text": f"AS FOR A FIRST AFFIRMATIVE DEFENSE. {filler}"},
+                {"filename": "Z Bundled Answer.pdf", "page_number": 22,
+                 "text": f"WHEREFORE third-party defendants demand dismissal. {filler}"},
+            ]
+
+        pages = WORKER.evidence(
+            FullBudgetS3(),
+            "NY-Suffolk-600371-2021-DeSousa-v-Calvagno-II-Karcher",
+            "What are the parties, claims, defenses, and requested relief in the verified record?",
+        )
+        selected = {(page["filename"], page["page_number"]) for page in pages}
+        self.assertTrue({
+            ("Z Bundled Answer.pdf", 15),
+            ("Z Bundled Answer.pdf", 17),
+            ("Z Bundled Answer.pdf", 22),
+        }.issubset(selected))
+
+
 if __name__ == "__main__":
     unittest.main()
