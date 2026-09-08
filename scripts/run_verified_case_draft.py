@@ -14,12 +14,12 @@ SHA256_RE = re.compile(r"[0-9a-f]{64}")
 BROAD_RECORD_TERMS = frozenset({"parties", "claims", "causes", "defenses", "relief"})
 PLEADING_FILENAME_RE = re.compile(
     r"\b(?:complaint|answer|cross[ _-]?claim|counter[ _-]?claim|"
-    r"third[ _-]?party|fourth[ _-]?party|bill[s]? of particulars)\\b",
+    r"third[ _-]?party|fourth[ _-]?party|bill[s]? of particulars)\b",
     re.IGNORECASE,
 )
 PLEADING_TEXT_RE = re.compile(
     r"\b(?:cause of action|wherefore|affirmative defense|cross[ -]?claim|"
-    r"counter[ -]?claim|third[ -]?party|plaintiff|defendant)\\b",
+    r"counter[ -]?claim|third[ -]?party|plaintiff|defendant)\b",
     re.IGNORECASE,
 )
 MERITS_PLEADING_PAGE_LIMIT = 20
