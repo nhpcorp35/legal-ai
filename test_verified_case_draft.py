@@ -58,5 +58,41 @@ class EvidenceFailClosedTests(unittest.TestCase):
         self.assertIn("breach of contract", pages[0]["text"].casefold())
 
 
+class RecordWidePleadingCoverageTests(unittest.TestCase):
+    def test_broad_party_claim_question_keeps_captions_and_operational_pleading_pages(self):
+        class PleadingS3(FakeS3):
+            pages = [
+                {"filename": "Summons and Complaint.pdf", "page_number": 1,
+                 "text": "ANDRZEJ SZYM CZYK, Plaintiff, against HUDSON 36 LLC and HUDSON 37 LLC, Defendants."},
+                {"filename": "Summons and Complaint.pdf", "page_number": 2,
+                 "text": "Background facts about the work site."},
+                {"filename": "Summons and Complaint.pdf", "page_number": 3,
+                 "text": "FIRST CAUSE OF ACTION -- NEGLIGENCE. WHEREFORE plaintiff demands judgment."},
+                {"filename": "Hudson 36 Answer.pdf", "page_number": 1,
+                 "text": "HUDSON 36 LLC answers the verified complaint and denies each allegation."},
+                {"filename": "Hudson 36 Answer.pdf", "page_number": 2,
+                 "text": "FIRST AFFIRMATIVE DEFENSE: failure to state a cause of action."},
+                {"filename": "First Third Party Complaint.pdf", "page_number": 1,
+                 "text": "HUDSON 37 LLC, third-party plaintiff, against FORWARD HEATING CORP., third-party defendant."},
+                {"filename": "First Third Party Complaint.pdf", "page_number": 3,
+                 "text": "FIRST CAUSE OF ACTION: contractual indemnification. SECOND CAUSE OF ACTION: contribution."},
+            ]
+
+        pages = WORKER.evidence(
+            PleadingS3(),
+            "NY-Suffolk-600371-2021-DeSousa-v-Calvagno-II-Karcher",
+            "What are the parties, claims, defenses, and requested relief in the verified record?",
+        )
+        selected = {(page["filename"], page["page_number"]) for page in pages}
+        self.assertTrue({
+            ("Summons and Complaint.pdf", 1),
+            ("Summons and Complaint.pdf", 3),
+            ("Hudson 36 Answer.pdf", 1),
+            ("Hudson 36 Answer.pdf", 2),
+            ("First Third Party Complaint.pdf", 1),
+            ("First Third Party Complaint.pdf", 3),
+        }.issubset(selected))
+
+
 if __name__ == "__main__":
     unittest.main()
