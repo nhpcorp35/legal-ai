@@ -158,15 +158,16 @@ def evidence(s3, case_id, question):
             section=(row[3],row[1],row[7])
             per_section[section]=per_section.get(section,0)+1
             return True
-        # First reserve every actual filing/section opening page.
-        for row in ranked:
-            if row[5] and row[2] == row[7]:
-                reserve(row)
-        # Then preserve affirmative-defense headings and their immediate
-        # continuation before generic operative pleading pages.
+        # Reserve affirmative-defense headings and their immediate
+        # continuation first. They are the only pages that may be displaced
+        # when a broad record contains more than the global 45-page budget.
         for row in ranked:
             section=(row[3],row[1],row[7])
             if row[5] and (row[8] or row[9]) and per_section.get(section,0) < MERITS_PLEADING_PAGES_PER_FILING:
+                reserve(row)
+        # Then reserve every actual filing/section opening page.
+        for row in ranked:
+            if row[5] and row[2] == row[7]:
                 reserve(row)
         # Then retain its operative claim, defense, and prayer pages.
         for row in ranked:
