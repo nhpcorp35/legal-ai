@@ -3430,7 +3430,7 @@ def workspace_matter_drafts(case_id):
     )
 
 
-@app.route("/workspace/matters/<path:case_id>/drafts/<request_id>")
+@app.route("/workspace/matters/<case_id>/drafts/<request_id>")
 @app.route("/workspace/case-00/drafts/<request_id>", defaults={"case_id": CASE00_ID})
 def workspace_matter_draft_detail(case_id, request_id):
     """Show one saved internal answer and its source citations."""
