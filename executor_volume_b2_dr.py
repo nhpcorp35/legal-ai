@@ -412,13 +412,15 @@ def _put_immutable_bytes(
             object_key=key,
         )
     try:
+        # Omit IfNoneMatch: Backblaze B2's S3-compatible API does not reliably
+        # support conditional puts and has closed connections when "*" is sent.
+        # Immutability is enforced by the HEAD precheck above (fail closed).
         client.put_object(
             Bucket=bucket,
             Key=key,
             Body=body,
             ContentType=content_type,
             Metadata=dict(metadata),
-            IfNoneMatch="*",
         )
     except Exception as exc:  # noqa: BLE001
         raise VolumeBackupError(

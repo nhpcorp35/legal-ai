@@ -38,10 +38,16 @@ class FakeS3:
         self.corrupt_download = corrupt_download
         self.corrupt_metadata_sha = corrupt_metadata_sha
         self.put_calls = 0
+        self.last_put_extra_kwargs: dict[str, object] = {}
 
-    def put_object(self, *, Bucket, Key, Body, ContentType, Metadata, IfNoneMatch=None):
-        if IfNoneMatch != "*":
-            raise AssertionError("immutable uploads must set IfNoneMatch='*'")
+    def put_object(self, *, Bucket, Key, Body, ContentType, Metadata, **kwargs):
+        # B2-compatible uploads must omit IfNoneMatch; immutability is via HEAD.
+        self.last_put_extra_kwargs = dict(kwargs)
+        if "IfNoneMatch" in kwargs:
+            raise AssertionError(
+                "B2-compatible put_object must omit IfNoneMatch; "
+                f"got IfNoneMatch={kwargs['IfNoneMatch']!r}"
+            )
         if (Bucket, Key) in self.objects:
             raise RuntimeError("precondition failed: object exists")
         data = Body.read() if hasattr(Body, "read") else bytes(Body)
@@ -138,6 +144,37 @@ class ManifestAndImmutableTests(unittest.TestCase):
                     now=datetime(2026, 9, 7, 12, 0, tzinfo=timezone.utc),
                 )
             self.assertTrue(first["verified"])
+
+    def test_put_omits_if_none_match_while_refusing_overwrite(self) -> None:
+        """Production put_object must omit IfNoneMatch; HEAD still blocks overwrite."""
+        s3 = FakeS3()
+        body = b"immutable-payload"
+        key = "disaster-recovery/legal-ai-executor/test/artifact.bin"
+        metadata = {
+            "sha256": hashlib.sha256(body).hexdigest(),
+            "kind": "file",
+        }
+        dr._put_immutable_bytes(
+            s3,
+            bucket="legalai-corpus",
+            key=key,
+            body=body,
+            content_type="application/octet-stream",
+            metadata=metadata,
+        )
+        self.assertEqual(s3.put_calls, 1)
+        self.assertNotIn("IfNoneMatch", s3.last_put_extra_kwargs)
+        self.assertEqual(s3.last_put_extra_kwargs, {})
+        with self.assertRaisesRegex(dr.VolumeBackupError, "refusing overwrite"):
+            dr._put_immutable_bytes(
+                s3,
+                bucket="legalai-corpus",
+                key=key,
+                body=body,
+                content_type="application/octet-stream",
+                metadata=metadata,
+            )
+        self.assertEqual(s3.put_calls, 1)
 
 
 class SqliteSnapshotTests(unittest.TestCase):
