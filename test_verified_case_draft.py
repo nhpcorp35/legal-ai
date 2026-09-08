@@ -125,5 +125,32 @@ class SzymczykFilenameCoverageTests(unittest.TestCase):
         self.assertIn("158068_2018_ANDRZEJ_SZYMCZYK_v_HUDSON_36_LLC_et_al_FIRST_THIRD_PARTY_COMPLAINT_7.pdf", selected)
 
 
+    def test_filing_led_coverage_retains_caption_claim_defense_and_prayer_pages(self):
+        class FilingLedS3(FakeS3):
+            pages = [
+                {"filename": "Complaint.pdf", "page_number": 1, "text": "Plaintiff against Defendant."},
+                {"filename": "Complaint.pdf", "page_number": 3, "text": "FIRST CAUSE OF ACTION: negligence."},
+                {"filename": "Complaint.pdf", "page_number": 4, "text": "WHEREFORE plaintiff requests damages."},
+                {"filename": "Answer.pdf", "page_number": 1, "text": "Defendant answers the complaint."},
+                {"filename": "Answer.pdf", "page_number": 2, "text": "FIRST AFFIRMATIVE DEFENSE."},
+                {"filename": "Answer.pdf", "page_number": 3, "text": "Defendant denies the remaining allegations."},
+            ] + [
+                {"filename": f"Exhibit {index}.pdf", "page_number": 1,
+                 "text": "parties claims defenses relief"}
+                for index in range(40)
+            ]
+
+        pages = WORKER.evidence(
+            FilingLedS3(),
+            "NY-Suffolk-600371-2021-DeSousa-v-Calvagno-II-Karcher",
+            "What are the parties, claims, defenses, and requested relief in the verified record?",
+        )
+        selected = {(page["filename"], page["page_number"]) for page in pages}
+        self.assertTrue({
+            ("Complaint.pdf", 1), ("Complaint.pdf", 3), ("Complaint.pdf", 4),
+            ("Answer.pdf", 1), ("Answer.pdf", 2), ("Answer.pdf", 3),
+        }.issubset(selected))
+
+
 if __name__ == "__main__":
     unittest.main()

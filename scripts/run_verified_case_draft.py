@@ -22,7 +22,14 @@ PLEADING_TEXT_RE = re.compile(
     r"counter[ -]?claim|third[ -]?party|plaintiff|defendant)\b",
     re.IGNORECASE,
 )
-MERITS_PLEADING_PAGE_LIMIT = 20
+PLEADING_OPERATIONAL_TEXT_RE = re.compile(
+    r"\b(?:cause of action|wherefore|prayer for relief|affirmative defense|"
+    r"den(?:y|ies|ied)|cross[ -]?claim|counter[ -]?claim|"
+    r"contractual indemnification|common[ -]?law indemnification|contribution)\b",
+    re.IGNORECASE,
+)
+MERITS_PLEADING_PAGE_LIMIT = 30
+MERITS_PLEADING_PAGES_PER_FILING = 3
 
 
 def normalized_filename(value: str) -> str:
@@ -89,25 +96,39 @@ def evidence(s3, case_id, question):
             # before matching so a real merits pleading is not skipped.
             pleading_filename = normalized_filename(filename)
             merits_pleading = bool(PLEADING_FILENAME_RE.search(pleading_filename))
+            operational_pleading = bool(PLEADING_OPERATIONAL_TEXT_RE.search(text))
             if broad_record_question and merits_pleading:
-                # Captions are usually on the first page; operative pleading
-                # language identifies claims, relief, and defenses.
+                # Retain a filing-led record map: caption plus the operative
+                # claim, defense, or prayer pages from every pleading.
                 if page == 1:
                     coverage_score += 8
-                if PLEADING_TEXT_RE.search(text):
+                if operational_pleading:
                     coverage_score += 6
             if score or coverage_score:
-                rows.append((score + coverage_score,filename,page,source,candidate,merits_pleading))
+                rows.append((score + coverage_score,filename,page,source,candidate,merits_pleading,operational_pleading))
     selected=[]; selected_ids=set(); total=0
     ranked = sorted(rows,key=lambda x:(-x[0],x[1].casefold(),x[2]))
-    # For broad case-map questions, reserve bounded context for actual
-    # pleadings before contracts/exhibits that happen to repeat query terms.
+    # For broad case-map questions, first reserve each pleading's caption,
+    # then up to two operative claim/defense/prayer pages per filing.
     ordered = ranked
     if broad_record_question:
-        merits = [row for row in ranked if row[5]][:MERITS_PLEADING_PAGE_LIMIT]
-        merit_ids = {(row[3], row[1], row[2]) for row in merits}
+        merits=[]; merit_ids=set(); per_filing={}
+        def reserve(row):
+            item_id=(row[3],row[1],row[2])
+            if item_id in merit_ids or len(merits) >= MERITS_PLEADING_PAGE_LIMIT:
+                return False
+            merits.append(row); merit_ids.add(item_id)
+            filing=(row[3],row[1]); per_filing[filing]=per_filing.get(filing,0)+1
+            return True
+        for row in ranked:
+            if row[5] and row[2] == 1:
+                reserve(row)
+        for row in ranked:
+            filing=(row[3],row[1])
+            if row[5] and row[6] and per_filing.get(filing,0) < MERITS_PLEADING_PAGES_PER_FILING:
+                reserve(row)
         ordered = merits + [row for row in ranked if (row[3], row[1], row[2]) not in merit_ids]
-    for _,filename,page,source,item,_ in ordered:
+    for _,filename,page,source,item,*_ in ordered:
         item_id = (source, filename, page)
         if item_id in selected_ids:
             continue
