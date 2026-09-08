@@ -94,5 +94,36 @@ class RecordWidePleadingCoverageTests(unittest.TestCase):
         }.issubset(selected))
 
 
+class SzymczykFilenameCoverageTests(unittest.TestCase):
+    def test_underscored_pleading_filename_is_classified(self):
+        name = "158068_2018_ANDRZEJ_SZYMCZYK_v_HUDSON_36_LLC_et_al_ANSWER_3.pdf"
+        self.assertRegex(WORKER.normalized_filename(name), WORKER.PLEADING_FILENAME_RE)
+
+    def test_merits_pleadings_are_reserved_ahead_of_high_scoring_contract_pages(self):
+        class DenseS3(FakeS3):
+            pages = [
+                {"filename": "158068_2018_ANDRZEJ_SZYMCZYK_v_HUDSON_36_LLC_et_al_ANSWER_3.pdf",
+                 "page_number": 1, "text": "HUDSON 36 LLC denies the complaint."},
+                {"filename": "158068_2018_ANDRZEJ_SZYMCZYK_v_HUDSON_36_LLC_et_al_SUMMONS___COMPLAINT_1.pdf",
+                 "page_number": 1, "text": "ANDRZEJ SZYMCZYK, Plaintiff, against HUDSON 36 LLC."},
+                {"filename": "158068_2018_ANDRZEJ_SZYMCZYK_v_HUDSON_36_LLC_et_al_FIRST_THIRD_PARTY_COMPLAINT_7.pdf",
+                 "page_number": 3, "text": "FIRST CAUSE OF ACTION: contractual indemnification."},
+            ] + [
+                {"filename": f"158068_2018_EXHIBIT_S_{index}.pdf", "page_number": 1,
+                 "text": "claims defenses relief claims defenses relief"}
+                for index in range(40)
+            ]
+
+        pages = WORKER.evidence(
+            DenseS3(),
+            "NY-Suffolk-600371-2021-DeSousa-v-Calvagno-II-Karcher",
+            "What are the parties, claims, defenses, and requested relief in the verified record?",
+        )
+        selected = {page["filename"] for page in pages}
+        self.assertIn("158068_2018_ANDRZEJ_SZYMCZYK_v_HUDSON_36_LLC_et_al_ANSWER_3.pdf", selected)
+        self.assertIn("158068_2018_ANDRZEJ_SZYMCZYK_v_HUDSON_36_LLC_et_al_SUMMONS___COMPLAINT_1.pdf", selected)
+        self.assertIn("158068_2018_ANDRZEJ_SZYMCZYK_v_HUDSON_36_LLC_et_al_FIRST_THIRD_PARTY_COMPLAINT_7.pdf", selected)
+
+
 if __name__ == "__main__":
     unittest.main()
