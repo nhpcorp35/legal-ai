@@ -11,6 +11,17 @@ import boto3
 MAX_PAGES, MAX_PAGE_CHARS, MAX_CONTEXT_CHARS = 30, 2200, 50000
 CASE_RE = re.compile(r"NY-[A-Za-z]+-[0-9]{6}-[0-9]{4}-[A-Za-z0-9-]{2,80}$")
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
+BROAD_RECORD_TERMS = frozenset({"parties", "claims", "causes", "defenses", "relief"})
+PLEADING_FILENAME_RE = re.compile(
+    r"\\b(?:complaint|answer|cross[ _-]?claim|counter[ _-]?claim|"
+    r"third[ _-]?party|fourth[ _-]?party|bill[s]? of particulars)\\b",
+    re.IGNORECASE,
+)
+PLEADING_TEXT_RE = re.compile(
+    r"\\b(?:cause of action|wherefore|affirmative defense|cross[ -]?claim|"
+    r"counter[ -]?claim|third[ -]?party|plaintiff|defendant)\\b",
+    re.IGNORECASE,
+)
 
 def client():
     return boto3.client("s3", endpoint_url=os.environ["B2_ENDPOINT"].rstrip("/"), region_name=os.environ["B2_REGION"], aws_access_key_id=os.environ["B2_KEY_ID"], aws_secret_access_key=os.environ["B2_APPLICATION_KEY"])
@@ -53,7 +64,9 @@ def verified_sources(s3, case_id):
 
 
 def evidence(s3, case_id, question):
+    """Select bounded evidence while retaining pleading-wide coverage when needed."""
     rows=[]; terms=words(question)
+    broad_record_question = len(BROAD_RECORD_TERMS.intersection(terms)) >= 2
     for source in verified_sources(s3, case_id):
         object_key=f"cases/{case_id}/intake/source/{source}/page_records.jsonl"
         raw=s3.get_object(Bucket=os.environ["B2_BUCKET"],Key=object_key)["Body"].read().decode()
@@ -63,8 +76,16 @@ def evidence(s3, case_id, question):
             lowered=text.casefold(); score=sum(lowered.count(term) for term in terms)
             score += 2 if any(term in filename.casefold() for term in terms) else 0
             candidate={"source_sha256":source,"filename":filename,"page_number":page,"text":text[:MAX_PAGE_CHARS]}
-            if score:
-                rows.append((score,filename,page,source,candidate))
+            coverage_score = 0
+            if broad_record_question and PLEADING_FILENAME_RE.search(filename):
+                # Captions are usually on the first page; operative pleading
+                # language identifies claims, relief, and defenses.
+                if page == 1:
+                    coverage_score += 8
+                if PLEADING_TEXT_RE.search(text):
+                    coverage_score += 6
+            if score or coverage_score:
+                rows.append((score + coverage_score,filename,page,source,candidate))
     selected=[]; total=0
     for _,_,_,_,item in sorted(rows,key=lambda x:(-x[0],x[1].casefold(),x[2])):
         if total+len(item["text"])>MAX_CONTEXT_CHARS or len(selected)>=MAX_PAGES: continue
@@ -74,7 +95,7 @@ def evidence(s3, case_id, question):
 
 def generate(question, pages):
     schema={"type":"object","additionalProperties":False,"required":["summary","findings","missing_information","limitations"],"properties":{"summary":{"type":"string"},"findings":{"type":"array","minItems":1,"items":{"type":"object","additionalProperties":False,"required":["statement","citations"],"properties":{"statement":{"type":"string"},"citations":{"type":"array","minItems":1,"items":{"type":"object","additionalProperties":False,"required":["source_sha256","filename","page_number"],"properties":{"source_sha256":{"type":"string"},"filename":{"type":"string"},"page_number":{"type":"integer","minimum":1}}}}}}},"missing_information":{"type":"array","items":{"type":"string"}},"limitations":{"type":"array","items":{"type":"string"}}}}
-    prompt={"question":question,"instructions":"Use only the supplied verified excerpts. This is an internal attorney-review draft, not legal advice or a conclusion. Make no unsupported inference. Every finding must cite supplied pages exactly. Identify missing information rather than guessing.","pages":pages}
+    prompt={"question":question,"instructions":"Use only the supplied verified excerpts. This is an internal attorney-review draft, not legal advice or a conclusion. Make no unsupported inference. Every finding must cite supplied pages exactly. Before stating that information is missing or calling something an open question, check the entire supplied record-wide excerpt set, including caption pages and operative pages from related pleadings. Treat pleaded alternatives, denials, and defenses as attributed litigation positions, not established facts or contradictions. For a question about parties, claims, defenses, or relief, make the summary a concise party-by-party and pleading-by-pleading map: identify the party, procedural role, pleading, opposing/target party when expressly shown, and the pleaded claim, defense, or relief; do not use dense narrative. Identify missing information only when it remains unsupported after that record-wide check.","pages":pages}
     payload={"model":os.environ.get("LEGALAI_OPENAI_MODEL","gpt-5.6-sol"),"instructions":"Return only strict JSON matching the schema.","input":json.dumps(prompt),"text":{"format":{"type":"json_schema","name":"verified_internal_draft","strict":True,"schema":schema}}}
     request=urllib.request.Request("https://api.openai.com/v1/responses",data=json.dumps(payload).encode(),headers={"Authorization":f"Bearer {os.environ['OPENAI_API_KEY']}","Content-Type":"application/json"},method="POST")
     with urllib.request.urlopen(request,timeout=int(os.environ.get("LEGALAI_MODEL_TIMEOUT_SECONDS","180"))) as response: body=json.loads(response.read().decode())
