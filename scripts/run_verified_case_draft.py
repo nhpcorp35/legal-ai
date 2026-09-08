@@ -13,15 +13,22 @@ CASE_RE = re.compile(r"NY-[A-Za-z]+-[0-9]{6}-[0-9]{4}-[A-Za-z0-9-]{2,80}$")
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
 BROAD_RECORD_TERMS = frozenset({"parties", "claims", "causes", "defenses", "relief"})
 PLEADING_FILENAME_RE = re.compile(
-    r"\\b(?:complaint|answer|cross[ _-]?claim|counter[ _-]?claim|"
+    r"\b(?:complaint|answer|cross[ _-]?claim|counter[ _-]?claim|"
     r"third[ _-]?party|fourth[ _-]?party|bill[s]? of particulars)\\b",
     re.IGNORECASE,
 )
 PLEADING_TEXT_RE = re.compile(
-    r"\\b(?:cause of action|wherefore|affirmative defense|cross[ -]?claim|"
+    r"\b(?:cause of action|wherefore|affirmative defense|cross[ -]?claim|"
     r"counter[ -]?claim|third[ -]?party|plaintiff|defendant)\\b",
     re.IGNORECASE,
 )
+MERITS_PLEADING_PAGE_LIMIT = 20
+
+
+def normalized_filename(value: str) -> str:
+    """Make generated archive filenames safe for procedural classification."""
+    return re.sub(r"[^a-z0-9]+", " ", value.casefold()).strip()
+
 
 def client():
     return boto3.client("s3", endpoint_url=os.environ["B2_ENDPOINT"].rstrip("/"), region_name=os.environ["B2_REGION"], aws_access_key_id=os.environ["B2_KEY_ID"], aws_secret_access_key=os.environ["B2_APPLICATION_KEY"])
@@ -77,7 +84,12 @@ def evidence(s3, case_id, question):
             score += 2 if any(term in filename.casefold() for term in terms) else 0
             candidate={"source_sha256":source,"filename":filename,"page_number":page,"text":text[:MAX_PAGE_CHARS]}
             coverage_score = 0
-            if broad_record_question and PLEADING_FILENAME_RE.search(filename):
+            # Archive-generated filenames use underscores before document
+            # numbers (for example, _ANSWER_3.pdf). Normalize separators
+            # before matching so a real merits pleading is not skipped.
+            pleading_filename = normalized_filename(filename)
+            merits_pleading = bool(PLEADING_FILENAME_RE.search(pleading_filename))
+            if broad_record_question and merits_pleading:
                 # Captions are usually on the first page; operative pleading
                 # language identifies claims, relief, and defenses.
                 if page == 1:
@@ -85,11 +97,22 @@ def evidence(s3, case_id, question):
                 if PLEADING_TEXT_RE.search(text):
                     coverage_score += 6
             if score or coverage_score:
-                rows.append((score + coverage_score,filename,page,source,candidate))
-    selected=[]; total=0
-    for _,_,_,_,item in sorted(rows,key=lambda x:(-x[0],x[1].casefold(),x[2])):
+                rows.append((score + coverage_score,filename,page,source,candidate,merits_pleading))
+    selected=[]; selected_ids=set(); total=0
+    ranked = sorted(rows,key=lambda x:(-x[0],x[1].casefold(),x[2]))
+    # For broad case-map questions, reserve bounded context for actual
+    # pleadings before contracts/exhibits that happen to repeat query terms.
+    ordered = ranked
+    if broad_record_question:
+        merits = [row for row in ranked if row[5]][:MERITS_PLEADING_PAGE_LIMIT]
+        merit_ids = {(row[3], row[1], row[2]) for row in merits}
+        ordered = merits + [row for row in ranked if (row[3], row[1], row[2]) not in merit_ids]
+    for _,filename,page,source,item,_ in ordered:
+        item_id = (source, filename, page)
+        if item_id in selected_ids:
+            continue
         if total+len(item["text"])>MAX_CONTEXT_CHARS or len(selected)>=MAX_PAGES: continue
-        selected.append(item); total+=len(item["text"])
+        selected.append(item); selected_ids.add(item_id); total+=len(item["text"])
     if not selected: raise ValueError("no matching verified evidence")
     return selected
 
