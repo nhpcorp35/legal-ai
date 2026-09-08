@@ -152,5 +152,37 @@ class SzymczykFilenameCoverageTests(unittest.TestCase):
         }.issubset(selected))
 
 
+    def test_bundled_later_answer_gets_its_own_caption_and_defense_pages(self):
+        class BundledS3(FakeS3):
+            pages = [
+                {"filename": "Answer to Third Party.pdf", "page_number": 1,
+                 "text": "VERIFIED ANSWER TO THIRD-PARTY COMPLAINT. Defendant denies the complaint."},
+                {"filename": "Answer to Third Party.pdf", "page_number": 13,
+                 "text": "DEMAND FOR A VERIFIED BILL OF PARTICULARS."},
+                {"filename": "Answer to Third Party.pdf", "page_number": 15,
+                 "text": "ANSWER TO THIRD-PARTY COMPLAINT. Third-party defendants answer."},
+                {"filename": "Answer to Third Party.pdf", "page_number": 17,
+                 "text": "AS FOR A FIRST AFFIRMATIVE DEFENSE. Plaintiff was solely negligent."},
+                {"filename": "Answer to Third Party.pdf", "page_number": 22,
+                 "text": "WHEREFORE the third-party defendants demand dismissal."},
+            ] + [
+                {"filename": f"Exhibit {index}.pdf", "page_number": 1,
+                 "text": "parties claims defenses relief"}
+                for index in range(45)
+            ]
+
+        pages = WORKER.evidence(
+            BundledS3(),
+            "NY-Suffolk-600371-2021-DeSousa-v-Calvagno-II-Karcher",
+            "What are the parties, claims, defenses, and requested relief in the verified record?",
+        )
+        selected = {(page["filename"], page["page_number"]) for page in pages}
+        self.assertTrue({
+            ("Answer to Third Party.pdf", 15),
+            ("Answer to Third Party.pdf", 17),
+            ("Answer to Third Party.pdf", 22),
+        }.issubset(selected))
+
+
 if __name__ == "__main__":
     unittest.main()
