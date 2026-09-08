@@ -28,7 +28,12 @@ PLEADING_OPERATIONAL_TEXT_RE = re.compile(
     r"contractual indemnification|common[ -]?law indemnification|contribution)\b",
     re.IGNORECASE,
 )
-MERITS_PLEADING_PAGE_LIMIT = 30
+PLEADING_SECTION_START_RE = re.compile(
+    r"\b(?:verified\s+)?answer\b(?:\s+to\s+(?:verified\s+)?"
+    r"(?:(?:second|third|fourth)\s+)?(?:third[ -]?party\s+)?complaint)?",
+    re.IGNORECASE,
+)
+MERITS_PLEADING_PAGE_LIMIT = 45
 MERITS_PLEADING_PAGES_PER_FILING = 3
 
 
@@ -78,63 +83,79 @@ def verified_sources(s3, case_id):
 
 
 def evidence(s3, case_id, question):
-    """Select bounded evidence while retaining pleading-wide coverage when needed."""
+    """Select bounded evidence with filing- and section-level pleading coverage."""
     rows=[]; terms=words(question)
     broad_record_question = len(BROAD_RECORD_TERMS.intersection(terms)) >= 2
+    documents={}
     for source in verified_sources(s3, case_id):
         object_key=f"cases/{case_id}/intake/source/{source}/page_records.jsonl"
-        raw=s3.get_object(Bucket=os.environ["B2_BUCKET"],Key=object_key)["Body"].read().decode()
+        raw=s3.get_object(Bucket=s3.meta.client.meta.endpoint_url if False else B2_BUCKET,Key=object_key)["Body"].read().decode()
         for line in raw.splitlines():
             item=json.loads(line); text=" ".join(str(item.get("text","")).split()); filename=item.get("filename"); page=item.get("page_number")
-            if not text or not isinstance(filename,str) or not isinstance(page,int) or page < 1: continue
+            if not text or not isinstance(filename,str) or not isinstance(page,int) or page < 1:
+                continue
+            documents.setdefault((source, filename), []).append((page, text))
+    for (source, filename), document_pages in documents.items():
+        section_start = 1
+        for page, text in sorted(document_pages):
+            pleading_filename = normalized_filename(filename)
+            merits_pleading = bool(PLEADING_FILENAME_RE.search(pleading_filename))
+            # Some archive PDFs concatenate an answer, demands, and a later
+            # answer. A later answer heading starts a separate filing section.
+            if (
+                merits_pleading and page > 1
+                and PLEADING_SECTION_START_RE.search(text[:700])
+            ):
+                section_start = page
             lowered=text.casefold(); score=sum(lowered.count(term) for term in terms)
             score += 2 if any(term in filename.casefold() for term in terms) else 0
             candidate={"source_sha256":source,"filename":filename,"page_number":page,"text":text[:MAX_PAGE_CHARS]}
             coverage_score = 0
-            # Archive-generated filenames use underscores before document
-            # numbers (for example, _ANSWER_3.pdf). Normalize separators
-            # before matching so a real merits pleading is not skipped.
-            pleading_filename = normalized_filename(filename)
-            merits_pleading = bool(PLEADING_FILENAME_RE.search(pleading_filename))
             operational_pleading = bool(PLEADING_OPERATIONAL_TEXT_RE.search(text))
             if broad_record_question and merits_pleading:
-                # Retain a filing-led record map: caption plus the operative
-                # claim, defense, or prayer pages from every pleading.
-                if page == 1:
+                # Retain a filing-led record map: each section's caption plus
+                # claim, defense, or prayer pages.
+                if page == section_start:
                     coverage_score += 8
                 if operational_pleading:
                     coverage_score += 6
             if score or coverage_score:
-                rows.append((score + coverage_score,filename,page,source,candidate,merits_pleading,operational_pleading))
+                rows.append((
+                    score + coverage_score, filename, page, source, candidate,
+                    merits_pleading, operational_pleading, section_start,
+                ))
     selected=[]; selected_ids=set(); total=0
     ranked = sorted(rows,key=lambda x:(-x[0],x[1].casefold(),x[2]))
-    # For broad case-map questions, first reserve each pleading's caption,
-    # then up to two operative claim/defense/prayer pages per filing.
     ordered = ranked
     if broad_record_question:
-        merits=[]; merit_ids=set(); per_filing={}
+        merits=[]; merit_ids=set(); per_section={}
         def reserve(row):
             item_id=(row[3],row[1],row[2])
             if item_id in merit_ids or len(merits) >= MERITS_PLEADING_PAGE_LIMIT:
                 return False
             merits.append(row); merit_ids.add(item_id)
-            filing=(row[3],row[1]); per_filing[filing]=per_filing.get(filing,0)+1
+            section=(row[3],row[1],row[7])
+            per_section[section]=per_section.get(section,0)+1
             return True
+        # First reserve every actual filing/section opening page.
         for row in ranked:
-            if row[5] and row[2] == 1:
+            if row[5] and row[2] == row[7]:
                 reserve(row)
+        # Then retain its operative claim, defense, and prayer pages.
         for row in ranked:
-            filing=(row[3],row[1])
-            if row[5] and row[6] and per_filing.get(filing,0) < MERITS_PLEADING_PAGES_PER_FILING:
+            section=(row[3],row[1],row[7])
+            if row[5] and row[6] and per_section.get(section,0) < MERITS_PLEADING_PAGES_PER_FILING:
                 reserve(row)
         ordered = merits + [row for row in ranked if (row[3], row[1], row[2]) not in merit_ids]
     for _,filename,page,source,item,*_ in ordered:
         item_id = (source, filename, page)
         if item_id in selected_ids:
             continue
-        if total+len(item["text"])>MAX_CONTEXT_CHARS or len(selected)>=MAX_PAGES: continue
+        if total+len(item["text"])>MAX_CONTEXT_CHARS or len(selected)>=MAX_PAGES:
+            continue
         selected.append(item); selected_ids.add(item_id); total+=len(item["text"])
-    if not selected: raise ValueError("no matching verified evidence")
+    if not selected:
+        raise ValueError("no matching verified evidence")
     return selected
 
 def generate(question, pages):
