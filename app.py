@@ -1,6 +1,7 @@
 from flask import Flask, request, render_template, abort, send_from_directory, Response, send_file, render_template_string, redirect, url_for
 from markupsafe import Markup, escape
 import base64
+import copy
 from io import BytesIO
 import hashlib
 import hmac
@@ -2400,8 +2401,28 @@ def reconcile_draft_request_lifecycle(item, now=None):
     return reconciled
 
 
+DRAFT_REQUEST_CACHE_TTL_SECONDS = 90
+_draft_request_cache = {}
+_draft_request_cache_lock = threading.Lock()
+
+
+def invalidate_draft_request_cache(case_id):
+    """Forget one case's short-lived, display-only draft-request cache."""
+    with _draft_request_cache_lock:
+        _draft_request_cache.pop(case_id, None)
+
+
 def load_draft_requests(case_id):
-    """Read internal-only draft request metadata for one indexed matter."""
+    """Read internal-only draft request metadata for one indexed matter.
+
+    A short, in-process cache keeps navigation responsive without changing
+    canonical B2 records. Request-creating and discard paths invalidate it.
+    """
+    now = time.monotonic()
+    with _draft_request_cache_lock:
+        cached = _draft_request_cache.get(case_id)
+        if cached and now - cached["loaded_at"] < DRAFT_REQUEST_CACHE_TTL_SECONDS:
+            return copy.deepcopy(cached["entries"])
     gateway_url = os.environ.get("LEGALAI_REVIEW_GATEWAY_URL", "").rstrip("/")
     secret = os.environ.get("LEGALAI_REVIEW_GATEWAY_SECRET", "")
     if not gateway_url or not secret:
@@ -2420,7 +2441,7 @@ def load_draft_requests(case_id):
     if not isinstance(entries, list):
         return None
     now = int(time.time())
-    return [
+    entries = [
         reconcile_draft_request_lifecycle(
             {
                 "request_id": item["request_id"],
@@ -2444,6 +2465,12 @@ def load_draft_requests(case_id):
         and isinstance(item.get("created_at"), int)
         and item.get("status") in {"QUEUED", "RUNNING", "READY", "FAILED"}
     ]
+    with _draft_request_cache_lock:
+        _draft_request_cache[case_id] = {
+            "loaded_at": time.monotonic(),
+            "entries": copy.deepcopy(entries),
+        }
+    return entries
 
 
 def load_draft_input_audit(case_id, request_id):
@@ -2525,7 +2552,10 @@ def create_draft_request(case_id, question, reviewer, regenerate_from=None):
             result = json.loads(response.read().decode("utf-8"))
     except (urllib.error.URLError, urllib.error.HTTPError, ValueError, UnicodeDecodeError):
         return None
-    return result if isinstance(result, dict) and result.get("ok") else None
+    if isinstance(result, dict) and result.get("ok"):
+        invalidate_draft_request_cache(case_id)
+        return result
+    return None
 
 
 def discard_temporary_draft_request(case_id, request_id):
@@ -2546,7 +2576,10 @@ def discard_temporary_draft_request(case_id, request_id):
             result = json.loads(response.read().decode("utf-8"))
     except (urllib.error.URLError, urllib.error.HTTPError, ValueError, UnicodeDecodeError):
         return False
-    return isinstance(result, dict) and result.get("ok") is True and result.get("discarded") is True
+    discarded = isinstance(result, dict) and result.get("ok") is True and result.get("discarded") is True
+    if discarded:
+        invalidate_draft_request_cache(case_id)
+    return discarded
 
 def load_szymczyk_review_packet():
     """Prefer the promoted B2 packet; retain the legacy config packet as fallback.
