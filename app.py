@@ -3439,7 +3439,7 @@ def workspace_matter_draft_detail(case_id, request_id):
         return basic_auth_required_response()
     if not re.fullmatch(r"draft-[0-9]+-[0-9a-f]{12}", request_id):
         abort(404)
-    item = next((entry for entry in (load_draft_requests(case_id) or []) if entry["request_id"] == request_id and entry["status"] == "READY" and entry["draft"]), None)
+    item = next((entry for entry in (load_draft_requests(case_id) or []) if entry["request_id"] == request_id and entry["draft"]), None)
     if item is None:
         abort(404)
     return render_template_string(
