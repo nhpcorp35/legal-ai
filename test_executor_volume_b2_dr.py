@@ -343,6 +343,52 @@ class CliLoggingTests(unittest.TestCase):
         configure.assert_called_once_with()
 
 
+class TransientClassifierTests(unittest.TestCase):
+    def test_wrapped_connection_closed_error_is_transient(self) -> None:
+        class ConnectionClosedError(Exception):
+            pass
+
+        try:
+            raise ConnectionClosedError("simulated closed connection")
+        except ConnectionClosedError as inner:
+            wrapped = dr.VolumeBackupError(
+                "B2 put_object failed",
+                object_key="disaster-recovery/example",
+                error_type="ConnectionClosedError",
+            )
+            wrapped.__cause__ = inner
+
+        self.assertTrue(dr.is_transient_daemon_error(wrapped))
+
+    def test_wrapped_protocol_error_is_transient(self) -> None:
+        class ProtocolError(Exception):
+            pass
+
+        try:
+            raise ProtocolError("simulated protocol failure")
+        except ProtocolError as inner:
+            wrapped = dr.VolumeBackupError(
+                "B2 put_object failed",
+                object_key="disaster-recovery/example",
+                error_type="ProtocolError",
+            )
+            wrapped.__cause__ = inner
+
+        self.assertTrue(dr.is_transient_daemon_error(wrapped))
+
+    def test_deterministic_volume_backup_error_is_not_transient(self) -> None:
+        exc = dr.VolumeBackupError(
+            "B2 object size mismatch",
+            object_key="disaster-recovery/example",
+        )
+        self.assertFalse(dr.is_transient_daemon_error(exc))
+
+    def test_volume_backup_error_cycle_in_cause_chain_is_not_transient(self) -> None:
+        exc = dr.VolumeBackupError("config failure")
+        exc.__cause__ = exc
+        self.assertFalse(dr.is_transient_daemon_error(exc))
+
+
 class DaemonRetryTests(unittest.TestCase):
     def test_transient_retries_at_most_twice_then_normal_interval(self) -> None:
         calls = {"n": 0}
@@ -374,6 +420,88 @@ class DaemonRetryTests(unittest.TestCase):
         )
         self.assertEqual(code, 0)
         self.assertEqual(calls["n"], 3)  # initial + 2 retries
+        self.assertEqual(waits, [5.0, 15.0, 3600.0])
+
+    def test_wrapped_connection_closed_error_is_retried(self) -> None:
+        class ConnectionClosedError(Exception):
+            pass
+
+        calls = {"n": 0}
+        waits: list[float] = []
+
+        def wrapped_transport_fail(**kwargs):
+            calls["n"] += 1
+            try:
+                raise ConnectionClosedError("simulated closed connection")
+            except ConnectionClosedError as inner:
+                raise dr.VolumeBackupError(
+                    "B2 put_object failed",
+                    object_key="disaster-recovery/example",
+                    error_type="ConnectionClosedError",
+                ) from inner
+
+        stop = threading.Event()
+
+        def tracking_wait(timeout=None):
+            waits.append(float(timeout) if timeout is not None else 0.0)
+            if len(waits) >= 3:
+                stop.set()
+                return True
+            return False
+
+        stop.wait = tracking_wait  # type: ignore[method-assign]
+
+        code = dr.run_daemon(
+            interval_seconds=3600,
+            initial_delay_seconds=0,
+            stop_event=stop,
+            environ=_b2_env(),
+            backup_fn=wrapped_transport_fail,
+            transient_retry_backoffs=(5.0, 15.0),
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(calls["n"], 3)
+        self.assertEqual(waits, [5.0, 15.0, 3600.0])
+
+    def test_wrapped_protocol_error_is_retried(self) -> None:
+        class ProtocolError(Exception):
+            pass
+
+        calls = {"n": 0}
+        waits: list[float] = []
+
+        def wrapped_protocol_fail(**kwargs):
+            calls["n"] += 1
+            try:
+                raise ProtocolError("simulated protocol failure")
+            except ProtocolError as inner:
+                raise dr.VolumeBackupError(
+                    "B2 put_object failed",
+                    object_key="disaster-recovery/example",
+                    error_type="ProtocolError",
+                ) from inner
+
+        stop = threading.Event()
+
+        def tracking_wait(timeout=None):
+            waits.append(float(timeout) if timeout is not None else 0.0)
+            if len(waits) >= 3:
+                stop.set()
+                return True
+            return False
+
+        stop.wait = tracking_wait  # type: ignore[method-assign]
+
+        code = dr.run_daemon(
+            interval_seconds=3600,
+            initial_delay_seconds=0,
+            stop_event=stop,
+            environ=_b2_env(),
+            backup_fn=wrapped_protocol_fail,
+            transient_retry_backoffs=(5.0, 15.0),
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(calls["n"], 3)
         self.assertEqual(waits, [5.0, 15.0, 3600.0])
 
     def test_volume_backup_error_does_not_retry(self) -> None:
