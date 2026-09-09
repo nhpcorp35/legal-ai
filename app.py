@@ -2524,6 +2524,51 @@ def open_indexed_case_pdf(case_id, source_sha256, filename):
         return None
     return content if 0 < len(content) <= 32 * 1024 * 1024 else None
 
+
+SZYMCZYK_PAGE17_CASE_ID = "NY-NewYork-158068-2018-Szymczyk-v-Hudson-36-37"
+SZYMCZYK_PAGE17_DOCUMENT = "158068_2018_ANDRZEJ_SZYMCZYK_v_HUDSON_36_LLC_et_al_ANSWER_TO_THIRD_PAR_10.pdf"
+SZYMCZYK_PAGE17_SOURCE_SHA256 = "ff8a0773d740358d56e43055f518e42b6124a4bc4fb00a39abaf85c5393568dc"
+
+
+def check_szymczyk_page17_index():
+    """Request one bounded, text-free original/index comparison through the gateway."""
+    gateway_url = os.environ.get("LEGALAI_REVIEW_GATEWAY_URL", "").rstrip("/")
+    secret = os.environ.get("LEGALAI_REVIEW_GATEWAY_SECRET", "")
+    if not gateway_url or not secret:
+        return None
+    payload = json.dumps(
+        {
+            "source_sha256": SZYMCZYK_PAGE17_SOURCE_SHA256,
+            "document_name": SZYMCZYK_PAGE17_DOCUMENT,
+            "page_number": 17,
+        }
+    ).encode("utf-8")
+    request_data = urllib.request.Request(
+        f"{gateway_url}/portal/cases/{urllib.parse.quote(SZYMCZYK_PAGE17_CASE_ID, safe='')}/page-diagnostic",
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "X-LegalAI-Portal-Secret": secret,
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request_data, timeout=45) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, urllib.error.HTTPError, ValueError, UnicodeDecodeError):
+        return None
+    if not isinstance(result, dict) or not result.get("ok"):
+        return None
+    if (
+        result.get("case_id") != SZYMCZYK_PAGE17_CASE_ID
+        or result.get("source_sha256") != SZYMCZYK_PAGE17_SOURCE_SHA256
+        or result.get("document_name") != SZYMCZYK_PAGE17_DOCUMENT
+        or result.get("page_number") != 17
+        or not all(isinstance(result.get(key), bool) for key in ("direct_text_present", "indexed_record_present", "matches"))
+    ):
+        return None
+    return result
+
 def create_draft_request(case_id, question, reviewer, regenerate_from=None):
     """Create an internal-only attorney-review question request.
 
@@ -3093,6 +3138,14 @@ def attorney_workspace():
                         },
                     ]
                 )
+                if case["case_id"] == SZYMCZYK_PAGE17_CASE_ID:
+                    questions.append(
+                        {
+                            "id": "Check",
+                            "label": "Check page 17 source/index",
+                            "url": f"/workspace/matters/{matter_url}/page-17-check",
+                        }
+                    )
                 if answered_count:
                     questions.append(
                         {
@@ -3314,6 +3367,28 @@ def workspace_matter_pdf(case_id, filename):
         mimetype="application/pdf",
         as_attachment=False,
         download_name=document_name,
+    )
+
+
+
+@app.route("/workspace/matters/<path:case_id>/page-17-check")
+def workspace_szymczyk_page17_check(case_id):
+    """Run the narrow read-only diagnostic for the known page-17 citation gap."""
+    reviewer = basic_review_user()
+    if reviewer is None:
+        return basic_auth_required_response()
+    if case_id != SZYMCZYK_PAGE17_CASE_ID:
+        abort(404)
+    result = check_szymczyk_page17_index()
+    if result is None:
+        outcome = "The diagnostic is temporarily unavailable. No source or index was changed."
+    elif result["matches"]:
+        outcome = "The verified original and its derived index match for page 17. No B2 repair was performed."
+    else:
+        outcome = "The verified original and its derived index differ for page 17. The original source remains unchanged; a separate derived-repair review is required."
+    return render_template_string(
+        """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Page 17 Diagnostic</title><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:900px;margin:0 auto;padding:42px 24px 64px}a{color:#123f63}p{font-size:1.05rem;line-height:1.55}.panel{background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:22px;margin-top:22px}</style></head><body><main><p><a href="{{ url_for('attorney_workspace') }}">← Attorney workspace</a></p><h1>Page 17 source/index check</h1><section class="panel"><p>{{ outcome }}</p><p>This check exposes no source text and makes no changes.</p></section></main></body></html>""",
+        outcome=outcome,
     )
 
 
