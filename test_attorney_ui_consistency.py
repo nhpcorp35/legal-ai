@@ -247,6 +247,28 @@ class AttorneyUiConsistencyTests(unittest.TestCase):
         self.assertNotIn("View answered question →", body)
         self.assertIn("Questions processing", body)
 
+    def test_failed_request_is_not_presented_as_processing(self):
+        failed_item = {
+            "request_id": "draft-7-abcdef123456",
+            "question": "An earlier question",
+            "requested_by": "allen@example.com",
+            "status": "FAILED",
+            "failure_code": "corpus",
+            "draft": None,
+        }
+        with patch.object(
+            legalai, "load_registered_cases", return_value=[{"case_id": CASE_ID, "stage": "Verified source indexed"}]
+        ), patch.object(legalai, "load_draft_requests", return_value=[failed_item]):
+            response = self.client.get(
+                f"/workspace/matters/{CASE_ID}/draft",
+                headers=_auth_headers(),
+            )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.get_data(as_text=True)
+        self.assertNotIn("Questions processing", body)
+
+
     def test_pdf_responses_are_not_html_wrapped(self):
         with patch.object(
             legalai,
