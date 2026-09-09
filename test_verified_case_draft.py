@@ -262,6 +262,21 @@ class SzymczykFilenameCoverageTests(unittest.TestCase):
             {(page["filename"], page["page_number"]) for page in pages},
         )
 
+    def test_pre_generation_gate_blocks_when_required_defense_pages_exceed_budget(self):
+        class TooManyDefenseSectionsS3(FakeS3):
+            pages = [
+                {"filename": f"Answer {index:02d}.pdf", "page_number": 2,
+                 "text": "AS FOR A FIRST AFFIRMATIVE DEFENSE parties claims defenses relief"}
+                for index in range(WORKER.MAX_PAGES + 1)
+            ]
+
+        with self.assertRaisesRegex(WORKER.PreGenerationGateError, "missing_first_affirmative_defense_page"):
+            WORKER.evidence(
+                TooManyDefenseSectionsS3(),
+                "NY-Suffolk-600371-2021-DeSousa-v-Calvagno-II-Karcher",
+                "What are the parties, claims, defenses, and requested relief in the verified record?",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -40,6 +40,10 @@ MERITS_PLEADING_PAGE_CHARS = 1600
 AFFIRMATIVE_DEFENSES_RE = re.compile(r"\baffirmative\s+defen[cs]es?\b", re.IGNORECASE)
 
 
+class PreGenerationGateError(ValueError):
+    """Raised when mandatory pleading coverage cannot fit before a model call."""
+
+
 def normalized_filename(value: str) -> str:
     """Make generated archive filenames safe for procedural classification."""
     return re.sub(r"[^a-z0-9]+", " ", value.casefold()).strip()
@@ -154,6 +158,7 @@ def evidence(s3, case_id, question):
                     affirmative_defenses, affirmative_defense_continuation,
                 ))
             prior_page = page
+    mandatory_ids=set()
     selected=[]; selected_ids=set(); total=0
     ranked = sorted(rows,key=lambda x:(-x[0],x[1].casefold(),x[2]))
     ordered = ranked
@@ -178,6 +183,10 @@ def evidence(s3, case_id, question):
                 first_defense_page[section] = min(
                     row[2], first_defense_page.get(section, row[2])
                 )
+        mandatory_ids = {
+            (section[0], section[1], page)
+            for section, page in first_defense_page.items()
+        }
         for row in ranked:
             section=(row[3],row[1],row[7])
             if (
@@ -215,6 +224,11 @@ def evidence(s3, case_id, question):
         selected.append(item); selected_ids.add(item_id); total+=len(item["text"])
     if not selected:
         raise ValueError("no matching verified evidence")
+    missing_mandatory = mandatory_ids.difference(selected_ids)
+    if missing_mandatory:
+        # Never spend a model call on a pleading map that dropped a required
+        # first affirmative-defense page. The bounded details stay internal.
+        raise PreGenerationGateError("missing_first_affirmative_defense_page")
     return selected
 
 def generate(question, pages):
@@ -257,8 +271,8 @@ def main():
         put(s3,args.case_id,args.request_id,"status.json",{"schema_version":"legalai-internal-draft-status.v1","case_id":args.case_id,"request_id":args.request_id,"status":"READY","updated_at":now()})
     except Exception as exc:
         # Persist only a bounded operational code, never source/model text.
-        code = exc.__class__.__name__.lower()
-        if code not in {"valueerror", "runtimeerror", "httperror", "urlerror", "clienterror"}:
+        code = "pre_generation_gate" if isinstance(exc, PreGenerationGateError) else exc.__class__.__name__.lower()
+        if code not in {"pre_generation_gate", "valueerror", "runtimeerror", "httperror", "urlerror", "clienterror"}:
             code = "internal_error"
         put(s3,args.case_id,args.request_id,"status.json",{"schema_version":"legalai-internal-draft-status.v1","case_id":args.case_id,"request_id":args.request_id,"status":"FAILED","failure_code":code,"updated_at":now()})
         raise
