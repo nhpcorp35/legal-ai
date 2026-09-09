@@ -2959,6 +2959,65 @@ def _ensure_monitor_started():
     timer.start()
 
 
+def build_draft_quality_data(matters, request_loader=load_draft_requests):
+    """Summarize internal draft states without exposing record source text.
+
+    A failed request is treated as superseded only when the same matter later
+    has a READY request with the identical question.  This avoids presenting
+    historical failures as current operator work while preserving every
+    failure in the read-only operational view.
+    """
+    totals = {"QUEUED": 0, "RUNNING": 0, "READY": 0, "FAILED": 0, "pre_generation_gate": 0}
+    by_case = []
+    for matter in matters:
+        case_id = matter.get("case_id") if isinstance(matter, dict) else None
+        if not isinstance(case_id, str):
+            continue
+        items = request_loader(case_id) or []
+        valid_items = [item for item in items if isinstance(item, dict)]
+        by_case.append((case_id, valid_items))
+        for item in valid_items:
+            status = item.get("status")
+            if status in totals:
+                totals[status] += 1
+            if item.get("failure_code") == "pre_generation_gate":
+                totals["pre_generation_gate"] += 1
+
+    failures = []
+    for case_id, items in by_case:
+        for item in items:
+            if item.get("status") != "FAILED":
+                continue
+            created_at = item.get("created_at")
+            later_ready = any(
+                candidate.get("status") == "READY"
+                and candidate.get("question") == item.get("question")
+                and isinstance(candidate.get("created_at"), int)
+                and isinstance(created_at, int)
+                and candidate["created_at"] > created_at
+                for candidate in items
+            )
+            failure_code = item.get("failure_code") or "unspecified"
+            if failure_code == "pre_generation_gate":
+                disposition = "Blocked before model call"
+            elif failure_code == STALE_QUEUED_FAILURE_CODE:
+                disposition = "Retryable stale queue failure"
+            elif later_ready:
+                disposition = "Superseded by later successful identical question"
+            else:
+                disposition = "Needs review"
+            failures.append({
+                "case_id": case_id,
+                "request_id": item.get("request_id"),
+                "question": item.get("question"),
+                "failure_code": failure_code,
+                "disposition": disposition,
+                "created_at": created_at,
+            })
+    failures.sort(key=lambda item: (item["case_id"], item["created_at"] if isinstance(item["created_at"], int) else 0, item["request_id"] or ""), reverse=True)
+    return totals, failures
+
+
 @app.route("/workspace/draft-quality")
 def workspace_draft_quality():
     """Read-only operational view of internal-draft quality states."""
@@ -2969,22 +3028,10 @@ def workspace_draft_quality():
         matters = load_registered_cases()
     except GatewayUnavailableError as exc:
         return gateway_unavailable_response(exc)
-    totals = {"QUEUED": 0, "RUNNING": 0, "READY": 0, "FAILED": 0, "pre_generation_gate": 0}
-    rows = []
-    for matter in matters:
-        case_id = matter.get("case_id")
-        if not isinstance(case_id, str):
-            continue
-        for item in load_draft_requests(case_id) or []:
-            status = item.get("status")
-            if status in totals:
-                totals[status] += 1
-            if item.get("failure_code") == "pre_generation_gate":
-                totals["pre_generation_gate"] += 1
-                rows.append({"case_id": case_id, "request_id": item.get("request_id"), "question": item.get("question")})
+    totals, failures = build_draft_quality_data(matters)
     return render_template_string(
-        """<!doctype html><title>Draft quality</title><main><p><a href=\"/workspace\">← Attorney workspace</a></p><h1>Draft quality</h1><p>Read-only internal operations view. No source text is shown.</p><ul><li>Queued: {{ totals.QUEUED }}</li><li>Running: {{ totals.RUNNING }}</li><li>Ready: {{ totals.READY }}</li><li>Failed: {{ totals.FAILED }}</li><li>Blocked before model call: {{ totals.pre_generation_gate }}</li></ul>{% if rows %}<h2>Gate blocks</h2>{% for row in rows %}<p><strong>{{ row.case_id }}</strong> · {{ row.request_id }}<br>{{ row.question }}</p>{% endfor %}{% else %}<p>No pre-generation gate blocks.</p>{% endif %}</main>""",
-        totals=totals, rows=rows,
+        """<!doctype html><title>Draft quality</title><main><p><a href=\"/workspace\">← Attorney workspace</a></p><h1>Draft quality</h1><p>Read-only internal operations view. No source text is shown.</p><ul><li>Queued: {{ totals.QUEUED }}</li><li>Running: {{ totals.RUNNING }}</li><li>Ready: {{ totals.READY }}</li><li>Failed: {{ totals.FAILED }}</li><li>Blocked before model call: {{ totals.pre_generation_gate }}</li></ul>{% if failures %}<h2>Failed requests</h2>{% for row in failures %}<p><strong>{{ row.disposition }}</strong><br>{{ row.case_id }} · {{ row.request_id }} · {{ row.failure_code }}<br>{{ row.question }}</p>{% endfor %}{% else %}<p>No failed requests.</p>{% endif %}</main>""",
+        totals=totals, failures=failures,
     )
 
 
