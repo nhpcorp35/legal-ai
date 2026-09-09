@@ -239,6 +239,29 @@ class SzymczykFilenameCoverageTests(unittest.TestCase):
             {(page["filename"], page["page_number"]) for page in pages},
         )
 
+    def test_first_defense_page_per_section_precedes_later_defense_headings(self):
+        class FirstDefenseS3(FakeS3):
+            pages = [
+                {"filename": f"A{index:02d} Answer.pdf", "page_number": page,
+                 "text": "AS FOR AN AFFIRMATIVE DEFENSE parties claims defenses relief"}
+                for index in range(23) for page in (2, 3)
+            ] + [
+                {"filename": "Z Answer to Third Party.pdf", "page_number": 15,
+                 "text": "ANSWER TO THIRD-PARTY COMPLAINT."},
+                {"filename": "Z Answer to Third Party.pdf", "page_number": 17,
+                 "text": "AS FOR A FIRST AFFIRMATIVE DEFENSE."},
+            ]
+
+        pages = WORKER.evidence(
+            FirstDefenseS3(),
+            "NY-Suffolk-600371-2021-DeSousa-v-Calvagno-II-Karcher",
+            "What are the parties, claims, defenses, and requested relief in the verified record?",
+        )
+        self.assertIn(
+            ("Z Answer to Third Party.pdf", 17),
+            {(page["filename"], page["page_number"]) for page in pages},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
