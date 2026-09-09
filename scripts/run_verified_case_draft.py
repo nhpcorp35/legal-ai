@@ -167,10 +167,27 @@ def evidence(s3, case_id, question):
             section=(row[3],row[1],row[7])
             per_section[section]=per_section.get(section,0)+1
             return True
-        # Reserve every affirmative-defense heading before any continuation.
-        # A continuation can have a higher term score than a later heading;
-        # reserving both in one ranked pass could fill the global 45-page
-        # budget before that later heading is reached.
+        # Reserve the first affirmative-defense heading in each pleading
+        # section before later heading pages. A long defense list can contain
+        # many headings; otherwise its later pages can fill the global budget
+        # before another section's first defense page is reached.
+        first_defense_page = {}
+        for row in rows:
+            section = (row[3], row[1], row[7])
+            if row[5] and row[8]:
+                first_defense_page[section] = min(
+                    row[2], first_defense_page.get(section, row[2])
+                )
+        for row in ranked:
+            section=(row[3],row[1],row[7])
+            if (
+                row[5] and row[8]
+                and row[2] == first_defense_page.get(section)
+                and per_section.get(section,0) < MERITS_PLEADING_PAGES_PER_FILING
+            ):
+                reserve(row)
+        # Then reserve additional affirmative-defense headings and immediate
+        # continuation pages, subject to the unchanged global budget.
         for row in ranked:
             section=(row[3],row[1],row[7])
             if row[5] and row[8] and per_section.get(section,0) < MERITS_PLEADING_PAGES_PER_FILING:
