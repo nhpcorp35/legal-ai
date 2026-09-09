@@ -67,6 +67,26 @@ class StaleQueuedLifecycleHelpersTests(unittest.TestCase):
         self.assertIs(legalai.reconcile_draft_request_lifecycle(item, now=now), item)
         self.assertEqual(item["failure_code"], "valueerror")
 
+    def test_quality_rows_identify_superseded_and_actionable_failures(self):
+        matters = [{"case_id": "NY-Test-1"}]
+        failed = _draft(
+            request_id="draft-1-aaaaaaaaaaaa", status="FAILED", created_at=100,
+            failure_code="corpus", question="Map the defenses.",
+        )
+        ready = _draft(
+            request_id="draft-2-bbbbbbbbbbbb", status="READY", created_at=200,
+            question="Map the defenses.",
+        )
+        actionable = _draft(
+            request_id="draft-3-cccccccccccc", status="FAILED", created_at=300,
+            failure_code="valueerror", question="Identify parties.",
+        )
+        totals, rows = legalai.build_draft_quality_data(matters, lambda _case_id: [failed, ready, actionable])
+        self.assertEqual(totals["FAILED"], 2)
+        by_id = {row["request_id"]: row for row in rows}
+        self.assertEqual(by_id[failed["request_id"]]["disposition"], "Superseded by later successful identical question")
+        self.assertEqual(by_id[actionable["request_id"]]["disposition"], "Needs review")
+
 
 class StaleQueuedLoadAndMonitorTests(unittest.TestCase):
     def setUp(self):
