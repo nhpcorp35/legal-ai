@@ -37,7 +37,7 @@ MERITS_PLEADING_PAGE_LIMIT = 45
 MERITS_PLEADING_PAGES_PER_FILING = 3
 # Every mandatory pleading page fits within MAX_CONTEXT_CHARS (45 × 1600).
 MERITS_PLEADING_PAGE_CHARS = 1600
-AFFIRMATIVE_DEFENSES_RE = re.compile(r"\\baffirmative\\s+defen[cs]es?\\b", re.IGNORECASE)
+AFFIRMATIVE_DEFENSES_RE = re.compile(r"\baffirmative\s+defen[cs]es?\b", re.IGNORECASE)
 
 
 def normalized_filename(value: str) -> str:
