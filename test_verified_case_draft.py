@@ -215,5 +215,30 @@ class SzymczykFilenameCoverageTests(unittest.TestCase):
         }.issubset(selected))
 
 
+    def test_late_affirmative_defense_heading_precedes_high_scoring_continuations(self):
+        filler = "parties claims defenses relief"
+        class HeadingPriorityS3(FakeS3):
+            pages = [
+                {"filename": f"A{index:02d} Answer.pdf", "page_number": page,
+                 "text": "AS FOR A FIRST AFFIRMATIVE DEFENSE." if page == 2 else filler}
+                for index in range(30) for page in (2, 3)
+            ] + [
+                {"filename": "Z Answer to Third Party.pdf", "page_number": 15,
+                 "text": "ANSWER TO THIRD-PARTY COMPLAINT."},
+                {"filename": "Z Answer to Third Party.pdf", "page_number": 17,
+                 "text": "AS FOR A FIRST AFFIRMATIVE DEFENSE."},
+            ]
+
+        pages = WORKER.evidence(
+            HeadingPriorityS3(),
+            "NY-Suffolk-600371-2021-DeSousa-v-Calvagno-II-Karcher",
+            "What are the parties, claims, defenses, and requested relief in the verified record?",
+        )
+        self.assertIn(
+            ("Z Answer to Third Party.pdf", 17),
+            {(page["filename"], page["page_number"]) for page in pages},
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
