@@ -2435,7 +2435,7 @@ def load_draft_requests(case_id):
     try:
         with urllib.request.urlopen(request_data, timeout=30) as response:
             result = json.loads(response.read().decode("utf-8"))
-    except (urllib.error.URLError, urllib.error.HTTPError, ValueError, UnicodeDecodeError):
+    except (urllib.error.URLError, urllib.error.HTTPError, ValueError, UnicodeDecodeError, TimeoutError):
         return None
     entries = result.get("requests") if isinstance(result, dict) else None
     if not isinstance(entries, list):
