@@ -2959,6 +2959,35 @@ def _ensure_monitor_started():
     timer.start()
 
 
+@app.route("/workspace/draft-quality")
+def workspace_draft_quality():
+    """Read-only operational view of internal-draft quality states."""
+    reviewer = basic_review_user()
+    if reviewer != "allen@nhpcorp.com":
+        abort(404)
+    try:
+        matters = load_registered_cases()
+    except GatewayUnavailableError as exc:
+        return gateway_unavailable_response(exc)
+    totals = {"QUEUED": 0, "RUNNING": 0, "READY": 0, "FAILED": 0, "pre_generation_gate": 0}
+    rows = []
+    for matter in matters:
+        case_id = matter.get("case_id")
+        if not isinstance(case_id, str):
+            continue
+        for item in load_draft_requests(case_id) or []:
+            status = item.get("status")
+            if status in totals:
+                totals[status] += 1
+            if item.get("failure_code") == "pre_generation_gate":
+                totals["pre_generation_gate"] += 1
+                rows.append({"case_id": case_id, "request_id": item.get("request_id"), "question": item.get("question")})
+    return render_template_string(
+        """<!doctype html><title>Draft quality</title><main><p><a href=\"/workspace\">← Attorney workspace</a></p><h1>Draft quality</h1><p>Read-only internal operations view. No source text is shown.</p><ul><li>Queued: {{ totals.QUEUED }}</li><li>Running: {{ totals.RUNNING }}</li><li>Ready: {{ totals.READY }}</li><li>Failed: {{ totals.FAILED }}</li><li>Blocked before model call: {{ totals.pre_generation_gate }}</li></ul>{% if rows %}<h2>Gate blocks</h2>{% for row in rows %}<p><strong>{{ row.case_id }}</strong> · {{ row.request_id }}<br>{{ row.question }}</p>{% endfor %}{% else %}<p>No pre-generation gate blocks.</p>{% endif %}</main>""",
+        totals=totals, rows=rows,
+    )
+
+
 def search_szymczyk_verified_pages(query):
     """Search the fixed verified Szymczyk page index through the portal relay."""
     query = clean_text(query)
