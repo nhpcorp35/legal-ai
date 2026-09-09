@@ -101,7 +101,7 @@ def evidence(s3, case_id, question):
     for (source, filename), document_pages in documents.items():
         section_start = 1
         prior_page = None
-        prior_affirmative_defenses = False
+        affirmative_defense_run_remaining = 0
         for page, text in sorted(document_pages):
             pleading_filename = normalized_filename(filename)
             merits_pleading = bool(PLEADING_FILENAME_RE.search(pleading_filename))
@@ -114,8 +114,18 @@ def evidence(s3, case_id, question):
                 section_start = page
             affirmative_defenses = bool(AFFIRMATIVE_DEFENSES_RE.search(text))
             affirmative_defense_continuation = (
-                prior_affirmative_defenses and prior_page is not None and page == prior_page + 1
+                affirmative_defense_run_remaining > 0
+                and prior_page is not None
+                and page == prior_page + 1
             )
+            if affirmative_defenses:
+                # Retain the heading plus its next two pages. Defense lists
+                # commonly span three page-records in a single pleading.
+                affirmative_defense_run_remaining = 2
+            elif affirmative_defense_continuation:
+                affirmative_defense_run_remaining -= 1
+            else:
+                affirmative_defense_run_remaining = 0
             lowered=text.casefold(); score=sum(lowered.count(term) for term in terms)
             score += 2 if any(term in filename.casefold() for term in terms) else 0
             candidate_text_limit = (
@@ -144,7 +154,6 @@ def evidence(s3, case_id, question):
                     affirmative_defenses, affirmative_defense_continuation,
                 ))
             prior_page = page
-            prior_affirmative_defenses = affirmative_defenses
     selected=[]; selected_ids=set(); total=0
     ranked = sorted(rows,key=lambda x:(-x[0],x[1].casefold(),x[2]))
     ordered = ranked
