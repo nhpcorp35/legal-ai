@@ -74,6 +74,14 @@ class PendingQueueTests(unittest.TestCase):
             pending = list(WORKER.pending_requests(self.QueueS3()))
         self.assertEqual(pending, [("NY-NewYork-158068-2018-Szymczyk-v-Hudson-36-37", "draft-2-bbbbbbbbbbbb")])
 
+    def test_pending_requests_can_limit_scan_to_one_case(self):
+        with mock.patch.object(WORKER, "request_status", return_value="QUEUED"):
+            pending = list(WORKER.pending_requests(self.QueueS3(), "NY-NewYork-158068-2018-Szymczyk-v-Hudson-36-37"))
+        self.assertEqual(pending, [
+            ("NY-NewYork-158068-2018-Szymczyk-v-Hudson-36-37", "draft-1-aaaaaaaaaaaa"),
+            ("NY-NewYork-158068-2018-Szymczyk-v-Hudson-36-37", "draft-2-bbbbbbbbbbbb"),
+        ])
+
 
 class RecordWidePleadingCoverageTests(unittest.TestCase):
     def test_broad_party_claim_question_keeps_captions_and_operational_pleading_pages(self):
