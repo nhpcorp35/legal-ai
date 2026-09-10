@@ -3527,12 +3527,20 @@ def workspace_matter_draft(case_id):
     submitted_status = None
     error = None
     discarded = False
-    draft_requests = load_draft_requests(case_id) or []
+    submitted_request_id = clean_text(request.args.get("submitted", ""))
+    # This page is the status surface for a just-submitted request.  It must
+    # bypass the short navigation cache so a completed worker result replaces
+    # QUEUED without requiring a browser refresh.
+    draft_requests = load_draft_requests(
+        case_id,
+        force_refresh=bool(
+            re.fullmatch(r"draft-[0-9]+-[0-9a-f]{12}", submitted_request_id)
+        ),
+    ) or []
     queued_requests = [
         item for item in draft_requests
         if item["status"] in {"QUEUED", "RUNNING"}
     ]
-    submitted_request_id = clean_text(request.args.get("submitted", ""))
     reused = request.args.get("reused") == "1"
     if re.fullmatch(r"draft-[0-9]+-[0-9a-f]{12}", submitted_request_id):
         confirmation = {"request_id": submitted_request_id, "reused": reused}
