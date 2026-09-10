@@ -164,6 +164,36 @@ class SzymczykFilenameCoverageTests(unittest.TestCase):
         selected = {(page["filename"], page["page_number"]) for page in pages}
         self.assertIn(("158068_2018_ANSWER_TO_THIRD_PAR_10.pdf", 17), selected)
 
+    def test_targeted_third_party_complaint_keeps_operative_pages_after_caption(self):
+        class ThirdPartyComplaintS3(FakeS3):
+            pages = [
+                {"filename": "158068_2018_THIRD_PARTY_SUMMONS_5.pdf", "page_number": 3,
+                 "text": "HUDSON 37 LLC, third-party plaintiff, against FORWARD HEATING CORP. and FORWARD MECHANICAL CORP., third-party defendants."},
+                {"filename": "158068_2018_THIRD_PARTY_SUMMONS_5.pdf", "page_number": 9,
+                 "text": "FIRST CAUSE OF ACTION: contractual indemnification."},
+                {"filename": "158068_2018_THIRD_PARTY_SUMMONS_5.pdf", "page_number": 11,
+                 "text": "THIRD CAUSE OF ACTION: breach of insurance-procurement obligations."},
+                {"filename": "158068_2018_THIRD_PARTY_SUMMONS_5.pdf", "page_number": 12,
+                 "text": "WHEREFORE Hudson 37 requests damages, costs, and disbursements."},
+            ] + [
+                {"filename": f"158068_2018_EXHIBIT_S_{index}.pdf", "page_number": 1,
+                 "text": "Hudson Forward Heating Mechanical claims relief third-party complaint"}
+                for index in range(45)
+            ]
+
+        pages = WORKER.evidence(
+            ThirdPartyComplaintS3(),
+            "NY-Suffolk-600371-2021-DeSousa-v-Calvagno-II-Karcher",
+            "What claims and relief does Hudson 37 assert against Forward Heating and Forward Mechanical in its third-party complaint?",
+        )
+        selected = {(page["filename"], page["page_number"]) for page in pages}
+        self.assertTrue({
+            ("158068_2018_THIRD_PARTY_SUMMONS_5.pdf", 3),
+            ("158068_2018_THIRD_PARTY_SUMMONS_5.pdf", 9),
+            ("158068_2018_THIRD_PARTY_SUMMONS_5.pdf", 11),
+            ("158068_2018_THIRD_PARTY_SUMMONS_5.pdf", 12),
+        }.issubset(selected))
+
     def test_merits_pleadings_are_reserved_ahead_of_high_scoring_contract_pages(self):
         class DenseS3(FakeS3):
             pages = [
