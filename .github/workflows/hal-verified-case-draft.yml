@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       diagnostic_only:
-        description: Emit the non-secret B2 configuration fingerprint and exit before draft generation.
+        description: Emit the non-secret B2 configuration fingerprint and request-status metadata; no draft generation.
         required: false
         default: false
         type: boolean
@@ -53,6 +53,61 @@ jobs:
           fields = ("B2_BUCKET", "B2_ENDPOINT", "B2_REGION")
           material = "\x1f".join(f"{field}={os.environ.get(field, '')}" for field in fields)
           print("b2_configuration_fingerprint=" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:16])
+          PY
+      - name: Read non-secret request status metadata
+        if: ${{ inputs.diagnostic_only == true && inputs.request_id != '' }}
+        env:
+          CASE_ID: ${{ inputs.case_id }}
+          REQUEST_ID: ${{ inputs.request_id }}
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+
+          import boto3
+          from botocore.exceptions import ClientError
+
+          case_id = os.environ["CASE_ID"]
+          request_id = os.environ["REQUEST_ID"]
+          if not re.fullmatch(r"NY-[A-Za-z]+-[0-9]{6}-[0-9]{4}-[A-Za-z0-9-]{2,80}", case_id):
+              raise SystemExit("invalid case_id")
+          if not re.fullmatch(r"draft-[0-9]+-[0-9a-f]{12}", request_id):
+              raise SystemExit("invalid request_id")
+          client = boto3.client(
+              "s3",
+              endpoint_url=os.environ["B2_ENDPOINT"].rstrip("/"),
+              region_name=os.environ["B2_REGION"],
+              aws_access_key_id=os.environ["B2_KEY_ID"],
+              aws_secret_access_key=os.environ["B2_APPLICATION_KEY"],
+          )
+          base = f"cases/{case_id}/derived/internal-drafts/{request_id}"
+          try:
+              raw = client.get_object(
+                  Bucket=os.environ["B2_BUCKET"], Key=f"{base}/status.json"
+              )["Body"].read()
+          except ClientError as exc:
+              print("request_status_object=missing")
+              print("request_status_read_error=" + str(((exc.response or {}).get("Error") or {}).get("Code", "unknown")))
+          else:
+              try:
+                  status = json.loads(raw.decode("utf-8"))
+              except (UnicodeDecodeError, json.JSONDecodeError):
+                  print("request_status_object=invalid_json")
+              else:
+                  print("request_status_object=present")
+                  print("request_status=" + str(status.get("status", "invalid")))
+                  print("request_status_sha256=" + hashlib.sha256(raw).hexdigest()[:16])
+                  print("request_status_updated_at_type=" + type(status.get("updated_at")).__name__)
+          try:
+              head = client.head_object(Bucket=os.environ["B2_BUCKET"], Key=f"{base}/draft.json")
+          except ClientError as exc:
+              print("request_draft_object=missing")
+              print("request_draft_head_error=" + str(((exc.response or {}).get("Error") or {}).get("Code", "unknown")))
+          else:
+              print("request_draft_object=present")
+              print("request_draft_content_length=" + str(head.get("ContentLength", 0)))
           PY
       - name: Stop after storage diagnostic
         if: ${{ inputs.diagnostic_only == true }}
