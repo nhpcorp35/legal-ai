@@ -6,6 +6,7 @@ import pathlib
 import sys
 import types
 import unittest
+from unittest import mock
 
 
 sys.modules.setdefault("boto3", types.SimpleNamespace(client=None))
@@ -56,6 +57,22 @@ class EvidenceFailClosedTests(unittest.TestCase):
         self.assertEqual([page["filename"] for page in pages], ["Complaint.pdf"])
         self.assertTrue(all(page["source_sha256"] == "a" * 64 for page in pages))
         self.assertIn("breach of contract", pages[0]["text"].casefold())
+
+
+class PendingQueueTests(unittest.TestCase):
+    class QueueS3:
+        def list_objects_v2(self, **kwargs):
+            if kwargs.get("Prefix") == "cases/":
+                return {"CommonPrefixes": [{"Prefix": "cases/NY-NewYork-158068-2018-Szymczyk-v-Hudson-36-37/"}]}
+            return {"Contents": [
+                {"Key": "cases/NY-NewYork-158068-2018-Szymczyk-v-Hudson-36-37/derived/draft-requests/draft-2-bbbbbbbbbbbb.json"},
+                {"Key": "cases/NY-NewYork-158068-2018-Szymczyk-v-Hudson-36-37/derived/draft-requests/draft-1-aaaaaaaaaaaa.json"},
+            ]}
+
+    def test_pending_requests_selects_only_queued_in_stable_order(self):
+        with mock.patch.object(WORKER, "request_status", side_effect=["FAILED", "QUEUED"]):
+            pending = list(WORKER.pending_requests(self.QueueS3()))
+        self.assertEqual(pending, [("NY-NewYork-158068-2018-Szymczyk-v-Hudson-36-37", "draft-2-bbbbbbbbbbbb")])
 
 
 class RecordWidePleadingCoverageTests(unittest.TestCase):

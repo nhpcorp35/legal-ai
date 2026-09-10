@@ -2412,7 +2412,7 @@ def invalidate_draft_request_cache(case_id):
         _draft_request_cache.pop(case_id, None)
 
 
-def load_draft_requests(case_id):
+def load_draft_requests(case_id, *, force_refresh=False):
     """Read internal-only draft request metadata for one indexed matter.
 
     A short, in-process cache keeps navigation responsive without changing
@@ -2421,7 +2421,11 @@ def load_draft_requests(case_id):
     now = time.monotonic()
     with _draft_request_cache_lock:
         cached = _draft_request_cache.get(case_id)
-        if cached and now - cached["loaded_at"] < DRAFT_REQUEST_CACHE_TTL_SECONDS:
+        if (
+            not force_refresh
+            and cached
+            and now - cached["loaded_at"] < DRAFT_REQUEST_CACHE_TTL_SECONDS
+        ):
             return copy.deepcopy(cached["entries"])
     gateway_url = os.environ.get("LEGALAI_REVIEW_GATEWAY_URL", "").rstrip("/")
     secret = os.environ.get("LEGALAI_REVIEW_GATEWAY_SECRET", "")
@@ -3637,7 +3641,10 @@ def workspace_matter_draft_detail(case_id, request_id):
         return basic_auth_required_response()
     if not re.fullmatch(r"draft-[0-9]+-[0-9a-f]{12}", request_id):
         abort(404)
-    item = next((entry for entry in (load_draft_requests(case_id) or []) if entry["request_id"] == request_id and entry["draft"]), None)
+    # A completed job can transition after the list page populated its short
+    # cache. Detail links are exact, user-initiated reads, so refresh before
+    # deciding that an answer does not exist.
+    item = next((entry for entry in (load_draft_requests(case_id, force_refresh=True) or []) if entry["request_id"] == request_id and entry["draft"]), None)
     if item is None:
         abort(404)
     return render_template_string(

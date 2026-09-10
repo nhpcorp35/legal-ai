@@ -2,6 +2,8 @@ name: HAL Verified Case Internal Draft
 run-name: verified-draft-${{ inputs.case_id }}-${{ inputs.request_id }}
 
 on:
+  schedule:
+    - cron: "*/5 * * * *"
   workflow_dispatch:
     inputs:
       case_id:
@@ -15,7 +17,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: verified-draft-${{ inputs.request_id }}
+  group: verified-draft-queue
   cancel-in-progress: false
 
 jobs:
@@ -42,7 +44,9 @@ jobs:
           CASE_ID: ${{ inputs.case_id }}
           REQUEST_ID: ${{ inputs.request_id }}
         run: |
-          if [ -n "$REQUEST_ID" ]; then
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            python scripts/run_verified_case_draft.py --scan-pending
+          elif [ -n "$REQUEST_ID" ]; then
             python scripts/run_verified_case_draft.py --case-id "$CASE_ID" --request-id "$REQUEST_ID"
           else
             python scripts/run_verified_case_draft.py --case-id "$CASE_ID"
