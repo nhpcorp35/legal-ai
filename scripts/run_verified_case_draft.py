@@ -48,6 +48,15 @@ THIRD_PARTY_COMPLAINT_QUESTION_RE = re.compile(
     re.IGNORECASE,
 )
 TARGETED_THIRD_PARTY_COMPLAINT_PAGE_LIMIT = 16
+TOP_ATTACK_SURFACES_MARKER = "v4.0 top attack surfaces report"
+# v4 reports need case-specific conflicts, not generic contract boilerplate.
+# Filings are strongest; orders and sworn/testimonial materials follow.
+ATTACK_SURFACE_PRIMARY_FILENAME_RE = re.compile(
+    r"\b(?:order|decision|judgment|affidavit|deposition|transcript|testimony|"
+    r"examination)\b",
+    re.IGNORECASE,
+)
+ATTACK_SURFACE_EXHIBIT_FILENAME_RE = re.compile(r"\bexhibit\b", re.IGNORECASE)
 
 
 class PreGenerationGateError(ValueError):
@@ -151,7 +160,10 @@ def evidence(s3, case_id, question):
     # (for example, "affirmative defenses"), but still requires the same
     # filing-led coverage before contract exhibits are considered.
     pleading_focused_question = bool(PLEADING_FOCUSED_QUESTION_RE.search(question))
-    filing_led_question = broad_record_question or pleading_focused_question
+    attack_surface_question = TOP_ATTACK_SURFACES_MARKER in question.casefold()
+    # The v4 report is intentionally filing-led even though its prompt uses
+    # analytical terms rather than a pleading's exact title.
+    filing_led_question = broad_record_question or pleading_focused_question or attack_surface_question
     targeted_third_party_complaint = bool(
         THIRD_PARTY_COMPLAINT_QUESTION_RE.search(question)
     )
@@ -249,6 +261,21 @@ def evidence(s3, case_id, question):
                     coverage_score += 10
                 if operational_pleading:
                     coverage_score += 6
+            if attack_surface_question:
+                # First surface party-identified pleadings; then court orders
+                # and sworn/testimonial materials; only then substantive
+                # exhibits. Generic contract excerpts get no v4 preference.
+                if merits_pleading:
+                    coverage_score += 40
+                elif ATTACK_SURFACE_PRIMARY_FILENAME_RE.search(pleading_filename):
+                    coverage_score += 28
+                elif (
+                    ATTACK_SURFACE_EXHIBIT_FILENAME_RE.search(pleading_filename)
+                    and PLEADING_TEXT_RE.search(text)
+                ):
+                    coverage_score += 16
+                if operational_pleading:
+                    coverage_score += 10
             if score or coverage_score:
                 rows.append((
                     score + coverage_score, filename, page, source, candidate,
@@ -348,8 +375,8 @@ def pleading_map(pages):
 def generate(question, pages):
     schema={"type":"object","additionalProperties":False,"required":["summary","findings","missing_information","limitations"],"properties":{"summary":{"type":"string"},"findings":{"type":"array","minItems":1,"items":{"type":"object","additionalProperties":False,"required":["statement","citations"],"properties":{"statement":{"type":"string"},"citations":{"type":"array","minItems":1,"items":{"type":"object","additionalProperties":False,"required":["source_sha256","filename","page_number"],"properties":{"source_sha256":{"type":"string"},"filename":{"type":"string"},"page_number":{"type":"integer","minimum":1}}}}}}},"missing_information":{"type":"array","items":{"type":"string"}},"limitations":{"type":"array","items":{"type":"string"}}}}
     instructions = "Use only the supplied verified excerpts. This is an internal attorney-review draft, not legal advice or a conclusion. Make no unsupported inference. Every finding must cite supplied pages exactly. Before stating that information is missing or calling something an open question, check the entire supplied record-wide excerpt set, including caption pages and operative pages from related pleadings. Use the filing map only as a navigation aid; verify every proposition against its cited pages. Treat pleaded alternatives, denials, and defenses as attributed litigation positions, not established facts or contradictions. For a question about parties, claims, defenses, or relief, make the summary a concise party-by-party and pleading-by-pleading map: identify the party, procedural role, pleading, opposing/target party when expressly shown, and the pleaded claim, defense, or relief; do not use dense narrative. Identify missing information only when it remains unsupported after that record-wide check."
-    if "v4.0 top attack surfaces report" in question.lower():
-        instructions += " For the v4.0 Top Attack Surfaces Report, return no more than eight findings ordered from highest to lower materiality. Start every finding with 'Rank N — [Contradiction / Credibility / Procedural weakness] —'. State the precise, record-supported tension or vulnerability and its limits. A contradiction requires two verified sources that actually conflict; a credibility vulnerability requires a concrete inconsistency, omission, or conflict in the record; a procedural weakness requires a pleading, burden, remedy, notice, timing, preservation, or posture issue actually shown. Do not invent a weakness from silence, characterize advocacy as fact, or convert alternative pleading or a denial into a contradiction."
+    if TOP_ATTACK_SURFACES_MARKER in question.casefold():
+        instructions += " For the v4.0 Top Attack Surfaces Report, prioritize identified pleadings, orders, sworn testimony, and party-specific exhibits over generic contract excerpts. Use a generic contract provision only where it directly conflicts with, limits, or corroborates a party-identified filing or evidence in the supplied pages. Return no more than eight findings ordered from highest to lower materiality. Start every finding with 'Rank N — [Contradiction / Credibility / Procedural weakness] —'. State the precise, record-supported tension or vulnerability and its limits. A contradiction requires two verified sources that actually conflict; a credibility vulnerability requires a concrete inconsistency, omission, or conflict in the record; a procedural weakness requires a pleading, burden, remedy, notice, timing, preservation, or posture issue actually shown. Do not invent a weakness from silence, characterize advocacy as fact, or convert alternative pleading or a denial into a contradiction."
     prompt={"question":question,"instructions":instructions,"pleading_map":pleading_map(pages),"pages":pages}
     payload={"model":os.environ.get("LEGALAI_OPENAI_MODEL","gpt-5.6-sol"),"instructions":"Return only strict JSON matching the schema.","input":json.dumps(prompt),"text":{"format":{"type":"json_schema","name":"verified_internal_draft","strict":True,"schema":schema}}}
     request=urllib.request.Request("https://api.openai.com/v1/responses",data=json.dumps(payload).encode(),headers={"Authorization":f"Bearer {os.environ['OPENAI_API_KEY']}","Content-Type":"application/json"},method="POST")
