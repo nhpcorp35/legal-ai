@@ -89,18 +89,20 @@ def request_status(s3, case_id, request_id):
     status = value.get("status") if isinstance(value, dict) else None
     return status if status in {"QUEUED", "RUNNING", "READY", "FAILED"} else "FAILED"
 
-def pending_requests(s3):
+def pending_requests(s3, case_id=None):
     """Yield queued verified-case requests in stable order without retrying failures."""
-    cases = s3.list_objects_v2(Bucket=os.environ["B2_BUCKET"], Prefix="cases/", Delimiter="/").get("CommonPrefixes", [])
-    for prefix in sorted(item.get("Prefix", "") for item in cases):
-        case_id = prefix.removeprefix("cases/").rstrip("/")
-        if not CASE_RE.fullmatch(case_id):
+    if case_id is None:
+        cases = [item.get("Prefix", "").removeprefix("cases/").rstrip("/") for item in s3.list_objects_v2(Bucket=os.environ["B2_BUCKET"], Prefix="cases/", Delimiter="/").get("CommonPrefixes", [])]
+    else:
+        cases = [case_id]
+    for current_case_id in sorted(cases):
+        if not CASE_RE.fullmatch(current_case_id):
             continue
-        objects = s3.list_objects_v2(Bucket=os.environ["B2_BUCKET"], Prefix=f"cases/{case_id}/derived/draft-requests/", MaxKeys=1000).get("Contents", [])
+        objects = s3.list_objects_v2(Bucket=os.environ["B2_BUCKET"], Prefix=f"cases/{current_case_id}/derived/draft-requests/", MaxKeys=1000).get("Contents", [])
         request_ids = sorted(str(item.get("Key", "")).rsplit("/", 1)[-1].removesuffix(".json") for item in objects if str(item.get("Key", "")).endswith(".json"))
         for request_id in request_ids:
-            if re.fullmatch(r"draft-[0-9]+-[0-9a-f]{12}", request_id) and request_status(s3, case_id, request_id) == "QUEUED":
-                yield case_id, request_id
+            if re.fullmatch(r"draft-[0-9]+-[0-9a-f]{12}", request_id) and request_status(s3, current_case_id, request_id) == "QUEUED":
+                yield current_case_id, request_id
 
 def verified_sources(s3, case_id):
     """Read the canonical immutable-original/additive source-set pointer."""
@@ -321,16 +323,16 @@ def run_request(s3, case_id, request_id):
 def main():
     parser=argparse.ArgumentParser(); parser.add_argument("--case-id"); parser.add_argument("--request-id"); parser.add_argument("--scan-pending", action="store_true"); args=parser.parse_args()
     if args.scan_pending:
-        if args.case_id or args.request_id: raise SystemExit("scan mode does not accept case or request identifiers")
-        s3=client(); next_request=next(pending_requests(s3), None)
+        if args.request_id: raise SystemExit("scan mode does not accept a request identifier")
+        if args.case_id and not CASE_RE.fullmatch(args.case_id): raise SystemExit("invalid case identifier")
+        s3=client(); next_request=next(pending_requests(s3, args.case_id), None)
         if next_request is not None: run_request(s3, *next_request)
         return
     if not CASE_RE.fullmatch(args.case_id or ""): raise SystemExit("invalid case identifier")
     s3=client()
     if not args.request_id:
-        keys = s3.list_objects_v2(Bucket=os.environ["B2_BUCKET"], Prefix=f"cases/{args.case_id}/derived/draft-requests/", MaxKeys=100).get("Contents", [])
-        pending = [str(item.get("Key", "")).rsplit("/", 1)[-1].removesuffix(".json") for item in keys if str(item.get("Key", "")).endswith(".json")]
-        args.request_id = sorted(pending)[-1] if pending else ""
+        next_request = next(pending_requests(s3, args.case_id), None)
+        args.request_id = next_request[1] if next_request else ""
     if not re.fullmatch(r"draft-[0-9]+-[0-9a-f]{12}", args.request_id or ""): raise SystemExit("invalid request identifier")
     run_request(s3,args.case_id,args.request_id)
 

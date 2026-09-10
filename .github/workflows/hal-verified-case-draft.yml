@@ -49,5 +49,5 @@ jobs:
           elif [ -n "$REQUEST_ID" ]; then
             python scripts/run_verified_case_draft.py --case-id "$CASE_ID" --request-id "$REQUEST_ID"
           else
-            python scripts/run_verified_case_draft.py --case-id "$CASE_ID"
+            python scripts/run_verified_case_draft.py --scan-pending --case-id "$CASE_ID"
           fi
