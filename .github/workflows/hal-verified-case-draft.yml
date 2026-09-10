@@ -6,6 +6,11 @@ on:
     - cron: "*/5 * * * *"
   workflow_dispatch:
     inputs:
+      diagnostic_only:
+        description: Emit the non-secret B2 configuration fingerprint and exit before draft generation.
+        required: false
+        default: false
+        type: boolean
       case_id:
         required: true
         type: string
@@ -49,7 +54,11 @@ jobs:
           material = "\x1f".join(f"{field}={os.environ.get(field, '')}" for field in fields)
           print("b2_configuration_fingerprint=" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:16])
           PY
+      - name: Stop after storage diagnostic
+        if: ${{ inputs.diagnostic_only == true }}
+        run: exit 0
       - name: Generate bounded internal draft
+        if: ${{ inputs.diagnostic_only != true }}
         env:
           CASE_ID: ${{ inputs.case_id }}
           REQUEST_ID: ${{ inputs.request_id }}
