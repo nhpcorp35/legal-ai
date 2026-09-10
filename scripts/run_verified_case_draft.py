@@ -231,9 +231,23 @@ def evidence(s3, case_id, question):
         raise PreGenerationGateError("missing_first_affirmative_defense_page")
     return selected
 
+def pleading_map(pages):
+    """Build a citation-only filing map from selected verified pages."""
+    filings = {}
+    for page in pages:
+        filename = page["filename"]
+        if not PLEADING_FILENAME_RE.search(normalized_filename(filename)):
+            continue
+        entry = filings.setdefault(filename, {"filename": filename, "citations": [], "signals": set()})
+        entry["citations"].append({key: page[key] for key in ("source_sha256", "filename", "page_number")})
+        for label, pattern in (("caption or filing opening", r"\\b(supreme court|plaintiff|defendant)\\b"), ("causes of action or relief", r"\\b(cause of action|wherefore|prayer for relief)\\b"), ("answer or denial", r"\\b(answer|den(?:y|ies|ied))\\b"), ("affirmative defense", r"\\baffirmative\\s+defen[cs]e"), ("cross-claim or counterclaim", r"\\b(cross[ -]?claim|counter[ -]?claim)\\b"), ("third-party pleading", r"\\b(third[ -]?party|fourth[ -]?party)\\b")):
+            if re.search(pattern, page["text"], re.IGNORECASE):
+                entry["signals"].add(label)
+    return [{"filename": item["filename"], "citations": item["citations"], "signals": sorted(item["signals"])} for item in sorted(filings.values(), key=lambda item: item["filename"].casefold())]
+
 def generate(question, pages):
     schema={"type":"object","additionalProperties":False,"required":["summary","findings","missing_information","limitations"],"properties":{"summary":{"type":"string"},"findings":{"type":"array","minItems":1,"items":{"type":"object","additionalProperties":False,"required":["statement","citations"],"properties":{"statement":{"type":"string"},"citations":{"type":"array","minItems":1,"items":{"type":"object","additionalProperties":False,"required":["source_sha256","filename","page_number"],"properties":{"source_sha256":{"type":"string"},"filename":{"type":"string"},"page_number":{"type":"integer","minimum":1}}}}}}},"missing_information":{"type":"array","items":{"type":"string"}},"limitations":{"type":"array","items":{"type":"string"}}}}
-    prompt={"question":question,"instructions":"Use only the supplied verified excerpts. This is an internal attorney-review draft, not legal advice or a conclusion. Make no unsupported inference. Every finding must cite supplied pages exactly. Before stating that information is missing or calling something an open question, check the entire supplied record-wide excerpt set, including caption pages and operative pages from related pleadings. Treat pleaded alternatives, denials, and defenses as attributed litigation positions, not established facts or contradictions. For a question about parties, claims, defenses, or relief, make the summary a concise party-by-party and pleading-by-pleading map: identify the party, procedural role, pleading, opposing/target party when expressly shown, and the pleaded claim, defense, or relief; do not use dense narrative. Identify missing information only when it remains unsupported after that record-wide check.","pages":pages}
+    prompt={"question":question,"instructions":"Use only the supplied verified excerpts. This is an internal attorney-review draft, not legal advice or a conclusion. Make no unsupported inference. Every finding must cite supplied pages exactly. Before stating that information is missing or calling something an open question, check the entire supplied record-wide excerpt set, including caption pages and operative pages from related pleadings. Use the filing map only as a navigation aid; verify every proposition against its cited pages. Treat pleaded alternatives, denials, and defenses as attributed litigation positions, not established facts or contradictions. For a question about parties, claims, defenses, or relief, make the summary a concise party-by-party and pleading-by-pleading map: identify the party, procedural role, pleading, opposing/target party when expressly shown, and the pleaded claim, defense, or relief; do not use dense narrative. Identify missing information only when it remains unsupported after that record-wide check.","pleading_map":pleading_map(pages),"pages":pages}
     payload={"model":os.environ.get("LEGALAI_OPENAI_MODEL","gpt-5.6-sol"),"instructions":"Return only strict JSON matching the schema.","input":json.dumps(prompt),"text":{"format":{"type":"json_schema","name":"verified_internal_draft","strict":True,"schema":schema}}}
     request=urllib.request.Request("https://api.openai.com/v1/responses",data=json.dumps(payload).encode(),headers={"Authorization":f"Bearer {os.environ['OPENAI_API_KEY']}","Content-Type":"application/json"},method="POST")
     with urllib.request.urlopen(request,timeout=int(os.environ.get("LEGALAI_MODEL_TIMEOUT_SECONDS","180"))) as response: body=json.loads(response.read().decode())
