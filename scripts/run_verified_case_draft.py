@@ -43,6 +43,11 @@ PLEADING_FOCUSED_QUESTION_RE = re.compile(
     r"third[ -]?party\s+complaint|cross[ -]?claim|counter[ -]?claim)\b",
     re.IGNORECASE,
 )
+THIRD_PARTY_COMPLAINT_QUESTION_RE = re.compile(
+    r"\bthird[ -]?party\s+complaint\b",
+    re.IGNORECASE,
+)
+TARGETED_THIRD_PARTY_COMPLAINT_PAGE_LIMIT = 16
 
 
 class PreGenerationGateError(ValueError):
@@ -147,6 +152,9 @@ def evidence(s3, case_id, question):
     # filing-led coverage before contract exhibits are considered.
     pleading_focused_question = bool(PLEADING_FOCUSED_QUESTION_RE.search(question))
     filing_led_question = broad_record_question or pleading_focused_question
+    targeted_third_party_complaint = bool(
+        THIRD_PARTY_COMPLAINT_QUESTION_RE.search(question)
+    )
     documents={}
     for source in verified_sources(s3, case_id):
         object_key=f"cases/{case_id}/intake/source/{source}/page_records.jsonl"
@@ -156,6 +164,42 @@ def evidence(s3, case_id, question):
             if not text or not isinstance(filename,str) or not isinstance(page,int) or page < 1:
                 continue
             documents.setdefault((source, filename), []).append((page, text))
+    # A third-party complaint caption often names all parties while its claims
+    # and prayer occur several pages later. Keep the bounded target pleading
+    # together so page-ranking cannot retain only the caption and falsely call
+    # the operative allegations missing.
+    targeted_pages = []
+    if targeted_third_party_complaint:
+        candidates = []
+        for (source, filename), document_pages in documents.items():
+            normalized = normalized_filename(filename)
+            is_complaint = (
+                "third party" in normalized
+                and ("complaint" in normalized or "summons" in normalized)
+                and "answer" not in normalized
+            )
+            if not is_complaint:
+                continue
+            joined = " ".join(text.casefold() for _, text in document_pages)
+            matched_terms = sum(1 for term in terms if term in joined)
+            if matched_terms:
+                candidates.append((matched_terms, source, filename, document_pages))
+        if candidates:
+            _, source, filename, document_pages = max(
+                candidates,
+                key=lambda item: (item[0], -len(item[3]), item[2].casefold()),
+            )
+            targeted_pages = [
+                {
+                    "source_sha256": source,
+                    "filename": filename,
+                    "page_number": page,
+                    "text": text[:MERITS_PLEADING_PAGE_CHARS],
+                }
+                for page, text in sorted(document_pages)[
+                    :TARGETED_THIRD_PARTY_COMPLAINT_PAGE_LIMIT
+                ]
+            ]
     for (source, filename), document_pages in documents.items():
         section_start = 1
         prior_page = None
@@ -269,7 +313,9 @@ def evidence(s3, case_id, question):
             if row[5] and row[6] and per_section.get(section,0) < MERITS_PLEADING_PAGES_PER_FILING:
                 reserve(row)
         ordered = merits + [row for row in ranked if (row[3], row[1], row[2]) not in merit_ids]
-    for _,filename,page,source,item,*_ in ordered:
+    ordered_items = targeted_pages + [row[4] for row in ordered]
+    for item in ordered_items:
+        filename, page, source = item["filename"], item["page_number"], item["source_sha256"]
         item_id = (source, filename, page)
         if item_id in selected_ids:
             continue
