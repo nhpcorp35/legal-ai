@@ -87,6 +87,18 @@ class StaleQueuedLifecycleHelpersTests(unittest.TestCase):
         self.assertEqual(by_id[failed["request_id"]]["disposition"], "Superseded by later successful identical question")
         self.assertEqual(by_id[actionable["request_id"]]["disposition"], "Needs review")
 
+    def test_quality_rows_separate_explicit_test_requests(self):
+        failed_test = _draft(
+            request_id="draft-1-aaaaaaaaaaaa", status="FAILED", created_at=100,
+            failure_code=legalai.STALE_QUEUED_FAILURE_CODE, question="test2",
+        )
+        totals, rows = legalai.build_draft_quality_data(
+            [{"case_id": "Case-00-Triborough"}], lambda _case_id: [failed_test]
+        )
+        self.assertEqual(totals["FAILED"], 1)
+        self.assertEqual(totals["test_failures"], 1)
+        self.assertEqual(rows[0]["disposition"], "Test request — no action")
+
 
 class StaleQueuedLoadAndMonitorTests(unittest.TestCase):
     def setUp(self):
