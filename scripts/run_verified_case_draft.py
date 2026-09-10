@@ -382,13 +382,40 @@ def run_request(s3, case_id, request_id):
         put(s3,case_id,request_id,"status.json",{"schema_version":"legalai-internal-draft-status.v1","case_id":case_id,"request_id":request_id,"status":"FAILED","failure_code":code,"updated_at":now()})
         raise
 
+WORKER_STATUS_KEY = "operations/internal-draft-worker/status.json"
+
+def write_worker_status(s3, status, **fields):
+    value = {
+        "schema_version": "legalai-internal-draft-worker-status.v1",
+        "status": status,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        **fields,
+    }
+    raw = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    s3.put_object(Bucket=os.environ["B2_BUCKET"], Key=WORKER_STATUS_KEY, Body=raw,
+                  ContentType="application/json",
+                  Metadata={"sha256": hashlib.sha256(raw).hexdigest()})
+
 def main():
     parser=argparse.ArgumentParser(); parser.add_argument("--case-id"); parser.add_argument("--request-id"); parser.add_argument("--scan-pending", action="store_true"); args=parser.parse_args()
     if args.scan_pending:
         if args.request_id: raise SystemExit("scan mode does not accept a request identifier")
         if args.case_id and not CASE_RE.fullmatch(args.case_id): raise SystemExit("invalid case identifier")
-        s3=client(); next_request=next(pending_requests(s3, args.case_id), None)
-        if next_request is not None: run_request(s3, *next_request)
+        s3=client()
+        write_worker_status(s3, "RUNNING", mode="scan_pending")
+        next_request=next(pending_requests(s3, args.case_id), None)
+        try:
+            if next_request is None:
+                write_worker_status(s3, "IDLE", mode="scan_pending", outcome="no_pending")
+            else:
+                run_request(s3, *next_request)
+                write_worker_status(s3, "IDLE", mode="scan_pending", outcome="processed",
+                                    case_id=next_request[0], request_id=next_request[1])
+        except Exception:
+            write_worker_status(s3, "FAILED", mode="scan_pending", outcome="failed",
+                                **({"case_id": next_request[0], "request_id": next_request[1]}
+                                   if next_request else {}))
+            raise
         return
     if not CASE_RE.fullmatch(args.case_id or ""): raise SystemExit("invalid case identifier")
     s3=client()
