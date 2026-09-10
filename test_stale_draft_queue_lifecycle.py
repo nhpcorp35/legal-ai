@@ -102,6 +102,8 @@ class StaleQueuedLifecycleHelpersTests(unittest.TestCase):
 
 class StaleQueuedLoadAndMonitorTests(unittest.TestCase):
     def setUp(self):
+        legalai._draft_request_cache.clear()
+        self.addCleanup(legalai._draft_request_cache.clear)
         self.env = patch.dict(
             os.environ,
             {
@@ -165,6 +167,17 @@ class StaleQueuedLoadAndMonitorTests(unittest.TestCase):
         self.assertIsNone(by_id["draft-2-bbbbbbbbbbbb"]["failure_code"])
         self.assertEqual(by_id["draft-3-cccccccccccc"]["status"], "RUNNING")
         self.assertEqual(by_id["draft-4-dddddddddddd"]["status"], "READY")
+
+    def test_force_refresh_bypasses_display_cache(self):
+        case_id = "NY-Nassau-608412-2024-Szymczyk-v-Szymczyk"
+        legalai._draft_request_cache[case_id] = {
+            "loaded_at": legalai.time.monotonic(),
+            "entries": [_draft(request_id="draft-1-aaaaaaaaaaaa", status="QUEUED")],
+        }
+        payload = {"requests": [_draft(request_id="draft-2-bbbbbbbbbbbb", status="READY")]}
+        with patch.object(legalai.urllib.request, "urlopen", return_value=_Response(payload)):
+            loaded = legalai.load_draft_requests(case_id, force_refresh=True)
+        self.assertEqual([item["request_id"] for item in loaded], ["draft-2-bbbbbbbbbbbb"])
 
     def test_monitor_alerts_reconciled_stale_queued_without_redispatch(self):
         case_id = "NY-Nassau-608412-2024-Szymczyk-v-Szymczyk"

@@ -71,6 +71,32 @@ def read_request(s3, case_id, request_id):
     if not isinstance(question, str) or not question.strip() or len(question) > 1000: raise ValueError("invalid question")
     return question
 
+def request_status(s3, case_id, request_id):
+    """Return durable status; a newly created request has no status object."""
+    try:
+        raw = s3.get_object(Bucket=os.environ["B2_BUCKET"], Key=key(case_id, request_id, "status.json"))["Body"].read()
+    except Exception:
+        return "QUEUED"
+    try:
+        value = json.loads(raw.decode())
+    except (UnicodeDecodeError, ValueError):
+        return "FAILED"
+    status = value.get("status") if isinstance(value, dict) else None
+    return status if status in {"QUEUED", "RUNNING", "READY", "FAILED"} else "FAILED"
+
+def pending_requests(s3):
+    """Yield queued verified-case requests in stable order without retrying failures."""
+    cases = s3.list_objects_v2(Bucket=os.environ["B2_BUCKET"], Prefix="cases/", Delimiter="/").get("CommonPrefixes", [])
+    for prefix in sorted(item.get("Prefix", "") for item in cases):
+        case_id = prefix.removeprefix("cases/").rstrip("/")
+        if not CASE_RE.fullmatch(case_id):
+            continue
+        objects = s3.list_objects_v2(Bucket=os.environ["B2_BUCKET"], Prefix=f"cases/{case_id}/derived/draft-requests/", MaxKeys=1000).get("Contents", [])
+        request_ids = sorted(str(item.get("Key", "")).rsplit("/", 1)[-1].removesuffix(".json") for item in objects if str(item.get("Key", "")).endswith(".json"))
+        for request_id in request_ids:
+            if re.fullmatch(r"draft-[0-9]+-[0-9a-f]{12}", request_id) and request_status(s3, case_id, request_id) == "QUEUED":
+                yield case_id, request_id
+
 def verified_sources(s3, case_id):
     """Read the canonical immutable-original/additive source-set pointer."""
     identity_key = f"cases/{case_id}/intake/case_identity.json"
@@ -267,28 +293,35 @@ def validate(result, pages):
             if not isinstance(cite,dict) or (cite.get("source_sha256"),cite.get("filename"),cite.get("page_number")) not in allowed: raise ValueError("unverified citation")
     return result
 
+def run_request(s3, case_id, request_id):
+    now=lambda: datetime.now(timezone.utc).isoformat()
+    put(s3,case_id,request_id,"status.json",{"schema_version":"legalai-internal-draft-status.v1","case_id":case_id,"request_id":request_id,"status":"RUNNING","updated_at":now()})
+    try:
+        question=read_request(s3,case_id,request_id); pages=evidence(s3,case_id,question); result=validate(generate(question,pages),pages)
+        draft={"schema_version":"legalai-internal-draft.v1","case_id":case_id,"request_id":request_id,"question":question,"review_required":True,"external_communication":False,"generated_at":now(),**result}
+        put(s3,case_id,request_id,"draft.json",draft)
+        put(s3,case_id,request_id,"input_audit.json",{"schema_version":"legalai-internal-draft-audit.v1","case_id":case_id,"request_id":request_id,"question_sha256":hashlib.sha256(question.encode()).hexdigest(),"retrieval_citations":[{k:p[k] for k in ("source_sha256","filename","page_number")} for p in pages],"generated_at":now()})
+        put(s3,case_id,request_id,"status.json",{"schema_version":"legalai-internal-draft-status.v1","case_id":case_id,"request_id":request_id,"status":"READY","updated_at":now()})
+    except Exception as exc:
+        code = "pre_generation_gate" if isinstance(exc, PreGenerationGateError) else exc.__class__.__name__.lower()
+        if code not in {"pre_generation_gate", "valueerror", "runtimeerror", "httperror", "urlerror", "clienterror"}: code = "internal_error"
+        put(s3,case_id,request_id,"status.json",{"schema_version":"legalai-internal-draft-status.v1","case_id":case_id,"request_id":request_id,"status":"FAILED","failure_code":code,"updated_at":now()})
+        raise
+
 def main():
-    parser=argparse.ArgumentParser(); parser.add_argument("--case-id",required=True); parser.add_argument("--request-id"); args=parser.parse_args()
-    if not CASE_RE.fullmatch(args.case_id): raise SystemExit("invalid case identifier")
-    s3=client(); now=lambda: datetime.now(timezone.utc).isoformat()
+    parser=argparse.ArgumentParser(); parser.add_argument("--case-id"); parser.add_argument("--request-id"); parser.add_argument("--scan-pending", action="store_true"); args=parser.parse_args()
+    if args.scan_pending:
+        if args.case_id or args.request_id: raise SystemExit("scan mode does not accept case or request identifiers")
+        s3=client(); next_request=next(pending_requests(s3), None)
+        if next_request is not None: run_request(s3, *next_request)
+        return
+    if not CASE_RE.fullmatch(args.case_id or ""): raise SystemExit("invalid case identifier")
+    s3=client()
     if not args.request_id:
         keys = s3.list_objects_v2(Bucket=os.environ["B2_BUCKET"], Prefix=f"cases/{args.case_id}/derived/draft-requests/", MaxKeys=100).get("Contents", [])
         pending = [str(item.get("Key", "")).rsplit("/", 1)[-1].removesuffix(".json") for item in keys if str(item.get("Key", "")).endswith(".json")]
         args.request_id = sorted(pending)[-1] if pending else ""
     if not re.fullmatch(r"draft-[0-9]+-[0-9a-f]{12}", args.request_id or ""): raise SystemExit("invalid request identifier")
-    put(s3,args.case_id,args.request_id,"status.json",{"schema_version":"legalai-internal-draft-status.v1","case_id":args.case_id,"request_id":args.request_id,"status":"RUNNING","updated_at":now()})
-    try:
-        question=read_request(s3,args.case_id,args.request_id); pages=evidence(s3,args.case_id,question); result=validate(generate(question,pages),pages)
-        draft={"schema_version":"legalai-internal-draft.v1","case_id":args.case_id,"request_id":args.request_id,"question":question,"review_required":True,"external_communication":False,"generated_at":now(),**result}
-        put(s3,args.case_id,args.request_id,"draft.json",draft)
-        put(s3,args.case_id,args.request_id,"input_audit.json",{"schema_version":"legalai-internal-draft-audit.v1","case_id":args.case_id,"request_id":args.request_id,"question_sha256":hashlib.sha256(question.encode()).hexdigest(),"retrieval_citations":[{k:p[k] for k in ("source_sha256","filename","page_number")} for p in pages],"generated_at":now()})
-        put(s3,args.case_id,args.request_id,"status.json",{"schema_version":"legalai-internal-draft-status.v1","case_id":args.case_id,"request_id":args.request_id,"status":"READY","updated_at":now()})
-    except Exception as exc:
-        # Persist only a bounded operational code, never source/model text.
-        code = "pre_generation_gate" if isinstance(exc, PreGenerationGateError) else exc.__class__.__name__.lower()
-        if code not in {"pre_generation_gate", "valueerror", "runtimeerror", "httperror", "urlerror", "clienterror"}:
-            code = "internal_error"
-        put(s3,args.case_id,args.request_id,"status.json",{"schema_version":"legalai-internal-draft-status.v1","case_id":args.case_id,"request_id":args.request_id,"status":"FAILED","failure_code":code,"updated_at":now()})
-        raise
+    run_request(s3,args.case_id,args.request_id)
 
 if __name__ == "__main__": main()
