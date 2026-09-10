@@ -82,6 +82,25 @@ class PendingQueueTests(unittest.TestCase):
             ("NY-NewYork-158068-2018-Szymczyk-v-Hudson-36-37", "draft-2-bbbbbbbbbbbb"),
         ])
 
+    def test_pending_requests_reads_later_b2_listing_pages(self):
+        class PaginatedQueueS3(self.QueueS3):
+            def list_objects_v2(self, **kwargs):
+                if kwargs.get("Prefix") == "cases/":
+                    return super().list_objects_v2(**kwargs)
+                if kwargs.get("ContinuationToken") is None:
+                    return {
+                        "Contents": [],
+                        "IsTruncated": True,
+                        "NextContinuationToken": "next-page",
+                    }
+                return {"Contents": [
+                    {"Key": "cases/NY-NewYork-158068-2018-Szymczyk-v-Hudson-36-37/derived/draft-requests/draft-3-cccccccccccc.json"}
+                ]}
+
+        with mock.patch.object(WORKER, "request_status", return_value="QUEUED"):
+            pending = list(WORKER.pending_requests(PaginatedQueueS3()))
+        self.assertEqual(pending, [("NY-NewYork-158068-2018-Szymczyk-v-Hudson-36-37", "draft-3-cccccccccccc")])
+
 
 class RecordWidePleadingCoverageTests(unittest.TestCase):
     def test_broad_party_claim_question_keeps_captions_and_operational_pleading_pages(self):
