@@ -2967,7 +2967,14 @@ def build_draft_quality_data(matters, request_loader=load_draft_requests):
     historical failures as current operator work while preserving every
     failure in the read-only operational view.
     """
-    totals = {"QUEUED": 0, "RUNNING": 0, "READY": 0, "FAILED": 0, "pre_generation_gate": 0}
+    totals = {
+        "QUEUED": 0,
+        "RUNNING": 0,
+        "READY": 0,
+        "FAILED": 0,
+        "pre_generation_gate": 0,
+        "test_failures": 0,
+    }
     by_case = []
     for matter in matters:
         case_id = matter.get("case_id") if isinstance(matter, dict) else None
@@ -2998,7 +3005,12 @@ def build_draft_quality_data(matters, request_loader=load_draft_requests):
                 for candidate in items
             )
             failure_code = item.get("failure_code") or "unspecified"
-            if failure_code == "pre_generation_gate":
+            question = clean_text(item.get("question"))
+            is_test_request = bool(re.fullmatch(r"test[0-9]*", question, re.IGNORECASE))
+            if is_test_request:
+                disposition = "Test request — no action"
+                totals["test_failures"] += 1
+            elif failure_code == "pre_generation_gate":
                 disposition = "Blocked before model call"
             elif failure_code == STALE_QUEUED_FAILURE_CODE:
                 disposition = "Retryable stale queue failure"
@@ -3009,7 +3021,7 @@ def build_draft_quality_data(matters, request_loader=load_draft_requests):
             failures.append({
                 "case_id": case_id,
                 "request_id": item.get("request_id"),
-                "question": item.get("question"),
+                "question": question,
                 "failure_code": failure_code,
                 "disposition": disposition,
                 "created_at": created_at,
@@ -3030,7 +3042,7 @@ def workspace_draft_quality():
         return gateway_unavailable_response(exc)
     totals, failures = build_draft_quality_data(matters)
     return render_template_string(
-        """<!doctype html><title>Draft quality</title><main><p><a href=\"/workspace\">← Attorney workspace</a></p><h1>Draft quality</h1><p>Read-only internal operations view. No source text is shown.</p><ul><li>Queued: {{ totals.QUEUED }}</li><li>Running: {{ totals.RUNNING }}</li><li>Ready: {{ totals.READY }}</li><li>Failed: {{ totals.FAILED }}</li><li>Blocked before model call: {{ totals.pre_generation_gate }}</li></ul>{% if failures %}<h2>Failed requests</h2>{% for row in failures %}<p><strong>{{ row.disposition }}</strong><br>{{ row.case_id }} · {{ row.request_id }} · {{ row.failure_code }}<br>{{ row.question }}</p>{% endfor %}{% else %}<p>No failed requests.</p>{% endif %}</main>""",
+        """<!doctype html><title>Draft quality</title><main><p><a href=\"/workspace\">← Attorney workspace</a></p><h1>Draft quality</h1><p>Read-only internal operations view. No source text is shown.</p><ul><li>Queued: {{ totals.QUEUED }}</li><li>Running: {{ totals.RUNNING }}</li><li>Ready: {{ totals.READY }}</li><li>Failed: {{ totals.FAILED }}</li><li>Test failures (no action): {{ totals.test_failures }}</li><li>Needs attention: {{ totals.FAILED - totals.test_failures }}</li><li>Blocked before model call: {{ totals.pre_generation_gate }}</li></ul>{% if failures %}<h2>Failed requests</h2>{% for row in failures %}<p><strong>{{ row.disposition }}</strong><br>{{ row.case_id }} · {{ row.request_id }} · {{ row.failure_code }}<br>{{ row.question }}</p>{% endfor %}{% else %}<p>No failed requests.</p>{% endif %}</main>""",
         totals=totals, failures=failures,
     )
 
