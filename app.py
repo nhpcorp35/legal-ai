@@ -3034,7 +3034,6 @@ def build_draft_quality_data(matters, request_loader=load_draft_requests):
     return totals, failures
 
 
-@app.route("/workspace/draft-quality")
 def load_draft_worker_status():
     """Read the worker heartbeat through the protected gateway; no source text."""
     gateway_url = os.environ.get("LEGALAI_REVIEW_GATEWAY_URL", "").rstrip("/")
@@ -3055,6 +3054,7 @@ def load_draft_worker_status():
         return None
     return worker
 
+@app.route("/workspace/draft-quality")
 def workspace_draft_quality():
     """Read-only operational view of internal-draft quality states."""
     reviewer = basic_review_user()
