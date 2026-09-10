@@ -244,8 +244,33 @@ class AttorneyUiConsistencyTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         body = response.get_data(as_text=True)
         self.assertIn("Automatic draft job queued.", body)
-        self.assertNotIn("View answered question →", body)
+        self.assertNotIn('<a class="answer-cta"', body)
         self.assertIn("Questions processing", body)
+        self.assertIn(f"/workspace/matters/{CASE_ID}/drafts/{request_id}/status", body)
+        self.assertIn("cache:'no-store'", body)
+
+    def test_draft_status_endpoint_returns_ready_link_without_source_text(self):
+        request_id = "draft-6-abcdef123456"
+        ready_item = {
+            "request_id": request_id,
+            "question": "What relief is requested?",
+            "requested_by": "allen@example.com",
+            "status": "READY",
+            "draft": {"summary": "Summary.", "findings": [], "missing_information": []},
+        }
+        with patch.object(
+            legalai, "load_registered_cases", return_value=[{"case_id": CASE_ID, "stage": "Verified source indexed"}]
+        ), patch.object(legalai, "load_draft_requests", return_value=[ready_item]) as loader:
+            response = self.client.get(
+                f"/workspace/matters/{CASE_ID}/drafts/{request_id}/status",
+                headers=_auth_headers(),
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json["status"], "READY")
+        self.assertEqual(response.json["answer_url"], f"/workspace/matters/{CASE_ID}/drafts/{request_id}")
+        self.assertNotIn("summary", response.get_data(as_text=True).casefold())
+        self.assertTrue(loader.call_args.kwargs["force_refresh"])
 
     def test_failed_request_is_not_presented_as_processing(self):
         failed_item = {
