@@ -3035,6 +3035,26 @@ def build_draft_quality_data(matters, request_loader=load_draft_requests):
 
 
 @app.route("/workspace/draft-quality")
+def load_draft_worker_status():
+    """Read the worker heartbeat through the protected gateway; no source text."""
+    gateway_url = os.environ.get("LEGALAI_REVIEW_GATEWAY_URL", "").rstrip("/")
+    secret = os.environ.get("LEGALAI_REVIEW_GATEWAY_SECRET", "")
+    if not gateway_url or not secret:
+        return None
+    request_data = urllib.request.Request(
+        f"{gateway_url}/portal/operations/internal-draft-worker/status",
+        headers={"X-LegalAI-Portal-Secret": secret}, method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request_data, timeout=15) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, urllib.error.HTTPError, ValueError, UnicodeDecodeError, TimeoutError):
+        return None
+    worker = result.get("worker") if isinstance(result, dict) else None
+    if not isinstance(worker, dict) or worker.get("status") not in {"RUNNING", "IDLE", "FAILED"}:
+        return None
+    return worker
+
 def workspace_draft_quality():
     """Read-only operational view of internal-draft quality states."""
     reviewer = basic_review_user()
@@ -3045,9 +3065,10 @@ def workspace_draft_quality():
     except GatewayUnavailableError as exc:
         return gateway_unavailable_response(exc)
     totals, failures = build_draft_quality_data(matters)
+    worker = load_draft_worker_status()
     return render_template_string(
-        """<!doctype html><title>Draft quality</title><main><p><a href=\"/workspace\">← Attorney workspace</a></p><h1>Draft quality</h1><p>Read-only internal operations view. No source text is shown.</p><ul><li>Queued: {{ totals.QUEUED }}</li><li>Running: {{ totals.RUNNING }}</li><li>Ready: {{ totals.READY }}</li><li>Failed: {{ totals.FAILED }}</li><li>Test failures (no action): {{ totals.test_failures }}</li><li>Needs attention: {{ totals.FAILED - totals.test_failures }}</li><li>Blocked before model call: {{ totals.pre_generation_gate }}</li></ul>{% if failures %}<h2>Failed requests</h2>{% for row in failures %}<p><strong>{{ row.disposition }}</strong><br>{{ row.case_id }} · {{ row.request_id }} · {{ row.failure_code }}<br>{{ row.question }}</p>{% endfor %}{% else %}<p>No failed requests.</p>{% endif %}</main>""",
-        totals=totals, failures=failures,
+        """<!doctype html><title>Draft quality</title><main><p><a href=\"/workspace\">← Attorney workspace</a></p><h1>Draft quality</h1><p>Read-only internal operations view. No source text is shown.</p>{% if worker %}<h2>Queue worker</h2><p><strong>{{ worker.status }}</strong> — {{ worker.outcome|default("scan recorded") }}<br>Last update: {{ worker.updated_at }}{% if worker.request_id %}<br>Request: {{ worker.request_id }}{% endif %}</p>{% else %}<h2>Queue worker</h2><p>Worker status has not been recorded yet.</p>{% endif %}<ul><li>Queued: {{ totals.QUEUED }}</li><li>Running: {{ totals.RUNNING }}</li><li>Ready: {{ totals.READY }}</li><li>Failed: {{ totals.FAILED }}</li><li>Test failures (no action): {{ totals.test_failures }}</li><li>Needs attention: {{ totals.FAILED - totals.test_failures }}</li><li>Blocked before model call: {{ totals.pre_generation_gate }}</li></ul>{% if failures %}<h2>Failed requests</h2>{% for row in failures %}<p><strong>{{ row.disposition }}</strong><br>{{ row.case_id }} · {{ row.request_id }} · {{ row.failure_code }}<br>{{ row.question }}</p>{% endfor %}{% else %}<p>No failed requests.</p>{% endif %}</main>""",
+        totals=totals, failures=failures, worker=worker,
     )
 
 
