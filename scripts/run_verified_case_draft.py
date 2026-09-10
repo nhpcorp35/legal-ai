@@ -38,6 +38,11 @@ MERITS_PLEADING_PAGES_PER_FILING = 3
 # Every mandatory pleading page fits within MAX_CONTEXT_CHARS (45 × 1600).
 MERITS_PLEADING_PAGE_CHARS = 1600
 AFFIRMATIVE_DEFENSES_RE = re.compile(r"\baffirmative\s+defen[cs]es?\b", re.IGNORECASE)
+PLEADING_FOCUSED_QUESTION_RE = re.compile(
+    r"\b(?:affirmative\s+defen[cs]e|answer\s+to\s+(?:a\s+)?third[ -]?party|"
+    r"third[ -]?party\s+complaint|cross[ -]?claim|counter[ -]?claim)\b",
+    re.IGNORECASE,
+)
 
 
 class PreGenerationGateError(ValueError):
@@ -119,6 +124,11 @@ def evidence(s3, case_id, question):
     """Select bounded evidence with filing- and section-level pleading coverage."""
     rows=[]; terms=words(question)
     broad_record_question = len(BROAD_RECORD_TERMS.intersection(terms)) >= 2
+    # A targeted pleading question can have only one of the broad map terms
+    # (for example, "affirmative defenses"), but still requires the same
+    # filing-led coverage before contract exhibits are considered.
+    pleading_focused_question = bool(PLEADING_FOCUSED_QUESTION_RE.search(question))
+    filing_led_question = broad_record_question or pleading_focused_question
     documents={}
     for source in verified_sources(s3, case_id):
         object_key=f"cases/{case_id}/intake/source/{source}/page_records.jsonl"
@@ -160,13 +170,13 @@ def evidence(s3, case_id, question):
             score += 2 if any(term in filename.casefold() for term in terms) else 0
             candidate_text_limit = (
                 MERITS_PLEADING_PAGE_CHARS
-                if broad_record_question and merits_pleading
+                if filing_led_question and merits_pleading
                 else MAX_PAGE_CHARS
             )
             candidate={"source_sha256":source,"filename":filename,"page_number":page,"text":text[:candidate_text_limit]}
             coverage_score = 0
             operational_pleading = bool(PLEADING_OPERATIONAL_TEXT_RE.search(text))
-            if broad_record_question and merits_pleading:
+            if filing_led_question and merits_pleading:
                 # Retain a filing-led record map: each section's caption plus
                 # claim, defense, or prayer pages.
                 if page == section_start:
@@ -188,7 +198,7 @@ def evidence(s3, case_id, question):
     selected=[]; selected_ids=set(); total=0
     ranked = sorted(rows,key=lambda x:(-x[0],x[1].casefold(),x[2]))
     ordered = ranked
-    if broad_record_question:
+    if filing_led_question:
         merits=[]; merit_ids=set(); per_section={}
         def reserve(row):
             item_id=(row[3],row[1],row[2])

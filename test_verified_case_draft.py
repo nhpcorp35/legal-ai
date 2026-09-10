@@ -116,6 +116,27 @@ class SzymczykFilenameCoverageTests(unittest.TestCase):
         name = "158068_2018_ANDRZEJ_SZYMCZYK_v_HUDSON_36_LLC_et_al_ANSWER_3.pdf"
         self.assertRegex(WORKER.normalized_filename(name), WORKER.PLEADING_FILENAME_RE)
 
+    def test_targeted_third_party_defense_question_reserves_page_17_before_exhibits(self):
+        class ThirdPartyDefenseS3(FakeS3):
+            pages = [
+                {"filename": "158068_2018_ANSWER_TO_THIRD_PAR_10.pdf", "page_number": 15,
+                 "text": "ANSWER TO THIRD-PARTY COMPLAINT. Third-party defendants answer."},
+                {"filename": "158068_2018_ANSWER_TO_THIRD_PAR_10.pdf", "page_number": 17,
+                 "text": "AS FOR A FIRST AFFIRMATIVE DEFENSE. Plaintiff was solely negligent."},
+            ] + [
+                {"filename": f"158068_2018_EXHIBIT_S_{index}.pdf", "page_number": 1,
+                 "text": "third-party contractor indemnity defense provision"}
+                for index in range(45)
+            ]
+
+        pages = WORKER.evidence(
+            ThirdPartyDefenseS3(),
+            "NY-Suffolk-600371-2021-DeSousa-v-Calvagno-II-Karcher",
+            "Which verified filing contains the affirmative defenses against the third-party complaint, and what does page 17 state?",
+        )
+        selected = {(page["filename"], page["page_number"]) for page in pages}
+        self.assertIn(("158068_2018_ANSWER_TO_THIRD_PAR_10.pdf", 17), selected)
+
     def test_merits_pleadings_are_reserved_ahead_of_high_scoring_contract_pages(self):
         class DenseS3(FakeS3):
             pages = [
