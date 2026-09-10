@@ -89,6 +89,22 @@ def request_status(s3, case_id, request_id):
     status = value.get("status") if isinstance(value, dict) else None
     return status if status in {"QUEUED", "RUNNING", "READY", "FAILED"} else "FAILED"
 
+
+def listed_objects(s3, **kwargs):
+    """Yield every B2 list result, including pages after the provider's object limit."""
+    continuation_token = None
+    while True:
+        request = dict(kwargs)
+        if continuation_token:
+            request["ContinuationToken"] = continuation_token
+        result = s3.list_objects_v2(**request)
+        yield from result.get("Contents", [])
+        if not result.get("IsTruncated"):
+            return
+        continuation_token = result.get("NextContinuationToken")
+        if not continuation_token:
+            raise RuntimeError("truncated B2 listing without continuation token")
+
 def pending_requests(s3, case_id=None):
     """Yield queued verified-case requests in stable order without retrying failures."""
     if case_id is None:
@@ -98,7 +114,7 @@ def pending_requests(s3, case_id=None):
     for current_case_id in sorted(cases):
         if not CASE_RE.fullmatch(current_case_id):
             continue
-        objects = s3.list_objects_v2(Bucket=os.environ["B2_BUCKET"], Prefix=f"cases/{current_case_id}/derived/draft-requests/", MaxKeys=1000).get("Contents", [])
+        objects = listed_objects(s3, Bucket=os.environ["B2_BUCKET"], Prefix=f"cases/{current_case_id}/derived/draft-requests/", MaxKeys=1000)
         request_ids = sorted(str(item.get("Key", "")).rsplit("/", 1)[-1].removesuffix(".json") for item in objects if str(item.get("Key", "")).endswith(".json"))
         for request_id in request_ids:
             if re.fullmatch(r"draft-[0-9]+-[0-9a-f]{12}", request_id) and request_status(s3, current_case_id, request_id) == "QUEUED":
