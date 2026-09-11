@@ -333,10 +333,14 @@ def evidence(s3, case_id, question):
                 first_defense_page[section] = min(
                     row[2], first_defense_page.get(section, row[2])
                 )
-        mandatory_ids = {
-            (section[0], section[1], page)
-            for section, page in first_defense_page.items()
-        }
+        mandatory_ids = (
+            {
+                (section[0], section[1], page)
+                for section, page in first_defense_page.items()
+            }
+            if not attack_surface_question
+            else set()
+        )
         for row in ranked:
             section=(row[3],row[1],row[7])
             if (
