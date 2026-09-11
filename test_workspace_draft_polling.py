@@ -20,7 +20,7 @@ def _auth_headers():
 
 
 def _request(status=None):
-    item = {
+    return {
         "request_id": REQUEST_ID,
         "question": "What relief is requested?",
         "requested_by": "allen@example.com",
@@ -28,7 +28,6 @@ def _request(status=None):
         "created_at": 1_000,
         "draft": None,
     }
-    return item
 
 
 class WorkspaceDraftPollingTests(unittest.TestCase):
@@ -70,10 +69,24 @@ class WorkspaceDraftPollingTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("window.setInterval(check,15000)", html)
 
+    def test_direct_status_read_returns_ready_answer_url(self):
+        ready = _request(status="READY")
+        ready["draft"] = {"summary": "ready", "findings": [], "missing_information": []}
+        with patch.object(legalai, "load_exact_draft_request", return_value=ready):
+            response = legalai.app.test_client().get(
+                f"/workspace/matters/{CASE_ID}/drafts/{REQUEST_ID}/status",
+                headers=_auth_headers(),
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["status"], "READY")
+        self.assertIn(f"/workspace/matters/{CASE_ID}/drafts/{REQUEST_ID}", payload["answer_url"])
+
     def test_automatic_completion_is_clearly_announced_on_answer_page(self):
         ready = _request(status="READY")
         ready["draft"] = {"summary": "ready", "findings": [], "missing_information": []}
-        with patch.object(legalai, "load_draft_requests", return_value=[ready]):
+        with patch.object(legalai, "load_exact_draft_request", return_value=ready):
             response = legalai.app.test_client().get(
                 f"/workspace/matters/{CASE_ID}/drafts/{REQUEST_ID}?completed=1",
                 headers=_auth_headers(),
