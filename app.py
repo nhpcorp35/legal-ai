@@ -2487,6 +2487,26 @@ def load_draft_requests(case_id, *, force_refresh=False):
     return entries
 
 
+def load_exact_draft_request(case_id, request_id):
+    """Read one draft directly; avoid a full queue scan for status/detail views."""
+    gateway_url = os.environ.get("LEGALAI_REVIEW_GATEWAY_URL", "").rstrip("/")
+    secret = os.environ.get("LEGALAI_REVIEW_GATEWAY_SECRET", "")
+    if not gateway_url or not secret or not re.fullmatch(r"draft-[0-9]+-[0-9a-f]{12}", str(request_id or "")):
+        return None
+    request_data = urllib.request.Request(
+        f"{gateway_url}/portal/cases/{urllib.parse.quote(case_id, safe='')}/draft-requests/{request_id}/status",
+        headers={"X-LegalAI-Portal-Secret": secret}, method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request_data, timeout=15) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, urllib.error.HTTPError, ValueError, UnicodeDecodeError, TimeoutError):
+        return None
+    if not isinstance(result, dict) or result.get("status") not in {"QUEUED", "RUNNING", "READY", "FAILED"}:
+        return None
+    return result
+
+
 def load_draft_input_audit(case_id, request_id):
     """Read citation-only retrieval audit data through the protected gateway."""
     gateway_url = os.environ.get("LEGALAI_REVIEW_GATEWAY_URL", "").rstrip("/")
@@ -3671,25 +3691,15 @@ def workspace_matter_draft_status(case_id, request_id):
         return basic_auth_required_response()
     if not re.fullmatch(r"draft-[0-9]+-[0-9a-f]{12}", request_id):
         abort(404)
-    if case_id != CASE00_ID:
-        try:
-            registered = {item["case_id"]: item["stage"] for item in load_registered_cases()}
-        except GatewayUnavailableError as exc:
-            return gateway_unavailable_response(exc)
-        if registered.get(case_id) != "Verified source indexed":
-            abort(404)
-    item = next(
-        (entry for entry in (load_draft_requests(case_id, force_refresh=True) or []) if entry.get("request_id") == request_id),
-        None,
-    )
+    item = load_exact_draft_request(case_id, request_id)
     if item is None:
         abort(404)
-    status = item.get("status")
+    status = item["status"]
     return Response(
         json.dumps({
             "status": status,
             "answer_url": url_for("workspace_matter_draft_detail", case_id=case_id, request_id=request_id)
-            if status == "READY" and item.get("draft") else None,
+            if status == "READY" else None,
         }),
         mimetype="application/json",
         headers={"Cache-Control": "no-store"},
@@ -3728,11 +3738,14 @@ def workspace_matter_draft_detail(case_id, request_id):
         return basic_auth_required_response()
     if not re.fullmatch(r"draft-[0-9]+-[0-9a-f]{12}", request_id):
         abort(404)
-    # A completed job can transition after the list page populated its short
-    # cache. Detail links are exact, user-initiated reads, so refresh before
-    # deciding that an answer does not exist.
-    item = next((entry for entry in (load_draft_requests(case_id, force_refresh=True) or []) if entry["request_id"] == request_id and entry["draft"]), None)
-    if item is None:
+    # Exact detail reads must not depend on the bounded queue listing.
+    item = load_exact_draft_request(case_id, request_id)
+    if (
+        item is None
+        or item.get("status") != "READY"
+        or not isinstance(item.get("draft"), dict)
+        or not isinstance(item.get("question"), str)
+    ):
         abort(404)
     return render_template_string(
         """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Answered Question</title><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:900px;margin:0 auto;padding:42px 24px 64px}a{color:#123f63}h1{margin:0 0 8px;font-size:clamp(2rem,5vw,3rem)}p,li{font-size:1.05rem;line-height:1.55}.meta{color:#52606d}.panel{background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:22px;margin-top:26px;box-shadow:0 2px 8px #0f172a10}.completed-notice{border-left:5px solid #15803d;background:#f0fdf4;font-size:1.15rem;font-weight:bold}.citation-list{list-style:none;margin:7px 0 0;padding:0}.citation-list li{font-size:.9rem;line-height:1.35;margin:4px 0}.citation-list a{overflow-wrap:anywhere}.report-badge{display:inline-block;margin:0 0 12px;padding:7px 11px;border-radius:999px;background:#123f63;color:#fff;font-weight:bold;letter-spacing:.03em;font-size:.9rem}.report-intro{border-left:5px solid #123f63;padding:11px 14px;background:#eef6fc;font-weight:bold}</style></head><body><main><p><a href="{{ url_for('workspace_matter_drafts', case_id=case_id) }}">← Answered questions</a></p><h1>Answered question</h1><p class="meta">{{ case_id }}</p>{% if completed_automatically %}<section class="panel completed-notice" role="status">✓ Draft completed automatically — no refresh was needed.</section>{% endif %}<section class="panel">{% if is_top_attack_report %}<div class="report-badge">V4.0 TOP ATTACK SURFACES REPORT</div><p class="report-intro">Ranked source-supported vulnerabilities from the verified record</p>{% endif %}<p><strong>Question</strong><br>{{ item.question }}</p><p><strong>Attorney review required.</strong> {{ item.draft.summary }}</p>{% if can_regenerate %}<p><a href="{{ url_for('workspace_matter_draft_audit', case_id=case_id, request_id=item.request_id) }}">View retrieval audit →</a></p>{% endif %}{% if can_regenerate %}<form method="post" action="{{ url_for('workspace_matter_draft', case_id=case_id) }}"><input type="hidden" name="action" value="regenerate"><input type="hidden" name="request_id" value="{{ item.request_id }}"><button type="submit">Regenerate this completed draft</button></form>{% endif %}<ul>{% for finding in item.draft.findings %}<li>{{ finding.statement }}{% if finding.citations %}<ul class="citation-list">{% for cite in finding.citations %}<li>{% if case_id == case00_id %}<a href="{{ url_for('workspace_case00_pdf', filename=cite.filename) }}#page={{ cite.page_number }}" target="_blank" rel="noopener">Open verified source — p. {{ cite.page_number }} · {{ cite.filename|truncate(72, True, '…') }}</a>{% else %}<a href="{{ url_for('workspace_matter_pdf', case_id=case_id, filename=cite.filename, source_sha256=cite.source_sha256) }}#page={{ cite.page_number }}" target="_blank" rel="noopener">Open verified source — p. {{ cite.page_number }} · {{ cite.filename|truncate(72, True, '…') }}</a>{% endif %}</li>{% endfor %}</ul>{% endif %}</li>{% endfor %}</ul>{% if item.draft.missing_information %}<p><strong>Missing information:</strong> {{ item.draft.missing_information|join('; ') }}</p>{% endif %}</section></main></body></html>""",
