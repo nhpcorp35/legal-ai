@@ -373,5 +373,42 @@ class SzymczykFilenameCoverageTests(unittest.TestCase):
             )
 
 
+class AttackSurfaceRetrievalTests(unittest.TestCase):
+    def test_v4_reserves_room_for_sworn_and_party_linked_exhibit_material(self):
+        class AttackSurfaceS3(FakeS3):
+            pages = [
+                {
+                    "filename": f"Answer {index:02d}.pdf",
+                    "page_number": 2,
+                    "text": "AS FOR A FIRST AFFIRMATIVE DEFENSE. Plaintiff denies the claims.",
+                }
+                for index in range(30)
+            ] + [
+                {
+                    "filename": "158068_2018_EXHIBIT_S_111.pdf",
+                    "page_number": 4,
+                    "text": "AFFIDAVIT OF JANE DOE. I am sworn and state the following facts.",
+                },
+                {
+                    "filename": "158068_2018_EXHIBIT_S_112.pdf",
+                    "page_number": 7,
+                    "text": "Email correspondence from Hudson 37 LLC regarding the incident report.",
+                },
+            ]
+
+        pages = WORKER.evidence(
+            AttackSurfaceS3(),
+            "NY-Suffolk-600371-2021-DeSousa-v-Calvagno-II-Karcher",
+            "Prepare the v4.0 Top Attack Surfaces Report from the verified record.",
+        )
+        selected = [(page["filename"], page["page_number"]) for page in pages]
+        self.assertIn(("158068_2018_EXHIBIT_S_111.pdf", 4), selected)
+        self.assertIn(("158068_2018_EXHIBIT_S_112.pdf", 7), selected)
+        self.assertLess(
+            selected.index(("158068_2018_EXHIBIT_S_111.pdf", 4)),
+            selected.index(("Answer 18.pdf", 2)),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
