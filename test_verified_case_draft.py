@@ -374,6 +374,33 @@ class SzymczykFilenameCoverageTests(unittest.TestCase):
 
 
 class AttackSurfaceRetrievalTests(unittest.TestCase):
+    def test_v4_prompt_requires_named_party_propositions_and_two_sided_citations(self):
+        result = {
+            "summary": "Internal draft.",
+            "findings": [{
+                "statement": "Rank 1 — Contradiction — Hudson 37's position conflicts with the court order.",
+                "citations": [{"source_sha256": "a" * 64, "filename": "Order.pdf", "page_number": 4}],
+            }],
+            "missing_information": [],
+            "limitations": [],
+        }
+        response = mock.MagicMock()
+        response.read.return_value = json.dumps({
+            "output": [{"content": [{"text": json.dumps(result)}]}]
+        }).encode()
+        response.__enter__.return_value = response
+        with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}), mock.patch.object(WORKER.urllib.request, "urlopen", return_value=response) as urlopen:
+            WORKER.generate(
+                "Prepare the v4.0 Top Attack Surfaces Report from the verified record.",
+                [{"source_sha256": "a" * 64, "filename": "Order.pdf", "page_number": 4, "text": "Hudson 37 LLC."}],
+            )
+
+        payload = json.loads(urlopen.call_args.args[0].data.decode())
+        instructions = json.loads(payload["input"])["instructions"]
+        self.assertIn("identify the affected party or litigation position", instructions)
+        self.assertIn("specific record proposition on each side", instructions)
+        self.assertIn("must cite each of the two conflicting verified propositions", instructions)
+
     def test_v4_reserves_room_for_sworn_and_party_linked_exhibit_material(self):
         class AttackSurfaceS3(FakeS3):
             pages = [
