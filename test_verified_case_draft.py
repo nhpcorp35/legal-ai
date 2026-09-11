@@ -400,6 +400,8 @@ class AttackSurfaceRetrievalTests(unittest.TestCase):
         self.assertIn("identify the affected party or litigation position", instructions)
         self.assertIn("specific record proposition on each side", instructions)
         self.assertIn("must cite each of the two conflicting verified propositions", instructions)
+        self.assertIn("Do not rank a defense merely because", instructions)
+        self.assertIn("return fewer when fewer qualify", instructions)
 
     def test_v4_reserves_room_for_sworn_and_party_linked_exhibit_material(self):
         class AttackSurfaceS3(FakeS3):
