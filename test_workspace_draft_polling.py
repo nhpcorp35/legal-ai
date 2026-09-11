@@ -52,7 +52,7 @@ class WorkspaceDraftPollingTests(unittest.TestCase):
         html = response.get_data(as_text=True)
         self.assertEqual(response.status_code, 200)
         self.assertIn("window.setInterval(check,15000)", html)
-        self.assertIn("window.location.assign(update.answer_url)", html)
+        self.assertIn("window.location.assign(update.answer_url+'?completed=1')", html)
 
     def test_completed_submission_does_not_start_polling(self):
         ready = _request(status="READY")
@@ -69,6 +69,19 @@ class WorkspaceDraftPollingTests(unittest.TestCase):
         html = response.get_data(as_text=True)
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("window.setInterval(check,15000)", html)
+
+    def test_automatic_completion_is_clearly_announced_on_answer_page(self):
+        ready = _request(status="READY")
+        ready["draft"] = {"summary": "ready", "findings": [], "missing_information": []}
+        with patch.object(legalai, "load_draft_requests", return_value=[ready]):
+            response = legalai.app.test_client().get(
+                f"/workspace/matters/{CASE_ID}/drafts/{REQUEST_ID}?completed=1",
+                headers=_auth_headers(),
+            )
+
+        html = response.get_data(as_text=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Draft completed automatically — no refresh was needed.", html)
 
 
 if __name__ == "__main__":
