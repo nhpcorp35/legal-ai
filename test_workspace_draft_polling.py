@@ -52,6 +52,7 @@ class WorkspaceDraftPollingTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("window.setInterval(check,15000)", html)
         self.assertIn("window.location.assign(update.answer_url+'?completed=1')", html)
+        self.assertIn("Status is still syncing", html)
 
     def test_completed_submission_does_not_start_polling(self):
         ready = _request(status="READY")
