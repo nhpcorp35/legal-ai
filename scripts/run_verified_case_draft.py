@@ -57,6 +57,23 @@ ATTACK_SURFACE_PRIMARY_FILENAME_RE = re.compile(
     re.IGNORECASE,
 )
 ATTACK_SURFACE_EXHIBIT_FILENAME_RE = re.compile(r"\bexhibit\b", re.IGNORECASE)
+# Exhibit filenames are often anonymized by NYSCEF export.  Detect the
+# underlying evidentiary material from its verified page text as well.
+ATTACK_SURFACE_PRIMARY_TEXT_RE = re.compile(
+    r"\b(?:decision\s*(?:and|&)\s*order|\bordered\b|affidavit|affirmation|"
+    r"deposition|examination\s+before\s+trial|transcript|testif(?:y|ied|ies)|"
+    r"testimony|sworn)\b",
+    re.IGNORECASE,
+)
+ATTACK_SURFACE_PARTY_EVIDENCE_TEXT_RE = re.compile(
+    r"\b(?:incident\s+report|accident\s+report|notice\s+of\s+claim|"
+    r"notice\s+of\s+occurrence|demand\s+letter|email|correspondence|"
+    r"invoice|work\s+order|daily\s+report|inspection\s+report)\b",
+    re.IGNORECASE,
+)
+ATTACK_SURFACE_MERITS_PLEADING_PAGE_LIMIT = 18
+ATTACK_SURFACE_PRIMARY_PAGE_LIMIT = 18
+ATTACK_SURFACE_EXHIBIT_PAGE_LIMIT = 9
 
 
 class PreGenerationGateError(ValueError):
@@ -267,13 +284,16 @@ def evidence(s3, case_id, question):
                 # exhibits. Generic contract excerpts get no v4 preference.
                 if merits_pleading:
                     coverage_score += 40
-                elif ATTACK_SURFACE_PRIMARY_FILENAME_RE.search(pleading_filename):
-                    coverage_score += 28
+                elif (
+                    ATTACK_SURFACE_PRIMARY_FILENAME_RE.search(pleading_filename)
+                    or ATTACK_SURFACE_PRIMARY_TEXT_RE.search(text)
+                ):
+                    coverage_score += 32
                 elif (
                     ATTACK_SURFACE_EXHIBIT_FILENAME_RE.search(pleading_filename)
-                    and PLEADING_TEXT_RE.search(text)
+                    and ATTACK_SURFACE_PARTY_EVIDENCE_TEXT_RE.search(text)
                 ):
-                    coverage_score += 16
+                    coverage_score += 20
                 if operational_pleading:
                     coverage_score += 10
             if score or coverage_score:
@@ -289,9 +309,14 @@ def evidence(s3, case_id, question):
     ordered = ranked
     if filing_led_question:
         merits=[]; merit_ids=set(); per_section={}
+        merits_limit = (
+            ATTACK_SURFACE_MERITS_PLEADING_PAGE_LIMIT
+            if attack_surface_question
+            else MERITS_PLEADING_PAGE_LIMIT
+        )
         def reserve(row):
             item_id=(row[3],row[1],row[2])
-            if item_id in merit_ids or len(merits) >= MERITS_PLEADING_PAGE_LIMIT:
+            if item_id in merit_ids or len(merits) >= merits_limit:
                 return False
             merits.append(row); merit_ids.add(item_id)
             section=(row[3],row[1],row[7])
@@ -339,7 +364,31 @@ def evidence(s3, case_id, question):
             section=(row[3],row[1],row[7])
             if row[5] and row[6] and per_section.get(section,0) < MERITS_PLEADING_PAGES_PER_FILING:
                 reserve(row)
-        ordered = merits + [row for row in ranked if (row[3], row[1], row[2]) not in merit_ids]
+        if attack_surface_question:
+            remaining = [row for row in ranked if (row[3], row[1], row[2]) not in merit_ids]
+            primary = [
+                row for row in remaining
+                if (
+                    ATTACK_SURFACE_PRIMARY_FILENAME_RE.search(normalized_filename(row[1]))
+                    or ATTACK_SURFACE_PRIMARY_TEXT_RE.search(row[4]["text"])
+                )
+            ][:ATTACK_SURFACE_PRIMARY_PAGE_LIMIT]
+            primary_ids = {(row[3], row[1], row[2]) for row in primary}
+            exhibits = [
+                row for row in remaining
+                if (
+                    (row[3], row[1], row[2]) not in primary_ids
+                    and ATTACK_SURFACE_EXHIBIT_FILENAME_RE.search(normalized_filename(row[1]))
+                    and ATTACK_SURFACE_PARTY_EVIDENCE_TEXT_RE.search(row[4]["text"])
+                )
+            ][:ATTACK_SURFACE_EXHIBIT_PAGE_LIMIT]
+            material_ids = primary_ids | {(row[3], row[1], row[2]) for row in exhibits}
+            ordered = merits + primary + exhibits + [
+                row for row in remaining
+                if (row[3], row[1], row[2]) not in material_ids
+            ]
+        else:
+            ordered = merits + [row for row in ranked if (row[3], row[1], row[2]) not in merit_ids]
     ordered_items = targeted_pages + [row[4] for row in ordered]
     for item in ordered_items:
         filename, page, source = item["filename"], item["page_number"], item["source_sha256"]
