@@ -3,6 +3,7 @@
 import re
 
 from core.models import (
+    DocumentReference,
     IssueFinding,
 )
 
@@ -20,7 +21,7 @@ from core.utils.issue_accessors import (
 from core.utils.scoring import clamp_score, normalize_risk
 
 
-ENGINE_VERSION = "Issue Engine v3.4 — Source Traceability"
+ENGINE_VERSION = "Issue Engine v4.0 — First-Hand Evidence Filter"
 
 
 REQUIRED_DOCUMENT_TYPES = {
@@ -128,6 +129,12 @@ LOW_RISK_TERMS = [
     "appears to",
 ]
 
+_FIRST_HAND_METADATA_FIELDS = ("first_hand_evidence", "first_hand", "personal_knowledge", "authenticated")
+_FIRST_HAND_SOURCE_KINDS = {"first_hand", "first_hand_evidence", "sworn_testimony", "deposition", "witness_affidavit", "party_admission", "authenticated_exhibit", "business_record"}
+_FIRST_HAND_DOCUMENT_TYPES = {"deposition", "transcript", "testimony", "witness_statement"}
+_ADVOCACY_DOCUMENT_TYPES = {"complaint", "answer", "motion", "memo", "memorandum", "brief", "opposition", "reply", "affirmation", "pleading"}
+_SECOND_HAND_MARKERS = ("upon information and belief", "counsel affirms", "attorney affirmation", "affirmation of counsel", "according to", "was informed")
+
 
 def clean_text(value):
     return " ".join(str(value or "").split()).strip()
@@ -147,6 +154,46 @@ def get_doc_name(doc):
 
 def get_doc_type(doc):
     return clean_text(doc.get("type") or doc.get("category") or "other")
+
+
+def _truthy_metadata(value):
+    return value if isinstance(value, bool) else clean_text(value).lower() in {"1", "true", "yes", "y"}
+
+
+def classify_first_hand_evidence(doc):
+    """Classify source quality; this is not an admissibility ruling."""
+    doc = doc or {}
+    doc_type = get_doc_type(doc).lower()
+    source_kind = clean_text(doc.get("source_kind") or doc.get("evidence_kind") or doc.get("classification")).lower().replace(" ", "_")
+    author_role = clean_text(doc.get("author_role") or doc.get("author_type")).lower()
+    haystack = " ".join((get_doc_name(doc).lower(), doc_type, get_doc_text(doc).lower()[:800], source_kind, author_role))
+    if re.search(r"(?:affidavit|affirmation)[_\s]+of[_\s]+service", haystack):
+        return False, "service_filing_not_substantive_evidence"
+    if any(marker in haystack for marker in _SECOND_HAND_MARKERS):
+        return False, "second_hand_or_advocacy_language"
+    if doc_type in _ADVOCACY_DOCUMENT_TYPES or "attorney" in author_role or "counsel" in author_role:
+        return False, "pleading_or_attorney_advocacy_not_first_hand_evidence"
+    if any(_truthy_metadata(doc.get(field)) for field in _FIRST_HAND_METADATA_FIELDS):
+        return True, "explicit_first_hand_metadata"
+    if source_kind in _FIRST_HAND_SOURCE_KINDS:
+        return True, "first_hand_source_kind"
+    if doc_type in _FIRST_HAND_DOCUMENT_TYPES:
+        return True, "first_hand_document_type"
+    if doc_type == "affidavit" and "attorney" not in haystack and "counsel" not in haystack:
+        return True, "non_service_affidavit"
+    return False, "first_hand_provenance_not_established"
+
+
+def filter_first_hand_evidence(documents):
+    """Keep only factual sources and retain a compact exclusion audit."""
+    accepted, excluded = [], []
+    for doc in documents or []:
+        is_first_hand, reason = classify_first_hand_evidence(doc)
+        if is_first_hand:
+            accepted.append(doc)
+        else:
+            excluded.append({"filename": get_doc_name(doc), "document_type": get_doc_type(doc), "reason": reason})
+    return accepted, excluded
 
 
 def first_text_document(documents):
@@ -824,9 +871,12 @@ def build_issue_analysis(selected_case, documents=None, attorney_notes=None):
     documents = documents or []
     attorney_notes = attorney_notes or []
 
-    motion_type = detect_motion_type(selected_case, documents)
+    source_inventory = list(documents)
+    documents, excluded_sources = filter_first_hand_evidence(source_inventory)
 
-    document_groups = classify_documents(documents)
+    motion_type = detect_motion_type(selected_case, source_inventory)
+
+    document_groups = classify_documents(source_inventory)
 
     missing_evidence = detect_missing_documents(documents, motion_type)
     burden_issues = detect_burden_issues(motion_type, documents)
@@ -883,6 +933,13 @@ def build_issue_analysis(selected_case, documents=None, attorney_notes=None):
         "engine": ENGINE_VERSION,
         "motion_type": motion_type,
         "document_groups": document_groups,
+        "first_hand_evidence": {
+            "accepted_count": len(documents),
+            "excluded_count": len(excluded_sources),
+            "accepted_documents": [get_doc_name(doc) for doc in documents],
+            "excluded_documents": excluded_sources,
+            "qualification": "Factual findings use only first-hand evidence. Pleadings and attorney advocacy are retained in the inventory but are not proof.",
+        },
         "core_issues": core_issues,
         "core_issue_labels": flatten_issue_labels(core_issues),
         "contradictions": contradictions + position_conflict_issues,
