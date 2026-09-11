@@ -1,3 +1,4 @@
+# This one-time recovery trigger exists only to process request draft-1789149705-ad4d36ce40a0.
 name: Recover Szymczyk internal draft
 
 on:
