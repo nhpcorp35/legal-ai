@@ -74,6 +74,13 @@ ATTACK_SURFACE_PARTY_EVIDENCE_TEXT_RE = re.compile(
 ATTACK_SURFACE_MERITS_PLEADING_PAGE_LIMIT = 18
 ATTACK_SURFACE_PRIMARY_PAGE_LIMIT = 18
 ATTACK_SURFACE_EXHIBIT_PAGE_LIMIT = 9
+# Attorney affirmations, counsel statements, service affidavits, and similar
+# advocacy may describe evidence but are not first-hand proof.
+ATTACK_SURFACE_NON_FIRST_HAND_RE = re.compile(
+    r"\b(?:attorney|counsel)\b|\b(?:affidavit|affirmation)\s+of\s+service\b|"
+    r"\b(?:counsel\s+(?:affirm|states?|argues?))\b|\b(?:affirmation\s+of\s+counsel)\b",
+    re.IGNORECASE,
+)
 
 
 class PreGenerationGateError(ValueError):
@@ -167,6 +174,24 @@ def verified_sources(s3, case_id):
     if not digests or any(not isinstance(digest, str) or not SHA256_RE.fullmatch(digest) for digest in digests) or len(set(digests)) != len(digests) or original not in digests:
         raise ValueError("invalid verified source set")
     return digests
+
+
+def attack_surface_first_hand_page(filename: str, text: str) -> bool:
+    """Return whether a v4 factual source is first-hand rather than advocacy."""
+    combined = f"{filename} {text[:1200]}"
+    if ATTACK_SURFACE_NON_FIRST_HAND_RE.search(combined):
+        return False
+    normalized = normalized_filename(filename)
+    if "affidavit or affirm" in normalized:
+        return bool(re.search(r"\b(?:i,|i am|personally|deponent|sworn)\b", text, re.IGNORECASE))
+    return bool(
+        ATTACK_SURFACE_PRIMARY_FILENAME_RE.search(normalized)
+        or ATTACK_SURFACE_PRIMARY_TEXT_RE.search(text)
+        or (
+            ATTACK_SURFACE_EXHIBIT_FILENAME_RE.search(normalized)
+            and ATTACK_SURFACE_PARTY_EVIDENCE_TEXT_RE.search(text)
+        )
+    )
 
 
 def evidence(s3, case_id, question):
@@ -285,8 +310,7 @@ def evidence(s3, case_id, question):
                 if merits_pleading:
                     coverage_score += 40
                 elif (
-                    ATTACK_SURFACE_PRIMARY_FILENAME_RE.search(pleading_filename)
-                    or ATTACK_SURFACE_PRIMARY_TEXT_RE.search(text)
+                    attack_surface_first_hand_page(filename, text)
                 ):
                     coverage_score += 32
                 elif (
@@ -373,8 +397,7 @@ def evidence(s3, case_id, question):
             primary = [
                 row for row in remaining
                 if (
-                    ATTACK_SURFACE_PRIMARY_FILENAME_RE.search(normalized_filename(row[1]))
-                    or ATTACK_SURFACE_PRIMARY_TEXT_RE.search(row[4]["text"])
+                    attack_surface_first_hand_page(row[1], row[4]["text"])
                 )
             ][:ATTACK_SURFACE_PRIMARY_PAGE_LIMIT]
             primary_ids = {(row[3], row[1], row[2]) for row in primary}
@@ -382,8 +405,7 @@ def evidence(s3, case_id, question):
                 row for row in remaining
                 if (
                     (row[3], row[1], row[2]) not in primary_ids
-                    and ATTACK_SURFACE_EXHIBIT_FILENAME_RE.search(normalized_filename(row[1]))
-                    and ATTACK_SURFACE_PARTY_EVIDENCE_TEXT_RE.search(row[4]["text"])
+                    and attack_surface_first_hand_page(row[1], row[4]["text"])
                 )
             ][:ATTACK_SURFACE_EXHIBIT_PAGE_LIMIT]
             material_ids = primary_ids | {(row[3], row[1], row[2]) for row in exhibits}
@@ -429,7 +451,7 @@ def generate(question, pages):
     schema={"type":"object","additionalProperties":False,"required":["summary","findings","missing_information","limitations"],"properties":{"summary":{"type":"string"},"findings":{"type":"array","minItems":1,"items":{"type":"object","additionalProperties":False,"required":["statement","citations"],"properties":{"statement":{"type":"string"},"citations":{"type":"array","minItems":1,"items":{"type":"object","additionalProperties":False,"required":["source_sha256","filename","page_number"],"properties":{"source_sha256":{"type":"string"},"filename":{"type":"string"},"page_number":{"type":"integer","minimum":1}}}}}}},"missing_information":{"type":"array","items":{"type":"string"}},"limitations":{"type":"array","items":{"type":"string"}}}}
     instructions = "Use only the supplied verified excerpts. This is an internal attorney-review draft, not legal advice or a conclusion. Make no unsupported inference. Every finding must cite supplied pages exactly. Before stating that information is missing or calling something an open question, check the entire supplied record-wide excerpt set, including caption pages and operative pages from related pleadings. Use the filing map only as a navigation aid; verify every proposition against its cited pages. Treat pleaded alternatives, denials, and defenses as attributed litigation positions, not established facts or contradictions. For a question about parties, claims, defenses, or relief, make the summary a concise party-by-party and pleading-by-pleading map: identify the party, procedural role, pleading, opposing/target party when expressly shown, and the pleaded claim, defense, or relief; do not use dense narrative. Identify missing information only when it remains unsupported after that record-wide check."
     if TOP_ATTACK_SURFACES_MARKER in question.casefold():
-        instructions += " For the v4.0 Top Attack Surfaces Report, prioritize identified pleadings, orders, sworn testimony, and party-specific exhibits over generic contract excerpts. Use a generic contract provision only where it directly conflicts with, limits, or corroborates a party-identified filing or evidence in the supplied pages. Return no more than eight findings ordered from highest to lower materiality; return fewer when fewer qualify. Start every finding with 'Rank N — [Contradiction / Credibility / Procedural weakness] —'. For every finding, use this attorney-readable sequence in the statement: (1) identify the affected party or litigation position only when expressly named in the supplied pages; (2) state the specific record proposition on each side of the tension, including the source type or filing where useful; (3) explain why the two propositions create the asserted vulnerability; and (4) state any material limit. Never use a broad label such as 'causation record' or 'notice challenge' without the particular propositions that support it. A contradiction must cite each of the two conflicting verified propositions. A credibility vulnerability must identify the person or party and the concrete inconsistency, omission, or conflict; if the record does not identify one, do not call it a credibility issue. A procedural weakness must identify the party position, pleading, order, burden, remedy, notice, timing, preservation, or posture actually shown. Do not rank a defense merely because its factual proof, operative pleading, policy, or other supporting material is absent from the supplied excerpts. It qualifies only when the supplied pages show an affirmative mismatch with a contract, order, testimony, or other identified evidence, or when a court actually addressed the position. Do not invent a weakness from silence, characterize advocacy as fact, or convert alternative pleading or a denial into a contradiction."
+        instructions += " For the v4.0 Top Attack Surfaces Report, prioritize identified pleadings, orders, sworn testimony, and party-specific exhibits over generic contract excerpts. Use a generic contract provision only where it directly conflicts with, limits, or corroborates a party-identified filing or evidence in the supplied pages. Return no more than eight findings ordered from highest to lower materiality; return fewer when fewer qualify. Start every finding with 'Rank N — [Contradiction / Credibility / Procedural weakness] —'. For every finding, use this attorney-readable sequence in the statement: (1) identify the affected party or litigation position only when expressly named in the supplied pages; (2) state the specific record proposition on each side of the tension, including the source type or filing where useful; (3) explain why the two propositions create the asserted vulnerability; and (4) state any material limit. Never use a broad label such as 'causation record' or 'notice challenge' without the particular propositions that support it. A contradiction must cite each of the two conflicting verified propositions. A credibility vulnerability must identify the person or party and the concrete inconsistency, omission, or conflict; if the record does not identify one, do not call it a credibility issue. A procedural weakness must identify the party position, pleading, order, burden, remedy, notice, timing, preservation, or posture actually shown. Do not rank a defense merely because its factual proof, operative pleading, policy, or other supporting material is absent from the supplied excerpts. It qualifies only when the supplied pages show an affirmative mismatch with a contract, order, testimony, or other identified evidence, or when a court actually addressed the position. Do not invent a weakness from silence, characterize advocacy as fact, or convert alternative pleading or a denial into a contradiction. A pleading may establish procedural posture only. Do not make a factual or credibility finding from an attorney affirmation, counsel statement, service affidavit, or a party’s characterization of an absent exhibit, deposition, report, or other evidence. When the underlying first-hand material is not among the supplied pages, identify that limitation and omit the finding rather than treating advocacy as proof."
     prompt={"question":question,"instructions":instructions,"pleading_map":pleading_map(pages),"pages":pages}
     payload={"model":os.environ.get("LEGALAI_OPENAI_MODEL","gpt-5.6-sol"),"instructions":"Return only strict JSON matching the schema.","input":json.dumps(prompt),"text":{"format":{"type":"json_schema","name":"verified_internal_draft","strict":True,"schema":schema}}}
     request=urllib.request.Request("https://api.openai.com/v1/responses",data=json.dumps(payload).encode(),headers={"Authorization":f"Bearer {os.environ['OPENAI_API_KEY']}","Content-Type":"application/json"},method="POST")
