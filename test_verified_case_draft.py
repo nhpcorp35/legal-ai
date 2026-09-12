@@ -59,6 +59,20 @@ class EvidenceFailClosedTests(unittest.TestCase):
         self.assertIn("breach of contract", pages[0]["text"].casefold())
 
 
+class ClaimsAndDefensesPromptTests(unittest.TestCase):
+    def test_claims_and_defenses_prompt_preserves_party_role_and_pleading_limits(self):
+        result = {"summary": "Internal draft.", "findings": [{"statement": "Pleading map.", "citations": [{"source_sha256": "a" * 64, "filename": "Complaint.pdf", "page_number": 1}]}], "missing_information": [], "limitations": []}
+        response = mock.MagicMock()
+        response.read.return_value = json.dumps({"output": [{"content": [{"text": json.dumps(result)}]}]}).encode()
+        response.__enter__.return_value = response
+        with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}), mock.patch.object(WORKER.urllib.request, "urlopen", return_value=response) as urlopen:
+            WORKER.generate("What claims and defenses affect summary judgment?", [{"source_sha256": "a" * 64, "filename": "Complaint.pdf", "page_number": 1, "text": "Private nuisance."}])
+        instructions = json.loads(json.loads(urlopen.call_args.args[0].data.decode())["input"])["instructions"]
+        self.assertIn("pleaded claims and party role", instructions)
+        self.assertIn("named owner", instructions)
+        self.assertIn("pleading typo", instructions)
+
+
 class PendingQueueTests(unittest.TestCase):
     class QueueS3:
         def list_objects_v2(self, **kwargs):
