@@ -331,6 +331,16 @@ def evidence(s3, case_id, question):
                     coverage_score += 20
                 if operational_pleading:
                     coverage_score += 10
+            # A party/claims question can require a non-pleading record page
+            # that directly addresses ownership, residence, or control. Keep
+            # this narrow so advocacy alone is not elevated into a fact.
+            party_role_evidence = (
+                filing_led_question
+                and PLEADING_PARTY_ROLE_TEXT_RE.search(text)
+                and any(term in lowered for term in ("karcher", "calvagno"))
+            )
+            if party_role_evidence:
+                coverage_score += 14
             if score or coverage_score:
                 rows.append((
                     score + coverage_score, filename, page, source, candidate,
