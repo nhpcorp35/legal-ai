@@ -69,8 +69,21 @@ class ClaimsAndDefensesPromptTests(unittest.TestCase):
             WORKER.generate("What claims and defenses affect summary judgment?", [{"source_sha256": "a" * 64, "filename": "Complaint.pdf", "page_number": 1, "text": "Private nuisance."}])
         instructions = json.loads(json.loads(urlopen.call_args.args[0].data.decode())["input"])["instructions"]
         self.assertIn("pleaded claims and party role", instructions)
-        self.assertIn("identifies a named defendant as an owner", instructions)
+        self.assertIn("ownership assertion and a party's nonresidence", instructions)
         self.assertIn("pleading typo", instructions)
+
+
+class PartyRoleEvidenceTests(unittest.TestCase):
+    def test_joint_owner_and_no_control_pages_survive_party_claims_retrieval(self):
+        class RoleS3(FakeS3):
+            pages = [
+                {"filename": "Complaint.pdf", "page_number": 1, "text": "Plaintiff against Calvagno and Karcher."},
+                {"filename": "Karcher Affidavit.pdf", "page_number": 1, "text": "Karcher never resided at the property and had no control."},
+                {"filename": "Plaintiffs Opposition.pdf", "page_number": 3, "text": "Karcher is a joint owner of the premises by recorded deed."},
+            ]
+        pages = WORKER.evidence(RoleS3(), "NY-Suffolk-600371-2021-DeSousa-v-Calvagno-II-Karcher", "What claims and defenses affect Calvagno and Karcher?")
+        selected = {page["filename"] for page in pages}
+        self.assertTrue({"Karcher Affidavit.pdf", "Plaintiffs Opposition.pdf"}.issubset(selected))
 
 
 class PendingQueueTests(unittest.TestCase):
