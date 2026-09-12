@@ -85,6 +85,20 @@ class PartyRoleEvidenceTests(unittest.TestCase):
         selected = {page["filename"] for page in pages}
         self.assertTrue({"Karcher Affidavit.pdf", "Plaintiffs Opposition.pdf"}.issubset(selected))
 
+    def test_audit_flags_party_role_evidence_outside_bounded_slice(self):
+        class RoleS3(FakeS3):
+            pages = [
+                {"filename": "Karcher Affidavit.pdf", "page_number": 1, "text": "Karcher never resided at the property and had no control."},
+                {"filename": "Plaintiffs Opposition.pdf", "page_number": 3, "text": "Karcher is a joint owner of the premises by recorded deed."},
+            ]
+        with mock.patch.object(WORKER, "MAX_PAGES", 1):
+            pages = WORKER.evidence(RoleS3(), "NY-Suffolk-600371-2021-DeSousa-v-Calvagno-II-Karcher", "What claims and defenses affect Calvagno and Karcher?")
+        coverage = pages.coverage["party_role_evidence"]
+        self.assertEqual(coverage["candidate_count"], 2)
+        self.assertEqual(coverage["retrieved_count"], 1)
+        self.assertTrue(coverage["outside_initial_slice"])
+        self.assertEqual(len(coverage["outside_initial_slice_citations"]), 1)
+
 
 class PendingQueueTests(unittest.TestCase):
     class QueueS3:

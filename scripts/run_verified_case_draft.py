@@ -33,6 +33,11 @@ PLEADING_PARTY_ROLE_TEXT_RE = re.compile(
     r"manager|member|principal|officer|agent|control(?:led|s)?)\b",
     re.IGNORECASE,
 )
+PARTY_ROLE_FACT_TEXT_RE = re.compile(
+    r"\b(?:joint\s+|co[- ]?)owner(?:ship)?\b|\b(?:never|did not)\s+"
+    r"(?:resid(?:e|ed)|live(?:d)?|occup(?:y|ied))\b|\bno\s+control\b",
+    re.IGNORECASE,
+)
 PLEADING_SECTION_START_RE = re.compile(
     r"\b(?:verified\s+)?answer\b(?:\s+to\s+(?:verified\s+)?"
     r"(?:(?:second|third|fourth)\s+)?(?:third[ -]?party\s+)?complaint)?",
@@ -90,6 +95,14 @@ ATTACK_SURFACE_NON_FIRST_HAND_RE = re.compile(
 
 class PreGenerationGateError(ValueError):
     """Raised when mandatory pleading coverage cannot fit before a model call."""
+
+
+class EvidenceSelection(list):
+    """Selected pages plus bounded retrieval-coverage metadata for the audit."""
+
+    def __init__(self, pages, coverage):
+        super().__init__(pages)
+        self.coverage = coverage
 
 
 def normalized_filename(value: str) -> str:
@@ -201,7 +214,7 @@ def attack_surface_first_hand_page(filename: str, text: str) -> bool:
 
 def evidence(s3, case_id, question):
     """Select bounded evidence with filing- and section-level pleading coverage."""
-    rows=[]; terms=words(question)
+    rows=[]; terms=words(question); party_role_candidates=set()
     broad_record_question = len(BROAD_RECORD_TERMS.intersection(terms)) >= 2
     # A targeted pleading question can have only one of the broad map terms
     # (for example, "affirmative defenses"), but still requires the same
@@ -337,9 +350,11 @@ def evidence(s3, case_id, question):
             party_role_evidence = (
                 filing_led_question
                 and PLEADING_PARTY_ROLE_TEXT_RE.search(text)
-                and any(term in lowered for term in ("karcher", "calvagno"))
+                and PARTY_ROLE_FACT_TEXT_RE.search(text)
+                and any(term in lowered for term in terms)
             )
             if party_role_evidence:
+                party_role_candidates.add((source, filename, page))
                 coverage_score += 14
                 if re.search(r"\b(?:joint|co[- ]?)owner(?:ship)?\b", text, re.IGNORECASE):
                     coverage_score += 30
@@ -454,7 +469,10 @@ def evidence(s3, case_id, question):
         # Never spend a model call on a pleading map that dropped a required
         # first affirmative-defense page. The bounded details stay internal.
         raise PreGenerationGateError("missing_first_affirmative_defense_page")
-    return selected
+    selected_party_role_ids = party_role_candidates.intersection(selected_ids)
+    outside_party_role_ids = party_role_candidates.difference(selected_ids)
+    coverage = {"party_role_evidence": {"candidate_count": len(party_role_candidates), "retrieved_count": len(selected_party_role_ids), "outside_initial_slice": bool(outside_party_role_ids), "outside_initial_slice_citations": [{"source_sha256": source, "filename": filename, "page_number": page} for source, filename, page in sorted(outside_party_role_ids, key=lambda item: (item[1].casefold(), item[2], item[0]))[:12]]}}
+    return EvidenceSelection(selected, coverage)
 
 def pleading_map(pages):
     """Build a citation-only filing map from selected verified pages."""
@@ -470,12 +488,14 @@ def pleading_map(pages):
                 entry["signals"].add(label)
     return [{"filename": item["filename"], "citations": item["citations"], "signals": sorted(item["signals"])} for item in sorted(filings.values(), key=lambda item: item["filename"].casefold())]
 
-def generate(question, pages):
+def generate(question, pages, coverage=None):
     schema={"type":"object","additionalProperties":False,"required":["summary","findings","missing_information","limitations"],"properties":{"summary":{"type":"string"},"findings":{"type":"array","minItems":1,"items":{"type":"object","additionalProperties":False,"required":["statement","citations"],"properties":{"statement":{"type":"string"},"citations":{"type":"array","minItems":1,"items":{"type":"object","additionalProperties":False,"required":["source_sha256","filename","page_number"],"properties":{"source_sha256":{"type":"string"},"filename":{"type":"string"},"page_number":{"type":"integer","minimum":1}}}}}}},"missing_information":{"type":"array","items":{"type":"string"}},"limitations":{"type":"array","items":{"type":"string"}}}}
     instructions = "Use only the supplied verified excerpts. This is an internal attorney-review draft, not legal advice or a conclusion. Make no unsupported inference. Every finding must cite supplied pages exactly. Before stating that information is missing or calling something an open question, check the entire supplied record-wide excerpt set, including caption pages and operative pages from related pleadings. Use the filing map only as a navigation aid; verify every proposition against its cited pages. Treat pleaded alternatives, denials, and defenses as attributed litigation positions, not established facts or contradictions. For a question about parties, claims, defenses, or relief, make the summary a short, plain-English map: (1) pleaded claims and party role, (2) strongest expressly pleaded or record-supported defenses, (3) record-supported response or limit to each defense, and (4) genuinely material missing evidence or filings. Do not use dense narrative. When supplied pages contain both an ownership assertion and a party's nonresidence or no-control statement, present both as attributed, competing record positions with citations; do not omit either or treat either as conclusively established. Do not portray a pleading typo or general denial as case-dispositive unless a supplied court ruling makes it so. Identify missing information only when it remains unsupported after that record-wide check."
     if TOP_ATTACK_SURFACES_MARKER in question.casefold():
         instructions += " For the v4.0 Top Attack Surfaces Report, prioritize identified pleadings, orders, sworn testimony, and party-specific exhibits over generic contract excerpts. Use a generic contract provision only where it directly conflicts with, limits, or corroborates a party-identified filing or evidence in the supplied pages. Return no more than eight findings ordered from highest to lower materiality; return fewer when fewer qualify. Start every finding with 'Rank N — [Contradiction / Credibility / Procedural weakness] —'. For every finding, use this attorney-readable sequence in the statement: (1) identify the affected party or litigation position only when expressly named in the supplied pages; (2) state the specific record proposition on each side of the tension, including the source type or filing where useful; (3) explain why the two propositions create the asserted vulnerability; and (4) state any material limit. Never use a broad label such as 'causation record' or 'notice challenge' without the particular propositions that support it. A contradiction must cite each of the two conflicting verified propositions. A credibility vulnerability must identify the person or party and the concrete inconsistency, omission, or conflict; if the record does not identify one, do not call it a credibility issue. A procedural weakness must identify the party position, pleading, order, burden, remedy, notice, timing, preservation, or posture actually shown. Do not rank a defense merely because its factual proof, operative pleading, policy, or other supporting material is absent from the supplied excerpts. It qualifies only when the supplied pages show an affirmative mismatch with a contract, order, testimony, or other identified evidence, or when a court actually addressed the position. Do not invent a weakness from silence, characterize advocacy as fact, or convert alternative pleading or a denial into a contradiction. A pleading may establish procedural posture only. Do not make a factual or credibility finding from an attorney affirmation, counsel statement, service affidavit, or a party’s characterization of an absent exhibit, deposition, report, or other evidence. When the underlying first-hand material is not among the supplied pages, identify that limitation and omit the finding rather than treating advocacy as proof."
     prompt={"question":question,"instructions":instructions,"pleading_map":pleading_map(pages),"pages":pages}
+    if coverage and coverage["party_role_evidence"]["outside_initial_slice"]:
+        prompt["record_coverage"] = {"party_role_evidence_outside_initial_slice": True, "instruction": "Do not infer that party-role evidence is absent merely because it is not among the supplied excerpts; state that the bounded retrieval slice requires attorney follow-up before treating it as missing."}
     payload={"model":os.environ.get("LEGALAI_OPENAI_MODEL","gpt-5.6-sol"),"instructions":"Return only strict JSON matching the schema.","input":json.dumps(prompt),"text":{"format":{"type":"json_schema","name":"verified_internal_draft","strict":True,"schema":schema}}}
     request=urllib.request.Request("https://api.openai.com/v1/responses",data=json.dumps(payload).encode(),headers={"Authorization":f"Bearer {os.environ['OPENAI_API_KEY']}","Content-Type":"application/json"},method="POST")
     with urllib.request.urlopen(request,timeout=int(os.environ.get("LEGALAI_MODEL_TIMEOUT_SECONDS","180"))) as response: body=json.loads(response.read().decode())
@@ -499,10 +519,10 @@ def run_request(s3, case_id, request_id):
     now=lambda: datetime.now(timezone.utc).isoformat()
     put(s3,case_id,request_id,"status.json",{"schema_version":"legalai-internal-draft-status.v1","case_id":case_id,"request_id":request_id,"status":"RUNNING","updated_at":now()})
     try:
-        question=read_request(s3,case_id,request_id); pages=evidence(s3,case_id,question); result=validate(generate(question,pages),pages)
+        question=read_request(s3,case_id,request_id); pages=evidence(s3,case_id,question); result=validate(generate(question,pages,getattr(pages,"coverage",None)),pages)
         draft={"schema_version":"legalai-internal-draft.v1","case_id":case_id,"request_id":request_id,"question":question,"review_required":True,"external_communication":False,"generated_at":now(),**result}
         put(s3,case_id,request_id,"draft.json",draft)
-        put(s3,case_id,request_id,"input_audit.json",{"schema_version":"legalai-internal-draft-audit.v1","case_id":case_id,"request_id":request_id,"question_sha256":hashlib.sha256(question.encode()).hexdigest(),"retrieval_citations":[{k:p[k] for k in ("source_sha256","filename","page_number")} for p in pages],"generated_at":now()})
+        put(s3,case_id,request_id,"input_audit.json",{"schema_version":"legalai-internal-draft-audit.v1","case_id":case_id,"request_id":request_id,"question_sha256":hashlib.sha256(question.encode()).hexdigest(),"retrieval_citations":[{k:p[k] for k in ("source_sha256","filename","page_number")} for p in pages],"coverage":getattr(pages,"coverage",{}),"generated_at":now()})
         put(s3,case_id,request_id,"status.json",{"schema_version":"legalai-internal-draft-status.v1","case_id":case_id,"request_id":request_id,"status":"READY","updated_at":now()})
     except Exception as exc:
         code = "pre_generation_gate" if isinstance(exc, PreGenerationGateError) else exc.__class__.__name__.lower()
