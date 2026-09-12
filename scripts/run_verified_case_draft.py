@@ -28,6 +28,11 @@ PLEADING_OPERATIONAL_TEXT_RE = re.compile(
     r"contractual indemnification|common[ -]?law indemnification|contribution)\b",
     re.IGNORECASE,
 )
+PLEADING_PARTY_ROLE_TEXT_RE = re.compile(
+    r"\b(?:owner(?:ship)?|title(?:d)?|landlord|tenant|occup(?:y|ied|ancy)|"
+    r"manager|member|principal|officer|agent|control(?:led|s)?)\b",
+    re.IGNORECASE,
+)
 PLEADING_SECTION_START_RE = re.compile(
     r"\b(?:verified\s+)?answer\b(?:\s+to\s+(?:verified\s+)?"
     r"(?:(?:second|third|fourth)\s+)?(?:third[ -]?party\s+)?complaint)?",
@@ -303,6 +308,12 @@ def evidence(s3, case_id, question):
                     coverage_score += 10
                 if operational_pleading:
                     coverage_score += 6
+                # Party role and ownership allegations may sit between the
+                # caption and formal causes of action. Retain them for a
+                # party/claims/defenses request rather than inferring a role
+                # from an incomplete pleading slice.
+                if PLEADING_PARTY_ROLE_TEXT_RE.search(text):
+                    coverage_score += 7
             if attack_surface_question:
                 # First surface party-identified pleadings; then court orders
                 # and sworn/testimonial materials; only then substantive
@@ -390,7 +401,7 @@ def evidence(s3, case_id, question):
         # Then retain its operative claim, defense, and prayer pages.
         for row in ranked:
             section=(row[3],row[1],row[7])
-            if row[5] and row[6] and per_section.get(section,0) < MERITS_PLEADING_PAGES_PER_FILING:
+            if row[5] and (row[6] or PLEADING_PARTY_ROLE_TEXT_RE.search(row[4]["text"])) and per_section.get(section,0) < MERITS_PLEADING_PAGES_PER_FILING:
                 reserve(row)
         if attack_surface_question:
             remaining = [row for row in ranked if (row[3], row[1], row[2]) not in merit_ids]
