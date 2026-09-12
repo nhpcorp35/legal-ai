@@ -76,6 +76,8 @@ class ClaimsAndDefensesPromptTests(unittest.TestCase):
         self.assertIn("summary must be one sentence of no more than 28 words", instructions)
         self.assertIn("Return at most one finding for each populated heading", instructions)
         self.assertIn("Use labels only", instructions)
+        self.assertIn("List no more than three material defense labels", instructions)
+        self.assertIn("Collapse any additional routine defenses", instructions)
         self.assertIn("Do not explain allegations, evidence, legal standards", instructions)
         self.assertIn("do not place a plaintiff-side ownership position, party-role statement", instructions)
         self.assertIn("do not place a plaintiff-side allegation, ownership position", instructions)
