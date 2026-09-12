@@ -77,6 +77,7 @@ class ClaimsAndDefensesPromptTests(unittest.TestCase):
         self.assertIn("Return at most one finding for each populated heading", instructions)
         self.assertIn("Use labels only", instructions)
         self.assertIn("Do not explain allegations, evidence, legal standards", instructions)
+        self.assertIn("do not place a plaintiff-side allegation, ownership position", instructions)
         self.assertIn("Do not invent, infer, or call out an unnamed party", instructions)
         self.assertIn("procedural disposition, not a merits decision", instructions)
 
