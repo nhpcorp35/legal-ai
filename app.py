@@ -62,6 +62,51 @@ ATTORNEY_TOP_NAV_HTML = (
     "</nav>"
 )
 
+# Immediate, accessible feedback for every form submission in the attorney workspace.
+# This prevents repeated clicks while a draft or feedback action is being accepted.
+ATTORNEY_SUBMIT_FEEDBACK_MARKER = 'data-attorney-submit-feedback'
+ATTORNEY_SUBMIT_FEEDBACK_HTML = """
+<style data-attorney-submit-feedback>
+@keyframes attorney-working-dot { 0%,80%,100%{opacity:.25}40%{opacity:1} }
+.attorney-working-dots{display:inline-flex;gap:2px;margin-left:5px;vertical-align:middle}
+.attorney-working-dots span{animation:attorney-working-dot 1.1s infinite;line-height:1}
+.attorney-working-dots span:nth-child(2){animation-delay:.15s}
+.attorney-working-dots span:nth-child(3){animation-delay:.3s}
+</style>
+<script data-attorney-submit-feedback>
+(function () {
+  function markWorking(form, event) {
+    if (form.dataset.attorneySubmitting === "true") {
+      event.preventDefault();
+      return;
+    }
+    form.dataset.attorneySubmitting = "true";
+    var submitter = event.submitter ||
+      form.querySelector('button[type="submit"], input[type="submit"]');
+    form.querySelectorAll('button[type="submit"], input[type="submit"]').forEach(function (control) {
+      control.disabled = true;
+      control.setAttribute("aria-disabled", "true");
+    });
+    if (!submitter) return;
+    if (submitter.tagName === "INPUT") {
+      submitter.value = "Working...";
+      return;
+    }
+    submitter.textContent = "Working";
+    var dots = document.createElement("span");
+    dots.className = "attorney-working-dots";
+    dots.setAttribute("aria-label", "...");
+    dots.setAttribute("role", "status");
+    dots.innerHTML = "<span>•</span><span>•</span><span>•</span>";
+    submitter.appendChild(dots);
+  }
+  document.addEventListener("submit", function (event) {
+    if (!event.defaultPrevented) markWorking(event.target, event);
+  }, true);
+}());
+</script>
+"""
+
 
 def inject_favicon_link(html):
     """Insert the LegalAI favicon link into a full HTML document if missing."""
@@ -149,6 +194,8 @@ def inject_attorney_ui(html):
         text = _inject_before_head_close(text, ATTORNEY_UI_STYLESHEET_TAG)
     if ATTORNEY_TOP_NAV_MARKER not in text:
         text = _inject_after_body_open(text, ATTORNEY_TOP_NAV_HTML)
+    if ATTORNEY_SUBMIT_FEEDBACK_MARKER not in text:
+        text = _inject_after_body_open(text, ATTORNEY_SUBMIT_FEEDBACK_HTML)
     return text
 
 
