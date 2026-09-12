@@ -69,7 +69,7 @@ class ClaimsAndDefensesPromptTests(unittest.TestCase):
             WORKER.generate("What claims and defenses affect summary judgment?", [{"source_sha256": "a" * 64, "filename": "Complaint.pdf", "page_number": 1, "text": "Private nuisance."}])
         instructions = json.loads(json.loads(urlopen.call_args.args[0].data.decode())["input"])["instructions"]
         self.assertIn("pleaded claims and party role", instructions)
-        self.assertIn("named owner", instructions)
+        self.assertIn("identifies a named defendant as an owner", instructions)
         self.assertIn("pleading typo", instructions)
 
 
