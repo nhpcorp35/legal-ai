@@ -72,7 +72,11 @@ class ClaimsAndDefensesPromptTests(unittest.TestCase):
         self.assertIn("ownership assertion and a party's nonresidence", instructions)
         self.assertIn("pleading typo", instructions)
         self.assertIn("(1) Main case; (2) counterclaims and cross-claims; (3) third-party claims", instructions)
-        self.assertIn("short claim labels", instructions)
+        self.assertIn("return a compact litigation map, not a memo", instructions)
+        self.assertIn("summary must be one sentence of no more than 28 words", instructions)
+        self.assertIn("Return at most one finding for each populated heading", instructions)
+        self.assertIn("Use labels only", instructions)
+        self.assertIn("Do not explain allegations, evidence, legal standards", instructions)
         self.assertIn("Do not invent, infer, or call out an unnamed party", instructions)
         self.assertIn("procedural disposition, not a merits decision", instructions)
 
