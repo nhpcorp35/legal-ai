@@ -124,6 +124,8 @@ class RecordWidePleadingCoverageTests(unittest.TestCase):
                  "text": "ANDRZEJ SZYM CZYK, Plaintiff, against HUDSON 36 LLC and HUDSON 37 LLC, Defendants."},
                 {"filename": "Summons and Complaint.pdf", "page_number": 2,
                  "text": "Background facts about the work site."},
+                {"filename": "Summons and Complaint.pdf", "page_number": 4,
+                 "text": "Patrick Karcher is an owner of the subject property."},
                 {"filename": "Summons and Complaint.pdf", "page_number": 3,
                  "text": "FIRST CAUSE OF ACTION -- NEGLIGENCE. WHEREFORE plaintiff demands judgment."},
                 {"filename": "Hudson 36 Answer.pdf", "page_number": 1,
@@ -144,6 +146,7 @@ class RecordWidePleadingCoverageTests(unittest.TestCase):
         selected = {(page["filename"], page["page_number"]) for page in pages}
         self.assertTrue({
             ("Summons and Complaint.pdf", 1),
+            ("Summons and Complaint.pdf", 4),
             ("Summons and Complaint.pdf", 3),
             ("Hudson 36 Answer.pdf", 1),
             ("Hudson 36 Answer.pdf", 2),
