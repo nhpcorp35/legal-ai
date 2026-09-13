@@ -68,7 +68,8 @@ class ClaimsAndDefensesPromptTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}), mock.patch.object(WORKER.urllib.request, "urlopen", return_value=response) as urlopen:
             WORKER.generate("What claims and defenses affect summary judgment?", [{"source_sha256": "a" * 64, "filename": "Complaint.pdf", "page_number": 1, "text": "Private nuisance."}])
         instructions = json.loads(json.loads(urlopen.call_args.args[0].data.decode())["input"])["instructions"]
-        self.assertIn("attorney-readable litigation map", instructions)
+        self.assertIn("return a compact litigation map, not a memo", instructions)
+        self.assertIn("it must be attorney-readable", instructions)
         self.assertIn("ownership assertion and a party's nonresidence", instructions)
         self.assertIn("pleading typo", instructions)
         self.assertIn("(1) Main case; (2) counterclaims and cross-claims; (3) third-party claims", instructions)
