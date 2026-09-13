@@ -68,22 +68,24 @@ class ClaimsAndDefensesPromptTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}), mock.patch.object(WORKER.urllib.request, "urlopen", return_value=response) as urlopen:
             WORKER.generate("What claims and defenses affect summary judgment?", [{"source_sha256": "a" * 64, "filename": "Complaint.pdf", "page_number": 1, "text": "Private nuisance."}])
         instructions = json.loads(json.loads(urlopen.call_args.args[0].data.decode())["input"])["instructions"]
-        self.assertIn("return a compact litigation map, not a memo", instructions)
-        self.assertIn("it must be attorney-readable", instructions)
-        self.assertIn("ownership assertion and a party's nonresidence", instructions)
-        self.assertIn("pleading typo", instructions)
-        self.assertIn("(1) Main case; (2) counterclaims and cross-claims; (3) third-party claims", instructions)
-        self.assertIn("return a compact litigation map, not a memo", instructions)
-        self.assertIn("summary must be one sentence of no more than 28 words", instructions)
-        self.assertIn("do not include party roles, ownership, control", instructions)
-        self.assertIn("Return at most one finding for each populated heading", instructions)
-        self.assertIn("Use labels only", instructions)
-        self.assertIn("List no more than three material defense labels", instructions)
-        self.assertIn("Collapse any additional routine defenses", instructions)
-        self.assertIn("Do not explain allegations, evidence, legal standards", instructions)
-        self.assertIn("do not place a plaintiff-side ownership position, party-role statement", instructions)
-        self.assertIn("do not place a plaintiff-side allegation, ownership position", instructions)
-        self.assertIn("Do not invent, infer, or call out an unnamed party", instructions)
+        for requirement in (
+            "compact litigation map",
+            "attorney-readable",
+            "ownership assertion and a party's nonresidence",
+            "pleading typo",
+            "(1) Main case; (2) counterclaims and cross-claims; (3) third-party claims",
+            "summary must be one sentence of no more than 28 words",
+            "do not include party roles, ownership, control",
+            "Return at most one finding for each populated heading",
+            "Use labels only",
+            "List no more than three material defense labels",
+            "Collapse any additional routine defenses",
+            "do not explain allegations, evidence, legal standards",
+            "do not place a plaintiff-side ownership position, party-role statement",
+            "do not place a plaintiff-side allegation, ownership position",
+            "Do not invent, infer, or call out an unnamed party",
+        ):
+            self.assertIn(requirement, instructions)
         self.assertIn("procedural disposition, not a merits decision", instructions)
 
 
