@@ -144,7 +144,7 @@ def request_status(s3, case_id, request_id):
     except (UnicodeDecodeError, ValueError):
         return "FAILED"
     status = value.get("status") if isinstance(value, dict) else None
-    return status if status in {"QUEUED", "RUNNING", "READY", "FAILED"} else "FAILED"
+    return status if status in {"QUEUED", "RUNNING", "READY", "FAILED", "CANCELLED"} else "FAILED"
 
 
 def listed_objects(s3, **kwargs):
@@ -521,14 +521,24 @@ def validate(result, pages):
 
 def run_request(s3, case_id, request_id):
     now=lambda: datetime.now(timezone.utc).isoformat()
+    # A cancellation is durable and wins over a delayed GitHub Actions worker.
+    # Do not claim a request that an authorized reviewer has already cancelled.
+    if request_status(s3, case_id, request_id) == "CANCELLED":
+        return
     put(s3,case_id,request_id,"status.json",{"schema_version":"legalai-internal-draft-status.v1","case_id":case_id,"request_id":request_id,"status":"RUNNING","updated_at":now()})
     try:
         question=read_request(s3,case_id,request_id); pages=evidence(s3,case_id,question); result=validate(generate(question,pages,getattr(pages,"coverage",None)),pages)
+        # Generation may have started before cancellation.  Preserve the audit
+        # trail but never publish a cancelled draft as READY.
+        if request_status(s3, case_id, request_id) == "CANCELLED":
+            return
         draft={"schema_version":"legalai-internal-draft.v1","case_id":case_id,"request_id":request_id,"question":question,"review_required":True,"external_communication":False,"generated_at":now(),**result}
         put(s3,case_id,request_id,"draft.json",draft)
         put(s3,case_id,request_id,"input_audit.json",{"schema_version":"legalai-internal-draft-audit.v1","case_id":case_id,"request_id":request_id,"question_sha256":hashlib.sha256(question.encode()).hexdigest(),"retrieval_citations":[{k:p[k] for k in ("source_sha256","filename","page_number")} for p in pages],"coverage":getattr(pages,"coverage",{}),"generated_at":now()})
         put(s3,case_id,request_id,"status.json",{"schema_version":"legalai-internal-draft-status.v1","case_id":case_id,"request_id":request_id,"status":"READY","updated_at":now()})
     except Exception as exc:
+        if request_status(s3, case_id, request_id) == "CANCELLED":
+            return
         code = "pre_generation_gate" if isinstance(exc, PreGenerationGateError) else exc.__class__.__name__.lower()
         if code not in {"pre_generation_gate", "valueerror", "runtimeerror", "httperror", "urlerror", "clienterror"}: code = "internal_error"
         put(s3,case_id,request_id,"status.json",{"schema_version":"legalai-internal-draft-status.v1","case_id":case_id,"request_id":request_id,"status":"FAILED","failure_code":code,"updated_at":now()})
