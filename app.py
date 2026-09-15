@@ -2524,7 +2524,7 @@ def load_draft_requests(case_id, *, force_refresh=False):
         if isinstance(item, dict)
         and all(isinstance(item.get(key), str) for key in ("request_id", "question", "requested_by", "status"))
         and isinstance(item.get("created_at"), int)
-        and item.get("status") in {"QUEUED", "RUNNING", "READY", "FAILED"}
+        and item.get("status") in {"QUEUED", "RUNNING", "READY", "FAILED", "CANCELLED"}
     ]
     with _draft_request_cache_lock:
         _draft_request_cache[case_id] = {
@@ -2549,7 +2549,7 @@ def load_exact_draft_request(case_id, request_id):
             result = json.loads(response.read().decode("utf-8"))
     except (urllib.error.URLError, urllib.error.HTTPError, ValueError, UnicodeDecodeError, TimeoutError):
         return None
-    if not isinstance(result, dict) or result.get("status") not in {"QUEUED", "RUNNING", "READY", "FAILED"}:
+    if not isinstance(result, dict) or result.get("status") not in {"QUEUED", "RUNNING", "READY", "FAILED", "CANCELLED"}:
         return None
     return result
 
