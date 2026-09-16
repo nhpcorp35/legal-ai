@@ -6,6 +6,7 @@ import pathlib
 import sys
 import types
 import unittest
+import urllib.request
 from unittest import mock
 
 
@@ -15,6 +16,17 @@ MODULE_PATH = pathlib.Path(__file__).with_name("scripts") / "run_verified_case_d
 SPEC = importlib.util.spec_from_file_location("verified_case_draft", MODULE_PATH)
 WORKER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(WORKER)
+
+CASE00_PATH = pathlib.Path(__file__).with_name("scripts") / "run_case00_internal_draft.py"
+CASE00_SPEC = importlib.util.spec_from_file_location("case00_internal_draft", CASE00_PATH)
+CASE00 = importlib.util.module_from_spec(CASE00_SPEC)
+with mock.patch.dict(sys.modules, {
+    "scripts.run_verified_case_draft": WORKER,
+    "scripts.rebuild_case00_derived": types.SimpleNamespace(),
+}):
+    CASE00_SPEC.loader.exec_module(CASE00)
+
+LEGAL_QUESTION = "Under New York insurance law, may an insurer obtain rescission for a material misrepresentation?"
 
 
 class FakeS3:
@@ -87,6 +99,101 @@ class ClaimsAndDefensesPromptTests(unittest.TestCase):
         ):
             self.assertIn(requirement, instructions)
         self.assertIn("procedural disposition, not a merits decision", instructions)
+
+
+class AuthorityAwareWorkerTests(unittest.TestCase):
+    active_page = {"source_sha256": "a" * 64, "filename": "Policy.pdf", "page_number": 7, "text": "Application answer."}
+    case00_page = {"filename": "Policy.pdf", "page_number": 7, "text": "Application answer."}
+
+    @staticmethod
+    def response(result):
+        response = mock.MagicMock()
+        response.read.return_value = json.dumps({"output": [{"content": [{"text": json.dumps(result)}]}]}).encode()
+        response.__enter__.return_value = response
+        return response
+
+    def test_active_worker_prompt_selects_three_authorities_and_unrelated_selects_none(self):
+        result = {"summary": "Rule.", "findings": [{"statement": "Rule.", "citations": [], "authority_citations": ["ny-ins-law-3105"]}], "missing_information": [], "limitations": []}
+        with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}), mock.patch.object(WORKER.urllib.request, "urlopen", return_value=self.response(result)) as urlopen:
+            WORKER.generate(LEGAL_QUESTION, [self.active_page])
+            legal_prompt = json.loads(json.loads(urlopen.call_args.args[0].data.decode())["input"])
+            WORKER.generate("What parties appear in this contract dispute?", [self.active_page])
+            unrelated_prompt = json.loads(json.loads(urlopen.call_args.args[0].data.decode())["input"])
+        self.assertEqual(len(legal_prompt["legal_authorities"]), 3)
+        self.assertEqual(
+            {item["authority_id"] for item in legal_prompt["legal_authorities"]},
+            {"ny-ins-law-3105", "ny-estiverne-mic-2024-06327", "ny-associated-industrial-farahnik-2025-03760"},
+        )
+        self.assertEqual(unrelated_prompt["legal_authorities"], [])
+        self.assertNotIn("legal_authorities", legal_prompt["pages"][0])
+        self.assertIn("Case-record facts cite only page citations", legal_prompt["instructions"])
+        self.assertIn("legal rules cite only authority ids", legal_prompt["instructions"])
+
+    def test_both_workers_accept_rule_and_mixed_findings_and_reject_bad_sources(self):
+        authorities = WORKER.match_verified_authorities(LEGAL_QUESTION)
+        rule = {"summary": "Rule.", "findings": [{"statement": "Rule.", "citations": [], "authority_citations": ["ny-ins-law-3105"]}]}
+        mixed_active = {"summary": "Application.", "findings": [{"statement": "Application.", "citations": [{key: self.active_page[key] for key in ("source_sha256", "filename", "page_number")}], "authority_citations": ["ny-ins-law-3105"]}]}
+        mixed_case00 = {"summary": "Application.", "findings": [{"statement": "Application.", "citations": [{"filename": "Policy.pdf", "page_number": 7}], "authority_citations": ["ny-ins-law-3105"]}]}
+        self.assertIs(WORKER.validate(rule, [self.active_page], authorities), rule)
+        self.assertIs(CASE00.validate(rule, [self.case00_page], authorities), rule)
+        self.assertIs(WORKER.validate(mixed_active, [self.active_page], authorities), mixed_active)
+        self.assertIs(CASE00.validate(mixed_case00, [self.case00_page], authorities), mixed_case00)
+        for validator, pages in ((WORKER.validate, [self.active_page]), (CASE00.validate, [self.case00_page])):
+            unknown = {"findings": [{"statement": "Rule.", "citations": [], "authority_citations": ["unknown-authority"]}]}
+            neither = {"findings": [{"statement": "Unsupported.", "citations": [], "authority_citations": []}]}
+            with self.assertRaisesRegex(ValueError, "unverified authority citation"):
+                validator(unknown, pages, authorities)
+            with self.assertRaisesRegex(ValueError, "uncited output"):
+                validator(neither, pages, authorities)
+
+    def test_case00_prompt_and_audit_keep_authorities_bounded_and_separate(self):
+        request_id = "draft-1-aaaaaaaaaaaa"
+        request_key = f"cases/{CASE00.CASE_ID}/derived/draft-requests/{request_id}.json"
+
+        class AuditS3:
+            def __init__(self):
+                self.objects = {request_key: json.dumps({"question": LEGAL_QUESTION}).encode()}
+
+            def get_object(self, **kwargs):
+                if kwargs["Key"] not in self.objects:
+                    raise KeyError(kwargs["Key"])
+                return {"Body": io.BytesIO(self.objects[kwargs["Key"]])}
+
+            def put_object(self, **kwargs):
+                self.objects[kwargs["Key"]] = kwargs["Body"]
+
+        client = AuditS3()
+        result = {"summary": "Rule.", "findings": [{"statement": "Rule.", "citations": [], "authority_citations": ["ny-ins-law-3105"]}], "missing_information": [], "limitations": []}
+        with mock.patch.object(CASE00, "evidence", return_value=[self.case00_page]), mock.patch.object(urllib.request, "urlopen", return_value=self.response(result)) as urlopen:
+            CASE00.run_request(client, request_id)
+        prompt = json.loads(json.loads(urlopen.call_args.args[0].data.decode())["input"])
+        audit = json.loads(client.objects[CASE00.key(request_id, "input_audit.json")])
+        self.assertEqual(len(prompt["legal_authorities"]), 3)
+        self.assertNotIn("legal_authorities", prompt["pages"][0])
+        self.assertEqual(len(audit["legal_authorities"]), 3)
+        expected = {"authority_id", "citation", "title", "source_url", "issuing_body", "date", "sha256"}
+        self.assertTrue(all(set(item) == expected for item in audit["legal_authorities"]))
+        self.assertTrue(all("propositions" not in item for item in audit["legal_authorities"]))
+        self.assertTrue(all(len(item["sha256"]) == 64 for item in audit["legal_authorities"]))
+
+    def test_case00_unrelated_prompt_has_no_authorities(self):
+        request_id = "draft-2-bbbbbbbbbbbb"
+        request_key = f"cases/{CASE00.CASE_ID}/derived/draft-requests/{request_id}.json"
+
+        class PromptS3:
+            def __init__(self):
+                self.objects = {request_key: json.dumps({"question": "Who signed the construction contract?"}).encode()}
+            def get_object(self, **kwargs):
+                if kwargs["Key"] not in self.objects: raise KeyError(kwargs["Key"])
+                return {"Body": io.BytesIO(self.objects[kwargs["Key"]])}
+            def put_object(self, **kwargs):
+                self.objects[kwargs["Key"]] = kwargs["Body"]
+
+        result = {"summary": "Fact.", "findings": [{"statement": "Fact.", "citations": [{"filename": "Policy.pdf", "page_number": 7}], "authority_citations": []}], "missing_information": [], "limitations": []}
+        with mock.patch.object(CASE00, "evidence", return_value=[self.case00_page]), mock.patch.object(urllib.request, "urlopen", return_value=self.response(result)) as urlopen:
+            CASE00.run_request(PromptS3(), request_id)
+        prompt = json.loads(json.loads(urlopen.call_args.args[0].data.decode())["input"])
+        self.assertEqual(prompt["legal_authorities"], [])
 
 
 class PartyRoleEvidenceTests(unittest.TestCase):
