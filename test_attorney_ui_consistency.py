@@ -324,6 +324,144 @@ class AttorneyUiConsistencyTests(unittest.TestCase):
         body = response.get_data(as_text=True)
         self.assertNotIn("Questions processing", body)
 
+    def test_answer_separates_record_and_registry_authority_links(self):
+        request_id = "draft-10-abcdef123456"
+        ready_item = {
+            "request_id": request_id,
+            "question": "Does <model> support rescission?",
+            "requested_by": "allen@example.com",
+            "status": "READY",
+            "draft": {
+                "summary": "Review <summary>.",
+                "findings": [{
+                    "statement": "Finding <script>alert(1)</script>.",
+                    "citations": [{
+                        "source_sha256": "a" * 64,
+                        "filename": "Policy & Application.pdf",
+                        "page_number": 7,
+                    }],
+                    "authority_citations": [
+                        "ny-ins-law-3105",
+                        "unknown-authority",
+                        "https://untrusted.example/authority",
+                    ],
+                }],
+                "missing_information": [],
+            },
+        }
+        with patch.object(legalai, "load_exact_draft_request", return_value=ready_item):
+            response = self.client.get(
+                f"/workspace/matters/{CASE_ID}/drafts/{request_id}",
+                headers=_auth_headers(),
+            )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.get_data(as_text=True)
+        self.assertIn("<strong>Verified record</strong>", body)
+        self.assertIn("<strong>Legal authority</strong>", body)
+        self.assertIn("Representations by the insured — N.Y. Ins. Law § 3105", body)
+        self.assertIn(
+            'href="https://www.nysenate.gov/legislation/laws/ISC/3105" target="_blank" rel="noopener"',
+            body,
+        )
+        self.assertNotIn("unknown-authority", body)
+        self.assertNotIn("untrusted.example", body)
+        self.assertNotIn("/pdf/https", body)
+        self.assertIn("Finding &lt;script&gt;alert(1)&lt;/script&gt;.", body)
+        self.assertIn("Does &lt;model&gt; support rescission?", body)
+        self.assertIn("Review &lt;summary&gt;.", body)
+
+    def test_legacy_answer_keeps_record_link_and_uses_missing_information_list(self):
+        request_id = "draft-11-abcdef123456"
+        ready_item = {
+            "request_id": request_id,
+            "question": "What remains missing?",
+            "requested_by": "allen@example.com",
+            "status": "READY",
+            "draft": {
+                "summary": "Summary.",
+                "findings": [{
+                    "statement": "Legacy finding.",
+                    "citations": [{
+                        "source_sha256": "b" * 64,
+                        "filename": "Legacy.pdf",
+                        "page_number": 2,
+                    }],
+                }],
+                "missing_information": ["First item", "Second <item>"],
+            },
+        }
+        with patch.object(legalai, "load_exact_draft_request", return_value=ready_item):
+            response = self.client.get(
+                f"/workspace/matters/{CASE_ID}/drafts/{request_id}",
+                headers=_auth_headers(),
+            )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.get_data(as_text=True)
+        self.assertIn("<strong>Verified record</strong>", body)
+        self.assertNotIn("<strong>Legal authority</strong>", body)
+        self.assertIn("Open verified source — p. 2 · Legacy.pdf", body)
+        self.assertIn(
+            "<h2>Missing information:</h2><ul><li>First item</li><li>Second &lt;item&gt;</li></ul>",
+            body,
+        )
+        self.assertNotIn("First item; Second", body)
+
+    def test_retrieval_audit_separates_authorities_and_supports_legacy_audits(self):
+        request_id = "draft-12-abcdef123456"
+        current_audit = {
+            "requested_by": "allen@example.com",
+            "citations": [{"filename": "Record.pdf", "page_number": 4}],
+            "legal_authorities": [{
+                "authority_id": "ny-ins-law-3105",
+                "citation": "N.Y. Ins. Law § 3105",
+                "title": "Representations by the insured",
+                "source_url": "https://www.nysenate.gov/legislation/laws/ISC/3105",
+                "issuing_body": "New York State Legislature",
+                "date": "1984-09-01",
+                "sha256": "a" * 64,
+            }],
+        }
+        path = f"/workspace/matters/{CASE_ID}/drafts/{request_id}/audit"
+        with patch.object(legalai, "load_draft_input_audit", return_value=current_audit):
+            response = self.client.get(path, headers=_auth_headers())
+
+        self.assertEqual(response.status_code, 200)
+        body = response.get_data(as_text=True)
+        self.assertIn("<h2>Verified record</h2>", body)
+        self.assertIn("Record.pdf — p. 4", body)
+        self.assertIn("<h2>Legal authorities</h2>", body)
+        self.assertIn("Representations by the insured — N.Y. Ins. Law § 3105", body)
+        self.assertNotIn("https://www.nysenate.gov", body)
+
+        legacy_audit = {
+            "requested_by": "allen@example.com",
+            "citations": [{"filename": "Legacy.pdf", "page_number": 1}],
+        }
+        with patch.object(legalai, "load_draft_input_audit", return_value=legacy_audit):
+            legacy_response = self.client.get(path, headers=_auth_headers())
+        self.assertEqual(legacy_response.status_code, 200)
+        legacy_body = legacy_response.get_data(as_text=True)
+        self.assertIn("Legacy.pdf — p. 1", legacy_body)
+        self.assertNotIn("<h2>Legal authorities</h2>", legacy_body)
+
+    def test_retrieval_audit_loader_defaults_missing_authorities_to_empty(self):
+        gateway_response = MagicMock()
+        gateway_response.__enter__.return_value.read.return_value = (
+            b'{"ok":true,"requested_by":"allen@example.com",'
+            b'"retrieval_citations":[{"filename":"Legacy.pdf","page_number":1}]}'
+        )
+        with patch.object(
+            legalai.urllib.request, "urlopen", return_value=gateway_response
+        ):
+            audit = legalai.load_draft_input_audit(
+                CASE_ID, "draft-13-abcdef123456"
+            )
+
+        self.assertEqual(audit["legal_authorities"], [])
+        self.assertEqual(audit["citations"][0]["filename"], "Legacy.pdf")
+
 
     def test_pdf_responses_are_not_html_wrapped(self):
         with patch.object(

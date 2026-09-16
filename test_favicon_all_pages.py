@@ -117,6 +117,8 @@ class FaviconCoverageTests(unittest.TestCase):
         with patch.object(legalai, "load_registered_cases", return_value=registered), patch.object(
             legalai, "available_case00_review_questions", return_value=questions
         ), patch.object(legalai, "load_draft_requests", return_value=[draft_ready]), patch.object(
+            legalai, "load_exact_draft_request", return_value=draft_ready
+        ), patch.object(
             legalai, "load_szymczyk_review_packet", return_value="# Candidate\n"
         ), patch.object(
             legalai, "search_case00_verified_pages", return_value=[]
