@@ -20,6 +20,8 @@ try:
         MAX_CONTEXT_CHARS,
         MAX_PAGE_CHARS,
         MAX_PAGES,
+        PLEADING_FILENAME_RE,
+        PLEADING_OPERATIONAL_TEXT_RE,
         authority_audit,
         authority_prompt,
         finding_schema,
@@ -30,6 +32,8 @@ except ModuleNotFoundError:
         MAX_CONTEXT_CHARS,
         MAX_PAGE_CHARS,
         MAX_PAGES,
+        PLEADING_FILENAME_RE,
+        PLEADING_OPERATIONAL_TEXT_RE,
         authority_audit,
         authority_prompt,
         finding_schema,
@@ -59,6 +63,53 @@ def request_status(client, request_id):
     return status if status in {"QUEUED","RUNNING","READY","FAILED","CANCELLED"} else "FAILED"
 def words(q): return {x for x in re.findall(r"[a-z0-9]{3,}",q.casefold()) if x not in {"what","with","from","that","this","about","record","verified","case"}}
 
+def select_evidence_pages(pages, question):
+    """Reserve operative pleading coverage before lexical ranking."""
+    terms=words(question); candidates=[]
+    for p in pages:
+        text=" ".join(str(p.get("text","")).split())
+        filename=p.get("source_filename"); page=p.get("page_number")
+        if not text or not isinstance(filename,str) or not isinstance(page,int): continue
+        score=sum(text.casefold().count(t) for t in terms)
+        candidates.append((score,filename,page,{"filename":filename,"page_number":page,"text":text[:MAX_PAGE_CHARS]}))
+
+    selected=[]; selected_ids=set(); total=0
+    def reserve(item):
+        nonlocal total
+        item_id=(item["filename"],item["page_number"])
+        if item_id in selected_ids or len(selected)>=MAX_PAGES or total+len(item["text"])>MAX_CONTEXT_CHARS:
+            return
+        selected.append(item); selected_ids.add(item_id); total+=len(item["text"])
+
+    foundational=bool(re.search(
+        r"\b(?:litigation|part(?:y|ies)|claims?|defenses?|relief|pleadings?|counterclaims?|cross[ -]?claims?|third[ -]?party)\b",
+        question,
+        re.IGNORECASE,
+    ))
+    if foundational:
+        filings={}
+        for _,filename,page,item in candidates:
+            if PLEADING_FILENAME_RE.search(filename.casefold()):
+                filings.setdefault(filename,[]).append((page,item))
+        # Reserve every pleading opening before lexical ranking so one large
+        # exhibit cannot crowd out complaints, answers, or third-party filings.
+        for filename in sorted(filings,key=str.casefold):
+            reserve(min(filings[filename],key=lambda row:row[0])[1])
+        # Then retain bounded operative pages for claims, defenses, and relief.
+        for filename in sorted(filings,key=str.casefold):
+            kept=0
+            for _,item in sorted(filings[filename],key=lambda row:row[0]):
+                if kept>=3: break
+                if PLEADING_OPERATIONAL_TEXT_RE.search(item["text"]):
+                    before=len(selected_ids); reserve(item)
+                    if len(selected_ids)>before: kept+=1
+
+    for _,_,_,item in sorted(candidates,key=lambda row:(-row[0],row[1].casefold(),row[2])):
+        reserve(item)
+    if not selected: raise ValueError("no verified evidence")
+    return selected
+
+
 def evidence(question):
     root=Path(__file__).resolve().parents[1] / "data" / "case-00-triborough"
     with tempfile.TemporaryDirectory(prefix="case00-question-") as temp:
@@ -66,19 +117,7 @@ def evidence(question):
         source=rebuild.materialize_b2_prefix(SOURCE_PREFIX,Path(temp),client=client,config=cfg)
         docs=rebuild.ingest_source_directory(source,root / "nyscef_filing_inventory.json")
         pages=rebuild.build_canonical_page_records(docs)["pages"]
-    terms=words(question); ranked=[]
-    for p in pages:
-        text=" ".join(str(p.get("text","")).split())
-        filename=p.get("source_filename"); page=p.get("page_number")
-        if not text or not isinstance(filename,str) or not isinstance(page,int): continue
-        score=sum(text.casefold().count(t) for t in terms)
-        ranked.append((score,filename,page,{"filename":filename,"page_number":page,"text":text[:MAX_PAGE_CHARS]}))
-    selected=[]; total=0
-    for _,_,_,p in sorted(ranked,key=lambda v:(-v[0],v[1].casefold(),v[2])):
-        if len(selected)>=MAX_PAGES or total+len(p["text"])>MAX_CONTEXT_CHARS: continue
-        selected.append(p); total+=len(p["text"])
-    if not selected: raise ValueError("no verified evidence")
-    return selected
+    return select_evidence_pages(pages, question)
 
 def validate(result, pages, authorities):
     allowed_pages={(p["filename"],p["page_number"]) for p in pages}

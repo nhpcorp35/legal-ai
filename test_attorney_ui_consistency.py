@@ -509,6 +509,45 @@ class AttorneyUiConsistencyTests(unittest.TestCase):
         self.assertEqual(audit["citations"][0]["filename"], "Legacy.pdf")
 
 
+    def test_authenticated_reviewer_can_open_another_reviewers_retrieval_audit(self):
+        request_id = "draft-15-abcdef123456"
+        audit = {
+            "requested_by": "original@example.com",
+            "citations": [{"filename": "Complaint.pdf", "page_number": 1}],
+            "legal_authorities": [],
+        }
+        path = f"/workspace/matters/{CASE_ID}/drafts/{request_id}/audit"
+        with patch.object(legalai, "load_draft_input_audit", return_value=audit):
+            response = self.client.get(path, headers=_auth_headers())
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Complaint.pdf — p. 1", response.get_data(as_text=True))
+
+    def test_retrieval_audit_falls_back_to_completed_draft_citations(self):
+        request_id = "draft-16-abcdef123456"
+        completed = {
+            "requested_by": "original@example.com",
+            "status": "READY",
+            "draft": {
+                "findings": [{
+                    "statement": "Supported finding.",
+                    "citations": [
+                        {"filename": "Complaint.pdf", "page_number": 2},
+                        {"filename": "Complaint.pdf", "page_number": 2},
+                    ],
+                    "authority_citations": [],
+                }],
+            },
+        }
+        path = f"/workspace/matters/{CASE_ID}/drafts/{request_id}/audit"
+        with patch.object(legalai, "load_draft_input_audit", return_value=None), patch.object(
+            legalai, "load_exact_draft_request", return_value=completed
+        ):
+            response = self.client.get(path, headers=_auth_headers())
+        self.assertEqual(response.status_code, 200)
+        body = response.get_data(as_text=True)
+        self.assertIn("1 verified page", body)
+        self.assertIn("Complaint.pdf — p. 2", body)
+
     def test_pdf_responses_are_not_html_wrapped(self):
         with patch.object(
             legalai,

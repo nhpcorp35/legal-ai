@@ -33,6 +33,18 @@ class WorkspaceSourceCitationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn(f"source_sha256={SOURCE_SHA256}", response.get_data(as_text=True))
 
+    def test_case00_source_map_does_not_require_registered_case_entry(self):
+        documents = [{"source_sha256": SOURCE_SHA256, "filename": "Complaint.pdf", "pages": 10}]
+        with patch.object(legalai, "load_registered_cases", return_value=[]), patch.object(
+            legalai, "load_case_source_map", return_value=documents
+        ):
+            response = legalai.app.test_client().get(
+                f"/workspace/matters/{legalai.CASE00_ID}/sources",
+                headers=_auth_headers(),
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Complaint.pdf", response.get_data(as_text=True))
+
     def test_verified_pdf_requires_and_forwards_the_cited_source(self):
         seen = {}
 
