@@ -104,10 +104,12 @@ def run_request(client, request_id):
     try:
         pages=evidence(question)
         authorities=match_verified_authorities(question)
-        schema=finding_schema({"filename":{"type":"string"},"page_number":{"type":"integer","minimum":1}})
+        schema=finding_schema({"filename":{"type":"string"},"page_number":{"type":"integer","minimum":1}}, attorney_sections=bool(authorities))
         # Reuse the bounded model transport, with Case-00's filename/page citation schema.
         import urllib.request
         instructions="Use only supplied verified excerpts and legal authorities. Internal attorney-review draft only. Case-record facts cite only page citations in citations; legal rules cite only authority ids in authority_citations; application findings should cite both where appropriate. Do not overstate court level, controlling effect, or proposition scope. Every finding must have at least one verified source across those two arrays."
+        if authorities:
+            instructions += " Produce a concise attorney answer, not a memorandum. The summary must be a two-sentence executive answer of no more than 70 words. Return no more than eight non-repetitive findings total, each no more than 110 words, using the section field in this order: Legal standard; Application; Policy-by-policy analysis; Bottom line. Use at most two findings per section. State each legal rule once; apply it by reference rather than repeating it. Distinguish primary and excess policies only where the supplied record permits. Put absent proof only in missing_information, as no more than eight short, prioritized bullets; do not repeat missing evidence in the findings or limitations. The Bottom line must give the present record-based assessment and the evidence that would most change it, without predicting an outcome unsupported by the sources."
         payload={"model":os.environ.get("LEGALAI_OPENAI_MODEL","gpt-5.6-sol"),"instructions":"Return only strict JSON matching the schema.","input":json.dumps({"question":question,"instructions":instructions,"pages":pages,"legal_authorities":authority_prompt(authorities)}),"text":{"format":{"type":"json_schema","name":"case00_internal_draft","strict":True,"schema":schema}}}
         req=urllib.request.Request("https://api.openai.com/v1/responses",data=json.dumps(payload).encode(),headers={"Authorization":f"Bearer {os.environ['OPENAI_API_KEY']}","Content-Type":"application/json"},method="POST")
         body=json.loads(urllib.request.urlopen(req,timeout=int(os.environ.get("LEGALAI_MODEL_TIMEOUT_SECONDS","180"))).read().decode())
