@@ -82,7 +82,7 @@ def select_evidence_pages(pages, question):
         selected.append(item); selected_ids.add(item_id); total+=len(item["text"])
 
     foundational=bool(re.search(
-        r"\\b(?:litigation|part(?:y|ies)|claims?|defenses?|relief|pleadings?|counterclaims?|cross[ -]?claims?|third[ -]?party)\\b",
+        r"\b(?:litigation|part(?:y|ies)|claims?|defenses?|relief|pleadings?|counterclaims?|cross[ -]?claims?|third[ -]?party)\b",
         question,
         re.IGNORECASE,
     ))
