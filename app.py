@@ -2624,8 +2624,7 @@ def load_draft_input_audit(case_id, request_id):
     legal_authorities = result.get("legal_authorities", []) if isinstance(result, dict) and result.get("ok") else None
     requested_by = result.get("requested_by") if isinstance(result, dict) and result.get("ok") else None
     if (
-        not isinstance(requested_by, str)
-        or not isinstance(citations, list)
+        not isinstance(citations, list)
         or not isinstance(legal_authorities, list)
         or len(legal_authorities) > 12
     ):
@@ -2650,7 +2649,7 @@ def load_draft_input_audit(case_id, request_id):
             for field in authority_fields
         })
     return {
-        "requested_by": requested_by,
+        "requested_by": requested_by if isinstance(requested_by, str) else None,
         "citations": citations,
         "legal_authorities": selected_authorities,
     }
@@ -2660,6 +2659,52 @@ _VERIFIED_AUTHORITY_BY_ID = {
     authority.authority_id: authority
     for authority in VERIFIED_NY_RESCISSION_AUTHORITIES
 }
+
+
+def fallback_draft_input_audit(case_id, request_id):
+    """Recover bounded citation metadata from a completed historical draft."""
+    item = load_exact_draft_request(case_id, request_id)
+    draft = item.get("draft") if isinstance(item, dict) else None
+    if not isinstance(draft, dict):
+        return None
+    citations = []
+    seen = set()
+    authority_ids = []
+    for finding in draft.get("findings", []):
+        if not isinstance(finding, dict):
+            continue
+        for citation in finding.get("citations", []):
+            if not isinstance(citation, dict):
+                continue
+            filename = citation.get("filename")
+            page_number = citation.get("page_number")
+            if not isinstance(filename, str) or not isinstance(page_number, int) or page_number < 1:
+                continue
+            identity = (filename, page_number)
+            if identity not in seen and len(citations) < 60:
+                citations.append({"filename": filename, "page_number": page_number})
+                seen.add(identity)
+        for authority_id in finding.get("authority_citations", []):
+            if isinstance(authority_id, str) and authority_id not in authority_ids:
+                authority_ids.append(authority_id)
+    if not citations:
+        return None
+    legal_authorities = []
+    for authority_id in authority_ids[:12]:
+        authority = _VERIFIED_AUTHORITY_BY_ID.get(authority_id)
+        if authority is not None:
+            legal_authorities.append({
+                field: getattr(authority, field)
+                for field in (
+                    "authority_id", "citation", "title", "source_url",
+                    "issuing_body", "date", "sha256",
+                )
+            })
+    return {
+        "requested_by": item.get("requested_by"),
+        "citations": citations,
+        "legal_authorities": legal_authorities,
+    }
 
 
 def findings_with_verified_authorities(findings):
@@ -3604,7 +3649,7 @@ def workspace_case00_pdf(filename):
 
 @app.route("/workspace/matters/<path:case_id>/drafts/<request_id>/audit")
 def workspace_matter_draft_audit(case_id, request_id):
-    """Show the authenticated requester's bounded retrieval-source audit."""
+    """Show a bounded retrieval-source audit to an authenticated reviewer."""
     reviewer = basic_review_user()
     if reviewer is None:
         return basic_auth_required_response()
@@ -3612,9 +3657,9 @@ def workspace_matter_draft_audit(case_id, request_id):
         abort(404)
     audit = load_draft_input_audit(case_id, request_id)
     if audit is None:
+        audit = fallback_draft_input_audit(case_id, request_id)
+    if audit is None:
         abort(502)
-    if audit["requested_by"] != reviewer:
-        abort(404)
     citations = audit["citations"]
     legal_authorities = audit.get("legal_authorities", [])
     return render_template_string(
@@ -3718,7 +3763,7 @@ def workspace_matter_sources(case_id):
         registered = {item["case_id"]: item["stage"] for item in load_registered_cases()}
     except GatewayUnavailableError as exc:
         return gateway_unavailable_response(exc)
-    if registered.get(case_id) != "Verified source indexed":
+    if case_id != CASE00_ID and registered.get(case_id) != "Verified source indexed":
         abort(404)
     documents = load_case_source_map(case_id)
     if documents is None:
