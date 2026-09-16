@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import os
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import app as legalai
 
@@ -124,6 +124,8 @@ class AttorneyUiConsistencyTests(unittest.TestCase):
             legalai, "available_case00_review_questions", return_value=["Q1"]
         ), patch.object(legalai, "load_registered_cases", return_value=registered), patch.object(
             legalai, "load_draft_requests", return_value=[draft_ready]
+        ), patch.object(
+            legalai, "load_exact_draft_request", return_value=draft_ready
         ), patch.object(legalai, "load_szymczyk_review_packet", return_value="# Candidate\n"), patch.object(
             legalai, "search_szymczyk_verified_pages", return_value=[]
         ), patch.object(
@@ -258,8 +260,14 @@ class AttorneyUiConsistencyTests(unittest.TestCase):
             "status": "READY",
             "draft": {"summary": "Summary.", "findings": [], "missing_information": []},
         }
+        portal_response = MagicMock()
+        portal_response.__enter__.return_value.read.return_value = (
+            b'{"status":"READY","draft_available":true}'
+        )
         with patch.object(
             legalai, "load_registered_cases", return_value=[{"case_id": CASE_ID, "stage": "Verified source indexed"}]
+        ), patch.object(
+            legalai.urllib.request, "urlopen", return_value=portal_response
         ), patch.object(legalai, "load_draft_requests", return_value=[ready_item]) as loader:
             response = self.client.get(
                 f"/workspace/matters/{CASE_ID}/drafts/{request_id}/status",
@@ -271,6 +279,29 @@ class AttorneyUiConsistencyTests(unittest.TestCase):
         self.assertEqual(response.json["answer_url"], f"/workspace/matters/{CASE_ID}/drafts/{request_id}")
         self.assertNotIn("summary", response.get_data(as_text=True).casefold())
         self.assertTrue(loader.call_args.kwargs["force_refresh"])
+
+    def test_exact_ready_status_loads_matching_completed_list_item(self):
+        request_id = "draft-6-abcdef123456"
+        completed_item = {
+            "request_id": request_id,
+            "question": "What relief is requested?",
+            "requested_by": "allen@example.com",
+            "status": "READY",
+            "draft": {"summary": "Summary.", "findings": [], "missing_information": []},
+        }
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = (
+            b'{"status":"READY","draft_available":true}'
+        )
+        with patch.object(
+            legalai.urllib.request, "urlopen", return_value=response
+        ), patch.object(
+            legalai, "load_draft_requests", return_value=[completed_item]
+        ) as loader:
+            result = legalai.load_exact_draft_request(CASE_ID, request_id)
+
+        self.assertEqual(result, completed_item)
+        loader.assert_called_once_with(CASE_ID, force_refresh=True)
 
     def test_failed_request_is_not_presented_as_processing(self):
         failed_item = {

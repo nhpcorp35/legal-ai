@@ -2551,6 +2551,16 @@ def load_exact_draft_request(case_id, request_id):
         return None
     if not isinstance(result, dict) or result.get("status") not in {"QUEUED", "RUNNING", "READY", "FAILED", "CANCELLED"}:
         return None
+    if (
+        result["status"] == "READY"
+        and (
+            not isinstance(result.get("draft"), dict)
+            or not isinstance(result.get("question"), str)
+        )
+    ):
+        for item in load_draft_requests(case_id, force_refresh=True) or []:
+            if isinstance(item, dict) and item.get("request_id") == request_id:
+                return item
     return result
 
 
