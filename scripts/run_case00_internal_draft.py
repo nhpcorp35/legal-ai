@@ -33,6 +33,14 @@ def now(): return datetime.now(timezone.utc).isoformat()
 def put(client, request_id, name, value):
     raw=json.dumps(value,sort_keys=True,separators=(",",":" )).encode()
     client.put_object(Bucket=os.environ["B2_BUCKET"],Key=key(request_id,name),Body=raw,ContentType="application/json",Metadata={"sha256":hashlib.sha256(raw).hexdigest()})
+def request_status(client, request_id):
+    try:
+        raw=client.get_object(Bucket=os.environ["B2_BUCKET"],Key=key(request_id,"status.json"))["Body"].read()
+        value=json.loads(raw.decode())
+    except Exception:
+        return "QUEUED"
+    status=value.get("status") if isinstance(value,dict) else None
+    return status if status in {"QUEUED","RUNNING","READY","FAILED","CANCELLED"} else "FAILED"
 def words(q): return {x for x in re.findall(r"[a-z0-9]{3,}",q.casefold()) if x not in {"what","with","from","that","this","about","record","verified","case"}}
 
 def evidence(question):
@@ -58,10 +66,12 @@ def evidence(question):
 
 def run_request(client, request_id):
     """Process one Case-00 request using the canonical benchmark corpus."""
+    if request_status(client, request_id) == "CANCELLED":
+        return
     request=json.loads(client.get_object(Bucket=os.environ["B2_BUCKET"],Key=f"cases/{CASE_ID}/derived/draft-requests/{request_id}.json")["Body"].read())
     question=request.get("question") if isinstance(request,dict) else None
     if not isinstance(question,str) or not question.strip() or len(question)>1000: raise SystemExit("invalid request")
-    put(client,request_id,"status.json",{"schema_version":"case00-internal-draft-status.v1","case_id":CASE_ID,"request_id":request_id,"status":"RUNNING","updated_at":now()})
+    put(client,request_id,"status.json",{"schema_version":"legalai-internal-draft-status.v1","case_id":CASE_ID,"request_id":request_id,"status":"RUNNING","updated_at":now()})
     try:
         pages=evidence(question)
         schema={"type":"object","additionalProperties":False,"required":["summary","findings","missing_information","limitations"],"properties":{"summary":{"type":"string"},"findings":{"type":"array","minItems":1,"items":{"type":"object","additionalProperties":False,"required":["statement","citations"],"properties":{"statement":{"type":"string"},"citations":{"type":"array","minItems":1,"items":{"type":"object","additionalProperties":False,"required":["filename","page_number"],"properties":{"filename":{"type":"string"},"page_number":{"type":"integer","minimum":1}}}}}}},"missing_information":{"type":"array","items":{"type":"string"}},"limitations":{"type":"array","items":{"type":"string"}}}}
@@ -73,10 +83,14 @@ def run_request(client, request_id):
         result=next(json.loads(c["text"]) for o in body.get("output",[]) for c in o.get("content",[]) if isinstance(c,dict) and isinstance(c.get("text"),str))
         allowed={(p["filename"],p["page_number"]) for p in pages}
         if not isinstance(result,dict) or not result.get("findings") or any((c.get("filename"),c.get("page_number")) not in allowed for f in result["findings"] for c in f.get("citations",[])): raise ValueError("uncited output")
-        draft={"schema_version":"case00-internal-draft.v1","case_id":CASE_ID,"request_id":request_id,"question":question,"review_required":True,"external_communication":False,"generated_at":now(),**result}
-        put(client,request_id,"draft.json",draft); put(client,request_id,"status.json",{"schema_version":"case00-internal-draft-status.v1","case_id":CASE_ID,"request_id":request_id,"status":"READY","updated_at":now()})
+        if request_status(client, request_id) == "CANCELLED":
+            return
+        draft={"schema_version":"legalai-internal-draft.v1","case_id":CASE_ID,"request_id":request_id,"question":question,"review_required":True,"external_communication":False,"generated_at":now(),**result}
+        put(client,request_id,"draft.json",draft); put(client,request_id,"status.json",{"schema_version":"legalai-internal-draft-status.v1","case_id":CASE_ID,"request_id":request_id,"status":"READY","updated_at":now()})
     except Exception as exc:
-        put(client,request_id,"status.json",{"schema_version":"case00-internal-draft-status.v1","case_id":CASE_ID,"request_id":request_id,"status":"FAILED","failure_code":exc.__class__.__name__.lower(),"updated_at":now()}); raise
+        if request_status(client, request_id) == "CANCELLED":
+            return
+        put(client,request_id,"status.json",{"schema_version":"legalai-internal-draft-status.v1","case_id":CASE_ID,"request_id":request_id,"status":"FAILED","failure_code":exc.__class__.__name__.lower(),"updated_at":now()}); raise
 
 def main():
     parser=argparse.ArgumentParser(); parser.add_argument("--request-id",required=True); args=parser.parse_args()
