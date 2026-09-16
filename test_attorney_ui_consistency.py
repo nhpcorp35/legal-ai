@@ -413,7 +413,7 @@ class AttorneyUiConsistencyTests(unittest.TestCase):
         create.assert_called_once_with(
             CASE_ID,
             "What is the governing rule?",
-            "allen@example.com",
+            "allenk@example.com",
             regenerate_from=request_id,
         )
 

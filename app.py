@@ -3766,7 +3766,10 @@ def workspace_matter_draft(case_id):
             else:
                 question = prior["question"]
                 confirmation = create_draft_request(
-                    case_id, question, reviewer, regenerate_from=prior_id
+                    case_id,
+                    question,
+                    prior.get("requested_by") or reviewer,
+                    regenerate_from=prior_id,
                 )
                 if confirmation is None:
                     error = "The replacement internal draft request could not be saved. Please try again."
