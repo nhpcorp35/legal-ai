@@ -11,7 +11,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import boto3
-from scripts import rebuild_case00_derived as rebuild
+try:
+    from scripts import rebuild_case00_derived as rebuild
+except ModuleNotFoundError:
+    import rebuild_case00_derived as rebuild
 try:
     from scripts.run_verified_case_draft import MAX_CONTEXT_CHARS, MAX_PAGE_CHARS, MAX_PAGES
 except ModuleNotFoundError:
