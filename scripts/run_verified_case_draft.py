@@ -527,7 +527,10 @@ def validate(result, pages):
 
 def run_request(s3, case_id, request_id):
     if case_id == CASE00_BENCHMARK_ID:
-        from scripts import run_case00_internal_draft
+        try:
+            from scripts import run_case00_internal_draft
+        except ModuleNotFoundError:
+            import run_case00_internal_draft
         return run_case00_internal_draft.run_request(s3, request_id)
     now=lambda: datetime.now(timezone.utc).isoformat()
     # A cancellation is durable and wins over a delayed GitHub Actions worker.
