@@ -133,6 +133,8 @@ class AuthorityAwareWorkerTests(unittest.TestCase):
         legal_schema = json.loads(urlopen.call_args_list[0].args[0].data.decode())["text"]["format"]["schema"]
         finding = legal_schema["properties"]["findings"]
         self.assertEqual(finding["maxItems"], 8)
+        self.assertEqual(legal_schema["properties"]["summary"]["maxLength"], 800)
+        self.assertIn("End the summary with a complete sentence", legal_prompt["instructions"])
         self.assertEqual(
             finding["items"]["properties"]["section"]["enum"],
             list(WORKER.ATTORNEY_ANSWER_SECTIONS),
@@ -181,6 +183,7 @@ class AuthorityAwareWorkerTests(unittest.TestCase):
         audit = json.loads(client.objects[CASE00.key(request_id, "input_audit.json")])
         self.assertEqual(len(prompt["legal_authorities"]), 3)
         self.assertIn("concise attorney answer", prompt["instructions"])
+        self.assertIn("End the summary with a complete sentence", prompt["instructions"])
         self.assertIn("Put absent proof only in missing_information", prompt["instructions"])
         self.assertNotIn("legal_authorities", prompt["pages"][0])
         self.assertEqual(len(audit["legal_authorities"]), 3)
