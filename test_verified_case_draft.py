@@ -139,6 +139,19 @@ class PendingQueueTests(unittest.TestCase):
             ("NY-NewYork-158068-2018-Szymczyk-v-Hudson-36-37", "draft-2-bbbbbbbbbbbb"),
         ])
 
+    def test_pending_requests_accepts_case00_benchmark(self):
+        class Case00QueueS3(self.QueueS3):
+            def list_objects_v2(self, **kwargs):
+                if kwargs.get("Prefix") == "cases/":
+                    return {"CommonPrefixes": [{"Prefix": "cases/Case-00-Triborough/"}]}
+                return {"Contents": [
+                    {"Key": "cases/Case-00-Triborough/derived/draft-requests/draft-3-cccccccccccc.json"}
+                ]}
+
+        with mock.patch.object(WORKER, "request_status", return_value="QUEUED"):
+            pending = list(WORKER.pending_requests(Case00QueueS3()))
+        self.assertEqual(pending, [("Case-00-Triborough", "draft-3-cccccccccccc")])
+
     def test_pending_requests_reads_later_b2_listing_pages(self):
         class PaginatedQueueS3(self.QueueS3):
             def list_objects_v2(self, **kwargs):
