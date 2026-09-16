@@ -2565,6 +2565,46 @@ def load_exact_draft_request(case_id, request_id):
     return result
 
 
+_draft_review_feedback_lock = threading.Lock()
+_DRAFT_REVIEW_DECISIONS = {"approve", "needs_revision"}
+
+
+def draft_review_feedback_csrf_token(reviewer, case_id, request_id):
+    """Bind one feedback form to its authenticated reviewer and exact draft."""
+    secret = os.environ.get("LEGALAI_REVIEW_GATEWAY_SECRET", "")
+    if not secret:
+        return ""
+    message = "\n".join((reviewer, case_id, request_id, "draft-review-feedback-v1"))
+    return hmac.new(secret.encode("utf-8"), message.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def archive_draft_review_feedback(reviewer, case_id, request_id, decision, accuracy_rating, usefulness_rating, missing_or_overstated, citation_problems, comments):
+    """Append one bounded, structured draft review to the persistent app volume."""
+    record = {
+        "schema_version": 1,
+        "submitted_at": int(time.time()),
+        "reviewer": reviewer,
+        "case_id": case_id,
+        "request_id": request_id,
+        "decision": decision,
+        "accuracy_rating": accuracy_rating,
+        "usefulness_rating": usefulness_rating,
+        "missing_or_overstated": missing_or_overstated,
+        "citation_problems": citation_problems,
+        "comments": comments,
+    }
+    feedback_dir = os.environ.get("LEGALAI_DRAFT_REVIEW_FEEDBACK_DIR", os.path.join(BASE_DIR, "data", "review_feedback"))
+    os.makedirs(feedback_dir, mode=0o700, exist_ok=True)
+    feedback_path = os.path.join(feedback_dir, "draft_feedback.jsonl")
+    serialized = json.dumps(record, sort_keys=True, ensure_ascii=False) + "\n"
+    with _draft_review_feedback_lock:
+        with open(feedback_path, "a", encoding="utf-8") as stream:
+            stream.write(serialized)
+            stream.flush()
+            os.fsync(stream.fileno())
+    return record
+
+
 def load_draft_input_audit(case_id, request_id):
     """Read bounded retrieval-source metadata through the protected gateway."""
     gateway_url = os.environ.get("LEGALAI_REVIEW_GATEWAY_URL", "").rstrip("/")
@@ -3864,8 +3904,8 @@ def workspace_matter_drafts(case_id):
     )
 
 
-@app.route("/workspace/matters/<case_id>/drafts/<request_id>")
-@app.route("/workspace/case-00/drafts/<request_id>", defaults={"case_id": CASE00_ID})
+@app.route("/workspace/matters/<case_id>/drafts/<request_id>", methods=["GET", "POST"])
+@app.route("/workspace/case-00/drafts/<request_id>", methods=["GET", "POST"], defaults={"case_id": CASE00_ID})
 def workspace_matter_draft_detail(case_id, request_id):
     """Show one saved internal answer and its source citations."""
     reviewer = basic_review_user()
@@ -3882,11 +3922,39 @@ def workspace_matter_draft_detail(case_id, request_id):
         or not isinstance(item.get("question"), str)
     ):
         abort(404)
+    feedback_saved = request.args.get("review") == "saved"
+    feedback_error = None
+    feedback_csrf_token = draft_review_feedback_csrf_token(reviewer, case_id, request_id)
+    if request.method == "POST":
+        submitted_token = clean_text(request.form.get("feedback_csrf_token", ""))
+        if not feedback_csrf_token or not hmac.compare_digest(submitted_token, feedback_csrf_token):
+            abort(400)
+        decision = clean_text(request.form.get("decision", ""))
+        accuracy_raw = clean_text(request.form.get("accuracy_rating", ""))
+        usefulness_raw = clean_text(request.form.get("usefulness_rating", ""))
+        missing_or_overstated = clean_text(request.form.get("missing_or_overstated", ""))
+        citation_problems = clean_text(request.form.get("citation_problems", ""))
+        comments = clean_text(request.form.get("comments", ""))
+        ratings_valid = accuracy_raw in {"1", "2", "3", "4", "5"} and usefulness_raw in {"1", "2", "3", "4", "5"}
+        notes_valid = all(len(value) <= 4000 for value in (missing_or_overstated, citation_problems, comments))
+        if decision not in _DRAFT_REVIEW_DECISIONS or not ratings_valid or not notes_valid:
+            feedback_error = "Choose a disposition and both ratings; keep each comment under 4,000 characters."
+        else:
+            try:
+                archive_draft_review_feedback(
+                    reviewer, case_id, request_id, decision,
+                    int(accuracy_raw), int(usefulness_raw),
+                    missing_or_overstated, citation_problems, comments,
+                )
+            except OSError:
+                feedback_error = "Your review could not be saved. Nothing was submitted; please try again."
+            else:
+                return redirect(url_for("workspace_matter_draft_detail", case_id=case_id, request_id=request_id, review="saved"), code=303)
     rendered_findings = findings_with_verified_authorities(
         item["draft"].get("findings", [])
     )
     finding_sections = group_attorney_findings(rendered_findings)
-    return render_template_string(
+    page = render_template_string(
         """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Answered Question</title><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:900px;margin:0 auto;padding:42px 24px 64px}a{color:#123f63}h1{margin:0 0 8px;font-size:clamp(2rem,5vw,3rem)}h2{margin:26px 0 8px;font-size:1.35rem;color:#123f63}p,li{font-size:1.05rem;line-height:1.55}.meta{color:#52606d}.panel{background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:22px;margin-top:26px;box-shadow:0 2px 8px #0f172a10}.completed-notice{border-left:5px solid #15803d;background:#f0fdf4;font-size:1.15rem;font-weight:bold}.source-label{font-size:.9rem;margin:9px 0 0;color:#52606d}.citation-list{list-style:none;margin:7px 0 0;padding:0}.citation-list li{font-size:.9rem;line-height:1.35;margin:4px 0}.citation-list a{overflow-wrap:anywhere}.report-badge{display:inline-block;margin:0 0 12px;padding:7px 11px;border-radius:999px;background:#123f63;color:#fff;font-weight:bold;letter-spacing:.03em;font-size:.9rem}.report-intro{border-left:5px solid #123f63;padding:11px 14px;background:#eef6fc;font-weight:bold}</style></head><body><main><p><a href="{{ url_for('workspace_matter_drafts', case_id=case_id) }}">← Answered questions</a></p><h1>Answered question</h1><p class="meta">{{ case_id }}</p>{% if completed_automatically %}<section class="panel completed-notice" role="status">✓ Draft completed automatically — no refresh was needed.</section>{% endif %}<section class="panel">{% if is_top_attack_report %}<div class="report-badge">V4.0 TOP ATTACK SURFACES REPORT</div><p class="report-intro">Ranked source-supported vulnerabilities from the verified record</p>{% endif %}<p><strong>Question</strong><br>{{ item.question }}</p><p><strong>Attorney review required.</strong> {{ item.draft.summary }}</p>{% if can_regenerate %}<p><a href="{{ url_for('workspace_matter_draft_audit', case_id=case_id, request_id=item.request_id) }}">View retrieval audit →</a></p>{% endif %}{% if can_regenerate %}<form method="post" action="{{ url_for('workspace_matter_draft', case_id=case_id) }}"><input type="hidden" name="action" value="regenerate"><input type="hidden" name="request_id" value="{{ item.request_id }}"><button type="submit">Regenerate this completed draft</button></form>{% endif %}{% for group in finding_sections %}{% if group.name %}<h2>{{ group.name }}</h2>{% endif %}<ul>{% for finding in group.findings %}<li>{{ finding.statement }}{% if finding.citations %}<p class="source-label"><strong>Verified record</strong></p><ul class="citation-list">{% for cite in finding.citations %}<li>{% if case_id == case00_id %}<a href="{{ url_for('workspace_case00_pdf', filename=cite.filename) }}#page={{ cite.page_number }}" target="_blank" rel="noopener">Open verified source — p. {{ cite.page_number }} · {{ cite.filename|truncate(72, True, '…') }}</a>{% else %}<a href="{{ url_for('workspace_matter_pdf', case_id=case_id, filename=cite.filename, source_sha256=cite.source_sha256) }}#page={{ cite.page_number }}" target="_blank" rel="noopener">Open verified source — p. {{ cite.page_number }} · {{ cite.filename|truncate(72, True, '…') }}</a>{% endif %}</li>{% endfor %}</ul>{% endif %}{% if finding.authorities %}<p class="source-label"><strong>Legal authority</strong></p><ul class="citation-list">{% for authority in finding.authorities %}<li><a href="{{ authority.source_url }}" target="_blank" rel="noopener">{{ authority.title }} — {{ authority.citation }}</a></li>{% endfor %}</ul>{% endif %}</li>{% endfor %}</ul>{% endfor %}{% if item.draft.missing_information %}<h2>Missing information</h2><ul>{% for entry in item.draft.missing_information %}<li>{{ entry }}</li>{% endfor %}</ul>{% endif %}</section></main></body></html>""",
         case_id=case_id,
         item=item,
@@ -3896,6 +3964,13 @@ def workspace_matter_draft_detail(case_id, request_id):
         completed_automatically=request.args.get("completed") == "1",
         case00_id=CASE00_ID,
     )
+    review_panel = render_template_string(
+        """<section class="panel" id="attorney-review"><style>.review-form fieldset{border:0;padding:0;margin:18px 0}.review-form legend,.review-form label{display:block;font-weight:bold;margin:12px 0 7px}.review-form .choice{display:inline-flex;align-items:center;gap:7px;margin:6px 18px 6px 0;font-weight:normal}.review-form textarea,.review-form select{box-sizing:border-box;width:100%;font:inherit;line-height:1.4;padding:10px;border:1px solid #64748b;border-radius:6px}.review-form button{margin-top:14px;background:#123f63;color:#fff;border:0;border-radius:6px;padding:11px 15px;font:inherit;font-weight:bold;cursor:pointer}.review-success{border-left:5px solid #15803d;background:#f0fdf4;padding:12px 14px}.review-error{border-left:5px solid #b45309;background:#fffbeb;padding:12px 14px}</style><h2>Attorney review</h2><p>Submit one structured review of this exact draft. Your identity, the draft ID, and submission time are recorded.</p>{% if feedback_saved %}<p class="review-success" role="status"><strong>Review saved.</strong> Thank you—no draft was regenerated.</p>{% endif %}{% if feedback_error %}<p class="review-error" role="alert">{{ feedback_error }}</p>{% endif %}<form class="review-form" method="post"><input type="hidden" name="feedback_csrf_token" value="{{ feedback_csrf_token }}"><fieldset><legend>Disposition</legend><label class="choice"><input type="radio" name="decision" value="approve" required> Approve</label><label class="choice"><input type="radio" name="decision" value="needs_revision" required> Needs revision</label></fieldset><label for="accuracy-rating">Accuracy</label><select id="accuracy-rating" name="accuracy_rating" required><option value="">Choose 1–5</option>{% for score in range(1, 6) %}<option value="{{ score }}">{{ score }}{% if score == 1 %} — poor{% elif score == 5 %} — excellent{% endif %}</option>{% endfor %}</select><label for="usefulness-rating">Usefulness</label><select id="usefulness-rating" name="usefulness_rating" required><option value="">Choose 1–5</option>{% for score in range(1, 6) %}<option value="{{ score }}">{{ score }}{% if score == 1 %} — poor{% elif score == 5 %} — excellent{% endif %}</option>{% endfor %}</select><label for="missing-or-overstated">What is missing or overstated?</label><textarea id="missing-or-overstated" name="missing_or_overstated" rows="4" maxlength="4000"></textarea><label for="citation-problems">Citation or source-link problems</label><textarea id="citation-problems" name="citation_problems" rows="4" maxlength="4000"></textarea><label for="review-comments">Other comments</label><textarea id="review-comments" name="comments" rows="4" maxlength="4000"></textarea><button type="submit">Save attorney review</button></form></section>""",
+        feedback_saved=feedback_saved,
+        feedback_error=feedback_error,
+        feedback_csrf_token=feedback_csrf_token,
+    )
+    return page.replace("</main>", review_panel + "</main>", 1)
 
 
 @app.route("/workspace/szymczyk/pdf/<path:filename>")
