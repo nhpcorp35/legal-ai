@@ -152,6 +152,12 @@ class PendingQueueTests(unittest.TestCase):
             pending = list(WORKER.pending_requests(Case00QueueS3()))
         self.assertEqual(pending, [("Case-00-Triborough", "draft-3-cccccccccccc")])
 
+    def test_run_request_dispatches_case00_to_benchmark_worker(self):
+        benchmark_worker = types.SimpleNamespace(run_request=mock.Mock())
+        with mock.patch.dict(sys.modules, {"scripts.run_case00_internal_draft": benchmark_worker}):
+            WORKER.run_request("client", "Case-00-Triborough", "draft-3-cccccccccccc")
+        benchmark_worker.run_request.assert_called_once_with("client", "draft-3-cccccccccccc")
+
     def test_pending_requests_reads_later_b2_listing_pages(self):
         class PaginatedQueueS3(self.QueueS3):
             def list_objects_v2(self, **kwargs):
