@@ -373,6 +373,50 @@ class AttorneyUiConsistencyTests(unittest.TestCase):
         self.assertIn("Does &lt;model&gt; support rescission?", body)
         self.assertIn("Review &lt;summary&gt;.", body)
 
+    def test_authenticated_reviewer_can_regenerate_another_reviewers_draft(self):
+        request_id = "draft-14-abcdef123456"
+        ready_item = {
+            "request_id": request_id,
+            "question": "What is the governing rule?",
+            "requested_by": "allenk@example.com",
+            "status": "READY",
+            "draft": {
+                "summary": "Summary.",
+                "findings": [],
+                "missing_information": [],
+            },
+        }
+        registered = [{"case_id": CASE_ID, "stage": "Verified source indexed"}]
+        with patch.object(legalai, "load_registered_cases", return_value=registered), patch.object(
+            legalai, "load_draft_requests", return_value=[ready_item]
+        ), patch.object(legalai, "load_exact_draft_request", return_value=ready_item), patch.object(
+            legalai,
+            "create_draft_request",
+            return_value={"request_id": "draft-15-bbbbbbbbbbbb", "reused": False},
+        ) as create:
+            listing = self.client.get(
+                f"/workspace/matters/{CASE_ID}/drafts", headers=_auth_headers()
+            )
+            detail = self.client.get(
+                f"/workspace/matters/{CASE_ID}/drafts/{request_id}",
+                headers=_auth_headers(),
+            )
+            submit = self.client.post(
+                f"/workspace/matters/{CASE_ID}/draft",
+                data={"action": "regenerate", "request_id": request_id},
+                headers=_auth_headers(),
+            )
+
+        self.assertIn("Regenerate this draft", listing.get_data(as_text=True))
+        self.assertIn("Regenerate this completed draft", detail.get_data(as_text=True))
+        self.assertEqual(submit.status_code, 303)
+        create.assert_called_once_with(
+            CASE_ID,
+            "What is the governing rule?",
+            "allen@example.com",
+            regenerate_from=request_id,
+        )
+
     def test_legacy_answer_keeps_record_link_and_uses_missing_information_list(self):
         request_id = "draft-11-abcdef123456"
         ready_item = {

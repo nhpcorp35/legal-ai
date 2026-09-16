@@ -3760,10 +3760,9 @@ def workspace_matter_draft(case_id):
                 item for item in draft_requests
                 if item.get("request_id") == prior_id
                 and item.get("status") == "READY"
-                and item.get("requested_by") == reviewer
             ), None)
             if prior is None:
-                error = "Only your completed internal draft can be regenerated."
+                error = "Only a completed internal draft can be regenerated."
             else:
                 question = prior["question"]
                 confirmation = create_draft_request(
@@ -3855,7 +3854,7 @@ def workspace_matter_drafts(case_id):
             abort(404)
     answered = [item for item in (load_draft_requests(case_id) or []) if item["status"] == "READY" and item["draft"]]
     return render_template_string(
-        """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Answered Questions</title><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:900px;margin:0 auto;padding:42px 24px 64px}a{color:#123f63}h1{margin:0 0 8px;font-size:clamp(2rem,5vw,3rem)}p{font-size:1.05rem;line-height:1.55}.meta{color:#52606d}.question{display:block;background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:20px;margin-top:16px;box-shadow:0 2px 8px #0f172a10;text-decoration:none;color:#172331}.question:hover{border-color:#123f63}.question strong{color:#123f63}</style></head><body><main><p><a href="/workspace">← Attorney workspace</a> · <a href="{{ url_for('workspace_matter_draft', case_id=case_id) }}">Ask a new review question</a></p><h1>Answered questions</h1><p class="meta">{{ case_id }}</p>{% if answered %}{% for item in answered %}<article class="question"><strong>Answered</strong><p>{{ item.question }}</p><span class="meta">Requested by {{ item.requested_by }}</span><p><a href="{{ url_for('workspace_matter_draft_detail', case_id=case_id, request_id=item.request_id) }}">Open answer →</a></p>{% if item.requested_by == reviewer %}<p><a href="{{ url_for('workspace_matter_draft_audit', case_id=case_id, request_id=item.request_id) }}">View retrieval audit →</a></p><form method="post" action="{{ url_for('workspace_matter_draft', case_id=case_id) }}"><input type="hidden" name="action" value="regenerate"><input type="hidden" name="request_id" value="{{ item.request_id }}"><button type="submit">Regenerate this draft</button></form>{% endif %}</article>{% endfor %}{% else %}<p>No answered questions yet.</p>{% endif %}</main></body></html>""",
+        """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Answered Questions</title><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:900px;margin:0 auto;padding:42px 24px 64px}a{color:#123f63}h1{margin:0 0 8px;font-size:clamp(2rem,5vw,3rem)}p{font-size:1.05rem;line-height:1.55}.meta{color:#52606d}.question{display:block;background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:20px;margin-top:16px;box-shadow:0 2px 8px #0f172a10;text-decoration:none;color:#172331}.question:hover{border-color:#123f63}.question strong{color:#123f63}</style></head><body><main><p><a href="/workspace">← Attorney workspace</a> · <a href="{{ url_for('workspace_matter_draft', case_id=case_id) }}">Ask a new review question</a></p><h1>Answered questions</h1><p class="meta">{{ case_id }}</p>{% if answered %}{% for item in answered %}<article class="question"><strong>Answered</strong><p>{{ item.question }}</p><span class="meta">Requested by {{ item.requested_by }}</span><p><a href="{{ url_for('workspace_matter_draft_detail', case_id=case_id, request_id=item.request_id) }}">Open answer →</a></p>{% if item.requested_by == reviewer %}<p><a href="{{ url_for('workspace_matter_draft_audit', case_id=case_id, request_id=item.request_id) }}">View retrieval audit →</a></p>{% endif %}<form method="post" action="{{ url_for('workspace_matter_draft', case_id=case_id) }}"><input type="hidden" name="action" value="regenerate"><input type="hidden" name="request_id" value="{{ item.request_id }}"><button type="submit">Regenerate this draft</button></form></article>{% endfor %}{% else %}<p>No answered questions yet.</p>{% endif %}</main></body></html>""",
         case_id=case_id,
         answered=answered,
         reviewer=reviewer,
@@ -3889,7 +3888,7 @@ def workspace_matter_draft_detail(case_id, request_id):
         case_id=case_id,
         item=item,
         finding_sections=finding_sections,
-        can_regenerate=item.get("requested_by") == reviewer,
+        can_regenerate=True,
         is_top_attack_report=clean_text(item.get("question", "")).lower() == TOP_ATTACK_SURFACES_QUESTION.lower(),
         completed_automatically=request.args.get("completed") == "1",
         case00_id=CASE00_ID,
