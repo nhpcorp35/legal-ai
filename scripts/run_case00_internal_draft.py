@@ -16,9 +16,25 @@ try:
 except ModuleNotFoundError:
     import rebuild_case00_derived as rebuild
 try:
-    from scripts.run_verified_case_draft import MAX_CONTEXT_CHARS, MAX_PAGE_CHARS, MAX_PAGES
+    from scripts.run_verified_case_draft import (
+        MAX_CONTEXT_CHARS,
+        MAX_PAGE_CHARS,
+        MAX_PAGES,
+        authority_audit,
+        authority_prompt,
+        finding_schema,
+        match_verified_authorities,
+    )
 except ModuleNotFoundError:
-    from run_verified_case_draft import MAX_CONTEXT_CHARS, MAX_PAGE_CHARS, MAX_PAGES
+    from run_verified_case_draft import (
+        MAX_CONTEXT_CHARS,
+        MAX_PAGE_CHARS,
+        MAX_PAGES,
+        authority_audit,
+        authority_prompt,
+        finding_schema,
+        match_verified_authorities,
+    )
 
 CASE_ID = "Case-00-Triborough"
 PREFIX = f"cases/{CASE_ID}/derived/internal-drafts"
@@ -64,6 +80,19 @@ def evidence(question):
     if not selected: raise ValueError("no verified evidence")
     return selected
 
+def validate(result, pages, authorities):
+    allowed_pages={(p["filename"],p["page_number"]) for p in pages}
+    allowed_authorities={authority.authority_id for authority in authorities}
+    if not isinstance(result,dict) or not isinstance(result.get("findings"),list) or not result["findings"]: raise ValueError("invalid output")
+    for finding in result["findings"]:
+        if not isinstance(finding,dict) or not isinstance(finding.get("statement"),str) or not isinstance(finding.get("citations"),list) or not isinstance(finding.get("authority_citations"),list): raise ValueError("uncited output")
+        if not finding["citations"] and not finding["authority_citations"]: raise ValueError("uncited output")
+        for citation in finding["citations"]:
+            if not isinstance(citation,dict) or (citation.get("filename"),citation.get("page_number")) not in allowed_pages: raise ValueError("unverified citation")
+        if any(not isinstance(authority_id,str) or authority_id not in allowed_authorities for authority_id in finding["authority_citations"]):
+            raise ValueError("unverified authority citation")
+    return result
+
 def run_request(client, request_id):
     """Process one Case-00 request using the canonical benchmark corpus."""
     if request_status(client, request_id) == "CANCELLED":
@@ -74,19 +103,22 @@ def run_request(client, request_id):
     put(client,request_id,"status.json",{"schema_version":"legalai-internal-draft-status.v1","case_id":CASE_ID,"request_id":request_id,"status":"RUNNING","updated_at":now()})
     try:
         pages=evidence(question)
-        schema={"type":"object","additionalProperties":False,"required":["summary","findings","missing_information","limitations"],"properties":{"summary":{"type":"string"},"findings":{"type":"array","minItems":1,"items":{"type":"object","additionalProperties":False,"required":["statement","citations"],"properties":{"statement":{"type":"string"},"citations":{"type":"array","minItems":1,"items":{"type":"object","additionalProperties":False,"required":["filename","page_number"],"properties":{"filename":{"type":"string"},"page_number":{"type":"integer","minimum":1}}}}}}},"missing_information":{"type":"array","items":{"type":"string"}},"limitations":{"type":"array","items":{"type":"string"}}}}
+        authorities=match_verified_authorities(question)
+        schema=finding_schema({"filename":{"type":"string"},"page_number":{"type":"integer","minimum":1}})
         # Reuse the bounded model transport, with Case-00's filename/page citation schema.
         import urllib.request
-        payload={"model":os.environ.get("LEGALAI_OPENAI_MODEL","gpt-5.6-sol"),"instructions":"Return only strict JSON matching the schema.","input":json.dumps({"question":question,"instructions":"Use only supplied verified excerpts. Internal attorney-review draft only. Every finding must cite supplied filename and page.","pages":pages}),"text":{"format":{"type":"json_schema","name":"case00_internal_draft","strict":True,"schema":schema}}}
+        instructions="Use only supplied verified excerpts and legal authorities. Internal attorney-review draft only. Case-record facts cite only page citations in citations; legal rules cite only authority ids in authority_citations; application findings should cite both where appropriate. Do not overstate court level, controlling effect, or proposition scope. Every finding must have at least one verified source across those two arrays."
+        payload={"model":os.environ.get("LEGALAI_OPENAI_MODEL","gpt-5.6-sol"),"instructions":"Return only strict JSON matching the schema.","input":json.dumps({"question":question,"instructions":instructions,"pages":pages,"legal_authorities":authority_prompt(authorities)}),"text":{"format":{"type":"json_schema","name":"case00_internal_draft","strict":True,"schema":schema}}}
         req=urllib.request.Request("https://api.openai.com/v1/responses",data=json.dumps(payload).encode(),headers={"Authorization":f"Bearer {os.environ['OPENAI_API_KEY']}","Content-Type":"application/json"},method="POST")
         body=json.loads(urllib.request.urlopen(req,timeout=int(os.environ.get("LEGALAI_MODEL_TIMEOUT_SECONDS","180"))).read().decode())
         result=next(json.loads(c["text"]) for o in body.get("output",[]) for c in o.get("content",[]) if isinstance(c,dict) and isinstance(c.get("text"),str))
-        allowed={(p["filename"],p["page_number"]) for p in pages}
-        if not isinstance(result,dict) or not result.get("findings") or any((c.get("filename"),c.get("page_number")) not in allowed for f in result["findings"] for c in f.get("citations",[])): raise ValueError("uncited output")
+        validate(result,pages,authorities)
         if request_status(client, request_id) == "CANCELLED":
             return
         draft={"schema_version":"legalai-internal-draft.v1","case_id":CASE_ID,"request_id":request_id,"question":question,"review_required":True,"external_communication":False,"generated_at":now(),**result}
-        put(client,request_id,"draft.json",draft); put(client,request_id,"status.json",{"schema_version":"legalai-internal-draft-status.v1","case_id":CASE_ID,"request_id":request_id,"status":"READY","updated_at":now()})
+        put(client,request_id,"draft.json",draft)
+        put(client,request_id,"input_audit.json",{"schema_version":"legalai-internal-draft-audit.v1","case_id":CASE_ID,"request_id":request_id,"question_sha256":hashlib.sha256(question.encode()).hexdigest(),"retrieval_citations":[{key:p[key] for key in ("filename","page_number")} for p in pages],"legal_authorities":authority_audit(authorities),"generated_at":now()})
+        put(client,request_id,"status.json",{"schema_version":"legalai-internal-draft-status.v1","case_id":CASE_ID,"request_id":request_id,"status":"READY","updated_at":now()})
     except Exception as exc:
         if request_status(client, request_id) == "CANCELLED":
             return

@@ -19,6 +19,7 @@ from functools import lru_cache
 from types import SimpleNamespace
 
 from matter_builder import get_matter
+from engines.verified_authority_registry import VERIFIED_NY_RESCISSION_AUTHORITIES
 
 app = Flask(__name__)
 
@@ -2565,7 +2566,7 @@ def load_exact_draft_request(case_id, request_id):
 
 
 def load_draft_input_audit(case_id, request_id):
-    """Read citation-only retrieval audit data through the protected gateway."""
+    """Read bounded retrieval-source metadata through the protected gateway."""
     gateway_url = os.environ.get("LEGALAI_REVIEW_GATEWAY_URL", "").rstrip("/")
     secret = os.environ.get("LEGALAI_REVIEW_GATEWAY_SECRET", "")
     if not gateway_url or not secret or not re.fullmatch(r"draft-[0-9]+-[0-9a-f]{12}", str(request_id or "")):
@@ -2580,10 +2581,69 @@ def load_draft_input_audit(case_id, request_id):
     except (urllib.error.URLError, urllib.error.HTTPError, ValueError, UnicodeDecodeError):
         return None
     citations = result.get("retrieval_citations") if isinstance(result, dict) and result.get("ok") else None
+    legal_authorities = result.get("legal_authorities", []) if isinstance(result, dict) and result.get("ok") else None
     requested_by = result.get("requested_by") if isinstance(result, dict) and result.get("ok") else None
-    if not isinstance(requested_by, str) or not isinstance(citations, list):
+    if (
+        not isinstance(requested_by, str)
+        or not isinstance(citations, list)
+        or not isinstance(legal_authorities, list)
+        or len(legal_authorities) > 12
+    ):
         return None
-    return {"requested_by": requested_by, "citations": citations}
+    selected_authorities = []
+    authority_fields = (
+        "authority_id",
+        "citation",
+        "title",
+        "source_url",
+        "issuing_body",
+        "date",
+        "sha256",
+    )
+    for authority in legal_authorities:
+        if not isinstance(authority, dict) or not all(
+            isinstance(authority.get(field), str) for field in authority_fields
+        ):
+            return None
+        selected_authorities.append({
+            field: authority[field]
+            for field in authority_fields
+        })
+    return {
+        "requested_by": requested_by,
+        "citations": citations,
+        "legal_authorities": selected_authorities,
+    }
+
+
+_VERIFIED_AUTHORITY_BY_ID = {
+    authority.authority_id: authority
+    for authority in VERIFIED_NY_RESCISSION_AUTHORITIES
+}
+
+
+def findings_with_verified_authorities(findings):
+    """Attach registry records to known authority ids and ignore all others."""
+    rendered = []
+    for finding in findings if isinstance(findings, list) else []:
+        if not isinstance(finding, dict):
+            continue
+        authority_ids = finding.get("authority_citations", [])
+        if not isinstance(authority_ids, list):
+            authority_ids = []
+        rendered.append({
+            "statement": finding.get("statement", ""),
+            "citations": finding.get("citations", [])
+            if isinstance(finding.get("citations", []), list)
+            else [],
+            "authorities": [
+                _VERIFIED_AUTHORITY_BY_ID[authority_id]
+                for authority_id in authority_ids
+                if isinstance(authority_id, str)
+                and authority_id in _VERIFIED_AUTHORITY_BY_ID
+            ],
+        })
+    return rendered
 
 
 def open_indexed_case_pdf(case_id, source_sha256, filename):
@@ -3492,7 +3552,7 @@ def workspace_case00_pdf(filename):
 
 @app.route("/workspace/matters/<path:case_id>/drafts/<request_id>/audit")
 def workspace_matter_draft_audit(case_id, request_id):
-    """Show the authenticated requester's citation-only retrieval audit."""
+    """Show the authenticated requester's bounded retrieval-source audit."""
     reviewer = basic_review_user()
     if reviewer is None:
         return basic_auth_required_response()
@@ -3504,9 +3564,13 @@ def workspace_matter_draft_audit(case_id, request_id):
     if audit["requested_by"] != reviewer:
         abort(404)
     citations = audit["citations"]
+    legal_authorities = audit.get("legal_authorities", [])
     return render_template_string(
-        """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Retrieval Audit</title><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:900px;margin:0 auto;padding:42px 24px 64px}a{color:#123f63}p,li{font-size:1.05rem;line-height:1.55}.meta{color:#52606d}.panel{background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:22px;margin-top:26px}</style></head><body><main><p><a href="{{ url_for('workspace_matter_drafts', case_id=case_id) }}">← Answered questions</a></p><h1>Retrieval audit</h1><p class="meta">Citation list supplied to the internal draft model. No source text is shown.</p><section class="panel"><p><strong>{{ citations|length }} verified pages</strong></p><ul>{% for cite in citations %}<li>{{ cite.filename }} — p. {{ cite.page_number }}</li>{% endfor %}</ul></section></main></body></html>""",
-        case_id=case_id, request_id=request_id, citations=citations,
+        """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Retrieval Audit</title><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:900px;margin:0 auto;padding:42px 24px 64px}a{color:#123f63}p,li{font-size:1.05rem;line-height:1.55}.meta{color:#52606d}.panel{background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:22px;margin-top:26px}</style></head><body><main><p><a href="{{ url_for('workspace_matter_drafts', case_id=case_id) }}">← Answered questions</a></p><h1>Retrieval audit</h1><p class="meta">Bounded source metadata supplied to the internal draft model. No source text is shown.</p><section class="panel"><h2>Verified record</h2><p><strong>{{ citations|length }} verified pages</strong></p><ul>{% for cite in citations %}<li>{{ cite.filename }} — p. {{ cite.page_number }}</li>{% endfor %}</ul></section>{% if legal_authorities %}<section class="panel"><h2>Legal authorities</h2><p><strong>{{ legal_authorities|length }} selected authorit{{ "y" if legal_authorities|length == 1 else "ies" }}</strong></p><ul>{% for authority in legal_authorities %}<li>{{ authority.title }} — {{ authority.citation }}<br><span class="meta">{{ authority.issuing_body }} · {{ authority.date }}</span></li>{% endfor %}</ul></section>{% endif %}</main></body></html>""",
+        case_id=case_id,
+        request_id=request_id,
+        citations=citations,
+        legal_authorities=legal_authorities,
     )
 
 
@@ -3804,10 +3868,14 @@ def workspace_matter_draft_detail(case_id, request_id):
         or not isinstance(item.get("question"), str)
     ):
         abort(404)
+    rendered_findings = findings_with_verified_authorities(
+        item["draft"].get("findings", [])
+    )
     return render_template_string(
-        """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Answered Question</title><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:900px;margin:0 auto;padding:42px 24px 64px}a{color:#123f63}h1{margin:0 0 8px;font-size:clamp(2rem,5vw,3rem)}p,li{font-size:1.05rem;line-height:1.55}.meta{color:#52606d}.panel{background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:22px;margin-top:26px;box-shadow:0 2px 8px #0f172a10}.completed-notice{border-left:5px solid #15803d;background:#f0fdf4;font-size:1.15rem;font-weight:bold}.citation-list{list-style:none;margin:7px 0 0;padding:0}.citation-list li{font-size:.9rem;line-height:1.35;margin:4px 0}.citation-list a{overflow-wrap:anywhere}.report-badge{display:inline-block;margin:0 0 12px;padding:7px 11px;border-radius:999px;background:#123f63;color:#fff;font-weight:bold;letter-spacing:.03em;font-size:.9rem}.report-intro{border-left:5px solid #123f63;padding:11px 14px;background:#eef6fc;font-weight:bold}</style></head><body><main><p><a href="{{ url_for('workspace_matter_drafts', case_id=case_id) }}">← Answered questions</a></p><h1>Answered question</h1><p class="meta">{{ case_id }}</p>{% if completed_automatically %}<section class="panel completed-notice" role="status">✓ Draft completed automatically — no refresh was needed.</section>{% endif %}<section class="panel">{% if is_top_attack_report %}<div class="report-badge">V4.0 TOP ATTACK SURFACES REPORT</div><p class="report-intro">Ranked source-supported vulnerabilities from the verified record</p>{% endif %}<p><strong>Question</strong><br>{{ item.question }}</p><p><strong>Attorney review required.</strong> {{ item.draft.summary }}</p>{% if can_regenerate %}<p><a href="{{ url_for('workspace_matter_draft_audit', case_id=case_id, request_id=item.request_id) }}">View retrieval audit →</a></p>{% endif %}{% if can_regenerate %}<form method="post" action="{{ url_for('workspace_matter_draft', case_id=case_id) }}"><input type="hidden" name="action" value="regenerate"><input type="hidden" name="request_id" value="{{ item.request_id }}"><button type="submit">Regenerate this completed draft</button></form>{% endif %}<ul>{% for finding in item.draft.findings %}<li>{{ finding.statement }}{% if finding.citations %}<ul class="citation-list">{% for cite in finding.citations %}<li>{% if case_id == case00_id %}<a href="{{ url_for('workspace_case00_pdf', filename=cite.filename) }}#page={{ cite.page_number }}" target="_blank" rel="noopener">Open verified source — p. {{ cite.page_number }} · {{ cite.filename|truncate(72, True, '…') }}</a>{% else %}<a href="{{ url_for('workspace_matter_pdf', case_id=case_id, filename=cite.filename, source_sha256=cite.source_sha256) }}#page={{ cite.page_number }}" target="_blank" rel="noopener">Open verified source — p. {{ cite.page_number }} · {{ cite.filename|truncate(72, True, '…') }}</a>{% endif %}</li>{% endfor %}</ul>{% endif %}</li>{% endfor %}</ul>{% if item.draft.missing_information %}<p><strong>Missing information:</strong> {{ item.draft.missing_information|join('; ') }}</p>{% endif %}</section></main></body></html>""",
+        """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Answered Question</title><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:900px;margin:0 auto;padding:42px 24px 64px}a{color:#123f63}h1{margin:0 0 8px;font-size:clamp(2rem,5vw,3rem)}p,li{font-size:1.05rem;line-height:1.55}.meta{color:#52606d}.panel{background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:22px;margin-top:26px;box-shadow:0 2px 8px #0f172a10}.completed-notice{border-left:5px solid #15803d;background:#f0fdf4;font-size:1.15rem;font-weight:bold}.source-label{font-size:.9rem;margin:9px 0 0;color:#52606d}.citation-list{list-style:none;margin:7px 0 0;padding:0}.citation-list li{font-size:.9rem;line-height:1.35;margin:4px 0}.citation-list a{overflow-wrap:anywhere}.report-badge{display:inline-block;margin:0 0 12px;padding:7px 11px;border-radius:999px;background:#123f63;color:#fff;font-weight:bold;letter-spacing:.03em;font-size:.9rem}.report-intro{border-left:5px solid #123f63;padding:11px 14px;background:#eef6fc;font-weight:bold}</style></head><body><main><p><a href="{{ url_for('workspace_matter_drafts', case_id=case_id) }}">← Answered questions</a></p><h1>Answered question</h1><p class="meta">{{ case_id }}</p>{% if completed_automatically %}<section class="panel completed-notice" role="status">✓ Draft completed automatically — no refresh was needed.</section>{% endif %}<section class="panel">{% if is_top_attack_report %}<div class="report-badge">V4.0 TOP ATTACK SURFACES REPORT</div><p class="report-intro">Ranked source-supported vulnerabilities from the verified record</p>{% endif %}<p><strong>Question</strong><br>{{ item.question }}</p><p><strong>Attorney review required.</strong> {{ item.draft.summary }}</p>{% if can_regenerate %}<p><a href="{{ url_for('workspace_matter_draft_audit', case_id=case_id, request_id=item.request_id) }}">View retrieval audit →</a></p>{% endif %}{% if can_regenerate %}<form method="post" action="{{ url_for('workspace_matter_draft', case_id=case_id) }}"><input type="hidden" name="action" value="regenerate"><input type="hidden" name="request_id" value="{{ item.request_id }}"><button type="submit">Regenerate this completed draft</button></form>{% endif %}<ul>{% for finding in rendered_findings %}<li>{{ finding.statement }}{% if finding.citations %}<p class="source-label"><strong>Verified record</strong></p><ul class="citation-list">{% for cite in finding.citations %}<li>{% if case_id == case00_id %}<a href="{{ url_for('workspace_case00_pdf', filename=cite.filename) }}#page={{ cite.page_number }}" target="_blank" rel="noopener">Open verified source — p. {{ cite.page_number }} · {{ cite.filename|truncate(72, True, '…') }}</a>{% else %}<a href="{{ url_for('workspace_matter_pdf', case_id=case_id, filename=cite.filename, source_sha256=cite.source_sha256) }}#page={{ cite.page_number }}" target="_blank" rel="noopener">Open verified source — p. {{ cite.page_number }} · {{ cite.filename|truncate(72, True, '…') }}</a>{% endif %}</li>{% endfor %}</ul>{% endif %}{% if finding.authorities %}<p class="source-label"><strong>Legal authority</strong></p><ul class="citation-list">{% for authority in finding.authorities %}<li><a href="{{ authority.source_url }}" target="_blank" rel="noopener">{{ authority.title }} — {{ authority.citation }}</a></li>{% endfor %}</ul>{% endif %}</li>{% endfor %}</ul>{% if item.draft.missing_information %}<h2>Missing information:</h2><ul>{% for entry in item.draft.missing_information %}<li>{{ entry }}</li>{% endfor %}</ul>{% endif %}</section></main></body></html>""",
         case_id=case_id,
         item=item,
+        rendered_findings=rendered_findings,
         can_regenerate=item.get("requested_by") == reviewer,
         is_top_attack_report=clean_text(item.get("question", "")).lower() == TOP_ATTACK_SURFACES_QUESTION.lower(),
         completed_automatically=request.args.get("completed") == "1",
