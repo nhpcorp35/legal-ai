@@ -12,7 +12,10 @@ from pathlib import Path
 
 import boto3
 from scripts import rebuild_case00_derived as rebuild
-from scripts.run_verified_case_draft import MAX_CONTEXT_CHARS, MAX_PAGE_CHARS, MAX_PAGES
+try:
+    from scripts.run_verified_case_draft import MAX_CONTEXT_CHARS, MAX_PAGE_CHARS, MAX_PAGES
+except ModuleNotFoundError:
+    from run_verified_case_draft import MAX_CONTEXT_CHARS, MAX_PAGE_CHARS, MAX_PAGES
 
 CASE_ID = "Case-00-Triborough"
 PREFIX = f"cases/{CASE_ID}/derived/internal-drafts"
