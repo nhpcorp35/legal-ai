@@ -2,15 +2,20 @@
 """Create one bounded, cited, internal-only draft from verified B2 page indexes."""
 from __future__ import annotations
 
-import argparse, hashlib, json, os, re, urllib.request
+import argparse, hashlib, json, os, re, sys, urllib.request
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import boto3
-try:
-    from engines.verified_authority_registry import match_verified_authorities
-except ModuleNotFoundError:
-    from verified_authority_registry import match_verified_authorities
+
+# Railway executes this file by path, which otherwise exposes only ``scripts``
+# on sys.path. Keep the repository-root package import identical in script and
+# module execution modes.
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from engines.verified_authority_registry import match_verified_authorities
 
 MAX_PAGES, MAX_PAGE_CHARS, MAX_CONTEXT_CHARS = 45, 2200, 75000
 CASE_RE = re.compile(r"NY-[A-Za-z]+-[0-9]{6}-[0-9]{4}-[A-Za-z0-9-]{2,80}$")
