@@ -526,6 +526,9 @@ def validate(result, pages):
     return result
 
 def run_request(s3, case_id, request_id):
+    if case_id == CASE00_BENCHMARK_ID:
+        from scripts import run_case00_internal_draft
+        return run_case00_internal_draft.run_request(s3, request_id)
     now=lambda: datetime.now(timezone.utc).isoformat()
     # A cancellation is durable and wins over a delayed GitHub Actions worker.
     # Do not claim a request that an authorized reviewer has already cancelled.
