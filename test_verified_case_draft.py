@@ -128,6 +128,17 @@ class AuthorityAwareWorkerTests(unittest.TestCase):
         self.assertNotIn("legal_authorities", legal_prompt["pages"][0])
         self.assertIn("Case-record facts cite only page citations", legal_prompt["instructions"])
         self.assertIn("legal rules cite only authority ids", legal_prompt["instructions"])
+        self.assertIn("concise attorney answer", legal_prompt["instructions"])
+        self.assertIn("State each legal rule once", legal_prompt["instructions"])
+        legal_schema = json.loads(urlopen.call_args_list[0].args[0].data.decode())["text"]["format"]["schema"]
+        finding = legal_schema["properties"]["findings"]
+        self.assertEqual(finding["maxItems"], 8)
+        self.assertEqual(
+            finding["items"]["properties"]["section"]["enum"],
+            list(WORKER.ATTORNEY_ANSWER_SECTIONS),
+        )
+        unrelated_schema = json.loads(urlopen.call_args_list[1].args[0].data.decode())["text"]["format"]["schema"]
+        self.assertNotIn("section", unrelated_schema["properties"]["findings"]["items"]["properties"])
 
     def test_both_workers_accept_rule_and_mixed_findings_and_reject_bad_sources(self):
         authorities = WORKER.match_verified_authorities(LEGAL_QUESTION)
@@ -169,6 +180,8 @@ class AuthorityAwareWorkerTests(unittest.TestCase):
         prompt = json.loads(json.loads(urlopen.call_args.args[0].data.decode())["input"])
         audit = json.loads(client.objects[CASE00.key(request_id, "input_audit.json")])
         self.assertEqual(len(prompt["legal_authorities"]), 3)
+        self.assertIn("concise attorney answer", prompt["instructions"])
+        self.assertIn("Put absent proof only in missing_information", prompt["instructions"])
         self.assertNotIn("legal_authorities", prompt["pages"][0])
         self.assertEqual(len(audit["legal_authorities"]), 3)
         expected = {"authority_id", "citation", "title", "source_url", "issuing_body", "date", "sha256"}

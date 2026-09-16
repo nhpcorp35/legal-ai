@@ -334,6 +334,7 @@ class AttorneyUiConsistencyTests(unittest.TestCase):
             "draft": {
                 "summary": "Review <summary>.",
                 "findings": [{
+                    "section": "Legal standard",
                     "statement": "Finding <script>alert(1)</script>.",
                     "citations": [{
                         "source_sha256": "a" * 64,
@@ -358,6 +359,7 @@ class AttorneyUiConsistencyTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         body = response.get_data(as_text=True)
         self.assertIn("<strong>Verified record</strong>", body)
+        self.assertIn("<h2>Legal standard</h2>", body)
         self.assertIn("<strong>Legal authority</strong>", body)
         self.assertIn("Representations by the insured — N.Y. Ins. Law § 3105", body)
         self.assertIn(
@@ -403,7 +405,7 @@ class AttorneyUiConsistencyTests(unittest.TestCase):
         self.assertNotIn("<strong>Legal authority</strong>", body)
         self.assertIn("Open verified source — p. 2 · Legacy.pdf", body)
         self.assertIn(
-            "<h2>Missing information:</h2><ul><li>First item</li><li>Second &lt;item&gt;</li></ul>",
+            "<h2>Missing information</h2><ul><li>First item</li><li>Second &lt;item&gt;</li></ul>",
             body,
         )
         self.assertNotIn("First item; Second", body)
