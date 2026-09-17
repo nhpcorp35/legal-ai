@@ -350,3 +350,22 @@ judgment.
 - Cleared the four release blockers from audit
   `c6adffe6-4345-4f14-b256-83b4068a45a8`. No new paid legal-analysis run and no
   attorney communication during this acceptance.
+
+
+## Daily attorney-goal alignment
+
+Every meaningful daily update must answer whether the work moved LegalAI toward the attorney reviewer’s stated goals. Use this checkpoint:
+
+- **Movement:** YES / NO / MIXED
+- **Goal advanced:** the specific reviewer goal advanced that day
+- **How / evidence:** the verified product change, test, deployment, or reviewed output demonstrating movement
+- **Remaining gap:** the next unresolved reviewer need
+
+Engineering activity alone does not count as progress. The evidence must show an improvement in LegalAI’s ability to identify what to look for, explain why it matters, apply the relevant procedure and law, or use the verified record to produce a more useful attorney work product.
+
+### 2026-09-17 alignment checkpoint
+
+- **Movement:** YES
+- **Goal advanced:** More complete, source-grounded identification of main-action parties, claims, requested relief, and expressly pleaded defenses without cross-claim or third-party contamination.
+- **How / evidence:** Main-action retrieval was narrowed and verified through focused tests, successful production deployments, a free retrieval preview, and a clean completed draft citing the operative complaint and answer pages.
+- **Remaining gap:** Validate counterclaims/cross-claims and third-party claims as separate retrieval layers, then test a consolidated synthesis that also explains why each issue matters under the relevant procedure and law
