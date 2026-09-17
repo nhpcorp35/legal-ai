@@ -489,7 +489,10 @@ def evidence(s3, case_id, question):
         raise PreGenerationGateError("missing_first_affirmative_defense_page")
     selected_party_role_ids = party_role_candidates.intersection(selected_ids)
     outside_party_role_ids = party_role_candidates.difference(selected_ids)
-    coverage = {"party_role_evidence": {"candidate_count": len(party_role_candidates), "retrieved_count": len(selected_party_role_ids), "outside_initial_slice": bool(outside_party_role_ids), "outside_initial_slice_citations": [{"source_sha256": source, "filename": filename, "page_number": page} for source, filename, page in sorted(outside_party_role_ids, key=lambda item: (item[1].casefold(), item[2], item[0]))[:12]]}}
+    coverage = {
+        "party_role_evidence": {"candidate_count": len(party_role_candidates), "retrieved_count": len(selected_party_role_ids), "outside_initial_slice": bool(outside_party_role_ids), "outside_initial_slice_citations": [{"source_sha256": source, "filename": filename, "page_number": page} for source, filename, page in sorted(outside_party_role_ids, key=lambda item: (item[1].casefold(), item[2], item[0]))[:12]]},
+        "verified_pleading_inventory": verified_pleading_inventory(documents),
+    }
     return EvidenceSelection(selected, coverage)
 
 def pleading_map(pages):
@@ -541,6 +544,44 @@ UNSELECTED_PAGES_MISSING_RE = re.compile(
     r"(?:not\s+supplied|not\s+provided|missing|absent|unavailable)\b",
     re.IGNORECASE,
 )
+PRESENT_PLEADING_MISSING_RE = re.compile(
+    r"\b(?:complaints?|answers?|third[ -]?party\s+(?:summons|complaints?)|bill(?:s)?\s+of\s+particulars)\b.{0,80}\b"
+    r"(?:missing|absent|not\s+supplied|not\s+provided|unavailable)\b",
+    re.IGNORECASE,
+)
+
+
+def pleading_kind(filename: str, pages) -> str | None:
+    """Classify a verified pleading using its filename and opening text."""
+    combined = f"{normalized_filename(filename)} {' '.join(text for _, text in sorted(pages)[:2]).casefold()[:2400]}"
+    if "bill of particulars" in combined or "bills of particulars" in combined:
+        return "bill of particulars"
+    if re.search(r"\b(?:third|fourth) party\b", combined):
+        if "answer" in combined:
+            return "third-party answer"
+        if "complaint" in combined or "summons" in combined:
+            return "third-party complaint"
+    if "counterclaim" in combined:
+        return "counterclaim"
+    if "cross claim" in combined or "crossclaim" in combined:
+        return "cross-claim"
+    if "answer" in combined:
+        return "answer"
+    if "complaint" in combined:
+        return "complaint"
+    return None
+
+
+def verified_pleading_inventory(documents):
+    """Describe every verified pleading without copying full text into the prompt."""
+    inventory = []
+    for (source, filename), document_pages in documents.items():
+        kind = pleading_kind(filename, document_pages)
+        if not kind:
+            continue
+        page_numbers = sorted({page for page, _ in document_pages})
+        inventory.append({"source_sha256": source, "filename": filename, "filing_kind": kind, "page_count": len(page_numbers), "first_page": page_numbers[0], "last_page": page_numbers[-1]})
+    return sorted(inventory, key=lambda item: (item["filing_kind"], item["filename"].casefold(), item["source_sha256"]))
 
 
 def litigation_map_question(question: str) -> bool:
@@ -574,6 +615,9 @@ def generate(question, pages, coverage=None, authorities=None):
         instructions += " End the summary with a complete sentence; never truncate a sentence to fill the schema limit."
         instructions += " Produce a concise attorney answer, not a memorandum. The summary must be a two-sentence executive answer of no more than 70 words. Return no more than eight non-repetitive findings total, each no more than 110 words, using the section field in this order: Legal standard; Application; Policy-by-policy analysis; Bottom line. Use at most two findings per section. State each legal rule once; apply it by reference rather than repeating it. Distinguish primary and excess policies only where the supplied record permits. Put absent proof only in missing_information, as no more than eight short, prioritized bullets; do not repeat missing evidence in the findings or limitations. The Bottom line must give the present record-based assessment and the evidence that would most change it, without predicting an outcome unsupported by the sources."
     prompt={"question":question,"instructions":instructions,"pleading_map":pleading_map(pages),"pages":pages,"legal_authorities":authority_prompt(authorities)}
+    if coverage and coverage.get("verified_pleading_inventory"):
+        prompt["verified_pleading_inventory"] = coverage["verified_pleading_inventory"]
+        prompt["instructions"] += " The verified_pleading_inventory is authoritative presence metadata for the complete verified corpus. A listed filing exists in the verified record even when only selected pages appear in pages. Never call a listed filing missing, absent, unavailable, not supplied, or not provided. If selected excerpts do not establish a requested detail, identify that exact detail as unresolved rather than claiming that the filing itself is missing."
     if coverage and coverage["party_role_evidence"]["outside_initial_slice"]:
         prompt["record_coverage"] = {"party_role_evidence_outside_initial_slice": True, "instruction": "Do not infer that party-role evidence is absent merely because it is not among the supplied excerpts; state that the bounded retrieval slice requires attorney follow-up before treating it as missing."}
     payload={"model":os.environ.get("LEGALAI_OPENAI_MODEL","gpt-5.6-sol"),"instructions":"Return only strict JSON matching the schema.","input":json.dumps(prompt),"text":{"format":{"type":"json_schema","name":"verified_internal_draft","strict":True,"schema":schema}}}
@@ -586,7 +630,7 @@ def generate(question, pages, coverage=None, authorities=None):
         if isinstance(result,dict): return result
     raise ValueError("model response invalid")
 
-def validate(result, pages, authorities=(), question=""):
+def validate(result, pages, authorities=(), question="", coverage=None):
     allowed={(p["source_sha256"],p["filename"],p["page_number"]) for p in pages}
     allowed_authorities={authority.authority_id for authority in authorities}
     if not isinstance(result,dict) or not isinstance(result.get("findings"),list) or not result["findings"]: raise ValueError("invalid output")
@@ -604,6 +648,14 @@ def validate(result, pages, authorities=(), question=""):
             raise ValueError("incomplete output")
         if any(UNSELECTED_PAGES_MISSING_RE.search(item) for item in text_items):
             raise ValueError("unverified missing-page claim")
+        inventory = (coverage or {}).get("verified_pleading_inventory", [])
+        present_kinds = {item.get("filing_kind") for item in inventory if isinstance(item, dict)}
+        if present_kinds and any(
+            PRESENT_PLEADING_MISSING_RE.search(item)
+            and any(kind in item.casefold() for kind in present_kinds if isinstance(kind, str))
+            for item in text_items
+        ):
+            raise ValueError("verified pleading called missing")
     if litigation_map_question(question) and not authorities and TOP_ATTACK_SURFACES_MARKER not in question.casefold():
         sections = [item.get("section") for item in result["findings"]]
         expected = [section for section in LITIGATION_MAP_SECTIONS if section in sections]
@@ -624,7 +676,7 @@ def run_request(s3, case_id, request_id):
     now=lambda: datetime.now(timezone.utc).isoformat()
     put(s3,case_id,request_id,"status.json",{"schema_version":"legalai-internal-draft-status.v1","case_id":case_id,"request_id":request_id,"status":"RUNNING","updated_at":now()})
     try:
-        question=read_request(s3,case_id,request_id); pages=evidence(s3,case_id,question); authorities=match_verified_authorities(question); result=validate(generate(question,pages,getattr(pages,"coverage",None),authorities),pages,authorities,question)
+        question=read_request(s3,case_id,request_id); pages=evidence(s3,case_id,question); authorities=match_verified_authorities(question); coverage=getattr(pages,"coverage",None); result=validate(generate(question,pages,coverage,authorities),pages,authorities,question,coverage)
         # Generation may have started before cancellation.  Preserve the audit
         # trail but never publish a cancelled draft as READY.
         if request_status(s3, case_id, request_id) == "CANCELLED":

@@ -72,6 +72,36 @@ class EvidenceFailClosedTests(unittest.TestCase):
 
 
 class ClaimsAndDefensesPromptTests(unittest.TestCase):
+    def test_verified_pleading_inventory_blocks_false_missing_filing_claim(self):
+        class PleadingInventoryS3(FakeS3):
+            pages = [
+                {"filename": "SUMMONS___COMPLAINT_1.pdf", "page_number": 1, "text": "SUPREME COURT Plaintiff against Defendant. Verified complaint."},
+                {"filename": "SUMMONS___COMPLAINT_1.pdf", "page_number": 2, "text": "First cause of action for negligence."},
+                {"filename": "SUMMONS___COMPLAINT_1.pdf", "page_number": 6, "text": "WHEREFORE plaintiff demands damages."},
+                {"filename": "THIRD_PARTY_SUMMONS_5.pdf", "page_number": 1, "text": "Third-party summons and complaint against Forward Heating Corp."},
+                {"filename": "THIRD_PARTY_SUMMONS_5.pdf", "page_number": 4, "text": "Cause of action for contractual indemnification."},
+            ]
+
+        question = "Identify the pleaded claims and party roles, defenses, and relief."
+        pages = WORKER.evidence(PleadingInventoryS3(), "NY-NewYork-158068-2018-Szymczyk-v-Hudson-36-37", question)
+        inventory = pages.coverage["verified_pleading_inventory"]
+        self.assertEqual({item["filing_kind"] for item in inventory}, {"complaint", "third-party complaint"})
+        result = {"summary": "The pleadings identify negligence and indemnification claims.", "findings": [{"section": "Main case", "statement": "Plaintiff and Defendant: negligence; defenses: none identified; relief: damages.", "citations": [{key: pages[0][key] for key in ("source_sha256", "filename", "page_number")}], "authority_citations": []}], "missing_information": ["The complete operative complaint is missing."], "limitations": []}
+        with self.assertRaisesRegex(ValueError, "verified pleading called missing"):
+            WORKER.validate(result, pages, question=question, coverage=pages.coverage)
+        result["missing_information"] = ["The complete first, second, third, and fourth third-party complaints were not supplied."]
+        with self.assertRaisesRegex(ValueError, "verified pleading called missing"):
+            WORKER.validate(result, pages, question=question, coverage=pages.coverage)
+
+        response = mock.MagicMock()
+        response.read.return_value = json.dumps({"output": [{"content": [{"text": json.dumps({**result, "missing_information": []})}]}]}).encode()
+        response.__enter__.return_value = response
+        with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}), mock.patch.object(WORKER.urllib.request, "urlopen", return_value=response) as urlopen:
+            WORKER.generate(question, pages, pages.coverage)
+        prompt = json.loads(json.loads(urlopen.call_args.args[0].data.decode())["input"])
+        self.assertEqual(prompt["verified_pleading_inventory"], inventory)
+        self.assertIn("authoritative presence metadata", prompt["instructions"])
+
     def test_claims_and_defenses_prompt_preserves_party_role_and_pleading_limits(self):
         result = {"summary": "Internal draft.", "findings": [{"statement": "Pleading map.", "citations": [{"source_sha256": "a" * 64, "filename": "Complaint.pdf", "page_number": 1}]}], "missing_information": [], "limitations": []}
         response = mock.MagicMock()
