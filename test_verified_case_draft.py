@@ -409,6 +409,45 @@ class RecordWidePleadingCoverageTests(unittest.TestCase):
             ("First Third Party Complaint.pdf", 3),
         }.issubset(selected))
 
+    def test_main_action_question_does_not_require_successive_third_party_layers(self):
+        class LayeredPleadingS3(FakeS3):
+            pages = [
+                {"filename": "SUMMONS___COMPLAINT_1.pdf", "page_number": 1,
+                 "text": "Andrzej Szymczyk, plaintiff, against Hudson 36 LLC and Hudson 37 LLC."},
+                {"filename": "SUMMONS___COMPLAINT_1.pdf", "page_number": 8,
+                 "text": "LABOR LAW SECTION 240(1)."},
+                {"filename": "SUMMONS___COMPLAINT_1.pdf", "page_number": 9,
+                 "text": "LABOR LAW SECTION 241(6)."},
+                {"filename": "SUMMONS___COMPLAINT_1.pdf", "page_number": 10,
+                 "text": "NEGLIGENCE AND LABOR LAW SECTION 200."},
+                {"filename": "SUMMONS___COMPLAINT_1.pdf", "page_number": 11,
+                 "text": "Plaintiff demands judgment for damages, costs and disbursements."},
+                {"filename": "ANSWER_3.pdf", "page_number": 1,
+                 "text": "Hudson 36 LLC and Hudson 37 LLC answer the complaint."},
+                {"filename": "ANSWER_3.pdf", "page_number": 3,
+                 "text": "AFFIRMATIVE DEFENSES. Failure to state a cause of action."},
+            ] + [
+                {"filename": f"THIRD_PARTY_COMPLAINT_{index}.pdf", "page_number": 1,
+                 "text": "Third-party complaint for contractual indemnification. WHEREFORE judgment is demanded."}
+                for index in range(50)
+            ]
+
+        pages = WORKER.evidence(
+            LayeredPleadingS3(),
+            "NY-NewYork-158068-2018-Szymczyk-v-Hudson-36-37",
+            "Based solely on the verified record, identify the plaintiff's claims against Hudson 36 LLC and Hudson 37 LLC, each party's role, the requested relief, and the defendants' strongest expressly pleaded defenses.",
+        )
+        selected = {(page["filename"], page["page_number"]) for page in pages}
+        self.assertTrue({
+            ("SUMMONS___COMPLAINT_1.pdf", 1),
+            ("SUMMONS___COMPLAINT_1.pdf", 8),
+            ("SUMMONS___COMPLAINT_1.pdf", 9),
+            ("SUMMONS___COMPLAINT_1.pdf", 10),
+            ("SUMMONS___COMPLAINT_1.pdf", 11),
+            ("ANSWER_3.pdf", 1),
+            ("ANSWER_3.pdf", 3),
+        }.issubset(selected))
+
 
 class SzymczykFilenameCoverageTests(unittest.TestCase):
     def test_underscored_pleading_filename_is_classified(self):

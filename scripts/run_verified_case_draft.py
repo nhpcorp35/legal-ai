@@ -64,6 +64,10 @@ PLEADING_FOCUSED_QUESTION_RE = re.compile(
     r"third[ -]?party\s+complaint|cross[ -]?claim|counter[ -]?claim)\b",
     re.IGNORECASE,
 )
+MAIN_ACTION_ONLY_QUESTION_RE = re.compile(
+    r"\bmain (?:action|case)(?: only)?\b|\bplaintiff[\'’]s claims against\b",
+    re.IGNORECASE,
+)
 PLEADING_CLAIM_TEXT_RE = re.compile(
     r"\b(?:cause of action|cross[ -]?claim|counter[ -]?claim|"
     r"negligence|breach of contract|contractual indemnification|"
@@ -251,6 +255,7 @@ def evidence(s3, case_id, question):
     # filing-led coverage before contract exhibits are considered.
     pleading_focused_question = bool(PLEADING_FOCUSED_QUESTION_RE.search(question))
     attack_surface_question = TOP_ATTACK_SURFACES_MARKER in question.casefold()
+    main_action_only_question = bool(MAIN_ACTION_ONLY_QUESTION_RE.search(question))
     # The v4 report is intentionally filing-led even though its prompt uses
     # analytical terms rather than a pleading's exact title.
     filing_led_question = broad_record_question or pleading_focused_question or attack_surface_question
@@ -309,6 +314,18 @@ def evidence(s3, case_id, question):
         for page, text in sorted(document_pages):
             pleading_filename = normalized_filename(filename)
             merits_pleading = bool(PLEADING_FILENAME_RE.search(pleading_filename))
+            if main_action_only_question and merits_pleading:
+                # A main-action request must not make every successive
+                # third-party/cross-claim pleading mandatory. Those layers are
+                # separate retrieval questions and otherwise exhaust the
+                # bounded 45-page budget before generation.
+                filing_identity = f"{pleading_filename} {text[:700]}"
+                if re.search(
+                    r"\b(?:third[ -]?party|fourth[ -]?party|cross[ -]?claim|counter[ -]?claim)\b",
+                    filing_identity,
+                    re.IGNORECASE,
+                ):
+                    merits_pleading = False
             # Some archive PDFs concatenate an answer, demands, and a later
             # answer. A later answer heading starts a separate filing section.
             if (
