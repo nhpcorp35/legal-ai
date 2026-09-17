@@ -1,9 +1,38 @@
 # LegalAI PRD (Living)
 
 **Status:** Active  
-**Last updated:** 2026-09-07
+**Last updated:** 2026-09-17
 **Authority:** Canonical product requirements and milestone register for LegalAI.  
 **Related (unchanged scopes):** `docs/HAL_CONTROL_ROOM.md` (orchestration contract); `docs/MISSION_CONTROL_OPTIMIZATION_AUTHORITY.md` (Mission Control cost/reliability register).
+
+---
+
+### 2026-09-17 — Verified-draft production hardening and operator log
+
+- **Final Case-00 result:** draft `draft-1789660599-156f71617422` reached
+  `READY` with all three requested litigation-map sections and exactly five
+  ranked attack surfaces. Read-only review confirmed complete prose and no
+  false claim that unselected page ranges were missing.
+- **Retrieval and output deployments:** filename-aware retrieval merged at
+  `5aba354` and deployed successfully as worker deployment
+  `1a3b02a5-b369-4d83-b2ef-abc5fe627455`; the composite Case-00 contract
+  merged at `6b29e50` and deployed successfully as
+  `898568f7-90a7-4998-9ef2-d3ff12c41777`; strict section/completeness
+  enforcement merged at `9dc06ec` and deployed successfully as
+  `b9404cab-1a89-4ad1-8786-1cadbb63100e`.
+- **Operator alerts:** feedback-alert support merged at `9e2c06f` and the
+  executor deployment `62f0ccaf-df3c-4530-b944-8bfc5569d7fa` succeeded.
+  Twenty-four tests and ten subtests passed; required B2 and Pushover
+  variables were present; the operator confirmed receipt of the test alert.
+- **Shared-worker follow-through:** the same output-safety principles are now
+  required for Szymczyk and future verified matters: ordered compact map
+  sections, short party/claim/defense/relief labels, procedural treatment of
+  death/substitution orders, complete sentences, and no claim that pages are
+  missing solely because bounded retrieval did not select them. Newest draft
+  requests are displayed first.
+- **Cost boundary:** all verification and this follow-through used
+  deterministic tests and read-only inspection. No paid legal-analysis
+  generation was invoked.
 
 ---
 

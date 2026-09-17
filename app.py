@@ -2528,6 +2528,9 @@ def load_draft_requests(case_id, *, force_refresh=False):
         and isinstance(item.get("created_at"), int)
         and item.get("status") in {"QUEUED", "RUNNING", "READY", "FAILED", "CANCELLED"}
     ]
+    # Gateway/B2 listing order is not a UI contract. Keep the newest request
+    # visible first so a just-submitted question cannot be buried by history.
+    entries.sort(key=lambda item: (item["created_at"], item["request_id"]), reverse=True)
     with _draft_request_cache_lock:
         _draft_request_cache[case_id] = {
             "loaded_at": time.monotonic(),
