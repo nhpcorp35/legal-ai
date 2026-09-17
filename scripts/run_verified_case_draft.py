@@ -527,7 +527,7 @@ ATTORNEY_ANSWER_SECTIONS = (
 )
 
 
-def finding_schema(page_citation_properties, *, attorney_sections=False):
+def finding_schema(page_citation_properties, *, attorney_sections=False, max_findings=8):
     """Build the strict source-aware finding schema for either worker."""
     page_required = list(page_citation_properties)
     finding_properties = {"statement":{"type":"string","maxLength":900},"citations":{"type":"array","items":{"type":"object","additionalProperties":False,"required":page_required,"properties":page_citation_properties}},"authority_citations":{"type":"array","items":{"type":"string"}}}
@@ -535,7 +535,7 @@ def finding_schema(page_citation_properties, *, attorney_sections=False):
     if attorney_sections:
         finding_properties = {"section":{"type":"string","enum":list(ATTORNEY_ANSWER_SECTIONS)}, **finding_properties}
         finding_required = ["section", *finding_required]
-    return {"type":"object","additionalProperties":False,"required":["summary","findings","missing_information","limitations"],"properties":{"summary":{"type":"string","maxLength":800},"findings":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"object","additionalProperties":False,"required":finding_required,"properties":finding_properties}},"missing_information":{"type":"array","maxItems":8,"items":{"type":"string","maxLength":300}},"limitations":{"type":"array","maxItems":4,"items":{"type":"string","maxLength":300}}}}
+    return {"type":"object","additionalProperties":False,"required":["summary","findings","missing_information","limitations"],"properties":{"summary":{"type":"string","maxLength":800},"findings":{"type":"array","minItems":1,"maxItems":max_findings,"items":{"type":"object","additionalProperties":False,"required":finding_required,"properties":finding_properties}},"missing_information":{"type":"array","maxItems":8,"items":{"type":"string","maxLength":300}},"limitations":{"type":"array","maxItems":4,"items":{"type":"string","maxLength":300}}}}
 
 
 def generate(question, pages, coverage=None, authorities=None):
