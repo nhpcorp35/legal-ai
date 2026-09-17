@@ -50,3 +50,18 @@ Above all: never confuse intention with execution, and never report RUNNING or D
 ## Execution Integrity Compliance Rule
 
 All future LegalAI execution and status reporting must comply with the LegalAI Execution Integrity Policy above. Before reporting RUNNING or DONE, confirm that the required evidence exists in the current tool or system state. If the evidence requirement is not satisfied, report NOT STARTED or BLOCKED as appropriate. Any retry must comply with the defined retry limits and audit-trail requirements. DONE is prohibited until the requested outcome has been successfully completed and independently verified.
+
+## Daily Attorney-Goal Alignment Check
+
+Every daily LegalAI progress update must explicitly answer: **Did today's verified work move LegalAI toward the attorney-review goals?** State **YES**, **NO**, or **MIXED**.
+
+Support that answer with four short items:
+
+- the attorney-review goal advanced;
+- the verified change or result that advanced it;
+- the evidence proving the movement (safe commit, test, deployment, run, or reviewed output reference);
+- the most important remaining gap or next step.
+
+Do not equate engineering activity, deployment success, or model output with progress toward attorney usefulness unless the verified result improves source completeness, legal/procedural understanding, issue prioritization, litigation cognition, or attorney workflow. If the day's work was maintenance only, say **NO**. If it advanced one goal but exposed or left a material regression, say **MIXED**.
+
+Record this checkpoint in the living PRD's Daily operations log. Keep it GitHub-safe: do not include private source text, credentials, personal attorney details, or privileged feedback.
