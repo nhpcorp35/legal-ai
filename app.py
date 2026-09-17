@@ -85,6 +85,16 @@ ATTORNEY_SUBMIT_FEEDBACK_HTML = """
     form.dataset.attorneySubmitting = "true";
     var submitter = event.submitter ||
       form.querySelector('button[type="submit"], input[type="submit"]');
+    // Disabled submit buttons are omitted from the browser's form payload.
+    // Preserve the clicked button's name/value before disabling controls so
+    // multi-action forms cannot silently fall through to a different action.
+    if (submitter && submitter.name) {
+      var submittedAction = document.createElement("input");
+      submittedAction.type = "hidden";
+      submittedAction.name = submitter.name;
+      submittedAction.value = submitter.value;
+      form.appendChild(submittedAction);
+    }
     form.querySelectorAll('button[type="submit"], input[type="submit"]').forEach(function (control) {
       control.disabled = true;
       control.setAttribute("aria-disabled", "true");
@@ -4126,7 +4136,7 @@ def workspace_matter_draft(case_id):
                         ),
                         code=303,
                     )
-        else:
+        elif action == "create":
             question = clean_text(request.form.get("question", ""))
             if not question or len(question) > 1000:
                 error = "Enter a focused review question (up to 1,000 characters)."
@@ -4144,6 +4154,8 @@ def workspace_matter_draft(case_id):
                         ),
                         code=303,
                     )
+        else:
+            error = "Unknown request action. Nothing was queued and no model was called."
         draft_requests = load_draft_requests(case_id) or []
         queued_requests = [
             item for item in draft_requests
