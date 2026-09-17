@@ -68,9 +68,59 @@ def test_foundational_question_reserves_unmarked_closing_relief_page():
 
 
 def test_case00_composite_schema_allows_map_plus_five_ranked_findings():
-    schema = draft.finding_schema(
+    schema = draft.composite_schema(
         {"filename": {"type": "string"}, "page_number": {"type": "integer"}},
-        max_findings=12,
     )
 
-    assert schema["properties"]["findings"]["maxItems"] == 12
+    assert schema["properties"]["findings"]["minItems"] == 8
+    assert schema["properties"]["findings"]["maxItems"] == 8
+    assert schema["properties"]["findings"]["items"]["properties"]["section"]["enum"] == list(draft.COMPOSITE_SECTIONS)
+
+
+def _composite_result():
+    findings=[]
+    for section in draft.COMPOSITE_SECTIONS:
+        findings.append({
+            "section":section,
+            "statement":f"{section} — Complete finding.",
+            "citations":[{"filename":"ANSWER_18.pdf","page_number":1}],
+            "authority_citations":[],
+        })
+    return {"summary":"Complete overview.","findings":findings,"missing_information":[],"limitations":[]}
+
+
+def test_composite_validation_rejects_missing_or_truncated_sections():
+    pages=[{"filename":"ANSWER_18.pdf","page_number":1,"text":"answer"}]
+    result=_composite_result()
+    assert draft.validate(result,pages,(),composite=True) == result
+
+    result=_composite_result()
+    result["findings"].pop()
+    try:
+        draft.validate(result,pages,(),composite=True)
+    except ValueError as exc:
+        assert str(exc) == "incomplete composite output"
+    else:
+        raise AssertionError("missing section was accepted")
+
+    result=_composite_result()
+    result["findings"][3]["statement"]="Rank 1 — truncated"
+    try:
+        draft.validate(result,pages,(),composite=True)
+    except ValueError as exc:
+        assert str(exc) == "truncated composite output"
+    else:
+        raise AssertionError("truncated finding was accepted")
+
+
+def test_composite_validation_rejects_bounded_pages_as_missing():
+    pages=[{"filename":"ANSWER_18.pdf","page_number":1,"text":"answer"}]
+    result=_composite_result()
+    result["missing_information"]=["Complaint pages 2–18 were not supplied."]
+
+    try:
+        draft.validate(result,pages,(),composite=True)
+    except ValueError as exc:
+        assert str(exc) == "bounded retrieval mislabeled as missing evidence"
+    else:
+        raise AssertionError("bounded page omission was accepted as missing evidence")

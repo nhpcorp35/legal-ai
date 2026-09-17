@@ -46,6 +46,16 @@ CASE_ID = "Case-00-Triborough"
 PREFIX = f"cases/{CASE_ID}/derived/internal-drafts"
 SOURCE_PREFIX = "Benchmarks/Case-00-Triborough/original/Tribrough Full Docket/"
 REQUEST_RE = re.compile(r"draft-[0-9]+-[0-9a-f]{12}$")
+COMPOSITE_SECTIONS = (
+    "Main action",
+    "Counterclaims and cross-claims",
+    "Third-party claims",
+    "Rank 1",
+    "Rank 2",
+    "Rank 3",
+    "Rank 4",
+    "Rank 5",
+)
 
 def s3():
     return boto3.client("s3", endpoint_url=os.environ["B2_ENDPOINT"].rstrip("/"), region_name=os.environ["B2_REGION"], aws_access_key_id=os.environ["B2_KEY_ID"], aws_secret_access_key=os.environ["B2_APPLICATION_KEY"])
@@ -126,10 +136,47 @@ def evidence(question):
         pages=rebuild.build_canonical_page_records(docs)["pages"]
     return select_evidence_pages(pages, question)
 
-def validate(result, pages, authorities):
+
+def composite_schema(page_citation_properties):
+    """Require three map findings followed by exactly five ranked findings."""
+    page_required=list(page_citation_properties)
+    finding={
+        "type":"object",
+        "additionalProperties":False,
+        "required":["section","statement","citations","authority_citations"],
+        "properties":{
+            "section":{"type":"string","enum":list(COMPOSITE_SECTIONS)},
+            "statement":{"type":"string","maxLength":1400},
+            "citations":{"type":"array","items":{"type":"object","additionalProperties":False,"required":page_required,"properties":page_citation_properties}},
+            "authority_citations":{"type":"array","items":{"type":"string"}},
+        },
+    }
+    return {
+        "type":"object",
+        "additionalProperties":False,
+        "required":["summary","findings","missing_information","limitations"],
+        "properties":{
+            "summary":{"type":"string","maxLength":500},
+            "findings":{"type":"array","minItems":8,"maxItems":8,"items":finding},
+            "missing_information":{"type":"array","maxItems":8,"items":{"type":"string","maxLength":300}},
+            "limitations":{"type":"array","maxItems":4,"items":{"type":"string","maxLength":300}},
+        },
+    }
+
+def validate(result, pages, authorities, *, composite=False):
     allowed_pages={(p["filename"],p["page_number"]) for p in pages}
     allowed_authorities={authority.authority_id for authority in authorities}
     if not isinstance(result,dict) or not isinstance(result.get("findings"),list) or not result["findings"]: raise ValueError("invalid output")
+    if composite:
+        if len(result["findings"]) != len(COMPOSITE_SECTIONS):
+            raise ValueError("incomplete composite output")
+        sections=tuple(finding.get("section") for finding in result["findings"] if isinstance(finding,dict))
+        if sections != COMPOSITE_SECTIONS:
+            raise ValueError("misordered composite output")
+        if any(not re.search(r"[.!?)]$", finding.get("statement","").strip()) for finding in result["findings"]):
+            raise ValueError("truncated composite output")
+        if any(re.search(r"\bpages?\s+[0-9–—, -]+\s+(?:was|were)\s+not supplied\b", item, re.IGNORECASE) for item in result.get("missing_information",[]) if isinstance(item,str)):
+            raise ValueError("bounded retrieval mislabeled as missing evidence")
     for finding in result["findings"]:
         if not isinstance(finding,dict) or not isinstance(finding.get("statement"),str) or not isinstance(finding.get("citations"),list) or not isinstance(finding.get("authority_citations"),list): raise ValueError("uncited output")
         if not finding["citations"] and not finding["authority_citations"]: raise ValueError("uncited output")
@@ -156,16 +203,17 @@ def run_request(client, request_id):
             re.IGNORECASE,
         ))
         attack_surfaces=bool(re.search(r"\battack\s+surfaces?\b", question, re.IGNORECASE))
-        schema=finding_schema(
-            {"filename":{"type":"string"},"page_number":{"type":"integer","minimum":1}},
+        composite=foundational and attack_surfaces and not authorities
+        citation_properties={"filename":{"type":"string"},"page_number":{"type":"integer","minimum":1}}
+        schema=composite_schema(citation_properties) if composite else finding_schema(
+            citation_properties,
             attorney_sections=bool(authorities),
-            max_findings=12 if foundational and attack_surfaces and not authorities else 8,
         )
         # Reuse the bounded model transport, with Case-00's filename/page citation schema.
         import urllib.request
         instructions="Use only supplied verified excerpts and legal authorities. Internal attorney-review draft only. Case-record facts cite only page citations in citations; legal rules cite only authority ids in authority_citations; application findings should cite both where appropriate. Do not overstate court level, controlling effect, or proposition scope. Every finding must have at least one verified source across those two arrays. Before calling information missing, check all supplied pleading openings, operative pages, and closing pages."
-        if foundational and attack_surfaces and not authorities:
-            instructions += " First provide a concise litigation map in this exact order: (1) Main action; (2) Counterclaims and cross-claims; (3) Third-party claims. For each populated category, identify expressly named parties and roles, short claim labels, short defense labels, and requested relief. If a category is not established by the supplied pages, state that narrowly in the summary or limitations; do not invent a claim. Then provide exactly five additional findings, labeled Rank 1 through Rank 5, containing the most consequential source-supported attack surfaces. Each ranked finding must distinguish verified fact, attributed party allegation, legal inference, and unresolved uncertainty where applicable, explain why the issue matters, and cite the exact supporting pages. Do not use the five ranked slots for party lists or routine pleading summaries."
+        if composite:
+            instructions += " Return exactly eight findings in the schema's section order. Findings 1–3 are the litigation map: Main action; Counterclaims and cross-claims; Third-party claims. Each map statement must begin with its section label and identify expressly named parties and roles, short claim labels, short defense labels, and requested relief. If a category is not established by the supplied pages, say only that the bounded excerpt does not establish it; do not invent a claim and do not call corpus pages or pleadings missing. Findings 4–8 must be sectioned Rank 1 through Rank 5 and contain the five most consequential source-supported attack surfaces. Each ranked statement must distinguish verified fact, attributed party allegation, legal inference, and unresolved uncertainty where applicable, explain why the issue matters, and cite exact pages. Every statement must be a complete, concise sentence or paragraph ending in punctuation; never truncate to fill a length limit. The summary is only a short executive overview and must not contain the litigation map. The input is a bounded retrieval slice from a 102-PDF verified corpus. Never describe an unselected page as 'not supplied' or list page ranges as missing information; describe only genuinely absent evidence, or state the bounded-retrieval limitation under limitations."
         if authorities:
             instructions += " End the summary with a complete sentence; never truncate a sentence to fill the schema limit."
             instructions += " Produce a concise attorney answer, not a memorandum. The summary must be a two-sentence executive answer of no more than 70 words. Return no more than eight non-repetitive findings total, each no more than 110 words, using the section field in this order: Legal standard; Application; Policy-by-policy analysis; Bottom line. Use at most two findings per section. State each legal rule once; apply it by reference rather than repeating it. Distinguish primary and excess policies only where the supplied record permits. Put absent proof only in missing_information, as no more than eight short, prioritized bullets; do not repeat missing evidence in the findings or limitations. The Bottom line must give the present record-based assessment and the evidence that would most change it, without predicting an outcome unsupported by the sources."
@@ -173,7 +221,7 @@ def run_request(client, request_id):
         req=urllib.request.Request("https://api.openai.com/v1/responses",data=json.dumps(payload).encode(),headers={"Authorization":f"Bearer {os.environ['OPENAI_API_KEY']}","Content-Type":"application/json"},method="POST")
         body=json.loads(urllib.request.urlopen(req,timeout=int(os.environ.get("LEGALAI_MODEL_TIMEOUT_SECONDS","180"))).read().decode())
         result=next(json.loads(c["text"]) for o in body.get("output",[]) for c in o.get("content",[]) if isinstance(c,dict) and isinstance(c.get("text"),str))
-        validate(result,pages,authorities)
+        validate(result,pages,authorities,composite=composite)
         if request_status(client, request_id) == "CANCELLED":
             return
         draft={"schema_version":"legalai-internal-draft.v1","case_id":CASE_ID,"request_id":request_id,"question":question,"review_required":True,"external_communication":False,"generated_at":now(),**result}
