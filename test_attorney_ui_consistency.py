@@ -261,6 +261,32 @@ class AttorneyUiConsistencyTests(unittest.TestCase):
         previewer.assert_called_once_with(CASE_ID, "What claims and relief are pleaded?")
         creator.assert_not_called()
 
+    def test_missing_action_fails_closed_without_queueing(self):
+        with patch.object(
+            legalai, "load_registered_cases", return_value=[{"case_id": CASE_ID, "stage": "Verified source indexed"}]
+        ), patch.object(legalai, "load_draft_requests", return_value=[]), patch.object(
+            legalai, "create_draft_request"
+        ) as creator:
+            response = self.client.post(
+                f"/workspace/matters/{CASE_ID}/draft",
+                data={"question": "What claims and relief are pleaded?"},
+                headers=_auth_headers(),
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(
+            "Unknown request action. Nothing was queued and no model was called.",
+            response.get_data(as_text=True),
+        )
+        creator.assert_not_called()
+
+    def test_submit_feedback_preserves_clicked_action_before_disabling(self):
+        self.assertIn('submittedAction.name = submitter.name;', legalai.ATTORNEY_SUBMIT_FEEDBACK_HTML)
+        self.assertIn('submittedAction.value = submitter.value;', legalai.ATTORNEY_SUBMIT_FEEDBACK_HTML)
+        self.assertLess(
+            legalai.ATTORNEY_SUBMIT_FEEDBACK_HTML.index('submittedAction.value = submitter.value;'),
+            legalai.ATTORNEY_SUBMIT_FEEDBACK_HTML.index('control.disabled = true;'),
+        )
+
     def test_processing_submission_keeps_processing_message(self):
         request_id = "draft-8-abcdef123456"
         queued_item = {
