@@ -15,6 +15,7 @@ import urllib.parse
 import urllib.request
 import threading
 import time
+import boto3
 from functools import lru_cache
 from types import SimpleNamespace
 
@@ -2578,8 +2579,47 @@ def draft_review_feedback_csrf_token(reviewer, case_id, request_id):
     return hmac.new(secret.encode("utf-8"), message.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
+def archive_draft_review_feedback_to_b2(record):
+    """Archive one structured draft review to canonical B2 storage."""
+    required = {
+        name: os.environ.get(name, "")
+        for name in (
+            "B2_ENDPOINT", "B2_REGION", "B2_KEY_ID",
+            "B2_APPLICATION_KEY", "B2_BUCKET",
+        )
+    }
+    if not all(required.values()):
+        return False
+    raw = json.dumps(
+        record, sort_keys=True, ensure_ascii=False, separators=(",", ":")
+    ).encode("utf-8")
+    digest = hashlib.sha256(raw).hexdigest()
+    object_key = (
+        f"cases/{record['case_id']}/derived/attorney-feedback/"
+        f"{record['request_id']}/{record['submitted_at']}-{digest[:12]}.json"
+    )
+    try:
+        client = boto3.client(
+            "s3",
+            endpoint_url=required["B2_ENDPOINT"].rstrip("/"),
+            region_name=required["B2_REGION"],
+            aws_access_key_id=required["B2_KEY_ID"],
+            aws_secret_access_key=required["B2_APPLICATION_KEY"],
+        )
+        client.put_object(
+            Bucket=required["B2_BUCKET"],
+            Key=object_key,
+            Body=raw,
+            ContentType="application/json",
+            Metadata={"sha256": digest},
+        )
+    except Exception as exc:
+        raise OSError("canonical attorney-feedback archive failed") from exc
+    return True
+
+
 def archive_draft_review_feedback(reviewer, case_id, request_id, decision, accuracy_rating, usefulness_rating, missing_or_overstated, citation_problems, comments):
-    """Append one bounded, structured draft review to the persistent app volume."""
+    """Archive one bounded review to B2 and mirror it on the app volume."""
     record = {
         "schema_version": 1,
         "submitted_at": int(time.time()),
@@ -2593,6 +2633,7 @@ def archive_draft_review_feedback(reviewer, case_id, request_id, decision, accur
         "citation_problems": citation_problems,
         "comments": comments,
     }
+    archive_draft_review_feedback_to_b2(record)
     feedback_dir = os.environ.get("LEGALAI_DRAFT_REVIEW_FEEDBACK_DIR", os.path.join(BASE_DIR, "data", "review_feedback"))
     os.makedirs(feedback_dir, mode=0o700, exist_ok=True)
     feedback_path = os.path.join(feedback_dir, "draft_feedback.jsonl")
@@ -2603,6 +2644,37 @@ def archive_draft_review_feedback(reviewer, case_id, request_id, decision, accur
             stream.flush()
             os.fsync(stream.fileno())
     return record
+
+
+def notify_draft_review_feedback(record):
+    """Best-effort Pushover alert without exposing the attorney's comments."""
+    token = os.environ.get("PUSHOVER_APP_TOKEN", "")
+    user = os.environ.get("PUSHOVER_USER_KEY", "")
+    if not token or not user:
+        return False
+    data = urllib.parse.urlencode({
+        "token": token,
+        "user": user,
+        "title": "LegalAI attorney review submitted",
+        "message": (
+            f"{record['reviewer']} selected "
+            f"{record['decision'].replace('_', ' ')} for "
+            f"{record['case_id']} / {record['request_id']} "
+            f"(accuracy {record['accuracy_rating']}/5; "
+            f"usefulness {record['usefulness_rating']}/5)."
+        ),
+    }).encode("utf-8")
+    try:
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                "https://api.pushover.net/1/messages.json",
+                data=data,
+            ),
+            timeout=10,
+        ) as response:
+            return 200 <= response.status < 300
+    except (urllib.error.URLError, urllib.error.HTTPError):
+        return False
 
 
 def load_draft_input_audit(case_id, request_id):
@@ -3986,7 +4058,7 @@ def workspace_matter_draft_detail(case_id, request_id):
             feedback_error = "Choose a disposition and both ratings; keep each comment under 4,000 characters."
         else:
             try:
-                archive_draft_review_feedback(
+                archived_review = archive_draft_review_feedback(
                     reviewer, case_id, request_id, decision,
                     int(accuracy_raw), int(usefulness_raw),
                     missing_or_overstated, citation_problems, comments,
@@ -3994,6 +4066,7 @@ def workspace_matter_draft_detail(case_id, request_id):
             except OSError:
                 feedback_error = "Your review could not be saved. Nothing was submitted; please try again."
             else:
+                notify_draft_review_feedback(archived_review)
                 return redirect(url_for("workspace_matter_draft_detail", case_id=case_id, request_id=request_id, review="saved"), code=303)
     rendered_findings = findings_with_verified_authorities(
         item["draft"].get("findings", [])
