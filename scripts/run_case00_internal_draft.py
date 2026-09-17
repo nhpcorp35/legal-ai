@@ -22,6 +22,7 @@ try:
         MAX_PAGES,
         PLEADING_FILENAME_RE,
         PLEADING_OPERATIONAL_TEXT_RE,
+        normalized_filename,
         authority_audit,
         authority_prompt,
         finding_schema,
@@ -34,6 +35,7 @@ except ModuleNotFoundError:
         MAX_PAGES,
         PLEADING_FILENAME_RE,
         PLEADING_OPERATIONAL_TEXT_RE,
+        normalized_filename,
         authority_audit,
         authority_prompt,
         finding_schema,
@@ -89,7 +91,7 @@ def select_evidence_pages(pages, question):
     if foundational:
         filings={}
         for _,filename,page,item in candidates:
-            if PLEADING_FILENAME_RE.search(filename.casefold()):
+            if PLEADING_FILENAME_RE.search(normalized_filename(filename)):
                 filings.setdefault(filename,[]).append((page,item))
         # Reserve every pleading opening before lexical ranking so one large
         # exhibit cannot crowd out complaints, answers, or third-party filings.
