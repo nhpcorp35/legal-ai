@@ -323,7 +323,9 @@ def evidence(s3, case_id, question):
                 # bounded 45-page budget before generation.
                 filing_identity = f"{pleading_filename} {text[:700]}"
                 if re.search(
-                    r"\b(?:third[ -]?party|fourth[ -]?party|cross[ -]?claim|counter[ -]?claim)\b",
+                    r"\b(?:third[ -]?(?:party|par)|fourth[ -]?(?:party|par)|"
+                    r"cross[ -]?(?:claim|c)|counter[ -]?(?:claim|c)|"
+                    r"bills? of particulars)\b",
                     filing_identity,
                     re.IGNORECASE,
                 ):
