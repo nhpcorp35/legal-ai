@@ -100,6 +100,40 @@ class ClaimsAndDefensesPromptTests(unittest.TestCase):
             self.assertIn(requirement, instructions)
         self.assertIn("procedural disposition, not a merits decision", instructions)
 
+    def test_litigation_map_schema_requires_section_field_and_short_ordered_set(self):
+        result = {"summary": "Internal draft.", "findings": [{"section": "Main case", "statement": "Plaintiff: negligence; defenses: none identified; relief: damages.", "citations": [{"source_sha256": "a" * 64, "filename": "Complaint.pdf", "page_number": 1}], "authority_citations": []}], "missing_information": [], "limitations": []}
+        response = mock.MagicMock()
+        response.read.return_value = json.dumps({"output": [{"content": [{"text": json.dumps(result)}]}]}).encode()
+        response.__enter__.return_value = response
+        with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}), mock.patch.object(WORKER.urllib.request, "urlopen", return_value=response) as urlopen:
+            WORKER.generate("Prepare a litigation map of the parties, claims, defenses, and relief.", [{"source_sha256": "a" * 64, "filename": "Complaint.pdf", "page_number": 1, "text": "Plaintiff alleges negligence."}])
+        schema = json.loads(urlopen.call_args.args[0].data.decode())["text"]["format"]["schema"]
+        findings = schema["properties"]["findings"]
+        self.assertEqual(findings["maxItems"], 3)
+        self.assertEqual(findings["items"]["properties"]["section"]["enum"], list(WORKER.LITIGATION_MAP_SECTIONS))
+        self.assertIn("section", findings["items"]["required"])
+
+    def test_litigation_map_validation_rejects_misordered_duplicate_and_truncated_output(self):
+        page = {"source_sha256": "a" * 64, "filename": "Complaint.pdf", "page_number": 1, "text": "Plaintiff alleges negligence."}
+        cite = {key: page[key] for key in ("source_sha256", "filename", "page_number")}
+        question = "Prepare a litigation map of the parties, claims, defenses, and relief."
+        def result(sections, statement="Party: negligence; defenses: limitations; relief: damages.", missing=()):
+            return {"summary": "The pleadings identify negligence claims.", "findings": [{"section": section, "statement": statement, "citations": [cite], "authority_citations": []} for section in sections], "missing_information": list(missing), "limitations": []}
+        self.assertIs(WORKER.validate(result(["Main case", "Third-party claims"]), [page], question=question)["findings"][0]["citations"][0], cite)
+        for sections in (["Third-party claims", "Main case"], ["Main case", "Main case"]):
+            with self.assertRaisesRegex(ValueError, "invalid litigation-map sections"):
+                WORKER.validate(result(sections), [page], question=question)
+        with self.assertRaisesRegex(ValueError, "incomplete output"):
+            WORKER.validate(result(["Main case"], statement="Party: negligence and"), [page], question=question)
+        with self.assertRaisesRegex(ValueError, "unverified missing-page claim"):
+            WORKER.validate(result(["Main case"], missing=["Complaint pages 2–18 were not supplied."]), [page], question=question)
+
+    def test_death_and_substitution_stays_procedural_not_merits(self):
+        page = {"source_sha256": "a" * 64, "filename": "Order.pdf", "page_number": 2, "text": "Motion denied due to death; substitution pending."}
+        result = {"summary": "The order records a procedural disposition.", "findings": [{"section": "Main case", "statement": "Estate representative: substitution pending; defenses: not adjudicated; relief: motion denied procedurally.", "citations": [{key: page[key] for key in ("source_sha256", "filename", "page_number")}], "authority_citations": []}], "missing_information": [], "limitations": []}
+        question = "Map the parties, claims, defenses, and relief after the party's death and substitution order."
+        self.assertIs(WORKER.validate(result, [page], question=question), result)
+
 
 class AuthorityAwareWorkerTests(unittest.TestCase):
     active_page = {"source_sha256": "a" * 64, "filename": "Policy.pdf", "page_number": 7, "text": "Application answer."}
