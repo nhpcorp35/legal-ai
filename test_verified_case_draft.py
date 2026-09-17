@@ -447,6 +447,7 @@ class RecordWidePleadingCoverageTests(unittest.TestCase):
             ("ANSWER_3.pdf", 1),
             ("ANSWER_3.pdf", 3),
         }.issubset(selected))
+        self.assertFalse(any("THIRD_PARTY" in filename for filename, _page in selected))
 
 
 class SzymczykFilenameCoverageTests(unittest.TestCase):
