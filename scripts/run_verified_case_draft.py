@@ -325,7 +325,11 @@ def evidence(s3, case_id, question):
                     filing_identity,
                     re.IGNORECASE,
                 ):
-                    merits_pleading = False
+                    # Exclude the page altogether, not merely from mandatory
+                    # reservations. Otherwise it can re-enter through the
+                    # general ranking pass and consume almost the entire
+                    # context window despite being outside the requested layer.
+                    continue
             # Some archive PDFs concatenate an answer, demands, and a later
             # answer. A later answer heading starts a separate filing section.
             if (
