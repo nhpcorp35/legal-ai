@@ -455,6 +455,34 @@ class RecordWidePleadingCoverageTests(unittest.TestCase):
             "cite the operative complaint and answer pages."
         ))
 
+    def test_main_action_excludes_nyscef_abbreviated_related_pleadings(self):
+        class ProductionNamesS3(FakeS3):
+            pages = [
+                {"filename": "158068_2018_SUMMONS___COMPLAINT_1.pdf", "page_number": 1,
+                 "text": "Andrzej Szymczyk against Hudson 36 LLC and Hudson 37 LLC."},
+                {"filename": "158068_2018_ANSWER_3.pdf", "page_number": 3,
+                 "text": "AFFIRMATIVE DEFENSES."},
+                {"filename": "158068_2018_ANSWER_TO_THIRD_PAR_10.pdf", "page_number": 14,
+                 "text": "General denial."},
+                {"filename": "158068_2018_ANSWER_WITH_CROSS_C_81.pdf", "page_number": 3,
+                 "text": "General denial."},
+                {"filename": "158068_2018_BILL_OF_PARTICULARS_11.pdf", "page_number": 4,
+                 "text": "Plaintiff alleges negligence."},
+            ]
+
+        pages = WORKER.evidence(
+            ProductionNamesS3(),
+            "NY-NewYork-158068-2018-Szymczyk-v-Hudson-36-37",
+            "Identify the plaintiff's claims against Hudson 36 LLC and Hudson 37 LLC; "
+            "cite the operative complaint and answer pages.",
+        )
+        selected = {page["filename"] for page in pages}
+        self.assertIn("158068_2018_SUMMONS___COMPLAINT_1.pdf", selected)
+        self.assertIn("158068_2018_ANSWER_3.pdf", selected)
+        self.assertFalse(any("THIRD_PAR" in filename for filename in selected))
+        self.assertFalse(any("CROSS_C" in filename for filename in selected))
+        self.assertFalse(any("BILL_OF_PARTICULARS" in filename for filename in selected))
+
 
 class SzymczykFilenameCoverageTests(unittest.TestCase):
     def test_underscored_pleading_filename_is_classified(self):
