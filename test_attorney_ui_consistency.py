@@ -226,6 +226,38 @@ class AttorneyUiConsistencyTests(unittest.TestCase):
         )
         self.assertNotIn("Automatic draft job queued.", body)
 
+    def test_free_retrieval_preview_does_not_queue_or_generate(self):
+        preview = {
+            "citations": [
+                {"source_sha256": "a" * 64, "filename": "Complaint.pdf", "page_number": 1},
+                {"source_sha256": "a" * 64, "filename": "Complaint.pdf", "page_number": 7},
+            ],
+            "pleadings": [{"filename": "Complaint.pdf", "page_count": 7}],
+            "page_count": 2,
+            "context_characters": 2400,
+            "page_limit": 45,
+            "context_limit": 75000,
+            "blocked_reason": None,
+            "warnings": [],
+        }
+        with patch.object(
+            legalai, "load_registered_cases", return_value=[{"case_id": CASE_ID, "stage": "Verified source indexed"}]
+        ), patch.object(legalai, "load_draft_requests", return_value=[]), patch.object(
+            legalai, "preview_draft_retrieval", return_value=preview
+        ) as previewer, patch.object(legalai, "create_draft_request") as creator:
+            response = self.client.post(
+                f"/workspace/matters/{CASE_ID}/draft",
+                data={"action": "preview", "question": "What claims and relief are pleaded?"},
+                headers=_auth_headers(),
+            )
+        self.assertEqual(response.status_code, 200)
+        body = response.get_data(as_text=True)
+        self.assertIn("Retrieval preview — no model called", body)
+        self.assertIn("Complaint.pdf — p. 7", body)
+        self.assertIn("Preview retrieval — free", body)
+        previewer.assert_called_once_with(CASE_ID, "What claims and relief are pleaded?")
+        creator.assert_not_called()
+
     def test_processing_submission_keeps_processing_message(self):
         request_id = "draft-8-abcdef123456"
         queued_item = {

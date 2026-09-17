@@ -3037,6 +3037,69 @@ def create_draft_request(case_id, question, reviewer, regenerate_from=None):
     return None
 
 
+def preview_draft_retrieval(case_id, question):
+    """Run the production evidence selector without calling a language model."""
+    required = {
+        name: os.environ.get(name, "")
+        for name in (
+            "B2_ENDPOINT", "B2_REGION", "B2_KEY_ID",
+            "B2_APPLICATION_KEY", "B2_BUCKET",
+        )
+    }
+    if not all(required.values()):
+        return None
+    s3 = boto3.client(
+        "s3",
+        endpoint_url=required["B2_ENDPOINT"].rstrip("/"),
+        region_name=required["B2_REGION"],
+        aws_access_key_id=required["B2_KEY_ID"],
+        aws_secret_access_key=required["B2_APPLICATION_KEY"],
+    )
+    try:
+        if case_id == CASE00_ID:
+            from scripts.run_case00_internal_draft import evidence
+            pages = evidence(question)
+            coverage = {}
+        else:
+            from scripts.run_verified_case_draft import evidence
+            pages = evidence(s3, case_id, question)
+            coverage = getattr(pages, "coverage", {})
+    except Exception as exc:
+        if exc.__class__.__name__ == "PreGenerationGateError":
+            return {
+                "citations": [], "pleadings": [], "page_count": 0,
+                "context_characters": 0, "page_limit": 45,
+                "context_limit": 75000,
+                "blocked_reason": "Required pleading coverage exceeds the bounded retrieval budget. Do not queue a paid draft until the question is narrowed.",
+                "warnings": [],
+            }
+        return None
+    citations = [
+        {
+            key: page[key]
+            for key in ("source_sha256", "filename", "page_number")
+            if key in page
+        }
+        for page in pages
+    ]
+    warnings = []
+    party_roles = coverage.get("party_role_evidence", {})
+    if party_roles.get("outside_initial_slice"):
+        warnings.append("Party-role evidence exists outside the selected retrieval slice.")
+    if len(citations) >= 45:
+        warnings.append("The preview reached the 45-page retrieval limit.")
+    return {
+        "citations": citations,
+        "pleadings": coverage.get("verified_pleading_inventory", []),
+        "page_count": len(citations),
+        "context_characters": sum(len(str(page.get("text", ""))) for page in pages),
+        "page_limit": 45,
+        "context_limit": 75000,
+        "blocked_reason": None,
+        "warnings": warnings,
+    }
+
+
 def discard_temporary_draft_request(case_id, request_id):
     """Hide an exact temporary test request while preserving its B2 audit trail."""
     gateway_url = os.environ.get("LEGALAI_REVIEW_GATEWAY_URL", "").rstrip("/")
@@ -3982,6 +4045,7 @@ def workspace_matter_draft(case_id):
     submitted_status = None
     error = None
     discarded = False
+    retrieval_preview = None
     submitted_request_id = clean_text(request.args.get("submitted", ""))
     # This page is the status surface for a just-submitted request.  It must
     # bypass the short navigation cache so a completed worker result replaces
@@ -4005,7 +4069,15 @@ def workspace_matter_draft(case_id):
                 break
     if request.method == "POST":
         action = request.form.get("action", "")
-        if action == "top-attack-surfaces":
+        if action == "preview":
+            question = clean_text(request.form.get("question", ""))
+            if not question or len(question) > 1000:
+                error = "Enter a focused review question (up to 1,000 characters)."
+            else:
+                retrieval_preview = preview_draft_retrieval(case_id, question)
+                if retrieval_preview is None:
+                    error = "The retrieval preview could not be prepared. No draft was queued and no model was called."
+        elif action == "top-attack-surfaces":
             question = TOP_ATTACK_SURFACES_QUESTION
             confirmation = create_draft_request(case_id, question, reviewer)
             if confirmation is None:
@@ -4078,12 +4150,13 @@ def workspace_matter_draft(case_id):
             if item["status"] in {"QUEUED", "RUNNING"}
         ]
     return render_template_string(
-        """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Prepare Internal Draft</title><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:820px;margin:0 auto;padding:42px 24px 64px}a{color:#123f63}h1{margin:0 0 8px;font-size:clamp(2rem,5vw,3rem)}p{font-size:1.05rem;line-height:1.55}.meta{color:#52606d}.panel{background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:22px;margin-top:26px;box-shadow:0 2px 8px #0f172a10}label{display:block;font-weight:bold;margin-bottom:8px}textarea{box-sizing:border-box;width:100%;font:inherit;line-height:1.45;padding:12px;border:1px solid #64748b;border-radius:6px}button{margin-top:12px;background:#123f63;color:#fff;border:0;border-radius:6px;padding:11px 15px;font:inherit;font-weight:bold;cursor:pointer}.secondary{background:#fff;color:#123f63;border:1px solid #123f63}.notice{border-left:4px solid #b45309;padding:12px 14px;background:#fffbeb}.success{border-left-color:#15803d;background:#f0fdf4}.answer-cta{display:inline-block;margin-top:12px;background:#123f63;color:#fff;border-radius:6px;padding:11px 15px;font-weight:bold;text-decoration:none}</style></head><body><main><p><a href="/workspace">← Attorney workspace</a></p><h1>Prepare internal review draft</h1><p class="meta">{{ case_id }}</p><p>Questions are processed automatically from the verified record. Results are internal attorney-review drafts only; nothing is sent to an attorney and no legal conclusion is approved.</p>{% if queued_requests %}<section class="panel"><strong>Questions processing</strong>{% for item in queued_requests %}<p><strong>{{ item.status }}</strong> — {{ item.question }}<br><span class="meta">Requested by {{ item.requested_by }}</span></p>{% if item.question|lower|trim == 'is this a test?' %}<form method="post"><input type="hidden" name="action" value="discard-test"><input type="hidden" name="request_id" value="{{ item.request_id }}"><button class="secondary" type="submit">Remove temporary test</button></form>{% endif %}{% endfor %}</section>{% endif %}{% if confirmation %}<section class="panel success" id="draft-confirmation">{% if submitted_status == 'READY' %}<strong>Your answered question is ready.</strong><p><a class="answer-cta" href="{{ url_for('workspace_matter_draft_detail', case_id=case_id, request_id=confirmation.request_id) }}">View answered question →</a></p>{% if confirmation.reused %}<p class="meta">This identical question already exists. To intentionally refresh it after a system update, use the guarded control below; ordinary duplicate submissions remain blocked.</p><form method="post"><input type="hidden" name="action" value="regenerate"><input type="hidden" name="request_id" value="{{ confirmation.request_id }}"><button class="secondary" type="submit">Regenerate this completed draft</button></form>{% endif %}{% else %}<strong data-draft-status>{% if confirmation.reused %}Existing internal draft shown.{% else %}Automatic draft job queued.{% endif %}</strong><p data-draft-message>{% if confirmation.reused %}This identical question already has an internal draft request, so no duplicate was created.{% else %}Your question will appear under Answered questions when its citation checks complete.{% endif %}</p>{% endif %}</section>{% endif %}{% if discarded %}<section class="panel success"><strong>Temporary test removed from the workspace.</strong><p>Its internal audit record remains preserved; no source material or attorney packet changed.</p></section>{% endif %}<section class="panel"><strong>v4.0 Top Attack Surfaces Report</strong><p>Ranked, attorney-review-only contradictions, credibility vulnerabilities, and procedural weaknesses supported by verified pages.</p><form method="post"><input type="hidden" name="action" value="top-attack-surfaces"><button class="secondary" type="submit">Prepare v4.0 report</button></form></section><section class="panel"><form method="post"><label for="question">What should the attorney-review draft address?</label><textarea id="question" name="question" rows="5" maxlength="1000" required placeholder="Example: What relief is requested in the verified complaint, and what support is present in the record?"></textarea><button type="submit">Ask a new review question</button></form></section>{% if error %}<p class="notice" role="alert">{{ error }}</p>{% endif %}{% if confirmation and submitted_status != 'READY' %}<script>(() => {const endpoint={{ url_for('workspace_matter_draft_status', case_id=case_id, request_id=confirmation.request_id)|tojson }};const panel=document.getElementById('draft-confirmation');const status=panel.querySelector('[data-draft-status]');const message=panel.querySelector('[data-draft-message]');let attempts=0;const timer=window.setInterval(check,15000);async function check(){attempts+=1;try{const response=await fetch(endpoint,{cache:'no-store',credentials:'same-origin'});if(!response.ok){if(response.status===404&&attempts>=2){status.textContent='Status is still syncing';message.textContent='Your draft remains safely queued while the status record catches up.';}return;}const update=await response.json();if(update.status==='READY'&&update.answer_url){window.clearInterval(timer);window.location.assign(update.answer_url+'?completed=1');}else if(update.status==='FAILED'){window.clearInterval(timer);status.textContent='This internal draft needs review.';message.textContent='The request was not completed automatically.';}else if(update.status==='RUNNING'){status.textContent='Question processing';}}catch(_error){}if(attempts>=40)window.clearInterval(timer);}check();})();</script>{% endif %}</main></body></html>""",
+        """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Prepare Internal Draft</title><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:820px;margin:0 auto;padding:42px 24px 64px}a{color:#123f63}h1{margin:0 0 8px;font-size:clamp(2rem,5vw,3rem)}p,li{font-size:1.05rem;line-height:1.55}.meta{color:#52606d}.panel{background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:22px;margin-top:26px;box-shadow:0 2px 8px #0f172a10}label{display:block;font-weight:bold;margin-bottom:8px}textarea{box-sizing:border-box;width:100%;font:inherit;line-height:1.45;padding:12px;border:1px solid #64748b;border-radius:6px}button{margin-top:12px;margin-right:8px;background:#123f63;color:#fff;border:0;border-radius:6px;padding:11px 15px;font:inherit;font-weight:bold;cursor:pointer}.secondary{background:#fff;color:#123f63;border:1px solid #123f63}.notice{border-left:4px solid #b45309;padding:12px 14px;background:#fffbeb}.success{border-left-color:#15803d;background:#f0fdf4}.answer-cta{display:inline-block;margin-top:12px;background:#123f63;color:#fff;border-radius:6px;padding:11px 15px;font-weight:bold;text-decoration:none}.preview-list{max-height:360px;overflow:auto;padding-right:8px}.preview-list li{font-size:.9rem;overflow-wrap:anywhere}</style></head><body><main><p><a href="/workspace">← Attorney workspace</a></p><h1>Prepare internal review draft</h1><p class="meta">{{ case_id }}</p><p>Questions are processed automatically from the verified record. Results are internal attorney-review drafts only; nothing is sent to an attorney and no legal conclusion is approved.</p>{% if queued_requests %}<section class="panel"><strong>Questions processing</strong>{% for item in queued_requests %}<p><strong>{{ item.status }}</strong> — {{ item.question }}<br><span class="meta">Requested by {{ item.requested_by }}</span></p>{% if item.question|lower|trim == 'is this a test?' %}<form method="post"><input type="hidden" name="action" value="discard-test"><input type="hidden" name="request_id" value="{{ item.request_id }}"><button class="secondary" type="submit">Remove temporary test</button></form>{% endif %}{% endfor %}</section>{% endif %}{% if confirmation %}<section class="panel success" id="draft-confirmation">{% if submitted_status == 'READY' %}<strong>Your answered question is ready.</strong><p><a class="answer-cta" href="{{ url_for('workspace_matter_draft_detail', case_id=case_id, request_id=confirmation.request_id) }}">View answered question →</a></p>{% if confirmation.reused %}<p class="meta">This identical question already exists. To intentionally refresh it after a system update, use the guarded control below; ordinary duplicate submissions remain blocked.</p><form method="post"><input type="hidden" name="action" value="regenerate"><input type="hidden" name="request_id" value="{{ confirmation.request_id }}"><button class="secondary" type="submit">Regenerate this completed draft</button></form>{% endif %}{% else %}<strong data-draft-status>{% if confirmation.reused %}Existing internal draft shown.{% else %}Automatic draft job queued.{% endif %}</strong><p data-draft-message>{% if confirmation.reused %}This identical question already has an internal draft request, so no duplicate was created.{% else %}Your question will appear under Answered questions when its citation checks complete.{% endif %}</p>{% endif %}</section>{% endif %}{% if discarded %}<section class="panel success"><strong>Temporary test removed from the workspace.</strong><p>Its internal audit record remains preserved; no source material or attorney packet changed.</p></section>{% endif %}<section class="panel"><strong>v4.0 Top Attack Surfaces Report</strong><p>Ranked, attorney-review-only contradictions, credibility vulnerabilities, and procedural weaknesses supported by verified pages.</p><form method="post"><input type="hidden" name="action" value="top-attack-surfaces"><button class="secondary" type="submit">Prepare v4.0 report</button></form></section><section class="panel"><form method="post"><label for="question">What should the attorney-review draft address?</label><textarea id="question" name="question" rows="5" maxlength="1000" required placeholder="Example: What relief is requested in the verified complaint, and what support is present in the record?">{{ question }}</textarea><button class="secondary" type="submit" name="action" value="preview">Preview retrieval — free</button><button type="submit" name="action" value="create">Ask a new review question</button></form></section>{% if retrieval_preview %}<section class="panel {{ 'notice' if retrieval_preview.blocked_reason else 'success' }}"><strong>Retrieval preview — no model called</strong>{% if retrieval_preview.blocked_reason %}<p><strong>Blocked:</strong> {{ retrieval_preview.blocked_reason }}</p>{% else %}<p>{{ retrieval_preview.page_count }} of {{ retrieval_preview.page_limit }} page slots selected · {{ retrieval_preview.context_characters }} of {{ retrieval_preview.context_limit }} context characters.</p><p><strong>{{ retrieval_preview.pleadings|length }} verified pleadings detected.</strong></p>{% for warning in retrieval_preview.warnings %}<p class="notice">{{ warning }}</p>{% endfor %}<ul class="preview-list">{% for cite in retrieval_preview.citations %}<li>{{ cite.filename }} — p. {{ cite.page_number }}</li>{% endfor %}</ul>{% endif %}</section>{% endif %}{% if error %}<p class="notice" role="alert">{{ error }}</p>{% endif %}{% if confirmation and submitted_status != 'READY' %}<script>(() => {const endpoint={{ url_for('workspace_matter_draft_status', case_id=case_id, request_id=confirmation.request_id)|tojson }};const panel=document.getElementById('draft-confirmation');const status=panel.querySelector('[data-draft-status]');const message=panel.querySelector('[data-draft-message]');let attempts=0;const timer=window.setInterval(check,15000);async function check(){attempts+=1;try{const response=await fetch(endpoint,{cache:'no-store',credentials:'same-origin'});if(!response.ok){if(response.status===404&&attempts>=2){status.textContent='Status is still syncing';message.textContent='Your draft remains safely queued while the status record catches up.';}return;}const update=await response.json();if(update.status==='READY'&&update.answer_url){window.clearInterval(timer);window.location.assign(update.answer_url+'?completed=1');}else if(update.status==='FAILED'){window.clearInterval(timer);status.textContent='This internal draft needs review.';message.textContent='The request was not completed automatically.';}else if(update.status==='RUNNING'){status.textContent='Question processing';}}catch(_error){}if(attempts>=40)window.clearInterval(timer);}check();})();</script>{% endif %}</main></body></html>""",
         case_id=case_id,
         question=question,
         confirmation=confirmation,
         submitted_status=submitted_status,
         discarded=discarded,
+        retrieval_preview=retrieval_preview,
         error=error,
         queued_requests=queued_requests,
     )
