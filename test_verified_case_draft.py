@@ -484,6 +484,36 @@ class RecordWidePleadingCoverageTests(unittest.TestCase):
         self.assertFalse(any("BILL_OF_PARTICULARS" in filename for filename in selected))
 
 
+    def test_counterclaim_crossclaim_question_excludes_main_and_third_party_layers(self):
+        class LayeredCrossClaimS3(FakeS3):
+            pages = [
+                {"filename": "SUMMONS___COMPLAINT_1.pdf", "page_number": 1,
+                 "text": "Andrzej Szymczyk against Hudson 36 LLC and Hudson 37 LLC."},
+                {"filename": "ANSWER_3.pdf", "page_number": 3,
+                 "text": "AFFIRMATIVE DEFENSES to the complaint."},
+                {"filename": "ANSWER_WITH_CROSS_C_81.pdf", "page_number": 1,
+                 "text": "ANSWER WITH CROSS-CLAIMS AND COUNTERCLAIM."},
+                {"filename": "ANSWER_WITH_CROSS_C_81.pdf", "page_number": 6,
+                 "text": "CROSS-CLAIM for negligence. WHEREFORE judgment is demanded."},
+                {"filename": "REPLY_TO_COUNTERCLAIM_82.pdf", "page_number": 1,
+                 "text": "REPLY TO COUNTERCLAIM and affirmative defenses."},
+                {"filename": "ANSWER_TO_THIRD_PAR_10.pdf", "page_number": 14,
+                 "text": "ANSWER TO THIRD-PARTY COMPLAINT."},
+            ]
+
+        pages = WORKER.evidence(
+            LayeredCrossClaimS3(),
+            "NY-NewYork-158068-2018-Szymczyk-v-Hudson-36-37",
+            "Identify all counterclaims and cross-claims in the main action, the parties, relief, and defenses.",
+        )
+        selected = {page["filename"] for page in pages}
+        self.assertIn("ANSWER_WITH_CROSS_C_81.pdf", selected)
+        self.assertIn("REPLY_TO_COUNTERCLAIM_82.pdf", selected)
+        self.assertNotIn("SUMMONS___COMPLAINT_1.pdf", selected)
+        self.assertNotIn("ANSWER_3.pdf", selected)
+        self.assertNotIn("ANSWER_TO_THIRD_PAR_10.pdf", selected)
+
+
 class SzymczykFilenameCoverageTests(unittest.TestCase):
     def test_underscored_pleading_filename_is_classified(self):
         name = "158068_2018_ANDRZEJ_SZYMCZYK_v_HUDSON_36_LLC_et_al_ANSWER_3.pdf"

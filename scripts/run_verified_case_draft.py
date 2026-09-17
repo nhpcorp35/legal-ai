@@ -23,7 +23,8 @@ CASE00_BENCHMARK_ID = "Case-00-Triborough"
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
 BROAD_RECORD_TERMS = frozenset({"parties", "claims", "causes", "defenses", "relief"})
 PLEADING_FILENAME_RE = re.compile(
-    r"\b(?:complaint|answer|cross[ _-]?claim|counter[ _-]?claim|"
+    r"\b(?:complaint|answer|reply|cross(?:[ _-]?claim|[ _-]?c\b)|"
+    r"counter(?:[ _-]?claim|[ _-]?c\b)|"
     r"third[ _-]?party|fourth[ _-]?party|bill[s]? of particulars)\b",
     re.IGNORECASE,
 )
@@ -68,6 +69,12 @@ MAIN_ACTION_ONLY_QUESTION_RE = re.compile(
     r"\bmain (?:action|case)(?: only)?\b|"
     r"\bplaintiff(?:[\'’]s|s)?\s+claims\s+against\b|"
     r"\boperative\s+complaint\s+and\s+answer\s+pages\b",
+    re.IGNORECASE,
+)
+CROSS_CLAIM_ONLY_QUESTION_RE = re.compile(
+    r"\b(?:all\s+)?counterclaims?\s+and\s+cross[ -]?claims?\b|"
+    r"\bcross[ -]?claims?\s+and\s+counterclaims?\b|"
+    r"\bmain action\b.*\b(?:counterclaims?|cross[ -]?claims?)\b",
     re.IGNORECASE,
 )
 PLEADING_CLAIM_TEXT_RE = re.compile(
@@ -257,7 +264,11 @@ def evidence(s3, case_id, question):
     # filing-led coverage before contract exhibits are considered.
     pleading_focused_question = bool(PLEADING_FOCUSED_QUESTION_RE.search(question))
     attack_surface_question = TOP_ATTACK_SURFACES_MARKER in question.casefold()
-    main_action_only_question = bool(MAIN_ACTION_ONLY_QUESTION_RE.search(question))
+    cross_claim_only_question = bool(CROSS_CLAIM_ONLY_QUESTION_RE.search(question))
+    main_action_only_question = (
+        bool(MAIN_ACTION_ONLY_QUESTION_RE.search(question))
+        and not cross_claim_only_question
+    )
     # The v4 report is intentionally filing-led even though its prompt uses
     # analytical terms rather than a pleading's exact title.
     filing_led_question = broad_record_question or pleading_focused_question or attack_surface_question
@@ -316,6 +327,20 @@ def evidence(s3, case_id, question):
         for page, text in sorted(document_pages):
             pleading_filename = normalized_filename(filename)
             merits_pleading = bool(PLEADING_FILENAME_RE.search(pleading_filename))
+            if cross_claim_only_question and merits_pleading:
+                # Keep this layer independent from the main complaint/answer
+                # and successive third-party pleadings. The filename or the
+                # operative page text must expressly identify a counterclaim,
+                # cross-claim, or a reply/answer directed to one.
+                filing_identity = f"{pleading_filename} {text[:700]}"
+                if not re.search(
+                    r"\b(?:cross[ -]?(?:claims?|c)|counter[ -]?(?:claims?|c)|"
+                    r"reply\s+to\s+(?:cross[ -]?claims?|counterclaims?)|"
+                    r"answer\s+to\s+(?:cross[ -]?claims?|counterclaims?))\b",
+                    filing_identity,
+                    re.IGNORECASE,
+                ):
+                    continue
             if main_action_only_question and merits_pleading:
                 # A main-action request must not make every successive
                 # third-party/cross-claim pleading mandatory. Those layers are
