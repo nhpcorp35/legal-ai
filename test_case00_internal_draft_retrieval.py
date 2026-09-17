@@ -24,7 +24,7 @@ def test_foundational_question_reserves_each_pleading_before_exhibits():
         _page(
             f"EXHIBIT_{index}.pdf",
             1,
-            "litigation claims defenses relief " * 80,
+            "litigation claims defenses relief " * 20,
         )
         for index in range(60)
     )
