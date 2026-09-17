@@ -64,8 +64,19 @@ PLEADING_FOCUSED_QUESTION_RE = re.compile(
     r"third[ -]?party\s+complaint|cross[ -]?claim|counter[ -]?claim)\b",
     re.IGNORECASE,
 )
-PLEADING_CLAIM_TEXT_RE = re.compile(r"\b(?:cause of action|cross[ -]?claim|counter[ -]?claim)\b", re.IGNORECASE)
-PLEADING_RELIEF_TEXT_RE = re.compile(r"\b(?:wherefore|prayer for relief)\b", re.IGNORECASE)
+PLEADING_CLAIM_TEXT_RE = re.compile(
+    r"\b(?:cause of action|cross[ -]?claim|counter[ -]?claim|"
+    r"negligence|breach of contract|contractual indemnification|"
+    r"common[ -]?law indemnification|contribution)\b|"
+    r"\blabor\s+law\s*(?:§|section|sec\.?\s*)?\s*(?:200|240|241)\b",
+    re.IGNORECASE,
+)
+PLEADING_RELIEF_TEXT_RE = re.compile(
+    r"\b(?:wherefore|prayer for relief|demands? judgment|requests? judgment|"
+    r"judgment (?:be )?(?:entered|granted)|dismiss(?:al|ing)|"
+    r"damages(?:,|\s+and|\s+in)|costs? and disbursements)\b",
+    re.IGNORECASE,
+)
 THIRD_PARTY_COMPLAINT_QUESTION_RE = re.compile(
     r"\bthird[ -]?party\s+complaint\b",
     re.IGNORECASE,
@@ -342,6 +353,13 @@ def evidence(s3, case_id, question):
                     coverage_score += 10
                 if operational_pleading:
                     coverage_score += 6
+                # A substantive cause-of-action heading or prayer page is
+                # independently operative even when it shares no literal
+                # terms with the user's broad litigation-map question.
+                if claim_pleading:
+                    coverage_score += 12
+                if relief_pleading:
+                    coverage_score += 12
                 # Party role and ownership allegations may sit between the
                 # caption and formal causes of action. Retain them for a
                 # party/claims/defenses request rather than inferring a role
@@ -510,8 +528,34 @@ def evidence(s3, case_id, question):
         raise PreGenerationGateError("missing_first_affirmative_defense_page")
     selected_party_role_ids = party_role_candidates.intersection(selected_ids)
     outside_party_role_ids = party_role_candidates.difference(selected_ids)
+    selected_claim_ids = {
+        (source, filename, page)
+        for _score, filename, page, source, _candidate, merits_pleading,
+        _operational, _section_start, _defense, _continuation,
+        claim_pleading, _relief_pleading in rows
+        if merits_pleading and claim_pleading
+    }.intersection(selected_ids)
+    selected_relief_ids = {
+        (source, filename, page)
+        for _score, filename, page, source, _candidate, merits_pleading,
+        _operational, _section_start, _defense, _continuation,
+        _claim_pleading, relief_pleading in rows
+        if merits_pleading and relief_pleading
+    }.intersection(selected_ids)
     coverage = {
         "party_role_evidence": {"candidate_count": len(party_role_candidates), "retrieved_count": len(selected_party_role_ids), "outside_initial_slice": bool(outside_party_role_ids), "outside_initial_slice_citations": [{"source_sha256": source, "filename": filename, "page_number": page} for source, filename, page in sorted(outside_party_role_ids, key=lambda item: (item[1].casefold(), item[2], item[0]))[:12]]},
+        "pleading_operatives": {
+            "claim_page_count": len(selected_claim_ids),
+            "relief_page_count": len(selected_relief_ids),
+            "claim_citations": [
+                {"source_sha256": source, "filename": filename, "page_number": page}
+                for source, filename, page in sorted(selected_claim_ids, key=lambda item: (item[1].casefold(), item[2], item[0]))
+            ],
+            "relief_citations": [
+                {"source_sha256": source, "filename": filename, "page_number": page}
+                for source, filename, page in sorted(selected_relief_ids, key=lambda item: (item[1].casefold(), item[2], item[0]))
+            ],
+        },
         "verified_pleading_inventory": verified_pleading_inventory(documents),
     }
     return EvidenceSelection(selected, coverage)
