@@ -449,6 +449,12 @@ class RecordWidePleadingCoverageTests(unittest.TestCase):
         }.issubset(selected))
         self.assertFalse(any("THIRD_PARTY" in filename for filename, _page in selected))
 
+    def test_main_action_scope_survives_plain_apostrophe_normalization(self):
+        self.assertIsNotNone(WORKER.MAIN_ACTION_ONLY_QUESTION_RE.search(
+            "Identify the plaintiffs claims against Hudson 36 LLC and Hudson 37 LLC; "
+            "cite the operative complaint and answer pages."
+        ))
+
 
 class SzymczykFilenameCoverageTests(unittest.TestCase):
     def test_underscored_pleading_filename_is_classified(self):

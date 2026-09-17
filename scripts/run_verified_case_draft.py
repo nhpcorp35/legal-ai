@@ -65,7 +65,9 @@ PLEADING_FOCUSED_QUESTION_RE = re.compile(
     re.IGNORECASE,
 )
 MAIN_ACTION_ONLY_QUESTION_RE = re.compile(
-    r"\bmain (?:action|case)(?: only)?\b|\bplaintiff[\'’]s claims against\b",
+    r"\bmain (?:action|case)(?: only)?\b|"
+    r"\bplaintiff(?:[\'’]s|s)?\s+claims\s+against\b|"
+    r"\boperative\s+complaint\s+and\s+answer\s+pages\b",
     re.IGNORECASE,
 )
 PLEADING_CLAIM_TEXT_RE = re.compile(
