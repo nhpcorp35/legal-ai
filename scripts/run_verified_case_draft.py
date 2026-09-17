@@ -77,6 +77,10 @@ CROSS_CLAIM_ONLY_QUESTION_RE = re.compile(
     r"\bmain action\b.*\b(?:counterclaims?|cross[ -]?claims?)\b",
     re.IGNORECASE,
 )
+CROSS_CLAIM_ASSERTING_PARTY_RE = re.compile(
+    r"\basserted\s+by\s+(.+?)(?=,\s+the\s+parties\b|,\s+each\b|\.\s|$)",
+    re.IGNORECASE,
+)
 PLEADING_CLAIM_TEXT_RE = re.compile(
     r"\b(?:cause of action|cross[ -]?claim|counter[ -]?claim|"
     r"negligence|breach of contract|contractual indemnification|"
@@ -284,6 +288,16 @@ def evidence(s3, case_id, question):
             if not text or not isinstance(filename,str) or not isinstance(page,int) or page < 1:
                 continue
             documents.setdefault((source, filename), []).append((page, text))
+    cross_claim_party_match = (
+        CROSS_CLAIM_ASSERTING_PARTY_RE.search(question)
+        if cross_claim_only_question
+        else None
+    )
+    cross_claim_party = (
+        " ".join(cross_claim_party_match.group(1).casefold().split())
+        if cross_claim_party_match
+        else ""
+    )
     # A third-party complaint caption often names all parties while its claims
     # and prayer occur several pages later. Keep the bounded target pleading
     # together so page-ranking cannot retain only the caption and falsely call
@@ -321,6 +335,10 @@ def evidence(s3, case_id, question):
                 ]
             ]
     for (source, filename), document_pages in documents.items():
+        if cross_claim_party:
+            document_text = " ".join(text.casefold() for _, text in document_pages)
+            if cross_claim_party not in document_text:
+                continue
         section_start = 1
         prior_page = None
         affirmative_defense_run_remaining = 0
