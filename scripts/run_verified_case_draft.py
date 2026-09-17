@@ -72,7 +72,7 @@ MAIN_ACTION_ONLY_QUESTION_RE = re.compile(
     re.IGNORECASE,
 )
 CROSS_CLAIM_ONLY_QUESTION_RE = re.compile(
-    r"\b(?:all\s+)?counterclaims?\s+and\s+cross[ -]?claims?\b|"
+    r"\b(?:(?:all|every)\s+)?counterclaims?\s+and\s+cross[ -]?claims?\b|"
     r"\bcross[ -]?claims?\s+and\s+counterclaims?\b|"
     r"\bmain action\b.*\b(?:counterclaims?|cross[ -]?claims?)\b",
     re.IGNORECASE,

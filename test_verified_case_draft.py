@@ -513,6 +513,34 @@ class RecordWidePleadingCoverageTests(unittest.TestCase):
         self.assertNotIn("ANSWER_3.pdf", selected)
         self.assertNotIn("ANSWER_TO_THIRD_PAR_10.pdf", selected)
 
+    def test_party_specific_every_counterclaim_question_uses_crossclaim_slice(self):
+        class PartySpecificCrossClaimS3(FakeS3):
+            pages = [
+                {"filename": "SUMMONS___COMPLAINT_1.pdf", "page_number": 1,
+                 "text": "Andrzej Szymczyk against Hudson 36 LLC and Hudson 37 LLC."},
+                {"filename": "ANSWER_3.pdf", "page_number": 3,
+                 "text": "AFFIRMATIVE DEFENSES to the complaint."},
+                {"filename": "ANSWER_WITH_CROSS_C_81.pdf", "page_number": 1,
+                 "text": "QUALITY FACILITIES SOLUTIONS CORP. ANSWER WITH CROSS-CLAIMS AND COUNTERCLAIM."},
+                {"filename": "ANSWER_WITH_CROSS_C_81.pdf", "page_number": 6,
+                 "text": "QUALITY FACILITIES SOLUTIONS CORP. CROSS-CLAIM for negligence."},
+                {"filename": "REPLY_TO_COUNTERCLAIM_82.pdf", "page_number": 1,
+                 "text": "REPLY TO QUALITY FACILITIES SOLUTIONS CORP. COUNTERCLAIM."},
+                {"filename": "ANSWER_TO_THIRD_PAR_10.pdf", "page_number": 14,
+                 "text": "ANSWER TO THIRD-PARTY COMPLAINT."},
+            ]
+
+        pages = WORKER.evidence(
+            PartySpecificCrossClaimS3(),
+            "NY-NewYork-158068-2018-Szymczyk-v-Hudson-36-37",
+            "Based solely on the verified record, identify every counterclaim and cross-claim asserted by Quality Facilities Solutions Corp., the parties against whom each is asserted, the requested relief, and the strongest expressly pleaded defenses. Cite only the operative pleading and reply pages.",
+        )
+        selected = {page["filename"] for page in pages}
+        self.assertEqual(
+            {"ANSWER_WITH_CROSS_C_81.pdf", "REPLY_TO_COUNTERCLAIM_82.pdf"},
+            selected,
+        )
+
 
 class SzymczykFilenameCoverageTests(unittest.TestCase):
     def test_underscored_pleading_filename_is_classified(self):
