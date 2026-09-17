@@ -540,6 +540,47 @@ class SzymczykFilenameCoverageTests(unittest.TestCase):
         selected = {page["page_number"] for page in pages if page["filename"] == "Complaint.pdf"}
         self.assertEqual(selected, {1, 3, 4, 5, 6, 7})
 
+    def test_substantive_claim_headings_and_judgment_language_are_operatives(self):
+        class SubstantiveHeadingsS3(FakeS3):
+            pages = [
+                {"filename": "SUMMONS___COMPLAINT_1.pdf", "page_number": 1,
+                 "text": "Plaintiff against Hudson 36 LLC and Hudson 37 LLC."},
+                {"filename": "SUMMONS___COMPLAINT_1.pdf", "page_number": 8,
+                 "text": "LABOR LAW SECTION 240(1). Defendants failed to provide protection."},
+                {"filename": "SUMMONS___COMPLAINT_1.pdf", "page_number": 9,
+                 "text": "LABOR LAW § 241(6). Defendants violated applicable rules."},
+                {"filename": "SUMMONS___COMPLAINT_1.pdf", "page_number": 10,
+                 "text": "NEGLIGENCE AND LABOR LAW § 200. Defendants had notice."},
+                {"filename": "SUMMONS___COMPLAINT_1.pdf", "page_number": 11,
+                 "text": "Plaintiff demands judgment for damages, costs and disbursements."},
+            ] + [
+                {"filename": f"Exhibit {index}.pdf", "page_number": 1,
+                 "text": "parties claims defenses relief"}
+                for index in range(45)
+            ]
+
+        pages = WORKER.evidence(
+            SubstantiveHeadingsS3(),
+            "NY-NewYork-158068-2018-Szymczyk-v-Hudson-36-37",
+            "Identify the pleaded claims and party roles, defenses, and relief.",
+        )
+        selected = {
+            page["page_number"] for page in pages
+            if page["filename"] == "SUMMONS___COMPLAINT_1.pdf"
+        }
+        self.assertEqual(selected, {1, 8, 9, 10, 11})
+        operatives = pages.coverage["pleading_operatives"]
+        self.assertEqual(operatives["claim_page_count"], 3)
+        self.assertEqual(operatives["relief_page_count"], 1)
+        self.assertEqual(
+            {item["page_number"] for item in operatives["claim_citations"]},
+            {8, 9, 10},
+        )
+        self.assertEqual(
+            [item["page_number"] for item in operatives["relief_citations"]],
+            [11],
+        )
+
 
     def test_bundled_later_answer_gets_its_own_caption_and_defense_pages(self):
         class BundledS3(FakeS3):
