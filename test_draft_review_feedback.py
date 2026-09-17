@@ -37,6 +37,7 @@ class DraftReviewFeedbackTests(unittest.TestCase):
                 "LEGALAI_REVIEW_JOHN_USERNAME": "johncuomo@gmail.com",
                 "LEGALAI_REVIEW_JOHN_PASSWORD": "secret",
                 "LEGALAI_REVIEW_GATEWAY_SECRET": "gateway-secret",
+                "LEGALAI_OPERATOR_API_TOKEN": "operator-secret",
                 "LEGALAI_DRAFT_REVIEW_FEEDBACK_DIR": self.temp.name,
             },
             clear=False,
@@ -159,6 +160,49 @@ class DraftReviewFeedbackTests(unittest.TestCase):
             )
         self.assertEqual(response.status_code, 400)
         self.assertFalse(os.path.exists(os.path.join(self.temp.name, "draft_feedback.jsonl")))
+
+    def test_operator_api_submits_and_reuses_exact_review(self):
+        payload = {
+            "reviewer": "johncuomo@gmail.com",
+            "case_id": CASE_ID,
+            "request_id": REQUEST_ID,
+            "decision": "needs_revision",
+            "accuracy_rating": 3,
+            "usefulness_rating": 3,
+            "missing_or_overstated": "Retrieve the complete pleading.",
+            "citation_problems": "Only isolated pages were cited.",
+            "comments": "Do not regenerate yet.",
+        }
+        headers = {
+            "Authorization": "Bearer operator-secret",
+            "Content-Type": "application/json",
+        }
+        with patch.object(legalai, "archive_draft_review_feedback_to_b2", return_value=True), patch.object(
+            legalai, "notify_draft_review_feedback", return_value=True
+        ) as notify:
+            created = self.client.post("/internal/reviews", headers=headers, json=payload)
+            reused = self.client.post("/internal/reviews", headers=headers, json=payload)
+            verified = self.client.get(
+                "/internal/reviews",
+                headers={"Authorization": "Bearer operator-secret"},
+                query_string={
+                    "reviewer": payload["reviewer"],
+                    "case_id": payload["case_id"],
+                    "request_id": payload["request_id"],
+                },
+            )
+        self.assertEqual(created.status_code, 201)
+        self.assertEqual(reused.status_code, 200)
+        self.assertFalse(created.get_json()["reused"])
+        self.assertTrue(reused.get_json()["reused"])
+        self.assertTrue(verified.get_json()["exists"])
+        with open(os.path.join(self.temp.name, "draft_feedback.jsonl"), encoding="utf-8") as stream:
+            self.assertEqual(len(stream.readlines()), 1)
+        notify.assert_called_once()
+
+    def test_operator_api_rejects_missing_token(self):
+        response = self.client.get("/internal/reviews")
+        self.assertEqual(response.status_code, 401)
 
 
 if __name__ == "__main__":

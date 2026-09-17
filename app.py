@@ -2621,8 +2621,37 @@ def archive_draft_review_feedback_to_b2(record):
     return True
 
 
+def _draft_review_feedback_path():
+    feedback_dir = os.environ.get(
+        "LEGALAI_DRAFT_REVIEW_FEEDBACK_DIR",
+        os.path.join(BASE_DIR, "data", "review_feedback"),
+    )
+    return os.path.join(feedback_dir, "draft_feedback.jsonl")
+
+
+def find_draft_review_feedback(reviewer, case_id, request_id):
+    """Return the existing review for one reviewer/draft tuple, if any."""
+    feedback_path = _draft_review_feedback_path()
+    try:
+        with open(feedback_path, encoding="utf-8") as stream:
+            for line in stream:
+                try:
+                    record = json.loads(line)
+                except (TypeError, ValueError):
+                    continue
+                if (
+                    record.get("reviewer") == reviewer
+                    and record.get("case_id") == case_id
+                    and record.get("request_id") == request_id
+                ):
+                    return record
+    except FileNotFoundError:
+        return None
+    return None
+
+
 def archive_draft_review_feedback(reviewer, case_id, request_id, decision, accuracy_rating, usefulness_rating, missing_or_overstated, citation_problems, comments):
-    """Archive one bounded review to B2 and mirror it on the app volume."""
+    """Idempotently archive one bounded review to B2 and the app volume."""
     record = {
         "schema_version": 1,
         "submitted_at": int(time.time()),
@@ -2636,17 +2665,99 @@ def archive_draft_review_feedback(reviewer, case_id, request_id, decision, accur
         "citation_problems": citation_problems,
         "comments": comments,
     }
-    archive_draft_review_feedback_to_b2(record)
-    feedback_dir = os.environ.get("LEGALAI_DRAFT_REVIEW_FEEDBACK_DIR", os.path.join(BASE_DIR, "data", "review_feedback"))
-    os.makedirs(feedback_dir, mode=0o700, exist_ok=True)
-    feedback_path = os.path.join(feedback_dir, "draft_feedback.jsonl")
-    serialized = json.dumps(record, sort_keys=True, ensure_ascii=False) + "\n"
     with _draft_review_feedback_lock:
+        existing = find_draft_review_feedback(reviewer, case_id, request_id)
+        if existing is not None:
+            return existing
+        archive_draft_review_feedback_to_b2(record)
+        feedback_path = _draft_review_feedback_path()
+        os.makedirs(os.path.dirname(feedback_path), mode=0o700, exist_ok=True)
+        serialized = json.dumps(record, sort_keys=True, ensure_ascii=False) + "\n"
         with open(feedback_path, "a", encoding="utf-8") as stream:
             stream.write(serialized)
             stream.flush()
             os.fsync(stream.fileno())
     return record
+
+
+def _operator_review_api_authorized():
+    configured = os.environ.get("LEGALAI_OPERATOR_API_TOKEN", "")
+    supplied = request.headers.get("Authorization", "")
+    prefix = "Bearer "
+    return bool(
+        configured
+        and supplied.startswith(prefix)
+        and hmac.compare_digest(supplied[len(prefix):], configured)
+    )
+
+
+@app.route("/internal/reviews", methods=["GET", "POST"])
+def internal_review_api():
+    """Protected operator path for idempotent review submission and verification."""
+    if not _operator_review_api_authorized():
+        return Response(
+            json.dumps({"ok": False, "error": "unauthorized"}),
+            status=401,
+            mimetype="application/json",
+        )
+    payload = request.get_json(silent=True) if request.method == "POST" else request.args
+    payload = payload if isinstance(payload, dict) else {}
+    reviewer = clean_text(payload.get("reviewer", "")).lower()
+    case_id = clean_text(payload.get("case_id", ""))
+    request_id = clean_text(payload.get("request_id", ""))
+    if (
+        reviewer not in review_accounts()
+        or not case_id
+        or not re.fullmatch(r"draft-[0-9]+-[0-9a-f]{12}", request_id)
+    ):
+        return Response(
+            json.dumps({"ok": False, "error": "invalid review identity"}),
+            status=400,
+            mimetype="application/json",
+        )
+    existing = find_draft_review_feedback(reviewer, case_id, request_id)
+    if request.method == "GET":
+        return Response(
+            json.dumps({"ok": True, "exists": existing is not None, "review": existing}),
+            mimetype="application/json",
+        )
+    decision = clean_text(payload.get("decision", ""))
+    accuracy = payload.get("accuracy_rating")
+    usefulness = payload.get("usefulness_rating")
+    notes = {
+        "missing_or_overstated": clean_text(payload.get("missing_or_overstated", "")),
+        "citation_problems": clean_text(payload.get("citation_problems", "")),
+        "comments": clean_text(payload.get("comments", "")),
+    }
+    if (
+        decision not in _DRAFT_REVIEW_DECISIONS
+        or accuracy not in range(1, 6)
+        or usefulness not in range(1, 6)
+        or any(len(value) > 4000 for value in notes.values())
+    ):
+        return Response(
+            json.dumps({"ok": False, "error": "invalid review fields"}),
+            status=400,
+            mimetype="application/json",
+        )
+    try:
+        archived = archive_draft_review_feedback(
+            reviewer, case_id, request_id, decision, accuracy, usefulness,
+            notes["missing_or_overstated"], notes["citation_problems"], notes["comments"],
+        )
+    except OSError:
+        return Response(
+            json.dumps({"ok": False, "error": "archive failed"}),
+            status=503,
+            mimetype="application/json",
+        )
+    if existing is None:
+        notify_draft_review_feedback(archived)
+    return Response(
+        json.dumps({"ok": True, "reused": existing is not None, "review": archived}),
+        status=200 if existing is not None else 201,
+        mimetype="application/json",
+    )
 
 
 def notify_draft_review_feedback(record):
