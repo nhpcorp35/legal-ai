@@ -179,6 +179,20 @@ class StaleQueuedLoadAndMonitorTests(unittest.TestCase):
             loaded = legalai.load_draft_requests(case_id, force_refresh=True)
         self.assertEqual([item["request_id"] for item in loaded], ["draft-2-bbbbbbbbbbbb"])
 
+    def test_load_draft_requests_keeps_newest_request_visible_first(self):
+        case_id = "NY-Nassau-608412-2024-Szymczyk-v-Szymczyk"
+        payload = {"requests": [
+            _draft(request_id="draft-1-aaaaaaaaaaaa", status="READY", created_at=100),
+            _draft(request_id="draft-3-cccccccccccc", status="QUEUED", created_at=300),
+            _draft(request_id="draft-2-bbbbbbbbbbbb", status="READY", created_at=200),
+        ]}
+        with patch.object(legalai.urllib.request, "urlopen", return_value=_Response(payload)), patch.object(legalai.time, "time", return_value=350):
+            loaded = legalai.load_draft_requests(case_id, force_refresh=True)
+        self.assertEqual(
+            [item["request_id"] for item in loaded],
+            ["draft-3-cccccccccccc", "draft-2-bbbbbbbbbbbb", "draft-1-aaaaaaaaaaaa"],
+        )
+
     def test_monitor_alerts_reconciled_stale_queued_without_redispatch(self):
         case_id = "NY-Nassau-608412-2024-Szymczyk-v-Szymczyk"
         stale = _draft(
