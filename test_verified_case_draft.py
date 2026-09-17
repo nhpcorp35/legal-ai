@@ -526,9 +526,22 @@ class RecordWidePleadingCoverageTests(unittest.TestCase):
                  "text": "QUALITY FACILITIES SOLUTIONS CORP. CROSS-CLAIM for negligence."},
                 {"filename": "REPLY_TO_COUNTERCLAIM_82.pdf", "page_number": 1,
                  "text": "REPLY TO QUALITY FACILITIES SOLUTIONS CORP. COUNTERCLAIM."},
+                {"filename": "ANSWER_WITH_CROSS_C_90.pdf", "page_number": 1,
+                 "text": "HORSEPOWER ELECTRIC AND MAINTENANCE CORP. ANSWER WITH CROSS-CLAIMS."},
+                {"filename": "ANSWER_WITH_CROSS_C_90.pdf", "page_number": 6,
+                 "text": "HORSEPOWER ELECTRIC AND MAINTENANCE CORP. CROSS-CLAIM for negligence."},
                 {"filename": "ANSWER_TO_THIRD_PAR_10.pdf", "page_number": 14,
                  "text": "ANSWER TO THIRD-PARTY COMPLAINT."},
             ]
+
+        PartySpecificCrossClaimS3.pages.extend(
+            {
+                "filename": f"ANSWER_WITH_CROSS_C_{100 + index}.pdf",
+                "page_number": 1,
+                "text": f"UNRELATED PARTY {index} ANSWER WITH CROSS-CLAIMS AND AFFIRMATIVE DEFENSES.",
+            }
+            for index in range(50)
+        )
 
         pages = WORKER.evidence(
             PartySpecificCrossClaimS3(),
