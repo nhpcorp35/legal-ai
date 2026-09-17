@@ -255,6 +255,9 @@ class AttorneyUiConsistencyTests(unittest.TestCase):
         self.assertIn("Retrieval preview — no model called", body)
         self.assertIn("Complaint.pdf — p. 7", body)
         self.assertIn("Preview retrieval — free", body)
+        self.assertIn('action="/workspace/matters/', body)
+        self.assertIn('#retrieval-preview"', body)
+        self.assertIn('id="retrieval-preview"', body)
         previewer.assert_called_once_with(CASE_ID, "What claims and relief are pleaded?")
         creator.assert_not_called()
 
