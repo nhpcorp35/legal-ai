@@ -345,6 +345,12 @@ def evidence(s3, case_id, question):
         for page, text in sorted(document_pages):
             pleading_filename = normalized_filename(filename)
             merits_pleading = bool(PLEADING_FILENAME_RE.search(pleading_filename))
+            if cross_claim_only_question and not merits_pleading:
+                # A focused counterclaim/cross-claim request expressly limits
+                # citations to operative pleadings and replies. Do not allow
+                # exhibits, trial bundles, or other term-matching record pages
+                # to re-enter through the general ranking pass.
+                continue
             if cross_claim_only_question and merits_pleading:
                 # Keep this layer independent from the main complaint/answer
                 # and successive third-party pleadings. The filename or the

@@ -499,6 +499,10 @@ class RecordWidePleadingCoverageTests(unittest.TestCase):
                  "text": "REPLY TO COUNTERCLAIM and affirmative defenses."},
                 {"filename": "ANSWER_TO_THIRD_PAR_10.pdf", "page_number": 14,
                  "text": "ANSWER TO THIRD-PARTY COMPLAINT."},
+                {"filename": "EXHIBIT_S__155.pdf", "page_number": 3,
+                 "text": "QUALITY FACILITIES SOLUTIONS CORP. cross-claim evidence and requested relief."},
+                {"filename": "TRIAL_DOCUMENTS_453.pdf", "page_number": 53,
+                 "text": "QUALITY FACILITIES SOLUTIONS CORP. counterclaim and defenses."},
             ]
 
         pages = WORKER.evidence(
