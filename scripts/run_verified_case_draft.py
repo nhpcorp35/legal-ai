@@ -55,6 +55,7 @@ PLEADING_SECTION_START_RE = re.compile(
 )
 MERITS_PLEADING_PAGE_LIMIT = 45
 MERITS_PLEADING_PAGES_PER_FILING = 3
+MERITS_COMPLAINT_PAGES_PER_FILING = 8
 # Every mandatory pleading page fits within MAX_CONTEXT_CHARS (45 × 1600).
 MERITS_PLEADING_PAGE_CHARS = 1600
 AFFIRMATIVE_DEFENSES_RE = re.compile(r"\baffirmative\s+defen[cs]es?\b", re.IGNORECASE)
@@ -63,6 +64,8 @@ PLEADING_FOCUSED_QUESTION_RE = re.compile(
     r"third[ -]?party\s+complaint|cross[ -]?claim|counter[ -]?claim)\b",
     re.IGNORECASE,
 )
+PLEADING_CLAIM_TEXT_RE = re.compile(r"\b(?:cause of action|cross[ -]?claim|counter[ -]?claim)\b", re.IGNORECASE)
+PLEADING_RELIEF_TEXT_RE = re.compile(r"\b(?:wherefore|prayer for relief)\b", re.IGNORECASE)
 THIRD_PARTY_COMPLAINT_QUESTION_RE = re.compile(
     r"\bthird[ -]?party\s+complaint\b",
     re.IGNORECASE,
@@ -326,6 +329,8 @@ def evidence(s3, case_id, question):
             candidate={"source_sha256":source,"filename":filename,"page_number":page,"text":text[:candidate_text_limit]}
             coverage_score = 0
             operational_pleading = bool(PLEADING_OPERATIONAL_TEXT_RE.search(text))
+            claim_pleading = bool(PLEADING_CLAIM_TEXT_RE.search(text))
+            relief_pleading = bool(PLEADING_RELIEF_TEXT_RE.search(text))
             if filing_led_question and merits_pleading:
                 # Retain a filing-led record map: each section's caption plus
                 # claim, defense, or prayer pages.
@@ -381,6 +386,7 @@ def evidence(s3, case_id, question):
                     score + coverage_score, filename, page, source, candidate,
                     merits_pleading, operational_pleading, section_start,
                     affirmative_defenses, affirmative_defense_continuation,
+                    claim_pleading, relief_pleading,
                 ))
             prior_page = page
     mandatory_ids=set()
@@ -402,6 +408,11 @@ def evidence(s3, case_id, question):
             section=(row[3],row[1],row[7])
             per_section[section]=per_section.get(section,0)+1
             return True
+        def section_page_limit(row):
+            normalized = normalized_filename(row[1])
+            if ("complaint" in normalized or "summons" in normalized) and "answer" not in normalized:
+                return MERITS_COMPLAINT_PAGES_PER_FILING
+            return MERITS_PLEADING_PAGES_PER_FILING
         # Reserve the first affirmative-defense heading in each pleading
         # section before later heading pages. A long defense list can contain
         # many headings; otherwise its later pages can fill the global budget
@@ -421,32 +432,42 @@ def evidence(s3, case_id, question):
             if not attack_surface_question
             else set()
         )
+        # First reserve every filing/section opening, then each expressly
+        # identified cause/cross-claim/counterclaim and prayer page. This keeps
+        # captions, operative labels, and requested relief together before
+        # defense continuations can consume a section's allowance.
+        for row in ranked:
+            if row[5] and row[2] == row[7] and reserve(row) and not attack_surface_question:
+                mandatory_ids.add((row[3], row[1], row[2]))
+        for signal_index in (10, 11):
+            for row in sorted(ranked, key=lambda item: (item[1].casefold(), item[2], -item[0])):
+                section=(row[3],row[1],row[7])
+                if row[5] and row[signal_index] and per_section.get(section,0) < section_page_limit(row):
+                    if reserve(row) and not attack_surface_question:
+                        mandatory_ids.add((row[3], row[1], row[2]))
         for row in ranked:
             section=(row[3],row[1],row[7])
             if (
                 row[5] and row[8]
                 and row[2] == first_defense_page.get(section)
-                and per_section.get(section,0) < MERITS_PLEADING_PAGES_PER_FILING
+                and per_section.get(section,0) < section_page_limit(row)
             ):
-                reserve(row)
+                if reserve(row) and not attack_surface_question:
+                    mandatory_ids.add((row[3], row[1], row[2]))
         # Then reserve additional affirmative-defense headings and immediate
         # continuation pages, subject to the unchanged global budget.
         for row in ranked:
             section=(row[3],row[1],row[7])
-            if row[5] and row[8] and per_section.get(section,0) < MERITS_PLEADING_PAGES_PER_FILING:
+            if row[5] and row[8] and per_section.get(section,0) < section_page_limit(row):
                 reserve(row)
         for row in ranked:
             section=(row[3],row[1],row[7])
-            if row[5] and row[9] and per_section.get(section,0) < MERITS_PLEADING_PAGES_PER_FILING:
+            if row[5] and row[9] and per_section.get(section,0) < section_page_limit(row):
                 reserve(row)
-        # Then reserve every actual filing/section opening page.
-        for row in ranked:
-            if row[5] and row[2] == row[7]:
-                reserve(row)
-        # Then retain its operative claim, defense, and prayer pages.
+        # Then retain remaining operative and party-role pages.
         for row in ranked:
             section=(row[3],row[1],row[7])
-            if row[5] and (row[6] or PLEADING_PARTY_ROLE_TEXT_RE.search(row[4]["text"])) and per_section.get(section,0) < MERITS_PLEADING_PAGES_PER_FILING:
+            if row[5] and (row[6] or PLEADING_PARTY_ROLE_TEXT_RE.search(row[4]["text"])) and per_section.get(section,0) < section_page_limit(row):
                 reserve(row)
         if attack_surface_question:
             remaining = [row for row in ranked if (row[3], row[1], row[2]) not in merit_ids]

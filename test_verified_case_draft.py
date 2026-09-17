@@ -518,6 +518,28 @@ class SzymczykFilenameCoverageTests(unittest.TestCase):
             ("Answer.pdf", 1), ("Answer.pdf", 2), ("Answer.pdf", 3),
         }.issubset(selected))
 
+    def test_all_complaint_cause_and_prayer_pages_precede_dense_exhibits(self):
+        class CompleteClaimsS3(FakeS3):
+            pages = [
+                {"filename": "Complaint.pdf", "page_number": 1, "text": "Plaintiff against Defendant."},
+                *[
+                    {"filename": "Complaint.pdf", "page_number": page, "text": f"{ordinal} CAUSE OF ACTION: pleaded claim {page}."}
+                    for page, ordinal in ((3, "FIRST"), (4, "SECOND"), (5, "THIRD"), (6, "FOURTH"))
+                ],
+                {"filename": "Complaint.pdf", "page_number": 7, "text": "WHEREFORE plaintiff requests damages and costs."},
+            ] + [
+                {"filename": f"Exhibit {index}.pdf", "page_number": 1, "text": "parties claims defenses relief"}
+                for index in range(40)
+            ]
+
+        pages = WORKER.evidence(
+            CompleteClaimsS3(),
+            "NY-Suffolk-600371-2021-DeSousa-v-Calvagno-II-Karcher",
+            "What are the parties, claims, defenses, and requested relief in the verified record?",
+        )
+        selected = {page["page_number"] for page in pages if page["filename"] == "Complaint.pdf"}
+        self.assertEqual(selected, {1, 3, 4, 5, 6, 7})
+
 
     def test_bundled_later_answer_gets_its_own_caption_and_defense_pages(self):
         class BundledS3(FakeS3):
