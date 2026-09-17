@@ -24,6 +24,7 @@ jobs:
       - name: Report non-sensitive draft object inventory
         run: |
           python - <<'PY'
+          import json
           import os
           from collections import defaultdict
 
@@ -71,6 +72,24 @@ jobs:
           print(f"draft_request_count={len(request_ids)}")
           print("draft_request_ids=" + ",".join(request_ids))
           print(f"internal_draft_count={len(artifacts)}")
+          request_prefix = f"cases/{case_id}/derived/draft-requests/"
+          for request_id in request_ids:
+              raw = client.get_object(
+                  Bucket=os.environ["B2_BUCKET"],
+                  Key=f"{request_prefix}{request_id}.json",
+              )["Body"].read()
+              item = json.loads(raw.decode("utf-8"))
+              print(
+                  request_id
+                  + ":schema=" + str(item.get("schema_version"))
+                  + ",case_match=" + str(item.get("case_id") == case_id).lower()
+                  + ",request_status=" + str(item.get("status"))
+                  + ",external_false=" + str(item.get("external_communication") is False).lower()
+                  + ",question_valid=" + str(isinstance(item.get("question"), str)).lower()
+                  + ",requester_valid=" + str(isinstance(item.get("requested_by"), str)).lower()
+                  + ",created_valid=" + str(isinstance(item.get("created_at"), int)).lower()
+                  + ",bytes=" + str(len(raw))
+              )
           for request_id in sorted(artifacts):
               names = artifacts[request_id]
               print(
@@ -81,4 +100,3 @@ jobs:
                   + ",discarded=" + str("discarded.json" in names).lower()
               )
           PY
-# Trigger after workflow registration on main.
