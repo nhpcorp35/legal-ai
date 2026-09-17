@@ -385,6 +385,56 @@ class AttorneyUiConsistencyTests(unittest.TestCase):
         body = response.get_data(as_text=True)
         self.assertNotIn("Questions processing", body)
 
+    def test_draft_status_endpoint_returns_exact_failure_code(self):
+        request_id = "draft-9-abcdef123456"
+        failed_item = {
+            "request_id": request_id,
+            "question": "What relief is requested?",
+            "requested_by": "allen@example.com",
+            "status": "FAILED",
+            "failure_code": "model_output_validation",
+            "draft": None,
+        }
+        with patch.object(legalai, "load_exact_draft_request", return_value=failed_item):
+            response = self.client.get(
+                f"/workspace/matters/{CASE_ID}/drafts/{request_id}/status",
+                headers=_auth_headers(),
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json["status"], "FAILED")
+        self.assertEqual(response.json["failure_code"], "model_output_validation")
+        self.assertIsNone(response.json["answer_url"])
+
+    def test_draft_polling_page_handles_failure_code_and_stale_row(self):
+        request_id = "draft-8-abcdef123456"
+        queued_item = {
+            "request_id": request_id,
+            "question": "What relief is requested?",
+            "requested_by": "allen@example.com",
+            "status": "QUEUED",
+            "draft": None,
+        }
+        with patch.object(
+            legalai, "load_registered_cases", return_value=[{"case_id": CASE_ID, "stage": "Verified source indexed"}]
+        ), patch.object(legalai, "load_draft_requests", return_value=[queued_item]):
+            response = self.client.get(
+                f"/workspace/matters/{CASE_ID}/draft?submitted={request_id}&reused=0",
+                headers=_auth_headers(),
+            )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.get_data(as_text=True)
+        self.assertIn(f'data-processing-request="{request_id}"', body)
+        self.assertIn("const requestId=", body)
+        self.assertIn("This internal draft failed.", body)
+        self.assertIn("Failure code: ", body)
+        self.assertIn("unspecified_failure", body)
+        self.assertIn("No automatic retry was started.", body)
+        self.assertIn("panel.classList.remove('success')", body)
+        self.assertIn("panel.classList.add('notice')", body)
+        self.assertIn("processing?.remove()", body)
+
     def test_answer_separates_record_and_registry_authority_links(self):
         request_id = "draft-10-abcdef123456"
         ready_item = {
