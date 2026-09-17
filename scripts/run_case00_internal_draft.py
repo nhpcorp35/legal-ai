@@ -97,11 +97,16 @@ def select_evidence_pages(pages, question):
         # exhibit cannot crowd out complaints, answers, or third-party filings.
         for filename in sorted(filings,key=str.casefold):
             reserve(min(filings[filename],key=lambda row:row[0])[1])
+        # Pleading relief is ordinarily at the end, and OCR may not preserve a
+        # reliable WHEREFORE marker. Reserve each filing's closing page before
+        # collecting its operative claims and defenses.
+        for filename in sorted(filings,key=str.casefold):
+            reserve(max(filings[filename],key=lambda row:row[0])[1])
         # Then retain bounded operative pages for claims, defenses, and relief.
         for filename in sorted(filings,key=str.casefold):
             kept=0
             for _,item in sorted(filings[filename],key=lambda row:row[0]):
-                if kept>=3: break
+                if kept>=4: break
                 if PLEADING_OPERATIONAL_TEXT_RE.search(item["text"]):
                     before=len(selected_ids); reserve(item)
                     if len(selected_ids)>before: kept+=1
@@ -145,10 +150,22 @@ def run_request(client, request_id):
     try:
         pages=evidence(question)
         authorities=match_verified_authorities(question)
-        schema=finding_schema({"filename":{"type":"string"},"page_number":{"type":"integer","minimum":1}}, attorney_sections=bool(authorities))
+        foundational=bool(re.search(
+            r"\b(?:litigation|part(?:y|ies)|claims?|defenses?|relief|pleadings?|counterclaims?|cross[ -]?claims?|third[ -]?party)\b",
+            question,
+            re.IGNORECASE,
+        ))
+        attack_surfaces=bool(re.search(r"\battack\s+surfaces?\b", question, re.IGNORECASE))
+        schema=finding_schema(
+            {"filename":{"type":"string"},"page_number":{"type":"integer","minimum":1}},
+            attorney_sections=bool(authorities),
+            max_findings=12 if foundational and attack_surfaces and not authorities else 8,
+        )
         # Reuse the bounded model transport, with Case-00's filename/page citation schema.
         import urllib.request
-        instructions="Use only supplied verified excerpts and legal authorities. Internal attorney-review draft only. Case-record facts cite only page citations in citations; legal rules cite only authority ids in authority_citations; application findings should cite both where appropriate. Do not overstate court level, controlling effect, or proposition scope. Every finding must have at least one verified source across those two arrays."
+        instructions="Use only supplied verified excerpts and legal authorities. Internal attorney-review draft only. Case-record facts cite only page citations in citations; legal rules cite only authority ids in authority_citations; application findings should cite both where appropriate. Do not overstate court level, controlling effect, or proposition scope. Every finding must have at least one verified source across those two arrays. Before calling information missing, check all supplied pleading openings, operative pages, and closing pages."
+        if foundational and attack_surfaces and not authorities:
+            instructions += " First provide a concise litigation map in this exact order: (1) Main action; (2) Counterclaims and cross-claims; (3) Third-party claims. For each populated category, identify expressly named parties and roles, short claim labels, short defense labels, and requested relief. If a category is not established by the supplied pages, state that narrowly in the summary or limitations; do not invent a claim. Then provide exactly five additional findings, labeled Rank 1 through Rank 5, containing the most consequential source-supported attack surfaces. Each ranked finding must distinguish verified fact, attributed party allegation, legal inference, and unresolved uncertainty where applicable, explain why the issue matters, and cite the exact supporting pages. Do not use the five ranked slots for party lists or routine pleading summaries."
         if authorities:
             instructions += " End the summary with a complete sentence; never truncate a sentence to fill the schema limit."
             instructions += " Produce a concise attorney answer, not a memorandum. The summary must be a two-sentence executive answer of no more than 70 words. Return no more than eight non-repetitive findings total, each no more than 110 words, using the section field in this order: Legal standard; Application; Policy-by-policy analysis; Bottom line. Use at most two findings per section. State each legal rule once; apply it by reference rather than repeating it. Distinguish primary and excess policies only where the supplied record permits. Put absent proof only in missing_information, as no more than eight short, prioritized bullets; do not repeat missing evidence in the findings or limitations. The Bottom line must give the present record-based assessment and the evidence that would most change it, without predicting an outcome unsupported by the sources."
