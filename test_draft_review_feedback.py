@@ -3,7 +3,7 @@ import json
 import os
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import app as legalai
 
@@ -61,7 +61,9 @@ class DraftReviewFeedbackTests(unittest.TestCase):
         token = legalai.draft_review_feedback_csrf_token(
             "johncuomo@gmail.com", CASE_ID, REQUEST_ID
         )
-        with patch.object(legalai, "load_exact_draft_request", return_value=ready_item()):
+        with patch.object(legalai, "load_exact_draft_request", return_value=ready_item()), patch.object(
+            legalai, "notify_draft_review_feedback", return_value=True
+        ) as notify:
             response = self.client.post(
                 f"/workspace/case-00/drafts/{REQUEST_ID}",
                 headers=auth_headers(),
@@ -84,6 +86,64 @@ class DraftReviewFeedbackTests(unittest.TestCase):
         self.assertEqual(saved["request_id"], REQUEST_ID)
         self.assertEqual(saved["decision"], "needs_revision")
         self.assertEqual(saved["accuracy_rating"], 4)
+        notify.assert_called_once()
+
+    def test_b2_archive_uses_deterministic_bounded_object(self):
+        record = {
+            "schema_version": 1,
+            "submitted_at": 1789670000,
+            "reviewer": "johncuomo@gmail.com",
+            "case_id": CASE_ID,
+            "request_id": REQUEST_ID,
+            "decision": "approve",
+            "accuracy_rating": 5,
+            "usefulness_rating": 5,
+            "missing_or_overstated": "",
+            "citation_problems": "",
+            "comments": "Good.",
+        }
+        env = {
+            "B2_ENDPOINT": "https://s3.example",
+            "B2_REGION": "us-test-1",
+            "B2_KEY_ID": "key",
+            "B2_APPLICATION_KEY": "secret",
+            "B2_BUCKET": "legalai-corpus",
+        }
+        client = MagicMock()
+        with patch.dict(os.environ, env, clear=False), patch.object(
+            legalai.boto3, "client", return_value=client
+        ):
+            self.assertTrue(legalai.archive_draft_review_feedback_to_b2(record))
+        call = client.put_object.call_args.kwargs
+        self.assertEqual(call["Bucket"], "legalai-corpus")
+        self.assertIn(
+            f"cases/{CASE_ID}/derived/attorney-feedback/{REQUEST_ID}/1789670000-",
+            call["Key"],
+        )
+        self.assertEqual(call["ContentType"], "application/json")
+        self.assertEqual(len(call["Metadata"]["sha256"]), 64)
+
+    def test_notification_excludes_private_comments(self):
+        response = MagicMock()
+        response.__enter__.return_value.status = 200
+        record = {
+            "reviewer": "johncuomo@gmail.com",
+            "case_id": CASE_ID,
+            "request_id": REQUEST_ID,
+            "decision": "needs_revision",
+            "accuracy_rating": 4,
+            "usefulness_rating": 3,
+            "comments": "PRIVATE COMMENT",
+        }
+        with patch.dict(
+            os.environ,
+            {"PUSHOVER_APP_TOKEN": "token", "PUSHOVER_USER_KEY": "user"},
+            clear=False,
+        ), patch.object(legalai.urllib.request, "urlopen", return_value=response) as send:
+            self.assertTrue(legalai.notify_draft_review_feedback(record))
+        body = send.call_args.args[0].data.decode("utf-8")
+        self.assertIn("needs+revision", body)
+        self.assertNotIn("PRIVATE", body)
 
     def test_tampered_token_is_rejected_without_write(self):
         with patch.object(legalai, "load_exact_draft_request", return_value=ready_item()):
