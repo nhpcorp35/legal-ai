@@ -572,6 +572,14 @@ class PendingQueueTests(unittest.TestCase):
             field_specific["validation_reason"],
             "incomplete_output_counterclaims_and_cross_claims",
         )
+        field_subtype = WORKER.failure_diagnostics(
+            ValueError("incomplete output counterclaims and cross claims connector ended"),
+            "model_validation",
+        )
+        self.assertEqual(
+            field_subtype["validation_reason"],
+            "incomplete_output_counterclaims_and_cross_claims_connector_ended",
+        )
 
         unknown = WORKER.failure_diagnostics(
             ValueError("private model output"),
