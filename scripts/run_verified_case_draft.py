@@ -182,6 +182,16 @@ PRE_GENERATION_GATE_DETAILS = frozenset({
     "duplicate_explicit_ordinal",
     "multiple_unlabeled_complaints",
 })
+MODEL_VALIDATION_REASONS = frozenset({
+    "incomplete_output",
+    "invalid_litigation_map_sections",
+    "invalid_output",
+    "uncited_output",
+    "unverified_authority_citation",
+    "unverified_citation",
+    "unverified_missing_page_claim",
+    "verified_pleading_called_missing",
+})
 
 
 def third_party_action_ordinal(filename, document_pages):
@@ -518,6 +528,13 @@ def failure_diagnostics(exc, stage):
         )
         if exc.detail in PRE_GENERATION_GATE_DETAILS:
             details["gate_detail"] = exc.detail
+    elif code == "model_output_validation":
+        validation_reason = str(exc).strip().casefold().replace("-", " ").replace(" ", "_")
+        details["validation_reason"] = (
+            validation_reason
+            if validation_reason in MODEL_VALIDATION_REASONS
+            else "unspecified_model_validation"
+        )
     if isinstance(exc, urllib.error.HTTPError):
         details["http_status"] = int(exc.code)
     elif isinstance(exc, urllib.error.URLError):

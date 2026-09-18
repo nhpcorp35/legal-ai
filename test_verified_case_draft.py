@@ -482,6 +482,27 @@ class PendingQueueTests(unittest.TestCase):
         self.assertEqual(unknown["gate_reason"], "unspecified_pre_generation_gate")
         self.assertNotIn("private source text", json.dumps(unknown))
 
+    def test_model_validation_persists_only_allowlisted_reason(self):
+        known = WORKER.failure_diagnostics(
+            ValueError("verified pleading called missing"),
+            "model_validation",
+        )
+        self.assertEqual(known["failure_code"], "model_output_validation")
+        self.assertEqual(
+            known["validation_reason"],
+            "verified_pleading_called_missing",
+        )
+
+        unknown = WORKER.failure_diagnostics(
+            ValueError("private model output"),
+            "model_validation",
+        )
+        self.assertEqual(
+            unknown["validation_reason"],
+            "unspecified_model_validation",
+        )
+        self.assertNotIn("private model output", json.dumps(unknown))
+
     def test_retrieval_diagnostic_backfills_reason_without_model_call(self):
         case_id = "NY-NewYork-158068-2018-Szymczyk-v-Hudson-36-37"
         request_id = "draft-3-cccccccccccc"
