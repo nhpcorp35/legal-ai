@@ -65,3 +65,12 @@ Support that answer with four short items:
 Do not equate engineering activity, deployment success, or model output with progress toward attorney usefulness unless the verified result improves source completeness, legal/procedural understanding, issue prioritization, litigation cognition, or attorney workflow. If the day's work was maintenance only, say **NO**. If it advanced one goal but exposed or left a material regression, say **MIXED**.
 
 Record this checkpoint in the living PRD's Daily operations log. Keep it GitHub-safe: do not include private source text, credentials, personal attorney details, or privileged feedback.
+
+
+## Railway Sandbox and Agent Guidance
+
+Prefer **Railway Sandboxes** when LegalAI needs a safe, production-like environment to reproduce worker failures, test fixes, inspect service behavior, or run isolated code. Use short-lived sandboxes, checkpoint only useful prepared states, and destroy them when the work is complete. Sandboxes use the same Railway credit pool as services, so use them deliberately and keep cost-visible.
+
+Do not adopt or delegate routine LegalAI work to **Railway Agent** by default. HAL working directly remains the preferred workflow because it better removes Allen from manual text loops. Consider Railway Agent only after an explicit user request or when it demonstrates a concrete capability that HAL plus Railway Sandboxes cannot provide.
+
+A sandbox does not authorize production changes, private-data transmission, destructive operations, or additional paid generation runs. Existing authorization, execution-integrity, idempotency, and audit-trail rules still apply.
