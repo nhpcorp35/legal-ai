@@ -402,8 +402,48 @@ def third_party_action_slices(documents):
 
     for answer in [item for item in filings if item["kind"] == "answer"]:
         candidates = actions
+        answer_sequence = filing_sequence(answer)
+        sequence_action = None
+        if answer_sequence is not None and len(action_summonses) > 1:
+            preceding = []
+            for action in actions:
+                summons_sequences = [
+                    filing_sequence(complaint)
+                    for complaint in action["complaints"]
+                    if complaint.get("action_summons")
+                ]
+                summons_sequences = [
+                    sequence for sequence in summons_sequences
+                    if sequence is not None and sequence < answer_sequence
+                ]
+                if summons_sequences:
+                    preceding.append((max(summons_sequences), action))
+            if preceding:
+                sequence_action = max(preceding, key=lambda item: item[0])[1]
+                candidates = [sequence_action]
         if answer["ordinal"]:
-            candidates = [a for a in actions if a["ordinal"] == answer["ordinal"]]
+            ordinal_candidates = [
+                action for action in candidates
+                if action["ordinal"] == answer["ordinal"]
+            ]
+            all_ordinal_candidates = [
+                action for action in actions
+                if action["ordinal"] == answer["ordinal"]
+            ]
+            if sequence_action is not None and all_ordinal_candidates:
+                ordinal_sequences = [
+                    filing_sequence(complaint)
+                    for complaint in all_ordinal_candidates[0]["complaints"]
+                    if complaint.get("action_summons")
+                ]
+                ordinal_sequences = [value for value in ordinal_sequences if value is not None]
+                # Synthetic or expressly numbered paired filings may share a
+                # sequence. Otherwise the most recent preceding summons is
+                # the operative chronological identity.
+                if ordinal_sequences and answer_sequence == max(ordinal_sequences):
+                    candidates = all_ordinal_candidates
+            elif ordinal_candidates or answer_sequence is None:
+                candidates = ordinal_candidates
         if not candidates:
             raise PreGenerationGateError("unmatched_third_party_answer")
         scored = sorted(
