@@ -178,6 +178,7 @@ PRE_GENERATION_GATE_REASONS = frozenset({
     "incomplete_third_party_action_slice",
     "missing_first_affirmative_defense_page",
     "missing_third_party_complaint",
+    "missing_validated_layer",
     "noncontiguous_third_party_actions",
     "retrieval_replay_passed_current_code",
     "third_party_action_slices_exceed_context",
@@ -604,7 +605,7 @@ def failure_diagnostics(exc, stage):
         code = "model_url_error"
     elif stage in {"model_request", "model_validation"} and isinstance(exc, ValueError):
         code = "model_output_validation"
-    elif stage in {"request_load", "evidence_retrieval", "authority_selection"}:
+    elif stage in {"request_load", "evidence_retrieval", "layer_composition", "authority_selection"}:
         code = "retrieval_error"
     elif stage in {"draft_write", "audit_write", "ready_write"}:
         code = "persistence_error"
@@ -720,6 +721,98 @@ def listed_objects(s3, **kwargs):
         continuation_token = result.get("NextContinuationToken")
         if not continuation_token:
             raise RuntimeError("truncated B2 listing without continuation token")
+
+
+def read_json_object(s3, object_key):
+    raw = s3.get_object(Bucket=os.environ["B2_BUCKET"], Key=object_key)["Body"].read()
+    value = json.loads(raw.decode())
+    if not isinstance(value, dict):
+        raise ValueError("invalid stored json object")
+    return value
+
+
+def compose_validated_layers(s3, case_id, question):
+    """Compose separately READY and validated litigation-map layers without a model call."""
+    prefix = f"cases/{case_id}/derived/internal-drafts/"
+    draft_keys = sorted(
+        (
+            str(item.get("Key", ""))
+            for item in listed_objects(
+                s3, Bucket=os.environ["B2_BUCKET"], Prefix=prefix, MaxKeys=1000
+            )
+            if str(item.get("Key", "")).endswith("/draft.json")
+        ),
+        reverse=True,
+    )
+    candidates = {section: [] for section in LITIGATION_MAP_SECTIONS}
+    for draft_key in draft_keys:
+        request_id = draft_key.removeprefix(prefix).split("/", 1)[0]
+        if not re.fullmatch(r"draft-[0-9]+-[0-9a-f]{12}", request_id):
+            continue
+        if request_status(s3, case_id, request_id) != "READY":
+            continue
+        draft = read_json_object(s3, draft_key)
+        findings = draft.get("findings")
+        if (
+            draft.get("schema_version") != "legalai-internal-draft.v1"
+            or draft.get("case_id") != case_id
+            or draft.get("external_communication") is not False
+            or not isinstance(findings, list)
+        ):
+            continue
+        sections = [item.get("section") for item in findings if isinstance(item, dict)]
+        draft_question = str(draft.get("question", ""))
+        if "Main case" in sections:
+            candidates["Main case"].append((request_id, draft))
+        if sections == ["Counterclaims and cross-claims"] and "quality facilit" in draft_question.casefold():
+            candidates["Counterclaims and cross-claims"].append((request_id, draft))
+        if sections == ["Third-party claims"] and THIRD_PARTY_ONLY_QUESTION_RE.search(draft_question):
+            try:
+                audit = read_json_object(s3, key(case_id, request_id, "input_audit.json"))
+            except Exception:
+                continue
+            actions = audit.get("coverage", {}).get("third_party_actions", [])
+            if [action.get("ordinal") for action in actions if isinstance(action, dict)] == list(THIRD_PARTY_ORDINALS):
+                candidates["Third-party claims"].append((request_id, draft, audit))
+    if any(not candidates[section] for section in LITIGATION_MAP_SECTIONS):
+        raise PreGenerationGateError("missing_validated_layer")
+
+    main_request, main_draft = candidates["Main case"][0]
+    counter_request, counter_draft = candidates["Counterclaims and cross-claims"][0]
+    third_request, third_draft, third_audit = candidates["Third-party claims"][0]
+    source_drafts = {
+        "Main case": (main_request, main_draft),
+        "Counterclaims and cross-claims": (counter_request, counter_draft),
+        "Third-party claims": (third_request, third_draft),
+    }
+    findings = []
+    citations = []
+    for section in LITIGATION_MAP_SECTIONS:
+        _source_request, source_draft = source_drafts[section]
+        finding = next(item for item in source_draft["findings"] if item.get("section") == section)
+        findings.append(finding)
+        citations.extend(finding.get("citations", []))
+    unique_citations = {
+        (cite.get("source_sha256"), cite.get("filename"), cite.get("page_number")): cite
+        for cite in citations
+        if isinstance(cite, dict)
+    }
+    pages = [{**cite, "text": ""} for cite in unique_citations.values()]
+    coverage = {
+        "third_party_actions": third_audit["coverage"]["third_party_actions"],
+        "composition_sources": {
+            section: source_drafts[section][0] for section in LITIGATION_MAP_SECTIONS
+        },
+    }
+    result = {
+        "summary": "The verified pleadings map main-action claims, counterclaims and cross-claims, and four successive third-party actions.",
+        "findings": findings,
+        "missing_information": [],
+        "limitations": [
+            "This consolidated draft deterministically reuses separately validated layer findings and citations."
+        ],
+    }
+    return validate(result, pages, question=question, coverage=coverage), pages, coverage
 
 def pending_requests(s3, case_id=None):
     """Yield queued verified-case requests in stable order without retrying failures."""
@@ -1511,15 +1604,20 @@ def run_request(s3, case_id, request_id):
     stage = "request_load"
     try:
         question=read_request(s3,case_id,request_id)
-        stage = "evidence_retrieval"
-        pages=evidence(s3,case_id,question)
-        stage = "authority_selection"
-        authorities=match_verified_authorities(question)
-        coverage=getattr(pages,"coverage",None)
-        stage = "model_request"
-        generated=generate(question,pages,coverage,authorities)
-        stage = "model_validation"
-        result=validate(generated,pages,authorities,question,coverage)
+        if CONSOLIDATED_LITIGATION_MAP_RE.search(question):
+            stage = "layer_composition"
+            result, pages, coverage = compose_validated_layers(s3, case_id, question)
+            authorities = ()
+        else:
+            stage = "evidence_retrieval"
+            pages=evidence(s3,case_id,question)
+            stage = "authority_selection"
+            authorities=match_verified_authorities(question)
+            coverage=getattr(pages,"coverage",None)
+            stage = "model_request"
+            generated=generate(question,pages,coverage,authorities)
+            stage = "model_validation"
+            result=validate(generated,pages,authorities,question,coverage)
         # Generation may have started before cancellation.  Preserve the audit
         # trail but never publish a cancelled draft as READY.
         if request_status(s3, case_id, request_id) == "CANCELLED":
