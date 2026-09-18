@@ -148,7 +148,7 @@ class ClaimsAndDefensesPromptTests(unittest.TestCase):
             "summary": "The third-party pleadings assert indemnification.",
             "findings": [{
                 "section": "Third-party claims",
-                "statement": "Alpha against Able: indemnification; defenses: unresolved; relief: judgment over.",
+                "statement": "First action — Alpha against Able: indemnification; defenses: unresolved; relief: judgment over. No corresponding answer was identified.",
                 "citations": [cite],
                 "authority_citations": [],
             }],
@@ -229,6 +229,30 @@ class ClaimsAndDefensesPromptTests(unittest.TestCase):
             WORKER.validate(result(["Main case"], statement="Party: negligence; relief: damages’"), [page], question=question)
         with self.assertRaisesRegex(ValueError, "unverified missing-page claim"):
             WORKER.validate(result(["Main case"], missing=["Complaint pages 2–18 were not supplied."]), [page], question=question)
+
+    def test_third_party_action_validation_requires_every_complete_action(self):
+        page = {"source_sha256": "a" * 64, "filename": "THIRD_PARTY_SUMMONS_5.pdf", "page_number": 1, "text": "Third-party complaint."}
+        cite = {key: page[key] for key in ("source_sha256", "filename", "page_number")}
+        question = "Validate the third-party-claims layer separately, including parties, claims, defenses, and relief."
+        coverage = {
+            "third_party_actions": [
+                {"ordinal": "first", "answer_present": True},
+                {"ordinal": "second", "answer_present": True},
+                {"ordinal": "third", "answer_present": False},
+                {"ordinal": "fourth", "answer_present": True},
+            ],
+        }
+        statement = (
+            "First action — A v. B: indemnification; defenses: limitations; relief: judgment over. "
+            "Second action — C v. D: contribution; defenses: waiver; relief: damages. "
+            "Third action — E v. F: breach; defenses: unresolved; relief: damages; no corresponding answer was identified. "
+            "Fourth action — G v. H: indemnification; defenses: estoppel; relief: dismissal."
+        )
+        result = {"summary": "The pleadings identify four actions.", "findings": [{"section": "Third-party claims", "statement": statement, "citations": [cite], "authority_citations": []}], "missing_information": [], "limitations": []}
+        self.assertIs(WORKER.validate(result, [page], question=question, coverage=coverage), result)
+        result["findings"][0]["statement"] = statement.split("Fourth action")[0].rstrip()
+        with self.assertRaisesRegex(ValueError, "incomplete third-party actions"):
+            WORKER.validate(result, [page], question=question, coverage=coverage)
 
     def test_third_party_only_litigation_map_accepts_only_third_party_section(self):
         page = {
