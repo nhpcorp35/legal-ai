@@ -314,17 +314,22 @@ def evidence(s3, case_id, question):
     # filing-led coverage before contract exhibits are considered.
     pleading_focused_question = bool(PLEADING_FOCUSED_QUESTION_RE.search(question))
     attack_surface_question = TOP_ATTACK_SURFACES_MARKER in question.casefold()
-    cross_claim_only_question = bool(CROSS_CLAIM_ONLY_QUESTION_RE.search(question))
+    third_party_only_question = bool(THIRD_PARTY_ONLY_QUESTION_RE.search(question))
+    cross_claim_only_question = (
+        bool(CROSS_CLAIM_ONLY_QUESTION_RE.search(question))
+        and not third_party_only_question
+    )
     main_action_only_question = (
         bool(MAIN_ACTION_ONLY_QUESTION_RE.search(question))
         and not cross_claim_only_question
+        and not third_party_only_question
     )
     # The v4 report is intentionally filing-led even though its prompt uses
     # analytical terms rather than a pleading's exact title.
     filing_led_question = broad_record_question or pleading_focused_question or attack_surface_question
     targeted_third_party_complaint = bool(
         THIRD_PARTY_COMPLAINT_QUESTION_RE.search(question)
-    )
+    ) and not third_party_only_question
     documents={}
     for source in verified_sources(s3, case_id):
         object_key=f"cases/{case_id}/intake/source/{source}/page_records.jsonl"
@@ -381,6 +386,16 @@ def evidence(s3, case_id, question):
                 ]
             ]
     for (source, filename), document_pages in documents.items():
+        document_identity = " ".join(
+            [normalized_filename(filename)]
+            + [text[:900].casefold() for _, text in sorted(document_pages)]
+        )
+        if third_party_only_question and not re.search(
+            r"\b(?:third[ -]?(?:party|par)|fourth[ -]?(?:party|par))\b",
+            document_identity,
+            re.IGNORECASE,
+        ):
+            continue
         if cross_claim_party:
             document_text = " ".join(text.casefold() for _, text in document_pages)
             if cross_claim_party not in document_text:
@@ -829,7 +844,13 @@ def validate(result, pages, authorities=(), question="", coverage=None):
     strict_output = litigation_map_question(question) or TOP_ATTACK_SURFACES_MARKER in question.casefold()
     if strict_output:
         text_items = [result.get("summary", ""), *[item["statement"] for item in result["findings"]], *result.get("missing_information", []), *result.get("limitations", [])]
-        if any(not isinstance(item, str) or not item.strip() or INCOMPLETE_SENTENCE_RE.search(item.strip()) for item in text_items):
+        if any(
+            not isinstance(item, str)
+            or not item.strip()
+            or item.strip()[-1] not in ".?!"
+            or INCOMPLETE_SENTENCE_RE.search(item.strip())
+            for item in text_items
+        ):
             raise ValueError("incomplete output")
         if any(UNSELECTED_PAGES_MISSING_RE.search(item) for item in text_items):
             raise ValueError("unverified missing-page claim")
