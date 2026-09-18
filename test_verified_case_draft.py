@@ -877,6 +877,34 @@ class SzymczykFilenameCoverageTests(unittest.TestCase):
             self.assertTrue(any(page["filename"].startswith(f"{ordinal}THIRD_PARTY_SUMMONS") for page in pages))
             self.assertTrue(any(page["filename"].startswith(f"{ordinal}ANSWER_TO_THIRD_PARTY") for page in pages))
 
+    def test_third_party_layer_groups_same_ordinal_complaint_filings(self):
+        class SplitComplaintS3(FakeS3):
+            pages = [
+                {"filename": "SECOND_THIRD_PARTY_SUMMONS_13.pdf", "page_number": 1,
+                 "text": "Second third-party summons. Bravo against Baker."},
+                {"filename": "SECOND_THIRD_PARTY_COMPLAINT_14.pdf", "page_number": 1,
+                 "text": "Second third-party complaint. Bravo against Baker."},
+                {"filename": "SECOND_THIRD_PARTY_COMPLAINT_14.pdf", "page_number": 4,
+                 "text": "FIRST CAUSE OF ACTION for contractual indemnification."},
+                {"filename": "SECOND_ANSWER_TO_THIRD_PARTY_COMPLAINT_20.pdf", "page_number": 1,
+                 "text": "Answer to second third-party complaint. Baker answers Bravo."},
+                {"filename": "THIRD_PARTY_COMPLAINT_5.pdf", "page_number": 1,
+                 "text": "Third-party complaint. Alpha against Able."},
+            ]
+
+        pages = WORKER.evidence(
+            SplitComplaintS3(),
+            "NY-NewYork-158068-2018-Szymczyk-v-Hudson-36-37",
+            "Validate the third-party-claims layer separately from the main action.",
+        )
+        actions = pages.coverage["third_party_actions"]
+        self.assertEqual([item["ordinal"] for item in actions], ["first", "second"])
+        self.assertEqual(
+            actions[1]["complaint_filenames"],
+            ["SECOND_THIRD_PARTY_COMPLAINT_14.pdf", "SECOND_THIRD_PARTY_SUMMONS_13.pdf"],
+        )
+        self.assertTrue(actions[1]["answer_present"])
+
     def test_third_party_layer_fails_closed_on_unmatched_answer(self):
         class AmbiguousAnswerS3(FakeS3):
             pages = [
