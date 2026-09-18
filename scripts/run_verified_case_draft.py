@@ -154,6 +154,10 @@ ATTACK_SURFACE_NON_FIRST_HAND_RE = re.compile(
 class PreGenerationGateError(ValueError):
     """Raised when mandatory pleading coverage cannot fit before a model call."""
 
+    def __init__(self, reason, detail=None):
+        super().__init__(reason)
+        self.detail = detail
+
 
 class EvidenceSelection(list):
     """Selected pages plus bounded retrieval-coverage metadata for the audit."""
@@ -173,6 +177,10 @@ PRE_GENERATION_GATE_REASONS = frozenset({
     "retrieval_replay_passed_current_code",
     "third_party_action_slices_exceed_context",
     "unmatched_third_party_answer",
+})
+PRE_GENERATION_GATE_DETAILS = frozenset({
+    "duplicate_explicit_ordinal",
+    "multiple_unlabeled_complaints",
 })
 
 
@@ -242,9 +250,17 @@ def third_party_action_slices(documents):
     ):
         ordinal = complaint["ordinal"]
         if ordinal is None:
-            ordinal = "first" if "first" not in used else None
-        if ordinal is None or ordinal in used:
-            raise PreGenerationGateError("ambiguous_third_party_action_identity")
+            if "first" in used:
+                raise PreGenerationGateError(
+                    "ambiguous_third_party_action_identity",
+                    "multiple_unlabeled_complaints",
+                )
+            ordinal = "first"
+        if ordinal in used:
+            raise PreGenerationGateError(
+                "ambiguous_third_party_action_identity",
+                "duplicate_explicit_ordinal",
+            )
         used.add(ordinal)
         actions.append({"ordinal": ordinal, "complaint": complaint, "answers": []})
     expected = set(THIRD_PARTY_ORDINALS[:len(actions)])
@@ -398,6 +414,8 @@ def failure_diagnostics(exc, stage):
             if gate_reason in PRE_GENERATION_GATE_REASONS
             else "unspecified_pre_generation_gate"
         )
+        if exc.detail in PRE_GENERATION_GATE_DETAILS:
+            details["gate_detail"] = exc.detail
     if isinstance(exc, urllib.error.HTTPError):
         details["http_status"] = int(exc.code)
     elif isinstance(exc, urllib.error.URLError):
@@ -458,15 +476,19 @@ def diagnose_failed_retrieval(s3, case_id, request_id):
     try:
         evidence(s3, case_id, question)
     except PreGenerationGateError as exc:
-        gate_reason = failure_diagnostics(exc, "evidence_retrieval")["gate_reason"]
+        diagnostics = failure_diagnostics(exc, "evidence_retrieval")
+        gate_reason = diagnostics["gate_reason"]
+        gate_detail = diagnostics.get("gate_detail")
     else:
         gate_reason = "retrieval_replay_passed_current_code"
+        gate_detail = None
     put(s3, case_id, request_id, "status.json", {
         **status,
         "gate_reason": gate_reason,
+        **({"gate_detail": gate_detail} if gate_detail else {}),
         "retrieval_diagnosed_at": datetime.now(timezone.utc).isoformat(),
     })
-    return gate_reason
+    return gate_reason, gate_detail
 
 
 def listed_objects(s3, **kwargs):
@@ -1216,7 +1238,7 @@ def main():
         if args.scan_pending: raise SystemExit("diagnostic mode cannot scan pending requests")
         if not valid_case_id(args.case_id or ""): raise SystemExit("invalid case identifier")
         if not re.fullmatch(r"draft-[0-9]+-[0-9a-f]{12}", args.request_id or ""): raise SystemExit("invalid request identifier")
-        gate_reason = diagnose_failed_retrieval(client(), args.case_id, args.request_id)
+        gate_reason, gate_detail = diagnose_failed_retrieval(client(), args.case_id, args.request_id)
         print(json.dumps({
             "case_id": args.case_id,
             "request_id": args.request_id,
@@ -1224,6 +1246,7 @@ def main():
             "failure_code": "pre_generation_gate",
             "failure_stage": "evidence_retrieval",
             "gate_reason": gate_reason,
+            **({"gate_detail": gate_detail} if gate_detail else {}),
             "model_called": False,
         }, sort_keys=True, separators=(",", ":")))
         return
