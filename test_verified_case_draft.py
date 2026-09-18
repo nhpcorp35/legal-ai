@@ -180,6 +180,8 @@ class ClaimsAndDefensesPromptTests(unittest.TestCase):
                 WORKER.validate(result(sections), [page], question=question)
         with self.assertRaisesRegex(ValueError, "incomplete output"):
             WORKER.validate(result(["Main case"], statement="Party: negligence and"), [page], question=question)
+        with self.assertRaisesRegex(ValueError, "incomplete output"):
+            WORKER.validate(result(["Main case"], statement="Party: negligence; relief: damages’"), [page], question=question)
         with self.assertRaisesRegex(ValueError, "unverified missing-page claim"):
             WORKER.validate(result(["Main case"], missing=["Complaint pages 2–18 were not supplied."]), [page], question=question)
 
@@ -731,6 +733,37 @@ class SzymczykFilenameCoverageTests(unittest.TestCase):
             ("158068_2018_THIRD_PARTY_SUMMONS_5.pdf", 11),
             ("158068_2018_THIRD_PARTY_SUMMONS_5.pdf", 12),
         }.issubset(selected))
+
+    def test_third_party_layer_reserves_each_successive_complaint(self):
+        class SuccessiveThirdPartyS3(FakeS3):
+            pages = [
+                {"filename": "SUMMONS___COMPLAINT_1.pdf", "page_number": 1,
+                 "text": "Plaintiff against defendants in the main action."},
+                {"filename": "ANSWER_WITH_CROSS_C_81.pdf", "page_number": 1,
+                 "text": "Counterclaims and cross-claims only."},
+            ]
+
+        for index, ordinal in enumerate(("", "SECOND_", "THIRD_", "FOURTH_"), start=1):
+            filename = f"{ordinal}THIRD_PARTY_SUMMONS_{index}.pdf"
+            SuccessiveThirdPartyS3.pages.extend([
+                {"filename": filename, "page_number": 1,
+                 "text": f"{ordinal.replace('_', ' ')}THIRD-PARTY PLAINTIFF against third-party defendant."},
+                {"filename": filename, "page_number": 4,
+                 "text": "FIRST CAUSE OF ACTION for contractual indemnification."},
+                {"filename": filename, "page_number": 7,
+                 "text": "WHEREFORE judgment, indemnification, costs, and disbursements are demanded."},
+            ])
+
+        pages = WORKER.evidence(
+            SuccessiveThirdPartyS3(),
+            "NY-NewYork-158068-2018-Szymczyk-v-Hudson-36-37",
+            "Validate the third-party-claims layer separately from the main action and all counterclaims/cross-claims. Identify the parties, claims, defenses, and relief.",
+        )
+        selected = {(page["filename"], page["page_number"]) for page in pages}
+        for index, ordinal in enumerate(("", "SECOND_", "THIRD_", "FOURTH_"), start=1):
+            filename = f"{ordinal}THIRD_PARTY_SUMMONS_{index}.pdf"
+            self.assertTrue({(filename, 1), (filename, 4), (filename, 7)}.issubset(selected))
+        self.assertFalse(any(filename in {"SUMMONS___COMPLAINT_1.pdf", "ANSWER_WITH_CROSS_C_81.pdf"} for filename, _ in selected))
 
     def test_merits_pleadings_are_reserved_ahead_of_high_scoring_contract_pages(self):
         class DenseS3(FakeS3):
