@@ -211,6 +211,15 @@ class ClaimsAndDefensesPromptTests(unittest.TestCase):
         def result(sections, statement="Party: negligence; defenses: limitations; relief: damages.", missing=()):
             return {"summary": "The pleadings identify negligence claims.", "findings": [{"section": section, "statement": statement, "citations": [cite], "authority_citations": []} for section in sections], "missing_information": list(missing), "limitations": []}
         self.assertIs(WORKER.validate(result(["Main case", "Third-party claims"]), [page], question=question)["findings"][0]["citations"][0], cite)
+        unpunctuated = result(
+            ["Main case"],
+            statement="Party: negligence; defenses: limitations; relief: damages",
+        )
+        normalized = WORKER.validate(unpunctuated, [page], question=question)
+        self.assertEqual(
+            normalized["findings"][0]["statement"],
+            "Party: negligence; defenses: limitations; relief: damages.",
+        )
         for sections in (["Third-party claims", "Main case"], ["Main case", "Main case"]):
             with self.assertRaisesRegex(ValueError, "invalid litigation-map sections"):
                 WORKER.validate(result(sections), [page], question=question)
