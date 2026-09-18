@@ -2,7 +2,7 @@
 """Create one bounded, cited, internal-only draft from verified B2 page indexes."""
 from __future__ import annotations
 
-import argparse, hashlib, json, os, re, sys, urllib.request
+import argparse, hashlib, json, os, re, socket, sys, urllib.error, urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -166,6 +166,46 @@ def key(case_id: str, request_id: str, name: str) -> str:
 def put(s3, case_id, request_id, name, value):
     raw = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
     s3.put_object(Bucket=os.environ["B2_BUCKET"], Key=key(case_id, request_id, name), Body=raw, ContentType="application/json", Metadata={"sha256": hashlib.sha256(raw).hexdigest()})
+
+
+def failure_diagnostics(exc, stage):
+    """Return secret-safe, actionable failure metadata for status and logs."""
+    if isinstance(exc, PreGenerationGateError):
+        code = "pre_generation_gate"
+    elif stage == "model_request" and isinstance(exc, urllib.error.HTTPError):
+        code = "model_http_error"
+    elif stage == "model_request" and isinstance(exc, (TimeoutError, socket.timeout)):
+        code = "model_timeout"
+    elif stage == "model_request" and isinstance(exc, urllib.error.URLError):
+        code = "model_url_error"
+    elif stage in {"model_request", "model_validation"} and isinstance(exc, ValueError):
+        code = "model_output_validation"
+    elif stage in {"request_load", "evidence_retrieval", "authority_selection"}:
+        code = "retrieval_error"
+    elif stage in {"draft_write", "audit_write", "ready_write"}:
+        code = "persistence_error"
+    else:
+        code = "internal_error"
+    details = {
+        "failure_code": code,
+        "failure_stage": stage,
+        "exception_type": exc.__class__.__name__.lower(),
+    }
+    if isinstance(exc, urllib.error.HTTPError):
+        details["http_status"] = int(exc.code)
+    elif isinstance(exc, urllib.error.URLError):
+        details["reason_type"] = exc.reason.__class__.__name__.lower()
+    return details
+
+
+def log_failure(case_id, request_id, diagnostics):
+    """Emit one JSON line without exception text, source text, or credentials."""
+    print(json.dumps({
+        "event": "internal_draft_failed",
+        "case_id": case_id,
+        "request_id": request_id,
+        **diagnostics,
+    }, sort_keys=True, separators=(",", ":")), file=sys.stderr, flush=True)
 
 def words(value: str) -> set[str]:
     return {x for x in re.findall(r"[a-z0-9]{3,}", value.casefold()) if x not in {"what","with","from","that","this","about","record","verified","case"}}
@@ -814,22 +854,36 @@ def run_request(s3, case_id, request_id):
         return run_case00_internal_draft.run_request(s3, request_id)
     now=lambda: datetime.now(timezone.utc).isoformat()
     put(s3,case_id,request_id,"status.json",{"schema_version":"legalai-internal-draft-status.v1","case_id":case_id,"request_id":request_id,"status":"RUNNING","updated_at":now()})
+    stage = "request_load"
     try:
-        question=read_request(s3,case_id,request_id); pages=evidence(s3,case_id,question); authorities=match_verified_authorities(question); coverage=getattr(pages,"coverage",None); result=validate(generate(question,pages,coverage,authorities),pages,authorities,question,coverage)
+        question=read_request(s3,case_id,request_id)
+        stage = "evidence_retrieval"
+        pages=evidence(s3,case_id,question)
+        stage = "authority_selection"
+        authorities=match_verified_authorities(question)
+        coverage=getattr(pages,"coverage",None)
+        stage = "model_request"
+        generated=generate(question,pages,coverage,authorities)
+        stage = "model_validation"
+        result=validate(generated,pages,authorities,question,coverage)
         # Generation may have started before cancellation.  Preserve the audit
         # trail but never publish a cancelled draft as READY.
         if request_status(s3, case_id, request_id) == "CANCELLED":
             return
         draft={"schema_version":"legalai-internal-draft.v1","case_id":case_id,"request_id":request_id,"question":question,"review_required":True,"external_communication":False,"generated_at":now(),**result}
+        stage = "draft_write"
         put(s3,case_id,request_id,"draft.json",draft)
+        stage = "audit_write"
         put(s3,case_id,request_id,"input_audit.json",{"schema_version":"legalai-internal-draft-audit.v1","case_id":case_id,"request_id":request_id,"question_sha256":hashlib.sha256(question.encode()).hexdigest(),"retrieval_citations":[{k:p[k] for k in ("source_sha256","filename","page_number")} for p in pages],"legal_authorities":authority_audit(authorities),"coverage":getattr(pages,"coverage",{}),"generated_at":now()})
+        stage = "ready_write"
         put(s3,case_id,request_id,"status.json",{"schema_version":"legalai-internal-draft-status.v1","case_id":case_id,"request_id":request_id,"status":"READY","updated_at":now()})
     except Exception as exc:
         if request_status(s3, case_id, request_id) == "CANCELLED":
             return
-        code = "pre_generation_gate" if isinstance(exc, PreGenerationGateError) else exc.__class__.__name__.lower()
-        if code not in {"pre_generation_gate", "valueerror", "runtimeerror", "httperror", "urlerror", "clienterror"}: code = "internal_error"
-        put(s3,case_id,request_id,"status.json",{"schema_version":"legalai-internal-draft-status.v1","case_id":case_id,"request_id":request_id,"status":"FAILED","failure_code":code,"updated_at":now()})
+        diagnostics = failure_diagnostics(exc, stage)
+        log_failure(case_id, request_id, diagnostics)
+        put(s3,case_id,request_id,"status.json",{"schema_version":"legalai-internal-draft-status.v1","case_id":case_id,"request_id":request_id,"status":"FAILED",**diagnostics,"updated_at":now()})
+        exc._legalai_failure_diagnostics = diagnostics
         raise
 
 WORKER_STATUS_KEY = "operations/internal-draft-worker/status.json"
@@ -861,8 +915,10 @@ def main():
                 run_request(s3, *next_request)
                 write_worker_status(s3, "IDLE", mode="scan_pending", outcome="processed",
                                     case_id=next_request[0], request_id=next_request[1])
-        except Exception:
+        except Exception as exc:
+            diagnostics = getattr(exc, "_legalai_failure_diagnostics", failure_diagnostics(exc, "worker_scan"))
             write_worker_status(s3, "FAILED", mode="scan_pending", outcome="failed",
+                                **diagnostics,
                                 **({"case_id": next_request[0], "request_id": next_request[1]}
                                    if next_request else {}))
             raise
