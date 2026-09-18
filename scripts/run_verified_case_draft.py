@@ -238,41 +238,76 @@ def third_party_action_slices(documents):
     complaints = [item for item in filings if item["kind"] == "complaint"]
     if not complaints:
         raise PreGenerationGateError("missing_third_party_complaint")
-    used = set()
-    actions = []
-    for complaint in sorted(
-        complaints,
-        key=lambda item: (
-            THIRD_PARTY_ORDINALS.index(item["ordinal"])
-            if item["ordinal"] in THIRD_PARTY_ORDINALS else len(THIRD_PARTY_ORDINALS),
-            item["filename"].casefold(),
-        ),
-    ):
-        ordinal = complaint["ordinal"]
-        if ordinal is None:
-            if "first" in used:
-                raise PreGenerationGateError(
-                    "ambiguous_third_party_action_identity",
-                    "multiple_unlabeled_complaints",
-                )
-            ordinal = "first"
-        if ordinal in used:
-            # A successive action may have separate summons, complaint, or
-            # amended-complaint filings carrying the same express ordinal.
-            # Keep them in one action; the ordinal identifies the action, not
-            # an individual source document.
-            action = next(item for item in actions if item["ordinal"] == ordinal)
-            action["complaints"].append(complaint)
-            action["caption_tokens"].update(complaint["caption_tokens"])
-            continue
-        used.add(ordinal)
-        actions.append({
+    def new_action(ordinal, complaint):
+        return {
             "ordinal": ordinal,
             "complaint": complaint,
             "complaints": [complaint],
             "caption_tokens": set(complaint["caption_tokens"]),
             "answers": [],
-        })
+        }
+
+    def attach(action, complaint):
+        action["complaints"].append(complaint)
+        action["caption_tokens"].update(complaint["caption_tokens"])
+
+    actions = []
+    for complaint in sorted(
+        (item for item in complaints if item["ordinal"] is not None),
+        key=lambda item: (
+            THIRD_PARTY_ORDINALS.index(item["ordinal"]),
+            item["filename"].casefold(),
+        ),
+    ):
+        ordinal = complaint["ordinal"]
+        action = next((item for item in actions if item["ordinal"] == ordinal), None)
+        if action is not None:
+            # A successive action may have separate summons, complaint, or
+            # amended-complaint filings carrying the same express ordinal.
+            # Keep them in one action; the ordinal identifies the action, not
+            # an individual source document.
+            attach(action, complaint)
+            continue
+        actions.append(new_action(ordinal, complaint))
+
+    unmatched = []
+    for complaint in sorted(
+        (item for item in complaints if item["ordinal"] is None),
+        key=lambda item: item["filename"].casefold(),
+    ):
+        scored = sorted(
+            ((len(complaint["caption_tokens"] & action["caption_tokens"]), action)
+             for action in actions),
+            key=lambda pair: (-pair[0], THIRD_PARTY_ORDINALS.index(pair[1]["ordinal"])),
+        )
+        # Two shared non-boilerplate caption tokens, with a unique best action,
+        # are required before an unlabeled filing may inherit an ordinal.
+        if scored and scored[0][0] >= 2 and (
+            len(scored) == 1 or scored[0][0] > scored[1][0]
+        ):
+            attach(scored[0][1], complaint)
+        else:
+            unmatched.append(complaint)
+
+    used = {action["ordinal"] for action in actions}
+    highest = max(
+        [THIRD_PARTY_ORDINALS.index(ordinal) for ordinal in used],
+        default=0,
+    )
+    missing = [
+        ordinal for ordinal in THIRD_PARTY_ORDINALS[:highest + 1]
+        if ordinal not in used
+    ]
+    if len(unmatched) == 1 and (len(missing) == 1 or not actions):
+        ordinal = missing[0] if missing else "first"
+        actions.append(new_action(ordinal, unmatched[0]))
+        used.add(ordinal)
+    elif unmatched:
+        raise PreGenerationGateError(
+            "ambiguous_third_party_action_identity",
+            "multiple_unlabeled_complaints",
+        )
+
     expected = set(THIRD_PARTY_ORDINALS[:len(actions)])
     if used != expected:
         raise PreGenerationGateError("noncontiguous_third_party_actions")
