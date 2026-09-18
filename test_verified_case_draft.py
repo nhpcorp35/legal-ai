@@ -753,6 +753,12 @@ class SzymczykFilenameCoverageTests(unittest.TestCase):
                 {"filename": filename, "page_number": 7,
                  "text": "WHEREFORE judgment, indemnification, costs, and disbursements are demanded."},
             ])
+        SuccessiveThirdPartyS3.pages.extend([
+            {"filename": "EXHIBIT_S__150.pdf", "page_number": 1,
+             "text": "Exhibit copy of an answer to third-party complaint."},
+            {"filename": "AFFIDAVIT_OR_AFFIRM_60.pdf", "page_number": 1,
+             "text": "Attached third-party pleading described in an affirmation."},
+        ])
 
         pages = WORKER.evidence(
             SuccessiveThirdPartyS3(),
@@ -763,7 +769,13 @@ class SzymczykFilenameCoverageTests(unittest.TestCase):
         for index, ordinal in enumerate(("", "SECOND_", "THIRD_", "FOURTH_"), start=1):
             filename = f"{ordinal}THIRD_PARTY_SUMMONS_{index}.pdf"
             self.assertTrue({(filename, 1), (filename, 4), (filename, 7)}.issubset(selected))
-        self.assertFalse(any(filename in {"SUMMONS___COMPLAINT_1.pdf", "ANSWER_WITH_CROSS_C_81.pdf"} for filename, _ in selected))
+        excluded = {
+            "SUMMONS___COMPLAINT_1.pdf",
+            "ANSWER_WITH_CROSS_C_81.pdf",
+            "EXHIBIT_S__150.pdf",
+            "AFFIDAVIT_OR_AFFIRM_60.pdf",
+        }
+        self.assertFalse(any(filename in excluded for filename, _ in selected))
 
     def test_merits_pleadings_are_reserved_ahead_of_high_scoring_contract_pages(self):
         class DenseS3(FakeS3):

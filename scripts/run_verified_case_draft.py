@@ -386,10 +386,21 @@ def evidence(s3, case_id, question):
                 ]
             ]
     for (source, filename), document_pages in documents.items():
+        normalized_document_filename = normalized_filename(filename)
         document_identity = " ".join(
-            [normalized_filename(filename)]
+            [normalized_document_filename]
             + [text[:900].casefold() for _, text in sorted(document_pages)]
         )
+        if third_party_only_question and re.search(
+            r"\b(?:exhibit|affidavit|affirmation|notice|stipulation)\b",
+            normalized_document_filename,
+            re.IGNORECASE,
+        ):
+            # The corpus includes many exhibit copies of the same operative
+            # third-party pleadings.  Requiring each duplicate copy exhausts
+            # the bounded page budget before generation.  Keep the filed
+            # summons/complaints and answers; exclude derivative copies.
+            continue
         if third_party_only_question and not re.search(
             r"\b(?:third[ -]?(?:party|par)|fourth[ -]?(?:party|par))\b",
             document_identity,
