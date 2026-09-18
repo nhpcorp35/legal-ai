@@ -127,6 +127,42 @@ class ClaimsAndDefensesPromptTests(unittest.TestCase):
         self.assertEqual(prompt["verified_pleading_inventory"], inventory)
         self.assertIn("authoritative presence metadata", prompt["instructions"])
 
+    def test_action_map_allows_only_action_specific_missing_answer(self):
+        page = {
+            "source_sha256": "a" * 64,
+            "filename": "THIRD_PARTY_SUMMONS_5.pdf",
+            "page_number": 1,
+            "text": "Third-party complaint. Alpha against Able.",
+        }
+        cite = {key: page[key] for key in ("source_sha256", "filename", "page_number")}
+        question = "Validate the third-party-claims layer separately, including parties, claims, defenses, and relief."
+        coverage = {
+            "verified_pleading_inventory": [
+                {"filing_kind": "third-party answer", "filename": "ANSWER_TO_THIRD_PARTY_10.pdf"}
+            ],
+            "third_party_actions": [
+                {"ordinal": "first", "answer_present": False}
+            ],
+        }
+        result = {
+            "summary": "The third-party pleadings assert indemnification.",
+            "findings": [{
+                "section": "Third-party claims",
+                "statement": "Alpha against Able: indemnification; defenses: unresolved; relief: judgment over.",
+                "citations": [cite],
+                "authority_citations": [],
+            }],
+            "missing_information": ["No corresponding answer was identified for the first action."],
+            "limitations": [],
+        }
+        self.assertIs(
+            WORKER.validate(result, [page], question=question, coverage=coverage),
+            result,
+        )
+        result["missing_information"] = ["The third-party answer is missing."]
+        with self.assertRaisesRegex(ValueError, "verified pleading called missing"):
+            WORKER.validate(result, [page], question=question, coverage=coverage)
+
     def test_claims_and_defenses_prompt_preserves_party_role_and_pleading_limits(self):
         result = {"summary": "Internal draft.", "findings": [{"statement": "Pleading map.", "citations": [{"source_sha256": "a" * 64, "filename": "Complaint.pdf", "page_number": 1}]}], "missing_information": [], "limitations": []}
         response = mock.MagicMock()
