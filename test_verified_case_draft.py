@@ -485,6 +485,71 @@ class PendingQueueTests(unittest.TestCase):
             pending = list(WORKER.pending_requests(Case00QueueS3()))
         self.assertEqual(pending, [("Case-00-Triborough", "draft-3-cccccccccccc")])
 
+    def test_compose_validated_layers_reuses_ready_layer_drafts_without_model(self):
+        case_id = "NY-NewYork-158068-2018-Szymczyk-v-Hudson-36-37"
+        source = "a" * 64
+        cite = {"source_sha256": source, "filename": "Pleading.pdf", "page_number": 1}
+        ids = {
+            "main": "draft-100-aaaaaaaaaaaa",
+            "counter": "draft-200-bbbbbbbbbbbb",
+            "third": "draft-300-cccccccccccc",
+        }
+        def draft(request_id, question, section, statement):
+            return {
+                "schema_version": "legalai-internal-draft.v1",
+                "case_id": case_id,
+                "request_id": request_id,
+                "question": question,
+                "external_communication": False,
+                "summary": "Validated layer.",
+                "findings": [{"section": section, "statement": statement, "citations": [cite], "authority_citations": []}],
+                "missing_information": [],
+                "limitations": [],
+            }
+        objects = {}
+        for layer, request_id in ids.items():
+            objects[WORKER.key(case_id, request_id, "status.json")] = {"status": "READY"}
+        objects[WORKER.key(case_id, ids["main"], "draft.json")] = draft(
+            ids["main"], "Validate the main case.", "Main case",
+            "Plaintiff against Defendant: negligence; defenses: limitations; relief: damages.",
+        )
+        objects[WORKER.key(case_id, ids["counter"], "draft.json")] = draft(
+            ids["counter"], "Validate Quality Facilities counterclaims and cross-claims.", "Counterclaims and cross-claims",
+            "Quality Facilities against Defendants: negligence; defenses: denial; relief: judgment over.",
+        )
+        third_statement = (
+            "First action — A v. B: indemnification; defenses: limitations; relief: judgment over. "
+            "Second action — C v. D: contribution; defenses: waiver; relief: damages. "
+            "Third action — E v. F: breach; defenses: unresolved; relief: damages; no corresponding answer was identified. "
+            "Fourth action — G v. H: indemnification; defenses: estoppel; relief: dismissal."
+        )
+        objects[WORKER.key(case_id, ids["third"], "draft.json")] = draft(
+            ids["third"], "Validate the third-party-claims layer separately.", "Third-party claims", third_statement,
+        )
+        objects[WORKER.key(case_id, ids["third"], "input_audit.json")] = {
+            "coverage": {"third_party_actions": [
+                {"ordinal": "first", "answer_present": True},
+                {"ordinal": "second", "answer_present": True},
+                {"ordinal": "third", "answer_present": False},
+                {"ordinal": "fourth", "answer_present": True},
+            ]}
+        }
+        class CompositionS3:
+            def list_objects_v2(self, **kwargs):
+                return {"Contents": [{"Key": key} for key in objects if key.endswith("/draft.json")]}
+            def get_object(self, **kwargs):
+                return {"Body": io.BytesIO(json.dumps(objects[kwargs["Key"]]).encode())}
+        question = "Prepare one consolidated map in order: Main case; Counterclaims and cross-claims; Third-party claims. Identify parties, claims, defenses, and relief."
+        with mock.patch.dict(os.environ, {"B2_BUCKET": "test"}):
+            result, pages, coverage = WORKER.compose_validated_layers(CompositionS3(), case_id, question)
+        self.assertEqual([item["section"] for item in result["findings"]], list(WORKER.LITIGATION_MAP_SECTIONS))
+        self.assertEqual(coverage["composition_sources"], {
+            "Main case": ids["main"],
+            "Counterclaims and cross-claims": ids["counter"],
+            "Third-party claims": ids["third"],
+        })
+        self.assertEqual(len(pages), 1)
+
     def test_run_request_dispatches_case00_to_benchmark_worker(self):
         benchmark_worker = types.SimpleNamespace(run_request=mock.Mock())
         with mock.patch.object(WORKER, "request_status", return_value="QUEUED"), mock.patch.dict(sys.modules, {"scripts.run_case00_internal_draft": benchmark_worker}):
