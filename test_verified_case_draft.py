@@ -72,6 +72,31 @@ class EvidenceFailClosedTests(unittest.TestCase):
 
 
 class ClaimsAndDefensesPromptTests(unittest.TestCase):
+    def test_party_specific_cross_claim_answer_does_not_require_main_case_section(self):
+        question = (
+            "Based solely on the verified record, identify every counterclaim and cross-claim "
+            "asserted by Quality Facilities Solutions Corp., the parties against whom each is "
+            "asserted, the requested relief, and the strongest expressly pleaded defenses."
+        )
+        page = {
+            "source_sha256": "a" * 64,
+            "filename": "ANSWER_WITH_CROSS_C_81.pdf",
+            "page_number": 6,
+            "text": "Quality Facilities Solutions Corp. asserts a cross-claim.",
+        }
+        result = {
+            "summary": "Quality Facilities Solutions Corp. pleads counterclaims and cross-claims.",
+            "findings": [{
+                "section": "Counterclaims and cross-claims",
+                "statement": "Quality Facilities Solutions Corp., claimant: negligence; defenses: affirmative defenses; relief: liability over.",
+                "citations": [{key: page[key] for key in ("source_sha256", "filename", "page_number")}],
+                "authority_citations": [],
+            }],
+            "missing_information": [],
+            "limitations": [],
+        }
+        self.assertIs(WORKER.validate(result, [page], question=question), result)
+
     def test_verified_pleading_inventory_blocks_false_missing_filing_claim(self):
         class PleadingInventoryS3(FakeS3):
             pages = [
