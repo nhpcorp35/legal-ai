@@ -905,6 +905,40 @@ class SzymczykFilenameCoverageTests(unittest.TestCase):
         )
         self.assertTrue(actions[1]["answer_present"])
 
+    def test_unlabeled_complaint_joins_unique_caption_match(self):
+        documents = {
+            ("a" * 64, "SECOND_THIRD_PARTY_SUMMONS_13.pdf"): [
+                (1, "Second third-party summons. Bravo Builders against Baker Electric.")
+            ],
+            ("b" * 64, "SUPPLEMENTAL_COMPLAINT_14.pdf"): [
+                (1, "Third-party complaint. Bravo Builders against Baker Electric.")
+            ],
+            ("c" * 64, "THIRD_PARTY_COMPLAINT_5.pdf"): [
+                (1, "Third-party complaint. Alpha Owner against Able Contractor.")
+            ],
+        }
+        actions = WORKER.third_party_action_slices(documents)
+        self.assertEqual([item["ordinal"] for item in actions], ["first", "second"])
+        self.assertEqual(len(actions[1]["complaints"]), 2)
+
+    def test_multiple_unmatched_unlabeled_complaints_still_fail_closed(self):
+        documents = {
+            ("a" * 64, "SECOND_THIRD_PARTY_COMPLAINT_13.pdf"): [
+                (1, "Second third-party complaint. Bravo against Baker.")
+            ],
+            ("b" * 64, "THIRD_PARTY_COMPLAINT_5.pdf"): [
+                (1, "Third-party complaint. Alpha against Able.")
+            ],
+            ("c" * 64, "THIRD_PARTY_COMPLAINT_9.pdf"): [
+                (1, "Third-party complaint. Charlie against Cedar.")
+            ],
+        }
+        with self.assertRaisesRegex(
+            WORKER.PreGenerationGateError,
+            "ambiguous_third_party_action_identity",
+        ):
+            WORKER.third_party_action_slices(documents)
+
     def test_third_party_layer_fails_closed_on_unmatched_answer(self):
         class AmbiguousAnswerS3(FakeS3):
             pages = [
