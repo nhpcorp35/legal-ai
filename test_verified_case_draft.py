@@ -183,6 +183,42 @@ class ClaimsAndDefensesPromptTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unverified missing-page claim"):
             WORKER.validate(result(["Main case"], missing=["Complaint pages 2–18 were not supplied."]), [page], question=question)
 
+    def test_third_party_only_litigation_map_accepts_only_third_party_section(self):
+        page = {
+            "source_sha256": "a" * 64,
+            "filename": "THIRD_PARTY_SUMMONS_5.pdf",
+            "page_number": 4,
+            "text": "Third-party plaintiff seeks contractual indemnification.",
+        }
+        cite = {key: page[key] for key in ("source_sha256", "filename", "page_number")}
+        question = (
+            "Validate the third-party-claims layer separately from the main action "
+            "and all counterclaims/cross-claims. Identify the parties, claims, "
+            "defenses, and relief."
+        )
+
+        def result(sections):
+            return {
+                "summary": "The third-party pleading asserts contractual indemnification.",
+                "findings": [
+                    {
+                        "section": section,
+                        "statement": "Third-party plaintiff and defendant: contractual indemnification; defenses: affirmative defenses; relief: indemnification.",
+                        "citations": [cite],
+                        "authority_citations": [],
+                    }
+                    for section in sections
+                ],
+                "missing_information": [],
+                "limitations": [],
+            }
+
+        valid = result(["Third-party claims"])
+        self.assertIs(WORKER.validate(valid, [page], question=question), valid)
+        for sections in (["Main case"], ["Main case", "Third-party claims"]):
+            with self.assertRaisesRegex(ValueError, "invalid litigation-map sections"):
+                WORKER.validate(result(sections), [page], question=question)
+
     def test_death_and_substitution_stays_procedural_not_merits(self):
         page = {"source_sha256": "a" * 64, "filename": "Order.pdf", "page_number": 2, "text": "Motion denied due to death; substitution pending."}
         result = {"summary": "The order records a procedural disposition.", "findings": [{"section": "Main case", "statement": "Estate representative: substitution pending; defenses: not adjudicated; relief: motion denied procedurally.", "citations": [{key: page[key] for key in ("source_sha256", "filename", "page_number")}], "authority_citations": []}], "missing_information": [], "limitations": []}
