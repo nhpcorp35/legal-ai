@@ -777,6 +777,58 @@ class SzymczykFilenameCoverageTests(unittest.TestCase):
         }
         self.assertFalse(any(filename in excluded for filename, _ in selected))
 
+    def test_third_party_layer_slices_four_actions_and_pairs_answers(self):
+        filler = "third-party claims defenses relief " * 120
+
+        class FourActionS3(FakeS3):
+            pages = []
+
+        parties = (("Alpha", "Able"), ("Bravo", "Baker"), ("Charlie", "Cedar"), ("Delta", "Dover"))
+        for index, (ordinal, names) in enumerate(zip(("", "SECOND_", "THIRD_", "FOURTH_"), parties), start=1):
+            label = ordinal.replace("_", " ")
+            complaint = f"{ordinal}THIRD_PARTY_SUMMONS_{index}.pdf"
+            answer = f"{ordinal}ANSWER_TO_THIRD_PARTY_COMPLAINT_{index}.pdf"
+            FourActionS3.pages.extend([
+                {"filename": complaint, "page_number": 1, "text": f"{label}THIRD-PARTY COMPLAINT. {names[0]} against {names[1]}."},
+                {"filename": complaint, "page_number": 3, "text": f"FIRST CAUSE OF ACTION contractual indemnification. {filler}"},
+                {"filename": complaint, "page_number": 7, "text": "WHEREFORE judgment, costs and disbursements are demanded."},
+                {"filename": answer, "page_number": 1, "text": f"ANSWER TO {label}THIRD-PARTY COMPLAINT. {names[1]} answers {names[0]}."},
+                {"filename": answer, "page_number": 4, "text": f"AFFIRMATIVE DEFENSES. {filler}"},
+                {"filename": answer, "page_number": 9, "text": "WHEREFORE dismissal is demanded."},
+            ])
+        FourActionS3.pages.extend([
+            {"filename": f"EXHIBIT_S_{i}.pdf", "page_number": 1, "text": filler}
+            for i in range(60)
+        ])
+
+        pages = WORKER.evidence(
+            FourActionS3(),
+            "NY-NewYork-158068-2018-Szymczyk-v-Hudson-36-37",
+            "Validate the third-party-claims layer separately from the main action and all counterclaims/cross-claims. Identify the parties, claims, defenses, and relief.",
+        )
+        actions = pages.coverage["third_party_actions"]
+        self.assertEqual([item["ordinal"] for item in actions], ["first", "second", "third", "fourth"])
+        self.assertTrue(all(item["answer_present"] for item in actions))
+        self.assertLessEqual(len(pages), WORKER.MAX_PAGES)
+        for ordinal in ("", "SECOND_", "THIRD_", "FOURTH_"):
+            self.assertTrue(any(page["filename"].startswith(f"{ordinal}THIRD_PARTY_SUMMONS") for page in pages))
+            self.assertTrue(any(page["filename"].startswith(f"{ordinal}ANSWER_TO_THIRD_PARTY") for page in pages))
+
+    def test_third_party_layer_fails_closed_on_unmatched_answer(self):
+        class AmbiguousAnswerS3(FakeS3):
+            pages = [
+                {"filename": "THIRD_PARTY_SUMMONS_5.pdf", "page_number": 1, "text": "Third-party complaint. Alpha against Able."},
+                {"filename": "SECOND_THIRD_PARTY_SUMMONS_13.pdf", "page_number": 1, "text": "Second third-party complaint. Bravo against Baker."},
+                {"filename": "ANSWER_TO_THIRD_PARTY_COMPLAINT_20.pdf", "page_number": 1, "text": "Answer to third-party complaint."},
+            ]
+
+        with self.assertRaisesRegex(WORKER.PreGenerationGateError, "(?:unmatched|ambiguous)_third_party_answer"):
+            WORKER.evidence(
+                AmbiguousAnswerS3(),
+                "NY-NewYork-158068-2018-Szymczyk-v-Hudson-36-37",
+                "Validate the third-party-claims layer separately from the main action and all counterclaims/cross-claims.",
+            )
+
     def test_merits_pleadings_are_reserved_ahead_of_high_scoring_contract_pages(self):
         class DenseS3(FakeS3):
             pages = [
