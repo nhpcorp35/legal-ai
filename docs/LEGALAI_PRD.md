@@ -1,7 +1,7 @@
 # LegalAI PRD (Living)
 
 **Status:** Active  
-**Last updated:** 2026-09-17
+**Last updated:** 2026-09-18
 **Authority:** Canonical product requirements and milestone register for LegalAI.  
 **Related (unchanged scopes):** `docs/HAL_CONTROL_ROOM.md` (orchestration contract); `docs/MISSION_CONTROL_OPTIMIZATION_AUTHORITY.md` (Mission Control cost/reliability register).
 
@@ -351,6 +351,21 @@ judgment.
   `c6adffe6-4345-4f14-b256-83b4068a45a8`. No new paid legal-analysis run and no
   attorney communication during this acceptance.
 
+### 2026-09-18
+
+- Diagnosed a failed party-scoped cross-claim draft: retrieval and output were
+  correctly scoped, but litigation-map validation still required the unrelated
+  main-case section.
+- Added secret-safe worker failure stages/codes and structured Railway logging,
+  fixed scoped-section validation, and added exact regression coverage in
+  PR `#235` / main `156ec5e0076a99f9b10d61e7f364b2b83c58e43c`.
+- Verified 73 focused tests and successful production deployments
+  `e6e51225-568a-4db4-8847-c4ce89ecf43c` (worker) and
+  `9338edc3-074a-4d60-b86c-b3132d9cbc2c` (executor).
+- After the fix and deployment verification, one controlled retry
+  `draft-1789743093-4556c89d89db` completed READY with a single correctly
+  scoped counterclaim/cross-claim section and operative-page citations.
+
 
 ## Daily attorney-goal alignment
 
@@ -369,3 +384,10 @@ Engineering activity alone does not count as progress. The evidence must show an
 - **Goal advanced:** More complete, source-grounded identification of main-action parties, claims, requested relief, and expressly pleaded defenses without cross-claim or third-party contamination.
 - **How / evidence:** Main-action retrieval was narrowed and verified through focused tests, successful production deployments, a free retrieval preview, and a clean completed draft citing the operative complaint and answer pages.
 - **Remaining gap:** Validate counterclaims/cross-claims and third-party claims as separate retrieval layers, then test a consolidated synthesis that also explains why each issue matters under the relevant procedure and law
+
+### 2026-09-18 alignment checkpoint
+
+- **Movement:** YES
+- **Goal advanced:** Accurate, source-grounded counterclaim/cross-claim mapping as a separate litigation layer, without forcing unrelated main-case material into the answer.
+- **How / evidence:** Main `156ec5e0076a99f9b10d61e7f364b2b83c58e43c`; 73 passing tests; successful worker/executor deployments; controlled draft `draft-1789743093-4556c89d89db` completed READY with operative-page citations.
+- **Remaining gap:** Validate the third-party-claim layer separately, then test a concise consolidated synthesis that explains why prioritized issues matter under governing procedure and law.
