@@ -77,6 +77,12 @@ CROSS_CLAIM_ONLY_QUESTION_RE = re.compile(
     r"\bmain action\b.*\b(?:counterclaims?|cross[ -]?claims?)\b",
     re.IGNORECASE,
 )
+THIRD_PARTY_ONLY_QUESTION_RE = re.compile(
+    r"\bthird[ -]?party(?:[ -]?claims?)?\s+layer\b|"
+    r"\b(?:validate|identify|map)\b.*\bthird[ -]?party\s+claims?\b.*\bseparately\b|"
+    r"\bthird[ -]?party\s+claims?\b.*\bseparately\s+from\s+the\s+main\s+(?:action|case)\b",
+    re.IGNORECASE,
+)
 CROSS_CLAIM_ASSERTING_PARTY_RE = re.compile(
     r"\basserted\s+by\s+(.+?)(?=,\s+the\s+parties\b|,\s+each\b|\.\s|$)",
     re.IGNORECASE,
@@ -838,9 +844,24 @@ def validate(result, pages, authorities=(), question="", coverage=None):
     if litigation_map_question(question) and not authorities and TOP_ATTACK_SURFACES_MARKER not in question.casefold():
         sections = [item.get("section") for item in result["findings"]]
         expected = [section for section in LITIGATION_MAP_SECTIONS if section in sections]
-        cross_claim_only = bool(CROSS_CLAIM_ONLY_QUESTION_RE.search(question))
-        invalid_scope = cross_claim_only and sections != ["Counterclaims and cross-claims"]
-        missing_main_case = not cross_claim_only and sections and sections[0] != "Main case"
+        third_party_only = bool(THIRD_PARTY_ONLY_QUESTION_RE.search(question))
+        # A third-party-only request commonly names counter/cross-claims only
+        # to exclude them.  The positive third-party scope therefore wins over
+        # the broader cross-claim detector.
+        cross_claim_only = (
+            bool(CROSS_CLAIM_ONLY_QUESTION_RE.search(question))
+            and not third_party_only
+        )
+        invalid_scope = (
+            (cross_claim_only and sections != ["Counterclaims and cross-claims"])
+            or (third_party_only and sections != ["Third-party claims"])
+        )
+        missing_main_case = (
+            not cross_claim_only
+            and not third_party_only
+            and sections
+            and sections[0] != "Main case"
+        )
         if not sections or any(section not in LITIGATION_MAP_SECTIONS for section in sections) or len(sections) != len(set(sections)) or sections != expected or invalid_scope or missing_main_case:
             raise ValueError("invalid litigation-map sections")
     return result
