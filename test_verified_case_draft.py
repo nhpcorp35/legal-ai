@@ -72,6 +72,31 @@ class EvidenceFailClosedTests(unittest.TestCase):
 
 
 class ClaimsAndDefensesPromptTests(unittest.TestCase):
+    def test_party_specific_cross_claim_answer_does_not_require_main_case_section(self):
+        question = (
+            "Based solely on the verified record, identify every counterclaim and cross-claim "
+            "asserted by Quality Facilities Solutions Corp., the parties against whom each is "
+            "asserted, the requested relief, and the strongest expressly pleaded defenses."
+        )
+        page = {
+            "source_sha256": "a" * 64,
+            "filename": "ANSWER_WITH_CROSS_C_81.pdf",
+            "page_number": 6,
+            "text": "Quality Facilities Solutions Corp. asserts a cross-claim.",
+        }
+        result = {
+            "summary": "Quality Facilities Solutions Corp. pleads counterclaims and cross-claims.",
+            "findings": [{
+                "section": "Counterclaims and cross-claims",
+                "statement": "Quality Facilities Solutions Corp., claimant: negligence; defenses: affirmative defenses; relief: liability over.",
+                "citations": [{key: page[key] for key in ("source_sha256", "filename", "page_number")}],
+                "authority_citations": [],
+            }],
+            "missing_information": [],
+            "limitations": [],
+        }
+        self.assertIs(WORKER.validate(result, [page], question=question), result)
+
     def test_verified_pleading_inventory_blocks_false_missing_filing_claim(self):
         class PleadingInventoryS3(FakeS3):
             pages = [
@@ -369,6 +394,62 @@ class PendingQueueTests(unittest.TestCase):
         with mock.patch.object(WORKER, "request_status", return_value="QUEUED"):
             pending = list(WORKER.pending_requests(PaginatedQueueS3()))
         self.assertEqual(pending, [("NY-NewYork-158068-2018-Szymczyk-v-Hudson-36-37", "draft-3-cccccccccccc")])
+
+    def test_model_http_failure_records_stage_and_safe_diagnostics(self):
+        case_id = "NY-NewYork-158068-2018-Szymczyk-v-Hudson-36-37"
+        request_id = "draft-3-cccccccccccc"
+        http_error = WORKER.urllib.error.HTTPError(
+            "https://api.openai.com/v1/responses", 429, "secret response text", {}, None
+        )
+        writes = []
+        with mock.patch.object(WORKER, "put", side_effect=lambda *args: writes.append(args[3:])), \
+             mock.patch.object(WORKER, "read_request", return_value="Identify claims."), \
+             mock.patch.object(WORKER, "evidence", return_value=[]), \
+             mock.patch.object(WORKER, "match_verified_authorities", return_value=()), \
+             mock.patch.object(WORKER, "generate", side_effect=http_error), \
+             mock.patch.object(WORKER, "request_status", return_value="QUEUED"), \
+             mock.patch.object(WORKER, "log_failure") as log_failure:
+            with self.assertRaises(WORKER.urllib.error.HTTPError):
+                WORKER.run_request("client", case_id, request_id)
+        failed = next(value for name, value in writes if name == "status.json" and value["status"] == "FAILED")
+        self.assertEqual(failed["failure_code"], "model_http_error")
+        self.assertEqual(failed["failure_stage"], "model_request")
+        self.assertEqual(failed["exception_type"], "httperror")
+        self.assertEqual(failed["http_status"], 429)
+        self.assertNotIn("secret response text", json.dumps(failed))
+        log_failure.assert_called_once()
+
+    def test_failure_log_excludes_exception_message(self):
+        diagnostics = WORKER.failure_diagnostics(ValueError("private source text"), "model_validation")
+        stream = io.StringIO()
+        with mock.patch.object(WORKER.sys, "stderr", stream):
+            WORKER.log_failure("NY-NewYork-158068-2018-Szymczyk-v-Hudson-36-37", "draft-3-cccccccccccc", diagnostics)
+        entry = json.loads(stream.getvalue())
+        self.assertEqual(entry["failure_code"], "model_output_validation")
+        self.assertEqual(entry["failure_stage"], "model_validation")
+        self.assertNotIn("private source text", stream.getvalue())
+
+    def test_scan_worker_status_preserves_request_failure_diagnostics(self):
+        case_id = "NY-NewYork-158068-2018-Szymczyk-v-Hudson-36-37"
+        request_id = "draft-3-cccccccccccc"
+        failure = RuntimeError("private")
+        failure._legalai_failure_diagnostics = {
+            "failure_code": "persistence_error",
+            "failure_stage": "audit_write",
+            "exception_type": "runtimeerror",
+        }
+        statuses = []
+        with mock.patch.object(WORKER, "client", return_value="client"), \
+             mock.patch.object(WORKER, "pending_requests", return_value=iter([(case_id, request_id)])), \
+             mock.patch.object(WORKER, "run_request", side_effect=failure), \
+             mock.patch.object(WORKER, "write_worker_status", side_effect=lambda *args, **kwargs: statuses.append((args, kwargs))), \
+             mock.patch.object(WORKER.sys, "argv", ["worker", "--scan-pending"]):
+            with self.assertRaisesRegex(RuntimeError, "private"):
+                WORKER.main()
+        _, failed = statuses[-1]
+        self.assertEqual(failed["failure_code"], "persistence_error")
+        self.assertEqual(failed["failure_stage"], "audit_write")
+        self.assertEqual(failed["request_id"], request_id)
 
 
 class RecordWidePleadingCoverageTests(unittest.TestCase):
