@@ -270,24 +270,25 @@ def third_party_action_slices(documents):
             continue
         actions.append(new_action(ordinal, complaint))
 
-    unmatched = []
+    # Cluster unlabeled summons/complaint files before assigning them. This
+    # prevents a filing for a missing action from being consumed too early as
+    # a duplicate of an explicitly labeled action.
+    clusters = []
     for complaint in sorted(
         (item for item in complaints if item["ordinal"] is None),
         key=lambda item: item["filename"].casefold(),
     ):
         scored = sorted(
-            ((len(complaint["caption_tokens"] & action["caption_tokens"]), action)
-             for action in actions),
-            key=lambda pair: (-pair[0], THIRD_PARTY_ORDINALS.index(pair[1]["ordinal"])),
+            ((len(complaint["caption_tokens"] & cluster["caption_tokens"]), cluster)
+             for cluster in clusters),
+            key=lambda pair: -pair[0],
         )
-        # Two shared non-boilerplate caption tokens, with a unique best action,
-        # are required before an unlabeled filing may inherit an ordinal.
         if scored and scored[0][0] >= 2 and (
             len(scored) == 1 or scored[0][0] > scored[1][0]
         ):
             attach(scored[0][1], complaint)
         else:
-            unmatched.append(complaint)
+            clusters.append(new_action(None, complaint))
 
     used = {action["ordinal"] for action in actions}
     highest = max(
@@ -298,15 +299,52 @@ def third_party_action_slices(documents):
         ordinal for ordinal in THIRD_PARTY_ORDINALS[:highest + 1]
         if ordinal not in used
     ]
-    if len(unmatched) == 1 and (len(missing) == 1 or not actions):
-        ordinal = missing[0] if missing else "first"
-        actions.append(new_action(ordinal, unmatched[0]))
-        used.add(ordinal)
-    elif unmatched:
-        raise PreGenerationGateError(
-            "ambiguous_third_party_action_identity",
-            "multiple_unlabeled_complaints",
+    # If there are more unlabeled clusters than ordinal gaps, only clusters
+    # with a unique, strong caption match may be absorbed as duplicate filings.
+    while len(clusters) > len(missing):
+        candidates = []
+        for cluster in clusters:
+            scored = sorted(
+                ((len(cluster["caption_tokens"] & action["caption_tokens"]), action)
+                 for action in actions),
+                key=lambda pair: (-pair[0], THIRD_PARTY_ORDINALS.index(pair[1]["ordinal"])),
+            )
+            if scored and scored[0][0] >= 2 and (
+                len(scored) == 1 or scored[0][0] > scored[1][0]
+            ):
+                candidates.append((scored[0][0], cluster, scored[0][1]))
+        if not candidates:
+            raise PreGenerationGateError(
+                "ambiguous_third_party_action_identity",
+                "multiple_unlabeled_complaints",
+            )
+        _, cluster, action = max(
+            candidates,
+            key=lambda item: (item[0], item[1]["complaint"]["filename"].casefold()),
         )
+        for complaint in cluster["complaints"]:
+            attach(action, complaint)
+        clusters.remove(cluster)
+
+    if len(clusters) != len(missing):
+        raise PreGenerationGateError("noncontiguous_third_party_actions")
+    if len(clusters) > 1:
+        def filing_sequence(cluster):
+            match = re.search(r"(\d+)(?!.*\d)", normalized_filename(
+                cluster["complaint"]["filename"]
+            ))
+            return int(match.group(1)) if match else None
+        sequences = [filing_sequence(cluster) for cluster in clusters]
+        if None in sequences or len(set(sequences)) != len(sequences):
+            raise PreGenerationGateError(
+                "ambiguous_third_party_action_identity",
+                "multiple_unlabeled_complaints",
+            )
+        clusters = [cluster for _, cluster in sorted(zip(sequences, clusters))]
+    for ordinal, cluster in zip(missing, clusters):
+        cluster["ordinal"] = ordinal
+        actions.append(cluster)
+        used.add(ordinal)
 
     expected = set(THIRD_PARTY_ORDINALS[:len(actions)])
     if used != expected:

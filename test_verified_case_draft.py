@@ -939,6 +939,29 @@ class SzymczykFilenameCoverageTests(unittest.TestCase):
         ):
             WORKER.third_party_action_slices(documents)
 
+    def test_ordered_unlabeled_clusters_fill_explicit_ordinal_gaps(self):
+        documents = {
+            ("a" * 64, "SECOND_THIRD_PARTY_COMPLAINT_20.pdf"): [
+                (1, "Second third-party complaint. Bravo against Baker.")
+            ],
+            ("b" * 64, "FOURTH_THIRD_PARTY_COMPLAINT_40.pdf"): [
+                (1, "Fourth third-party complaint. Delta against Dover.")
+            ],
+            ("c" * 64, "THIRD_PARTY_COMPLAINT_10.pdf"): [
+                (1, "Third-party complaint. Alpha against Able.")
+            ],
+            ("d" * 64, "THIRD_PARTY_COMPLAINT_30.pdf"): [
+                (1, "Third-party complaint. Charlie against Cedar.")
+            ],
+        }
+        actions = WORKER.third_party_action_slices(documents)
+        self.assertEqual(
+            [item["ordinal"] for item in actions],
+            ["first", "second", "third", "fourth"],
+        )
+        self.assertEqual(actions[0]["complaint"]["filename"], "THIRD_PARTY_COMPLAINT_10.pdf")
+        self.assertEqual(actions[2]["complaint"]["filename"], "THIRD_PARTY_COMPLAINT_30.pdf")
+
     def test_third_party_layer_fails_closed_on_unmatched_answer(self):
         class AmbiguousAnswerS3(FakeS3):
             pages = [
