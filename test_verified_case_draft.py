@@ -1041,6 +1041,23 @@ class SzymczykFilenameCoverageTests(unittest.TestCase):
             ],
         )
 
+    def test_answers_attach_to_most_recent_preceding_summons(self):
+        documents = {
+            (character * 64, f"THIRD_PARTY_SUMMONS_{filing}.pdf"): [
+                (1, "Second third-party summons and complaint. Hudson 37 against contractor.")
+            ]
+            for character, filing in zip("abcd", (5, 13, 65, 74))
+        }
+        for character, filing in zip("efg", (10, 19, 86)):
+            documents[(character * 64, f"ANSWER_{filing}.pdf")] = [
+                (1, "Verified answer to second third-party complaint. Contractor answers Hudson 37.")
+            ]
+        actions = WORKER.third_party_action_slices(documents)
+        self.assertEqual(
+            [[answer["filename"] for answer in action["answers"]] for action in actions],
+            [["ANSWER_10.pdf"], ["ANSWER_19.pdf"], [], ["ANSWER_86.pdf"]],
+        )
+
     def test_third_party_mentions_do_not_promote_nonpleadings(self):
         documents = {
             ("a" * 64, "THIRD_PARTY_SUMMONS_5.pdf"): [
@@ -1069,7 +1086,7 @@ class SzymczykFilenameCoverageTests(unittest.TestCase):
             pages = [
                 {"filename": "THIRD_PARTY_SUMMONS_5.pdf", "page_number": 1, "text": "Third-party complaint. Alpha against Able."},
                 {"filename": "SECOND_THIRD_PARTY_SUMMONS_13.pdf", "page_number": 1, "text": "Second third-party complaint. Bravo against Baker."},
-                {"filename": "ANSWER_TO_THIRD_PARTY_COMPLAINT_20.pdf", "page_number": 1, "text": "Answer to third-party complaint."},
+                {"filename": "ANSWER_TO_THIRD_PARTY_COMPLAINT_2.pdf", "page_number": 1, "text": "Answer to third-party complaint."},
             ]
 
         with self.assertRaisesRegex(WORKER.PreGenerationGateError, "(?:unmatched|ambiguous)_third_party_answer"):
