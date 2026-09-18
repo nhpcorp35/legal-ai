@@ -370,6 +370,62 @@ class PendingQueueTests(unittest.TestCase):
             pending = list(WORKER.pending_requests(PaginatedQueueS3()))
         self.assertEqual(pending, [("NY-NewYork-158068-2018-Szymczyk-v-Hudson-36-37", "draft-3-cccccccccccc")])
 
+    def test_model_http_failure_records_stage_and_safe_diagnostics(self):
+        case_id = "NY-NewYork-158068-2018-Szymczyk-v-Hudson-36-37"
+        request_id = "draft-3-cccccccccccc"
+        http_error = WORKER.urllib.error.HTTPError(
+            "https://api.openai.com/v1/responses", 429, "secret response text", {}, None
+        )
+        writes = []
+        with mock.patch.object(WORKER, "put", side_effect=lambda *args: writes.append(args[3:])), \
+             mock.patch.object(WORKER, "read_request", return_value="Identify claims."), \
+             mock.patch.object(WORKER, "evidence", return_value=[]), \
+             mock.patch.object(WORKER, "match_verified_authorities", return_value=()), \
+             mock.patch.object(WORKER, "generate", side_effect=http_error), \
+             mock.patch.object(WORKER, "request_status", return_value="QUEUED"), \
+             mock.patch.object(WORKER, "log_failure") as log_failure:
+            with self.assertRaises(WORKER.urllib.error.HTTPError):
+                WORKER.run_request("client", case_id, request_id)
+        failed = next(value for name, value in writes if name == "status.json" and value["status"] == "FAILED")
+        self.assertEqual(failed["failure_code"], "model_http_error")
+        self.assertEqual(failed["failure_stage"], "model_request")
+        self.assertEqual(failed["exception_type"], "httperror")
+        self.assertEqual(failed["http_status"], 429)
+        self.assertNotIn("secret response text", json.dumps(failed))
+        log_failure.assert_called_once()
+
+    def test_failure_log_excludes_exception_message(self):
+        diagnostics = WORKER.failure_diagnostics(ValueError("private source text"), "model_validation")
+        stream = io.StringIO()
+        with mock.patch.object(WORKER.sys, "stderr", stream):
+            WORKER.log_failure("NY-NewYork-158068-2018-Szymczyk-v-Hudson-36-37", "draft-3-cccccccccccc", diagnostics)
+        entry = json.loads(stream.getvalue())
+        self.assertEqual(entry["failure_code"], "model_output_validation")
+        self.assertEqual(entry["failure_stage"], "model_validation")
+        self.assertNotIn("private source text", stream.getvalue())
+
+    def test_scan_worker_status_preserves_request_failure_diagnostics(self):
+        case_id = "NY-NewYork-158068-2018-Szymczyk-v-Hudson-36-37"
+        request_id = "draft-3-cccccccccccc"
+        failure = RuntimeError("private")
+        failure._legalai_failure_diagnostics = {
+            "failure_code": "persistence_error",
+            "failure_stage": "audit_write",
+            "exception_type": "runtimeerror",
+        }
+        statuses = []
+        with mock.patch.object(WORKER, "client", return_value="client"), \
+             mock.patch.object(WORKER, "pending_requests", return_value=iter([(case_id, request_id)])), \
+             mock.patch.object(WORKER, "run_request", side_effect=failure), \
+             mock.patch.object(WORKER, "write_worker_status", side_effect=lambda *args, **kwargs: statuses.append((args, kwargs))), \
+             mock.patch.object(WORKER.sys, "argv", ["worker", "--scan-pending"]):
+            with self.assertRaisesRegex(RuntimeError, "private"):
+                WORKER.main()
+        _, failed = statuses[-1]
+        self.assertEqual(failed["failure_code"], "persistence_error")
+        self.assertEqual(failed["failure_stage"], "audit_write")
+        self.assertEqual(failed["request_id"], request_id)
+
 
 class RecordWidePleadingCoverageTests(unittest.TestCase):
     def test_broad_party_claim_question_keeps_captions_and_operational_pleading_pages(self):
