@@ -503,12 +503,32 @@ class PendingQueueTests(unittest.TestCase):
              mock.patch.object(WORKER, "evidence", side_effect=WORKER.PreGenerationGateError("ambiguous_third_party_answer")), \
              mock.patch.object(WORKER, "generate") as generate, \
              mock.patch.object(WORKER, "put", side_effect=lambda *args: writes.append(args[3:])):
-            reason = WORKER.diagnose_failed_retrieval(s3, case_id, request_id)
+            reason, detail = WORKER.diagnose_failed_retrieval(s3, case_id, request_id)
         self.assertEqual(reason, "ambiguous_third_party_answer")
+        self.assertIsNone(detail)
         self.assertEqual(writes[0][0], "status.json")
         self.assertEqual(writes[0][1]["gate_reason"], reason)
         self.assertEqual(writes[0][1]["updated_at"], status["updated_at"])
         generate.assert_not_called()
+
+    def test_third_party_identity_gate_reports_only_allowlisted_subtype(self):
+        duplicate = WORKER.failure_diagnostics(
+            WORKER.PreGenerationGateError(
+                "ambiguous_third_party_action_identity",
+                "duplicate_explicit_ordinal",
+            ),
+            "evidence_retrieval",
+        )
+        self.assertEqual(duplicate["gate_detail"], "duplicate_explicit_ordinal")
+
+        private = WORKER.failure_diagnostics(
+            WORKER.PreGenerationGateError(
+                "ambiguous_third_party_action_identity",
+                "private source text",
+            ),
+            "evidence_retrieval",
+        )
+        self.assertNotIn("gate_detail", private)
 
     def test_scan_worker_status_preserves_request_failure_diagnostics(self):
         case_id = "NY-NewYork-158068-2018-Szymczyk-v-Hudson-36-37"
