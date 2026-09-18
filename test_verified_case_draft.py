@@ -257,6 +257,17 @@ class ClaimsAndDefensesPromptTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "incomplete third-party actions"):
             WORKER.validate(result, [page], question=question, coverage=coverage)
 
+    def test_consolidated_map_requires_all_sections_in_order(self):
+        page = {"source_sha256": "a" * 64, "filename": "Complaint.pdf", "page_number": 1, "text": "Plaintiff alleges negligence."}
+        cite = {key: page[key] for key in ("source_sha256", "filename", "page_number")}
+        question = "Prepare one consolidated map in order: Main case; Counterclaims and cross-claims; Third-party claims. Identify parties, claims, defenses, and relief."
+        def result(sections):
+            return {"summary": "The pleadings identify the requested layers.", "findings": [{"section": section, "statement": "Parties: claims; defenses: limitations; relief: damages.", "citations": [cite], "authority_citations": []} for section in sections], "missing_information": [], "limitations": []}
+        with self.assertRaisesRegex(ValueError, "invalid litigation-map sections"):
+            WORKER.validate(result(["Counterclaims and cross-claims"]), [page], question=question)
+        complete = result(list(WORKER.LITIGATION_MAP_SECTIONS))
+        self.assertIs(WORKER.validate(complete, [page], question=question), complete)
+
     def test_third_party_only_litigation_map_accepts_only_third_party_section(self):
         page = {
             "source_sha256": "a" * 64,
@@ -985,6 +996,37 @@ class SzymczykFilenameCoverageTests(unittest.TestCase):
         for ordinal in ("", "SECOND_", "THIRD_", "FOURTH_"):
             self.assertTrue(any(page["filename"].startswith(f"{ordinal}THIRD_PARTY_SUMMONS") for page in pages))
             self.assertTrue(any(page["filename"].startswith(f"{ordinal}ANSWER_TO_THIRD_PARTY") for page in pages))
+
+    def test_consolidated_map_preserves_main_cross_and_third_party_layers(self):
+        class ConsolidatedS3(FakeS3):
+            pages = [
+                {"filename": "SUMMONS___COMPLAINT_1.pdf", "page_number": 1, "text": "Plaintiff against Defendant."},
+                {"filename": "SUMMONS___COMPLAINT_1.pdf", "page_number": 3, "text": "FIRST CAUSE OF ACTION: negligence."},
+                {"filename": "ANSWER_WITH_CROSS_C_3.pdf", "page_number": 1, "text": "Defendant answers and asserts a cross-claim."},
+                {"filename": "ANSWER_WITH_CROSS_C_3.pdf", "page_number": 3, "text": "FIRST CROSS-CLAIM: contribution. WHEREFORE judgment is demanded."},
+            ]
+
+        filings = ((5, 10), (13, 19), (65, 70), (74, 86))
+        for index, (complaint_number, answer_number) in enumerate(filings, start=1):
+            ConsolidatedS3.pages.extend([
+                {"filename": f"THIRD_PARTY_SUMMONS_{complaint_number}.pdf", "page_number": 1, "text": f"Third-party complaint action {index}. Alpha{index} against Able{index}."},
+                {"filename": f"THIRD_PARTY_SUMMONS_{complaint_number}.pdf", "page_number": 3, "text": "FIRST CAUSE OF ACTION: contractual indemnification. WHEREFORE judgment is demanded."},
+                {"filename": f"ANSWER_TO_THIRD_PARTY_{answer_number}.pdf", "page_number": 1, "text": f"Answer to third-party complaint. Able{index} answers Alpha{index}."},
+                {"filename": f"ANSWER_TO_THIRD_PARTY_{answer_number}.pdf", "page_number": 3, "text": "FIRST AFFIRMATIVE DEFENSE. WHEREFORE dismissal is demanded."},
+            ])
+
+        pages = WORKER.evidence(
+            ConsolidatedS3(),
+            "NY-NewYork-158068-2018-Szymczyk-v-Hudson-36-37",
+            "Prepare one consolidated map in order: Main case; Counterclaims and cross-claims; Third-party claims. Identify parties, claims, defenses, and relief.",
+        )
+        selected = {page["filename"] for page in pages}
+        self.assertIn("SUMMONS___COMPLAINT_1.pdf", selected)
+        self.assertIn("ANSWER_WITH_CROSS_C_3.pdf", selected)
+        self.assertEqual(
+            [action["ordinal"] for action in pages.coverage["third_party_actions"]],
+            ["first", "second", "third", "fourth"],
+        )
 
     def test_third_party_layer_groups_same_ordinal_complaint_filings(self):
         class SplitComplaintS3(FakeS3):
