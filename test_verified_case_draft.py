@@ -467,6 +467,21 @@ class PendingQueueTests(unittest.TestCase):
         self.assertEqual(entry["failure_stage"], "model_validation")
         self.assertNotIn("private source text", stream.getvalue())
 
+    def test_pre_generation_gate_persists_only_allowlisted_reason(self):
+        known = WORKER.failure_diagnostics(
+            WORKER.PreGenerationGateError("ambiguous_third_party_answer"),
+            "evidence_retrieval",
+        )
+        self.assertEqual(known["failure_code"], "pre_generation_gate")
+        self.assertEqual(known["gate_reason"], "ambiguous_third_party_answer")
+
+        unknown = WORKER.failure_diagnostics(
+            WORKER.PreGenerationGateError("private source text"),
+            "evidence_retrieval",
+        )
+        self.assertEqual(unknown["gate_reason"], "unspecified_pre_generation_gate")
+        self.assertNotIn("private source text", json.dumps(unknown))
+
     def test_scan_worker_status_preserves_request_failure_diagnostics(self):
         case_id = "NY-NewYork-158068-2018-Szymczyk-v-Hudson-36-37"
         request_id = "draft-3-cccccccccccc"
