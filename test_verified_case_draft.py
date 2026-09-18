@@ -1019,6 +1019,28 @@ class SzymczykFilenameCoverageTests(unittest.TestCase):
         self.assertEqual(actions[0]["complaint"]["filename"], "THIRD_PARTY_COMPLAINT_10.pdf")
         self.assertEqual(actions[2]["complaint"]["filename"], "THIRD_PARTY_COMPLAINT_30.pdf")
 
+    def test_distinct_third_party_summons_filings_define_successive_actions(self):
+        documents = {
+            (character * 64, f"THIRD_PARTY_SUMMONS_{filing}.pdf"): [
+                (1, "Second third-party summons and complaint. Hudson 37 against contractor.")
+            ]
+            for character, filing in zip("abcd", (5, 13, 65, 74))
+        }
+        actions = WORKER.third_party_action_slices(documents)
+        self.assertEqual(
+            [item["ordinal"] for item in actions],
+            ["first", "second", "third", "fourth"],
+        )
+        self.assertEqual(
+            [item["complaint"]["filename"] for item in actions],
+            [
+                "THIRD_PARTY_SUMMONS_5.pdf",
+                "THIRD_PARTY_SUMMONS_13.pdf",
+                "THIRD_PARTY_SUMMONS_65.pdf",
+                "THIRD_PARTY_SUMMONS_74.pdf",
+            ],
+        )
+
     def test_third_party_mentions_do_not_promote_nonpleadings(self):
         documents = {
             ("a" * 64, "THIRD_PARTY_SUMMONS_5.pdf"): [
