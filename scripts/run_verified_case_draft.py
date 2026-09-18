@@ -105,6 +105,16 @@ THIRD_PARTY_COMPLAINT_QUESTION_RE = re.compile(
     re.IGNORECASE,
 )
 TARGETED_THIRD_PARTY_COMPLAINT_PAGE_LIMIT = 16
+THIRD_PARTY_ACTION_PAGE_LIMIT = 11
+THIRD_PARTY_ORDINALS = ("first", "second", "third", "fourth")
+THIRD_PARTY_ORDINAL_RE = re.compile(
+    r"\b(first|second|third|fourth)\s+third[ -]?party\b", re.IGNORECASE
+)
+THIRD_PARTY_CAPTION_STOPWORDS = frozenset({
+    "against", "answer", "complaint", "corp", "corporation", "defendant",
+    "defendants", "first", "fourth", "inc", "llc", "party", "plaintiff",
+    "plaintiffs", "second", "summons", "third", "verified",
+})
 TOP_ATTACK_SURFACES_MARKER = "v4.0 top attack surfaces report"
 V4_PROCEDURAL_ORDER_TEXT_RE = re.compile(r"\b(?:death|deceased|substitut(?:e|ion)|representative|jurisdiction)\b", re.IGNORECASE)
 # v4 reports need case-specific conflicts, not generic contract boilerplate.
@@ -151,6 +161,177 @@ class EvidenceSelection(list):
     def __init__(self, pages, coverage):
         super().__init__(pages)
         self.coverage = coverage
+
+
+def third_party_action_ordinal(filename, document_pages):
+    """Return the expressly stated successive-action ordinal, if any."""
+    identity = " ".join(
+        [normalized_filename(filename)]
+        + [text[:1200].casefold() for _, text in sorted(document_pages)[:3]]
+    )
+    match = THIRD_PARTY_ORDINAL_RE.search(identity)
+    if match:
+        return match.group(1).casefold()
+    return None
+
+
+def third_party_caption_tokens(filename, document_pages):
+    """Extract stable caption-name tokens used only to pair answers to actions."""
+    text = " ".join(
+        [normalized_filename(filename)]
+        + [page_text[:1600].casefold() for _, page_text in sorted(document_pages)[:3]]
+    )
+    return {
+        token for token in re.findall(r"[a-z][a-z0-9]{2,}", text)
+        if token not in THIRD_PARTY_CAPTION_STOPWORDS
+    }
+
+
+def third_party_action_slices(documents):
+    """Group operative complaints and answers into successive actions."""
+    filings = []
+    for (source, filename), document_pages in documents.items():
+        normalized = normalized_filename(filename)
+        identity = " ".join(
+            [normalized]
+            + [text[:900].casefold() for _, text in sorted(document_pages)[:3]]
+        )
+        if not re.search(r"\bthird[ -]?(?:party|par)\b", identity):
+            continue
+        if re.search(r"\b(?:exhibit|affidavit|affirmation|notice|stipulation)\b", normalized):
+            continue
+        is_answer = "answer" in normalized or bool(
+            re.search(r"\banswer\s+to\b.*\bthird[ -]?party\b", identity)
+        )
+        is_complaint = not is_answer and bool(re.search(r"\b(?:complaint|summons)\b", identity))
+        if not (is_answer or is_complaint):
+            continue
+        filings.append({
+            "source": source, "filename": filename,
+            "pages": sorted(document_pages),
+            "kind": "answer" if is_answer else "complaint",
+            "ordinal": third_party_action_ordinal(filename, document_pages),
+            "caption_tokens": third_party_caption_tokens(filename, document_pages),
+        })
+
+    complaints = [item for item in filings if item["kind"] == "complaint"]
+    if not complaints:
+        raise PreGenerationGateError("missing_third_party_complaint")
+    used = set()
+    actions = []
+    for complaint in sorted(
+        complaints,
+        key=lambda item: (
+            THIRD_PARTY_ORDINALS.index(item["ordinal"])
+            if item["ordinal"] in THIRD_PARTY_ORDINALS else len(THIRD_PARTY_ORDINALS),
+            item["filename"].casefold(),
+        ),
+    ):
+        ordinal = complaint["ordinal"]
+        if ordinal is None:
+            ordinal = "first" if "first" not in used else None
+        if ordinal is None or ordinal in used:
+            raise PreGenerationGateError("ambiguous_third_party_action_identity")
+        used.add(ordinal)
+        actions.append({"ordinal": ordinal, "complaint": complaint, "answers": []})
+    expected = set(THIRD_PARTY_ORDINALS[:len(actions)])
+    if used != expected:
+        raise PreGenerationGateError("noncontiguous_third_party_actions")
+
+    for answer in [item for item in filings if item["kind"] == "answer"]:
+        candidates = actions
+        if answer["ordinal"]:
+            candidates = [a for a in actions if a["ordinal"] == answer["ordinal"]]
+        if not candidates:
+            raise PreGenerationGateError("unmatched_third_party_answer")
+        scored = sorted(
+            ((len(answer["caption_tokens"] & a["complaint"]["caption_tokens"]), a) for a in candidates),
+            key=lambda pair: (-pair[0], THIRD_PARTY_ORDINALS.index(pair[1]["ordinal"])),
+        )
+        if answer["ordinal"] is None and (not scored or scored[0][0] == 0):
+            raise PreGenerationGateError("unmatched_third_party_answer")
+        if answer["ordinal"] is None and len(scored) > 1 and scored[0][0] == scored[1][0]:
+            raise PreGenerationGateError("ambiguous_third_party_answer")
+        scored[0][1]["answers"].append(answer)
+    return sorted(actions, key=lambda a: THIRD_PARTY_ORDINALS.index(a["ordinal"]))
+
+
+def select_third_party_action_pages(documents):
+    """Select and validate each successive third-party action independently."""
+    actions = third_party_action_slices(documents)
+    selected = []
+    action_audit = []
+    for action in actions:
+        candidates = []
+        for filing in [action["complaint"], *action["answers"]]:
+            pages = filing["pages"]
+            for index, (page_number, text) in enumerate(pages):
+                opening = index == 0
+                claim = bool(PLEADING_CLAIM_TEXT_RE.search(text))
+                defense = bool(AFFIRMATIVE_DEFENSES_RE.search(text))
+                relief = bool(PLEADING_RELIEF_TEXT_RE.search(text))
+                closing = index == len(pages) - 1
+                if opening or claim or defense or relief or closing:
+                    candidates.append({
+                        "filing": filing, "page_number": page_number, "text": text,
+                        "opening": opening, "claim": claim, "defense": defense,
+                        "relief": relief, "closing": closing,
+                    })
+        chosen = []
+        seen = set()
+        def reserve(rows, limit=None):
+            kept = 0
+            for row in sorted(rows, key=lambda item: (
+                item["filing"]["filename"].casefold(), item["page_number"]
+            )):
+                filing = row["filing"]
+                page_id = (filing["source"], filing["filename"], row["page_number"])
+                if page_id in seen or len(chosen) >= THIRD_PARTY_ACTION_PAGE_LIMIT:
+                    continue
+                chosen.append(row)
+                seen.add(page_id)
+                kept += 1
+                if limit is not None and kept >= limit:
+                    break
+        # Required roles first, then a bounded claim set, then each answer's
+        # defenses and both sides' prayers. Remaining operative pages fill the
+        # slice without allowing a long complaint to crowd out its answer.
+        reserve([row for row in candidates if row["opening"]])
+        reserve([
+            row for row in candidates
+            if row["filing"]["kind"] == "complaint" and row["claim"]
+        ], limit=4)
+        for answer in action["answers"]:
+            reserve([
+                row for row in candidates
+                if row["filing"] is answer and row["defense"]
+            ], limit=1)
+        reserve([row for row in candidates if row["relief"]])
+        reserve([row for row in candidates if row["closing"]])
+        reserve(candidates)
+        if not any(row["filing"]["kind"] == "complaint" for row in chosen):
+            raise PreGenerationGateError("incomplete_third_party_action_slice")
+        action_pages = [{
+            "source_sha256": row["filing"]["source"],
+            "filename": row["filing"]["filename"],
+            "page_number": row["page_number"],
+            "text": row["text"][:MERITS_PLEADING_PAGE_CHARS],
+        } for row in chosen]
+        selected.extend(action_pages)
+        action_audit.append({
+            "ordinal": action["ordinal"],
+            "complaint_filename": action["complaint"]["filename"],
+            "answer_filenames": sorted(a["filename"] for a in action["answers"]),
+            "answer_present": bool(action["answers"]),
+            "citations": [
+                {key: page[key] for key in ("source_sha256", "filename", "page_number")}
+                for page in action_pages
+            ],
+            "unresolved": [] if action["answers"] else ["No corresponding answer was identified in the verified corpus."],
+        })
+    if len(selected) > MAX_PAGES or sum(len(page["text"]) for page in selected) > MAX_CONTEXT_CHARS:
+        raise PreGenerationGateError("third_party_action_slices_exceed_context")
+    return selected, action_audit
 
 
 def valid_case_id(value: str) -> bool:
@@ -339,6 +520,27 @@ def evidence(s3, case_id, question):
             if not text or not isinstance(filename,str) or not isinstance(page,int) or page < 1:
                 continue
             documents.setdefault((source, filename), []).append((page, text))
+    if third_party_only_question:
+        selected, action_audit = select_third_party_action_pages(documents)
+        coverage = {
+            "party_role_evidence": {
+                "candidate_count": 0, "retrieved_count": 0,
+                "outside_initial_slice": False,
+                "outside_initial_slice_citations": [],
+            },
+            "pleading_operatives": {
+                "claim_page_count": sum(
+                    bool(PLEADING_CLAIM_TEXT_RE.search(page["text"])) for page in selected
+                ),
+                "relief_page_count": sum(
+                    bool(PLEADING_RELIEF_TEXT_RE.search(page["text"])) for page in selected
+                ),
+                "claim_citations": [], "relief_citations": [],
+            },
+            "verified_pleading_inventory": verified_pleading_inventory(documents),
+            "third_party_actions": action_audit,
+        }
+        return EvidenceSelection(selected, coverage)
     cross_claim_party_match = (
         CROSS_CLAIM_ASSERTING_PARTY_RE.search(question)
         if cross_claim_only_question
@@ -829,6 +1031,9 @@ def generate(question, pages, coverage=None, authorities=None):
     if coverage and coverage.get("verified_pleading_inventory"):
         prompt["verified_pleading_inventory"] = coverage["verified_pleading_inventory"]
         prompt["instructions"] += " The verified_pleading_inventory is authoritative presence metadata for the complete verified corpus. A listed filing exists in the verified record even when only selected pages appear in pages. Never call a listed filing missing, absent, unavailable, not supplied, or not provided. If selected excerpts do not establish a requested detail, identify that exact detail as unresolved rather than claiming that the filing itself is missing."
+    if coverage and coverage.get("third_party_actions"):
+        prompt["third_party_actions"] = coverage["third_party_actions"]
+        prompt["instructions"] += " The third_party_actions array is the deterministically validated action map. Address every listed action in ordinal order within the single Third-party claims finding. For each action identify the cited parties, claim labels, defense labels, requested relief, and any listed unresolved item. Do not merge parties or positions across actions."
     if coverage and coverage["party_role_evidence"]["outside_initial_slice"]:
         prompt["record_coverage"] = {"party_role_evidence_outside_initial_slice": True, "instruction": "Do not infer that party-role evidence is absent merely because it is not among the supplied excerpts; state that the bounded retrieval slice requires attorney follow-up before treating it as missing."}
     payload={"model":os.environ.get("LEGALAI_OPENAI_MODEL","gpt-5.6-sol"),"instructions":"Return only strict JSON matching the schema.","input":json.dumps(prompt),"text":{"format":{"type":"json_schema","name":"verified_internal_draft","strict":True,"schema":schema}}}
