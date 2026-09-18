@@ -170,6 +170,7 @@ PRE_GENERATION_GATE_REASONS = frozenset({
     "missing_first_affirmative_defense_page",
     "missing_third_party_complaint",
     "noncontiguous_third_party_actions",
+    "retrieval_replay_passed_current_code",
     "third_party_action_slices_exceed_context",
     "unmatched_third_party_answer",
 })
@@ -437,6 +438,35 @@ def request_status(s3, case_id, request_id):
         return "FAILED"
     status = value.get("status") if isinstance(value, dict) else None
     return status if status in {"QUEUED", "RUNNING", "READY", "FAILED", "CANCELLED"} else "FAILED"
+
+
+def diagnose_failed_retrieval(s3, case_id, request_id):
+    """Replay evidence selection only and backfill a safe gate reason."""
+    raw = s3.get_object(
+        Bucket=os.environ["B2_BUCKET"],
+        Key=key(case_id, request_id, "status.json"),
+    )["Body"].read()
+    status = json.loads(raw.decode("utf-8"))
+    if (
+        not isinstance(status, dict)
+        or status.get("status") != "FAILED"
+        or status.get("failure_code") != "pre_generation_gate"
+        or status.get("failure_stage") != "evidence_retrieval"
+    ):
+        raise ValueError("request is not a failed pre-generation retrieval")
+    question = read_request(s3, case_id, request_id)
+    try:
+        evidence(s3, case_id, question)
+    except PreGenerationGateError as exc:
+        gate_reason = failure_diagnostics(exc, "evidence_retrieval")["gate_reason"]
+    else:
+        gate_reason = "retrieval_replay_passed_current_code"
+    put(s3, case_id, request_id, "status.json", {
+        **status,
+        "gate_reason": gate_reason,
+        "retrieval_diagnosed_at": datetime.now(timezone.utc).isoformat(),
+    })
+    return gate_reason
 
 
 def listed_objects(s3, **kwargs):
@@ -1181,7 +1211,22 @@ def write_worker_status(s3, status, **fields):
                   Metadata={"sha256": hashlib.sha256(raw).hexdigest()})
 
 def main():
-    parser=argparse.ArgumentParser(); parser.add_argument("--case-id"); parser.add_argument("--request-id"); parser.add_argument("--scan-pending", action="store_true"); args=parser.parse_args()
+    parser=argparse.ArgumentParser(); parser.add_argument("--case-id"); parser.add_argument("--request-id"); parser.add_argument("--scan-pending", action="store_true"); parser.add_argument("--diagnose-retrieval", action="store_true"); args=parser.parse_args()
+    if args.diagnose_retrieval:
+        if args.scan_pending: raise SystemExit("diagnostic mode cannot scan pending requests")
+        if not valid_case_id(args.case_id or ""): raise SystemExit("invalid case identifier")
+        if not re.fullmatch(r"draft-[0-9]+-[0-9a-f]{12}", args.request_id or ""): raise SystemExit("invalid request identifier")
+        gate_reason = diagnose_failed_retrieval(client(), args.case_id, args.request_id)
+        print(json.dumps({
+            "case_id": args.case_id,
+            "request_id": args.request_id,
+            "status": "FAILED",
+            "failure_code": "pre_generation_gate",
+            "failure_stage": "evidence_retrieval",
+            "gate_reason": gate_reason,
+            "model_called": False,
+        }, sort_keys=True, separators=(",", ":")))
+        return
     if args.scan_pending:
         if args.request_id: raise SystemExit("scan mode does not accept a request identifier")
         if args.case_id and not valid_case_id(args.case_id): raise SystemExit("invalid case identifier")

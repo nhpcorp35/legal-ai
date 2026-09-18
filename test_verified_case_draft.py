@@ -482,6 +482,34 @@ class PendingQueueTests(unittest.TestCase):
         self.assertEqual(unknown["gate_reason"], "unspecified_pre_generation_gate")
         self.assertNotIn("private source text", json.dumps(unknown))
 
+    def test_retrieval_diagnostic_backfills_reason_without_model_call(self):
+        case_id = "NY-NewYork-158068-2018-Szymczyk-v-Hudson-36-37"
+        request_id = "draft-3-cccccccccccc"
+        status = {
+            "schema_version": "legalai-internal-draft-status.v1",
+            "case_id": case_id,
+            "request_id": request_id,
+            "status": "FAILED",
+            "failure_code": "pre_generation_gate",
+            "failure_stage": "evidence_retrieval",
+            "updated_at": "2026-09-18T17:29:19Z",
+        }
+        s3 = mock.Mock()
+        s3.get_object.return_value = {
+            "Body": io.BytesIO(json.dumps(status).encode("utf-8"))
+        }
+        writes = []
+        with mock.patch.object(WORKER, "read_request", return_value="third-party claims layer"), \
+             mock.patch.object(WORKER, "evidence", side_effect=WORKER.PreGenerationGateError("ambiguous_third_party_answer")), \
+             mock.patch.object(WORKER, "generate") as generate, \
+             mock.patch.object(WORKER, "put", side_effect=lambda *args: writes.append(args[3:])):
+            reason = WORKER.diagnose_failed_retrieval(s3, case_id, request_id)
+        self.assertEqual(reason, "ambiguous_third_party_answer")
+        self.assertEqual(writes[0][0], "status.json")
+        self.assertEqual(writes[0][1]["gate_reason"], reason)
+        self.assertEqual(writes[0][1]["updated_at"], status["updated_at"])
+        generate.assert_not_called()
+
     def test_scan_worker_status_preserves_request_failure_diagnostics(self):
         case_id = "NY-NewYork-158068-2018-Szymczyk-v-Hudson-36-37"
         request_id = "draft-3-cccccccccccc"
