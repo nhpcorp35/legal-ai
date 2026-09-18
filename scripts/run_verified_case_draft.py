@@ -259,6 +259,7 @@ def third_party_action_slices(documents):
             "kind": "answer" if is_answer else "complaint",
             "ordinal": third_party_action_ordinal(filename, document_pages),
             "caption_tokens": third_party_caption_tokens(filename, document_pages),
+            "action_summons": bool(re.search(r"\bthird party summons\b", normalized)),
         })
 
     complaints = [item for item in filings if item["kind"] == "complaint"]
@@ -277,9 +278,33 @@ def third_party_action_slices(documents):
         action["complaints"].append(complaint)
         action["caption_tokens"].update(complaint["caption_tokens"])
 
+    def filing_sequence(filing):
+        match = re.search(r"(\d+)(?!.*\d)", normalized_filename(filing["filename"]))
+        return int(match.group(1)) if match else None
+
     actions = []
+    action_summonses = [item for item in complaints if item["action_summons"]]
+    if len(action_summonses) > len(THIRD_PARTY_ORDINALS):
+        raise PreGenerationGateError("ambiguous_third_party_action_identity")
+    if len(action_summonses) > 1:
+        sequences = [filing_sequence(item) for item in action_summonses]
+        if None in sequences or len(set(sequences)) != len(sequences):
+            raise PreGenerationGateError(
+                "ambiguous_third_party_action_identity",
+                "multiple_unlabeled_complaints",
+            )
+        for ordinal, complaint in zip(
+            THIRD_PARTY_ORDINALS,
+            [item for _, item in sorted(zip(sequences, action_summonses))],
+        ):
+            actions.append(new_action(ordinal, complaint))
+
     for complaint in sorted(
-        (item for item in complaints if item["ordinal"] is not None),
+        (
+            item for item in complaints
+            if item["ordinal"] is not None
+            and (len(action_summonses) <= 1 or not item["action_summons"])
+        ),
         key=lambda item: (
             THIRD_PARTY_ORDINALS.index(item["ordinal"]),
             item["filename"].casefold(),
@@ -301,7 +326,11 @@ def third_party_action_slices(documents):
     # a duplicate of an explicitly labeled action.
     clusters = []
     for complaint in sorted(
-        (item for item in complaints if item["ordinal"] is None),
+        (
+            item for item in complaints
+            if item["ordinal"] is None
+            and (len(action_summonses) <= 1 or not item["action_summons"])
+        ),
         key=lambda item: item["filename"].casefold(),
     ):
         scored = sorted(
@@ -355,12 +384,7 @@ def third_party_action_slices(documents):
     if len(clusters) != len(missing):
         raise PreGenerationGateError("noncontiguous_third_party_actions")
     if len(clusters) > 1:
-        def filing_sequence(cluster):
-            match = re.search(r"(\d+)(?!.*\d)", normalized_filename(
-                cluster["complaint"]["filename"]
-            ))
-            return int(match.group(1)) if match else None
-        sequences = [filing_sequence(cluster) for cluster in clusters]
+        sequences = [filing_sequence(cluster["complaint"]) for cluster in clusters]
         if None in sequences or len(set(sequences)) != len(sequences):
             raise PreGenerationGateError(
                 "ambiguous_third_party_action_identity",
