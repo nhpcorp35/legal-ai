@@ -962,6 +962,29 @@ class SzymczykFilenameCoverageTests(unittest.TestCase):
         self.assertEqual(actions[0]["complaint"]["filename"], "THIRD_PARTY_COMPLAINT_10.pdf")
         self.assertEqual(actions[2]["complaint"]["filename"], "THIRD_PARTY_COMPLAINT_30.pdf")
 
+    def test_third_party_mentions_do_not_promote_nonpleadings(self):
+        documents = {
+            ("a" * 64, "THIRD_PARTY_SUMMONS_5.pdf"): [
+                (1, "Third-party summons and complaint. Alpha against Able.")
+            ],
+            ("b" * 64, "MEMORANDUM_OF_LAW_312.pdf"): [
+                (1, "This memorandum discusses the third-party complaint and summons.")
+            ],
+            ("c" * 64, "DECISION_ORDER_354.pdf"): [
+                (1, "Decision concerning the second third-party complaint and summons.")
+            ],
+            ("d" * 64, "ANSWER_19.pdf"): [
+                (1, "This answer discusses a third-party complaint but is not captioned as an answer to it.")
+            ],
+        }
+        actions = WORKER.third_party_action_slices(documents)
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(
+            [item["filename"] for item in actions[0]["complaints"]],
+            ["THIRD_PARTY_SUMMONS_5.pdf"],
+        )
+        self.assertEqual(actions[0]["answers"], [])
+
     def test_third_party_layer_fails_closed_on_unmatched_answer(self):
         class AmbiguousAnswerS3(FakeS3):
             pages = [
