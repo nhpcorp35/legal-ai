@@ -1626,7 +1626,7 @@ def run_request(s3, case_id, request_id):
         stage = "draft_write"
         put(s3,case_id,request_id,"draft.json",draft)
         stage = "audit_write"
-        put(s3,case_id,request_id,"input_audit.json",{"schema_version":"legalai-internal-draft-audit.v1","case_id":case_id,"request_id":request_id,"question_sha256":hashlib.sha256(question.encode()).hexdigest(),"retrieval_citations":[{k:p[k] for k in ("source_sha256","filename","page_number")} for p in pages],"legal_authorities":authority_audit(authorities),"coverage":getattr(pages,"coverage",{}),"generated_at":now()})
+        put(s3,case_id,request_id,"input_audit.json",{"schema_version":"legalai-internal-draft-audit.v1","case_id":case_id,"request_id":request_id,"question_sha256":hashlib.sha256(question.encode()).hexdigest(),"retrieval_citations":[{k:p[k] for k in ("source_sha256","filename","page_number")} for p in pages],"legal_authorities":authority_audit(authorities),"coverage":coverage or {},"generated_at":now()})
         stage = "ready_write"
         put(s3,case_id,request_id,"status.json",{"schema_version":"legalai-internal-draft-status.v1","case_id":case_id,"request_id":request_id,"status":"READY","updated_at":now()})
     except Exception as exc:
