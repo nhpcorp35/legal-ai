@@ -182,6 +182,21 @@ PRE_GENERATION_GATE_DETAILS = frozenset({
     "duplicate_explicit_ordinal",
     "multiple_unlabeled_complaints",
 })
+INCOMPLETE_OUTPUT_FIELDS = (
+    "counterclaims_and_cross_claims",
+    "finding",
+    "limitations",
+    "main_case",
+    "missing_information",
+    "summary",
+    "third_party_claims",
+)
+INCOMPLETE_OUTPUT_SUBTYPES = (
+    "connector_ended",
+    "empty",
+    "invalid_terminal",
+    "near_schema_limit",
+)
 MODEL_VALIDATION_REASONS = frozenset({
     "incomplete_output",
     "incomplete_output_counterclaims_and_cross_claims",
@@ -199,7 +214,11 @@ MODEL_VALIDATION_REASONS = frozenset({
     "unverified_citation",
     "unverified_missing_page_claim",
     "verified_pleading_called_missing",
-})
+}) | frozenset(
+    f"incomplete_output_{field}_{subtype}"
+    for field in INCOMPLETE_OUTPUT_FIELDS
+    for subtype in INCOMPLETE_OUTPUT_SUBTYPES
+)
 
 
 def third_party_action_ordinal(filename, document_pages):
@@ -1356,12 +1375,16 @@ def validate(result, pages, authorities=(), question="", coverage=None):
         for container, field, label in sentence_fields:
             item = container.get(field) if isinstance(container, dict) else container[field]
             if not isinstance(item, str) or not item.strip():
-                raise ValueError(f"incomplete output {label}")
+                raise ValueError(f"incomplete output {label} empty")
             cleaned = item.strip()
             if cleaned[-1] not in ".?!":
+                if len(cleaned) >= 2350:
+                    raise ValueError(f"incomplete output {label} near schema limit")
                 unquoted = CLOSING_SENTENCE_MARK_RE.sub("", cleaned).rstrip()
-                if not unquoted or INCOMPLETE_SENTENCE_RE.search(unquoted):
-                    raise ValueError(f"incomplete output {label}")
+                if not unquoted:
+                    raise ValueError(f"incomplete output {label} invalid terminal")
+                if INCOMPLETE_SENTENCE_RE.search(unquoted):
+                    raise ValueError(f"incomplete output {label} connector ended")
                 cleaned += "."
                 if isinstance(container, dict):
                     container[field] = cleaned
@@ -1376,7 +1399,7 @@ def validate(result, pages, authorities=(), question="", coverage=None):
                 or item.strip()[-1] not in ".?!"
                 or INCOMPLETE_SENTENCE_RE.search(item.strip())
             ):
-                raise ValueError(f"incomplete output {label}")
+                raise ValueError(f"incomplete output {label} invalid terminal")
         if any(UNSELECTED_PAGES_MISSING_RE.search(item) for item in text_items):
             raise ValueError("unverified missing-page claim")
         inventory = (coverage or {}).get("verified_pleading_inventory", [])
