@@ -838,7 +838,10 @@ def validate(result, pages, authorities=(), question="", coverage=None):
     if litigation_map_question(question) and not authorities and TOP_ATTACK_SURFACES_MARKER not in question.casefold():
         sections = [item.get("section") for item in result["findings"]]
         expected = [section for section in LITIGATION_MAP_SECTIONS if section in sections]
-        if not sections or any(section not in LITIGATION_MAP_SECTIONS for section in sections) or len(sections) != len(set(sections)) or sections != expected or sections[0] != "Main case":
+        cross_claim_only = bool(CROSS_CLAIM_ONLY_QUESTION_RE.search(question))
+        invalid_scope = cross_claim_only and sections != ["Counterclaims and cross-claims"]
+        missing_main_case = not cross_claim_only and sections and sections[0] != "Main case"
+        if not sections or any(section not in LITIGATION_MAP_SECTIONS for section in sections) or len(sections) != len(set(sections)) or sections != expected or invalid_scope or missing_main_case:
             raise ValueError("invalid litigation-map sections")
     return result
 
