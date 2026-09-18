@@ -223,9 +223,9 @@ class ClaimsAndDefensesPromptTests(unittest.TestCase):
         for sections in (["Third-party claims", "Main case"], ["Main case", "Main case"]):
             with self.assertRaisesRegex(ValueError, "invalid litigation-map sections"):
                 WORKER.validate(result(sections), [page], question=question)
-        with self.assertRaisesRegex(ValueError, "incomplete output"):
+        with self.assertRaisesRegex(ValueError, "incomplete output main case"):
             WORKER.validate(result(["Main case"], statement="Party: negligence and"), [page], question=question)
-        with self.assertRaisesRegex(ValueError, "incomplete output"):
+        with self.assertRaisesRegex(ValueError, "incomplete output main case"):
             WORKER.validate(result(["Main case"], statement="Party: negligence; relief: damages’"), [page], question=question)
         with self.assertRaisesRegex(ValueError, "unverified missing-page claim"):
             WORKER.validate(result(["Main case"], missing=["Complaint pages 2–18 were not supplied."]), [page], question=question)
@@ -560,6 +560,14 @@ class PendingQueueTests(unittest.TestCase):
         self.assertEqual(
             known["validation_reason"],
             "verified_pleading_called_missing",
+        )
+        field_specific = WORKER.failure_diagnostics(
+            ValueError("incomplete output counterclaims and cross claims"),
+            "model_validation",
+        )
+        self.assertEqual(
+            field_specific["validation_reason"],
+            "incomplete_output_counterclaims_and_cross_claims",
         )
 
         unknown = WORKER.failure_diagnostics(
