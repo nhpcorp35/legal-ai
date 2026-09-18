@@ -225,8 +225,11 @@ class ClaimsAndDefensesPromptTests(unittest.TestCase):
                 WORKER.validate(result(sections), [page], question=question)
         with self.assertRaisesRegex(ValueError, "incomplete output main case"):
             WORKER.validate(result(["Main case"], statement="Party: negligence and"), [page], question=question)
-        with self.assertRaisesRegex(ValueError, "incomplete output main case"):
-            WORKER.validate(result(["Main case"], statement="Party: negligence; relief: damages’"), [page], question=question)
+        quoted = result(["Main case"], statement="Party: negligence; relief: ‘damages’")
+        self.assertEqual(
+            WORKER.validate(quoted, [page], question=question)["findings"][0]["statement"],
+            "Party: negligence; relief: ‘damages’.",
+        )
         with self.assertRaisesRegex(ValueError, "unverified missing-page claim"):
             WORKER.validate(result(["Main case"], missing=["Complaint pages 2–18 were not supplied."]), [page], question=question)
 
