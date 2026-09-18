@@ -184,6 +184,7 @@ PRE_GENERATION_GATE_DETAILS = frozenset({
 })
 MODEL_VALIDATION_REASONS = frozenset({
     "incomplete_output",
+    "incomplete_third_party_actions",
     "invalid_litigation_map_sections",
     "invalid_output",
     "uncited_output",
@@ -1265,10 +1266,10 @@ def litigation_map_question(question: str) -> bool:
     return bool(LITIGATION_MAP_QUESTION_RE.search(question)) or len(BROAD_RECORD_TERMS.intersection(terms)) >= 2
 
 
-def finding_schema(page_citation_properties, *, attorney_sections=False, litigation_map=False, max_findings=8):
+def finding_schema(page_citation_properties, *, attorney_sections=False, litigation_map=False, max_findings=8, statement_max_length=900):
     """Build the strict source-aware finding schema for either worker."""
     page_required = list(page_citation_properties)
-    finding_properties = {"statement":{"type":"string","maxLength":900},"citations":{"type":"array","items":{"type":"object","additionalProperties":False,"required":page_required,"properties":page_citation_properties}},"authority_citations":{"type":"array","items":{"type":"string"}}}
+    finding_properties = {"statement":{"type":"string","maxLength":statement_max_length},"citations":{"type":"array","items":{"type":"object","additionalProperties":False,"required":page_required,"properties":page_citation_properties}},"authority_citations":{"type":"array","items":{"type":"string"}}}
     finding_required = ["statement", "citations", "authority_citations"]
     sections = ATTORNEY_ANSWER_SECTIONS if attorney_sections else LITIGATION_MAP_SECTIONS if litigation_map else ()
     if sections:
@@ -1280,7 +1281,8 @@ def finding_schema(page_citation_properties, *, attorney_sections=False, litigat
 def generate(question, pages, coverage=None, authorities=None):
     authorities = tuple(match_verified_authorities(question) if authorities is None else authorities)
     map_question = litigation_map_question(question) and not authorities and TOP_ATTACK_SURFACES_MARKER not in question.casefold()
-    schema=finding_schema({"source_sha256":{"type":"string"},"filename":{"type":"string"},"page_number":{"type":"integer","minimum":1}}, attorney_sections=bool(authorities), litigation_map=map_question, max_findings=len(LITIGATION_MAP_SECTIONS) if map_question else 8)
+    third_party_action_count = len((coverage or {}).get("third_party_actions", []))
+    schema=finding_schema({"source_sha256":{"type":"string"},"filename":{"type":"string"},"page_number":{"type":"integer","minimum":1}}, attorney_sections=bool(authorities), litigation_map=map_question, max_findings=len(LITIGATION_MAP_SECTIONS) if map_question else 8, statement_max_length=2400 if third_party_action_count > 1 else 900)
     instructions = "Use only the supplied verified excerpts and legal authorities. This is an internal attorney-review draft, not legal advice or a conclusion. Make no unsupported inference. Case-record facts cite only page citations in citations; legal rules cite only authority ids in authority_citations; application findings should cite both where appropriate. Do not overstate court level, controlling effect, or proposition scope. Every finding must have at least one verified source across those two arrays. Before stating that information is missing or calling something an open question, check the entire supplied record-wide excerpt set, including caption pages and operative pages from related pleadings. Never call a page range missing merely because it was not selected into the bounded retrieval slice; describe the bounded retrieval limitation instead. Use the filing map only as a navigation aid; verify every proposition against its cited pages. Treat pleaded alternatives, denials, and defenses as attributed litigation positions, not established facts or contradictions. For a question about parties, claims, defenses, or relief, return a compact litigation map, not a memo; it must be attorney-readable. The summary must be one sentence of no more than 28 words and may name only claim categories, counterclaim categories, and categories of missing material; do not include party roles, ownership, control, or other factual positions. Return at most one finding for each populated heading, in this exact order: (1) Main case; (2) counterclaims and cross-claims; (3) third-party claims. Put the exact heading in the section field. Each finding must use this one-line shape: '[expressly named parties and short roles]: [claim labels]; defenses: [short labels]; relief: [short label].' Use labels only (for example, breach, lien foreclosure, negligence, statute of limitations, payment); do not explain allegations, evidence, legal standards, or why a position may succeed. In the claims field, list only an expressly asserted cause-of-action label; do not place a plaintiff-side ownership position, party-role statement, necessary-party label, or other non-claim there. In the defenses field, list only a defense attributed to the responding party; do not place a plaintiff-side allegation, ownership position, necessary-party label, or other non-defense there. List no more than three material defense labels for each party. Collapse any additional routine defenses into the single label 'affirmative defenses'; do not enumerate waiver, estoppel, laches, unclean hands, comparative fault, or similar boilerplate separately unless one is the only material defense expressly identified in the supplied record. Omit an empty heading rather than narrating that it is empty. List only the parties named in the caption or operative pleading. Do not invent, infer, or call out an unnamed party from a missing or partial caption. List a John Doe, XYZ entity, or other placeholder only if a supplied verified pleading expressly names it. If a supplied order shows that a motion was disposed of because a party died and substitution is pending, label it a procedural disposition, not a merits decision; state only the procedural consequence shown by that order. Do not use dense narrative. End every summary, finding, missing-information item, and limitation with a complete sentence; never truncate text to fill a schema limit. When supplied pages contain both an ownership assertion and a party's nonresidence or no-control statement, present both as attributed, competing record positions with citations; do not omit either or treat either as conclusively established. Do not portray a pleading typo or general denial as case-dispositive unless a supplied court ruling makes it so. Identify missing information only when it remains unsupported after that record-wide check."
     if TOP_ATTACK_SURFACES_MARKER in question.casefold():
         instructions += " For the v4.0 Top Attack Surfaces Report, do not prepend or return a claims-map summary. If a supplied order shows a motion was disposed of because a party died and substitution is pending, identify it as a procedural disposition, not a merits decision, and state only the procedural consequence shown by that order."
@@ -1372,6 +1374,37 @@ def validate(result, pages, authorities=(), question="", coverage=None):
             for item in text_items
         ):
             raise ValueError("verified pleading called missing")
+        third_party_actions = (coverage or {}).get("third_party_actions", [])
+        if third_party_actions:
+            third_party_findings = [
+                finding for finding in result["findings"]
+                if finding.get("section") == "Third-party claims"
+            ]
+            if len(third_party_findings) != 1:
+                raise ValueError("incomplete third-party actions")
+            statement = third_party_findings[0]["statement"]
+            positions = []
+            for action in third_party_actions:
+                ordinal = action.get("ordinal") if isinstance(action, dict) else None
+                match = re.search(
+                    rf"\b{re.escape(str(ordinal))}(?:\s+third[ -]?party)?\s+action\b",
+                    statement,
+                    re.IGNORECASE,
+                ) if ordinal else None
+                if match is None or (positions and match.start() <= positions[-1][1]):
+                    raise ValueError("incomplete third-party actions")
+                positions.append((action, match.start(), match.end()))
+            for index, (action, _, start) in enumerate(positions):
+                end = positions[index + 1][1] if index + 1 < len(positions) else len(statement)
+                action_text = statement[start:end]
+                if "defenses:" not in action_text.casefold() or "relief:" not in action_text.casefold():
+                    raise ValueError("incomplete third-party actions")
+                if not action.get("answer_present", False) and not re.search(
+                    r"\bno corresponding answer was identified\b",
+                    action_text,
+                    re.IGNORECASE,
+                ):
+                    raise ValueError("incomplete third-party actions")
     if litigation_map_question(question) and not authorities and TOP_ATTACK_SURFACES_MARKER not in question.casefold():
         sections = [item.get("section") for item in result["findings"]]
         expected = [section for section in LITIGATION_MAP_SECTIONS if section in sections]
