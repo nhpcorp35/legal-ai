@@ -18,6 +18,7 @@ if __package__ in {None, ""}:
 from engines.verified_authority_registry import match_verified_authorities
 
 MAX_PAGES, MAX_PAGE_CHARS, MAX_CONTEXT_CHARS = 45, 2200, 75000
+CONSOLIDATED_MAX_PAGES, CONSOLIDATED_MAX_CONTEXT_CHARS = 80, 130000
 CASE_RE = re.compile(r"NY-[A-Za-z]+-[0-9]{6}-[0-9]{4}-[A-Za-z0-9-]{2,80}$")
 CASE00_BENCHMARK_ID = "Case-00-Triborough"
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
@@ -82,6 +83,10 @@ THIRD_PARTY_ONLY_QUESTION_RE = re.compile(
     r"\b(?:validate|identify|map)\b.*\bthird[ -]?party\s+claims?\b.*\bseparately\b|"
     r"\bthird[ -]?party\s+claims?\b.*\bseparately\s+from\s+the\s+main\s+(?:action|case)\b",
     re.IGNORECASE,
+)
+CONSOLIDATED_LITIGATION_MAP_RE = re.compile(
+    r"\bmain\s+(?:case|action)\b.*\bcounterclaims?\s+and\s+cross[ -]?claims?\b.*\bthird[ -]?party\s+claims?\b",
+    re.IGNORECASE | re.DOTALL,
 )
 CROSS_CLAIM_ASSERTING_PARTY_RE = re.compile(
     r"\basserted\s+by\s+(.+?)(?=,\s+the\s+parties\b|,\s+each\b|\.\s|$)",
@@ -776,15 +781,18 @@ def evidence(s3, case_id, question):
     # filing-led coverage before contract exhibits are considered.
     pleading_focused_question = bool(PLEADING_FOCUSED_QUESTION_RE.search(question))
     attack_surface_question = TOP_ATTACK_SURFACES_MARKER in question.casefold()
+    consolidated_question = bool(CONSOLIDATED_LITIGATION_MAP_RE.search(question))
     third_party_only_question = bool(THIRD_PARTY_ONLY_QUESTION_RE.search(question))
     cross_claim_only_question = (
         bool(CROSS_CLAIM_ONLY_QUESTION_RE.search(question))
         and not third_party_only_question
+        and not consolidated_question
     )
     main_action_only_question = (
         bool(MAIN_ACTION_ONLY_QUESTION_RE.search(question))
         and not cross_claim_only_question
         and not third_party_only_question
+        and not consolidated_question
     )
     # The v4 report is intentionally filing-led even though its prompt uses
     # analytical terms rather than a pleading's exact title.
@@ -837,6 +845,9 @@ def evidence(s3, case_id, question):
     # together so page-ranking cannot retain only the caption and falsely call
     # the operative allegations missing.
     targeted_pages = []
+    consolidated_action_audit = []
+    if consolidated_question:
+        targeted_pages, consolidated_action_audit = select_third_party_action_pages(documents)
     if targeted_third_party_complaint:
         candidates = []
         for (source, filename), document_pages in documents.items():
@@ -1145,7 +1156,13 @@ def evidence(s3, case_id, question):
         item_id = (source, filename, page)
         if item_id in selected_ids:
             continue
-        if total+len(item["text"])>MAX_CONTEXT_CHARS or len(selected)>=MAX_PAGES:
+        max_context_chars = (
+            CONSOLIDATED_MAX_CONTEXT_CHARS
+            if consolidated_question
+            else MAX_CONTEXT_CHARS
+        )
+        max_pages = CONSOLIDATED_MAX_PAGES if consolidated_question else MAX_PAGES
+        if total+len(item["text"])>max_context_chars or len(selected)>=max_pages:
             continue
         selected.append(item); selected_ids.add(item_id); total+=len(item["text"])
     if not selected:
@@ -1187,6 +1204,8 @@ def evidence(s3, case_id, question):
         },
         "verified_pleading_inventory": verified_pleading_inventory(documents),
     }
+    if consolidated_action_audit:
+        coverage["third_party_actions"] = consolidated_action_audit
     return EvidenceSelection(selected, coverage)
 
 def pleading_map(pages):
@@ -1453,16 +1472,19 @@ def validate(result, pages, authorities=(), question="", coverage=None):
         sections = [item.get("section") for item in result["findings"]]
         expected = [section for section in LITIGATION_MAP_SECTIONS if section in sections]
         third_party_only = bool(THIRD_PARTY_ONLY_QUESTION_RE.search(question))
+        consolidated = bool(CONSOLIDATED_LITIGATION_MAP_RE.search(question))
         # A third-party-only request commonly names counter/cross-claims only
         # to exclude them.  The positive third-party scope therefore wins over
         # the broader cross-claim detector.
         cross_claim_only = (
             bool(CROSS_CLAIM_ONLY_QUESTION_RE.search(question))
             and not third_party_only
+            and not consolidated
         )
         invalid_scope = (
             (cross_claim_only and sections != ["Counterclaims and cross-claims"])
             or (third_party_only and sections != ["Third-party claims"])
+            or (consolidated and sections != list(LITIGATION_MAP_SECTIONS))
         )
         missing_main_case = (
             not cross_claim_only
