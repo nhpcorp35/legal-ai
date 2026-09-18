@@ -257,12 +257,22 @@ def third_party_action_slices(documents):
                 )
             ordinal = "first"
         if ordinal in used:
-            raise PreGenerationGateError(
-                "ambiguous_third_party_action_identity",
-                "duplicate_explicit_ordinal",
-            )
+            # A successive action may have separate summons, complaint, or
+            # amended-complaint filings carrying the same express ordinal.
+            # Keep them in one action; the ordinal identifies the action, not
+            # an individual source document.
+            action = next(item for item in actions if item["ordinal"] == ordinal)
+            action["complaints"].append(complaint)
+            action["caption_tokens"].update(complaint["caption_tokens"])
+            continue
         used.add(ordinal)
-        actions.append({"ordinal": ordinal, "complaint": complaint, "answers": []})
+        actions.append({
+            "ordinal": ordinal,
+            "complaint": complaint,
+            "complaints": [complaint],
+            "caption_tokens": set(complaint["caption_tokens"]),
+            "answers": [],
+        })
     expected = set(THIRD_PARTY_ORDINALS[:len(actions)])
     if used != expected:
         raise PreGenerationGateError("noncontiguous_third_party_actions")
@@ -274,7 +284,7 @@ def third_party_action_slices(documents):
         if not candidates:
             raise PreGenerationGateError("unmatched_third_party_answer")
         scored = sorted(
-            ((len(answer["caption_tokens"] & a["complaint"]["caption_tokens"]), a) for a in candidates),
+            ((len(answer["caption_tokens"] & a["caption_tokens"]), a) for a in candidates),
             key=lambda pair: (-pair[0], THIRD_PARTY_ORDINALS.index(pair[1]["ordinal"])),
         )
         if answer["ordinal"] is None and (not scored or scored[0][0] == 0):
@@ -292,7 +302,7 @@ def select_third_party_action_pages(documents):
     action_audit = []
     for action in actions:
         candidates = []
-        for filing in [action["complaint"], *action["answers"]]:
+        for filing in [*action["complaints"], *action["answers"]]:
             pages = filing["pages"]
             for index, (page_number, text) in enumerate(pages):
                 opening = index == 0
@@ -350,6 +360,9 @@ def select_third_party_action_pages(documents):
         action_audit.append({
             "ordinal": action["ordinal"],
             "complaint_filename": action["complaint"]["filename"],
+            "complaint_filenames": sorted(
+                complaint["filename"] for complaint in action["complaints"]
+            ),
             "answer_filenames": sorted(a["filename"] for a in action["answers"]),
             "answer_present": bool(action["answers"]),
             "citations": [
