@@ -221,10 +221,26 @@ def third_party_action_slices(documents):
             continue
         if re.search(r"\b(?:exhibit|affidavit|affirmation|notice|stipulation)\b", normalized):
             continue
-        is_answer = "answer" in normalized or bool(
-            re.search(r"\banswer\s+to\b.*\bthird[ -]?party\b", identity)
+        opening_text = " ".join(
+            text[:1600].casefold() for _, text in sorted(document_pages)[:1]
         )
-        is_complaint = not is_answer and bool(re.search(r"\b(?:complaint|summons)\b", identity))
+        filename_is_third_party = bool(re.search(r"\bthird[ -]?party\b", normalized))
+        opening_is_third_party_answer = bool(re.search(
+            r"\banswer\s+to\b.*\bthird[ -]?party\b|"
+            r"\bthird[ -]?party\s+defendants?\b.*\banswer\b",
+            opening_text,
+        ))
+        opening_is_third_party_complaint = bool(re.search(
+            r"\b(?:first|second|third|fourth)?\s*third[ -]?party\b.*"
+            r"\b(?:complaint|summons)\b",
+            opening_text,
+        ))
+        is_answer = "answer" in normalized and (
+            filename_is_third_party or opening_is_third_party_answer
+        )
+        is_complaint = not is_answer and bool(
+            re.search(r"\b(?:complaint|summons)\b", normalized)
+        ) and (filename_is_third_party or opening_is_third_party_complaint)
         if not (is_answer or is_complaint):
             continue
         filings.append({
