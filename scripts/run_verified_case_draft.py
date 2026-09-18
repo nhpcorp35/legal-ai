@@ -762,7 +762,7 @@ def compose_validated_layers(s3, case_id, question):
             continue
         sections = [item.get("section") for item in findings if isinstance(item, dict)]
         draft_question = str(draft.get("question", ""))
-        if "Main case" in sections:
+        if "Main case" in sections and not CONSOLIDATED_LITIGATION_MAP_RE.search(draft_question):
             candidates["Main case"].append((request_id, draft))
         if sections == ["Counterclaims and cross-claims"] and "quality facilit" in draft_question.casefold():
             candidates["Counterclaims and cross-claims"].append((request_id, draft))

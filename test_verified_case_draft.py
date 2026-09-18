@@ -493,6 +493,7 @@ class PendingQueueTests(unittest.TestCase):
             "main": "draft-100-aaaaaaaaaaaa",
             "counter": "draft-200-bbbbbbbbbbbb",
             "third": "draft-300-cccccccccccc",
+            "prior_composition": "draft-400-dddddddddddd",
         }
         def draft(request_id, question, section, statement):
             return {
@@ -534,6 +535,12 @@ class PendingQueueTests(unittest.TestCase):
                 {"ordinal": "fourth", "answer_present": True},
             ]}
         }
+        objects[WORKER.key(case_id, ids["prior_composition"], "draft.json")] = draft(
+            ids["prior_composition"],
+            "Prior consolidated map: Main case; Counterclaims and cross-claims; Third-party claims.",
+            "Main case",
+            "Prior composition: claims; defenses: limitations; relief: damages.",
+        )
         class CompositionS3:
             def list_objects_v2(self, **kwargs):
                 return {"Contents": [{"Key": key} for key in objects if key.endswith("/draft.json")]}
