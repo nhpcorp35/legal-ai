@@ -1152,6 +1152,13 @@ PRESENT_PLEADING_MISSING_RE = re.compile(
     r"(?:missing|absent|not\s+supplied|not\s+provided|unavailable)\b",
     re.IGNORECASE,
 )
+ACTION_SPECIFIC_MISSING_ANSWER_RE = re.compile(
+    r"\b(?:corresponding\s+answer|answer\s+for\s+the\s+"
+    r"(?:first|second|third|fourth)\s+action)\b.{0,80}\b"
+    r"(?:missing|absent|not\s+supplied|not\s+provided|unavailable)\b|"
+    r"\bno\s+corresponding\s+answer\b",
+    re.IGNORECASE,
+)
 
 
 def pleading_kind(filename: str, pages) -> str | None:
@@ -1262,9 +1269,17 @@ def validate(result, pages, authorities=(), question="", coverage=None):
             raise ValueError("unverified missing-page claim")
         inventory = (coverage or {}).get("verified_pleading_inventory", [])
         present_kinds = {item.get("filing_kind") for item in inventory if isinstance(item, dict)}
+        unresolved_action_answer = any(
+            isinstance(action, dict) and not action.get("answer_present", False)
+            for action in (coverage or {}).get("third_party_actions", [])
+        )
         if present_kinds and any(
             PRESENT_PLEADING_MISSING_RE.search(item)
             and any(kind in item.casefold() for kind in present_kinds if isinstance(kind, str))
+            and not (
+                unresolved_action_answer
+                and ACTION_SPECIFIC_MISSING_ANSWER_RE.search(item)
+            )
             for item in text_items
         ):
             raise ValueError("verified pleading called missing")
