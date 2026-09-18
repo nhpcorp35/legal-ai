@@ -1206,6 +1206,7 @@ LITIGATION_MAP_QUESTION_RE = re.compile(
     re.IGNORECASE,
 )
 INCOMPLETE_SENTENCE_RE = re.compile(r"(?:[,;:]|\b(?:and|or|the|a|an|to|of|for|with|by|from))\s*$", re.IGNORECASE)
+DANGLING_SENTENCE_MARK_RE = re.compile(r"[\'’\"“”]\s*$")
 UNSELECTED_PAGES_MISSING_RE = re.compile(
     r"\b(?:pages?|pp?\.)\s*\d+(?:\s*[-–—]\s*\d+)?\s+(?:was|were|is|are)?\s*"
     r"(?:not\s+supplied|not\s+provided|missing|absent|unavailable)\b",
@@ -1320,6 +1321,30 @@ def validate(result, pages, authorities=(), question="", coverage=None):
             raise ValueError("unverified authority citation")
     strict_output = litigation_map_question(question) or TOP_ATTACK_SURFACES_MARKER in question.casefold()
     if strict_output:
+        # JSON-schema generation guarantees bounded strings but not terminal
+        # punctuation. Normalize otherwise complete prose deterministically;
+        # retain fail-closed behavior for empty, connector-ended, or dangling-
+        # quote text that may actually be truncated.
+        sentence_fields = [
+            (result, "summary"),
+            *[(finding, "statement") for finding in result["findings"]],
+        ]
+        for collection_name in ("missing_information", "limitations"):
+            collection = result.get(collection_name, [])
+            sentence_fields.extend((collection, index) for index in range(len(collection)))
+        for container, field in sentence_fields:
+            item = container.get(field) if isinstance(container, dict) else container[field]
+            if not isinstance(item, str) or not item.strip():
+                raise ValueError("incomplete output")
+            cleaned = item.strip()
+            if cleaned[-1] not in ".?!":
+                if INCOMPLETE_SENTENCE_RE.search(cleaned) or DANGLING_SENTENCE_MARK_RE.search(cleaned):
+                    raise ValueError("incomplete output")
+                cleaned += "."
+                if isinstance(container, dict):
+                    container[field] = cleaned
+                else:
+                    container[field] = cleaned
         text_items = [result.get("summary", ""), *[item["statement"] for item in result["findings"]], *result.get("missing_information", []), *result.get("limitations", [])]
         if any(
             not isinstance(item, str)
