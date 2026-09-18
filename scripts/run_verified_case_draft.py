@@ -184,6 +184,13 @@ PRE_GENERATION_GATE_DETAILS = frozenset({
 })
 MODEL_VALIDATION_REASONS = frozenset({
     "incomplete_output",
+    "incomplete_output_counterclaims_and_cross_claims",
+    "incomplete_output_finding",
+    "incomplete_output_limitations",
+    "incomplete_output_main_case",
+    "incomplete_output_missing_information",
+    "incomplete_output_summary",
+    "incomplete_output_third_party_claims",
     "incomplete_third_party_actions",
     "invalid_litigation_map_sections",
     "invalid_output",
@@ -1328,34 +1335,47 @@ def validate(result, pages, authorities=(), question="", coverage=None):
         # retain fail-closed behavior for empty, connector-ended, or dangling-
         # quote text that may actually be truncated.
         sentence_fields = [
-            (result, "summary"),
-            *[(finding, "statement") for finding in result["findings"]],
+            (result, "summary", "summary"),
+            *[
+                (
+                    finding,
+                    "statement",
+                    {
+                        "Main case": "main case",
+                        "Counterclaims and cross-claims": "counterclaims and cross claims",
+                        "Third-party claims": "third party claims",
+                    }.get(finding.get("section"), "finding"),
+                )
+                for finding in result["findings"]
+            ],
         ]
         for collection_name in ("missing_information", "limitations"):
             collection = result.get(collection_name, [])
-            sentence_fields.extend((collection, index) for index in range(len(collection)))
-        for container, field in sentence_fields:
+            label = collection_name.replace("_", " ")
+            sentence_fields.extend((collection, index, label) for index in range(len(collection)))
+        for container, field, label in sentence_fields:
             item = container.get(field) if isinstance(container, dict) else container[field]
             if not isinstance(item, str) or not item.strip():
-                raise ValueError("incomplete output")
+                raise ValueError(f"incomplete output {label}")
             cleaned = item.strip()
             if cleaned[-1] not in ".?!":
                 if INCOMPLETE_SENTENCE_RE.search(cleaned) or DANGLING_SENTENCE_MARK_RE.search(cleaned):
-                    raise ValueError("incomplete output")
+                    raise ValueError(f"incomplete output {label}")
                 cleaned += "."
                 if isinstance(container, dict):
                     container[field] = cleaned
                 else:
                     container[field] = cleaned
         text_items = [result.get("summary", ""), *[item["statement"] for item in result["findings"]], *result.get("missing_information", []), *result.get("limitations", [])]
-        if any(
-            not isinstance(item, str)
-            or not item.strip()
-            or item.strip()[-1] not in ".?!"
-            or INCOMPLETE_SENTENCE_RE.search(item.strip())
-            for item in text_items
-        ):
-            raise ValueError("incomplete output")
+        for container, field, label in sentence_fields:
+            item = container.get(field) if isinstance(container, dict) else container[field]
+            if (
+                not isinstance(item, str)
+                or not item.strip()
+                or item.strip()[-1] not in ".?!"
+                or INCOMPLETE_SENTENCE_RE.search(item.strip())
+            ):
+                raise ValueError(f"incomplete output {label}")
         if any(UNSELECTED_PAGES_MISSING_RE.search(item) for item in text_items):
             raise ValueError("unverified missing-page claim")
         inventory = (coverage or {}).get("verified_pleading_inventory", [])
