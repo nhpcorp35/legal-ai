@@ -163,6 +163,18 @@ class EvidenceSelection(list):
         self.coverage = coverage
 
 
+PRE_GENERATION_GATE_REASONS = frozenset({
+    "ambiguous_third_party_action_identity",
+    "ambiguous_third_party_answer",
+    "incomplete_third_party_action_slice",
+    "missing_first_affirmative_defense_page",
+    "missing_third_party_complaint",
+    "noncontiguous_third_party_actions",
+    "third_party_action_slices_exceed_context",
+    "unmatched_third_party_answer",
+})
+
+
 def third_party_action_ordinal(filename, document_pages):
     """Return the expressly stated successive-action ordinal, if any."""
     identity = " ".join(
@@ -378,6 +390,13 @@ def failure_diagnostics(exc, stage):
         "failure_stage": stage,
         "exception_type": exc.__class__.__name__.lower(),
     }
+    if isinstance(exc, PreGenerationGateError):
+        gate_reason = str(exc)
+        details["gate_reason"] = (
+            gate_reason
+            if gate_reason in PRE_GENERATION_GATE_REASONS
+            else "unspecified_pre_generation_gate"
+        )
     if isinstance(exc, urllib.error.HTTPError):
         details["http_status"] = int(exc.code)
     elif isinstance(exc, urllib.error.URLError):
