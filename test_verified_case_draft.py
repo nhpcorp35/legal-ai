@@ -52,6 +52,24 @@ class MatchingEvidenceS3(FakeS3):
 
 
 class EvidenceFailClosedTests(unittest.TestCase):
+    def test_retrieval_validation_profiles_cover_each_supported_layer(self):
+        self.assertEqual(
+            set(WORKER.RETRIEVAL_VALIDATION_PROFILES),
+            {"main-action", "counter-cross", "third-party", "consolidated"},
+        )
+        self.assertTrue(WORKER.MAIN_ACTION_ONLY_QUESTION_RE.search(
+            WORKER.RETRIEVAL_VALIDATION_PROFILES["main-action"]
+        ))
+        self.assertTrue(WORKER.CROSS_CLAIM_ONLY_QUESTION_RE.search(
+            WORKER.RETRIEVAL_VALIDATION_PROFILES["counter-cross"]
+        ))
+        self.assertTrue(WORKER.THIRD_PARTY_ONLY_QUESTION_RE.search(
+            WORKER.RETRIEVAL_VALIDATION_PROFILES["third-party"]
+        ))
+        self.assertTrue(WORKER.CONSOLIDATED_LITIGATION_MAP_RE.search(
+            WORKER.RETRIEVAL_VALIDATION_PROFILES["consolidated"]
+        ))
+
     def test_retrieval_validation_is_read_only_and_model_free(self):
         report = WORKER.validate_retrieval(
             type(
