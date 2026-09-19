@@ -113,6 +113,10 @@ PLEADING_RELIEF_TEXT_RE = re.compile(
     r"damages(?:,|\s+and|\s+in)|costs? and disbursements)\b",
     re.IGNORECASE,
 )
+PLEADING_PRAYER_START_RE = re.compile(
+    r"\b(?:wherefore|prayer for relief)\b",
+    re.IGNORECASE,
+)
 THIRD_PARTY_COMPLAINT_QUESTION_RE = re.compile(
     r"\bthird[ -]?party\s+complaint\b",
     re.IGNORECASE,
@@ -1105,6 +1109,7 @@ def evidence(s3, case_id, question):
         section_start = 1
         prior_page = None
         affirmative_defense_run_remaining = 0
+        prayer_run_remaining = 0
         for page, text in sorted(document_pages):
             pleading_filename = normalized_filename(filename)
             merits_pleading = bool(PLEADING_FILENAME_RE.search(pleading_filename))
@@ -1174,6 +1179,20 @@ def evidence(s3, case_id, question):
             operational_pleading = bool(PLEADING_OPERATIONAL_TEXT_RE.search(text))
             claim_pleading = bool(PLEADING_CLAIM_TEXT_RE.search(text))
             relief_pleading = bool(PLEADING_RELIEF_TEXT_RE.search(text))
+            prayer_continuation = (
+                prayer_run_remaining > 0
+                and prior_page is not None
+                and page == prior_page + 1
+            )
+            if PLEADING_PRAYER_START_RE.search(text):
+                # Multi-part prayers often continue for several pages without
+                # repeating WHEREFORE. Preserve the bounded continuation so
+                # later relief categories are not silently dropped.
+                prayer_run_remaining = 4
+            elif prayer_continuation:
+                prayer_run_remaining -= 1
+            else:
+                prayer_run_remaining = 0
             if filing_led_question and merits_pleading:
                 # Retain a filing-led record map: each section's caption plus
                 # claim, defense, or prayer pages.
@@ -1192,6 +1211,8 @@ def evidence(s3, case_id, question):
                     coverage_score += 12
                 if relief_pleading:
                     coverage_score += 12
+                if prayer_continuation:
+                    coverage_score += 10
                 # Party role and ownership allegations may sit between the
                 # caption and formal causes of action. Retain them for a
                 # party/claims/defenses request rather than inferring a role
@@ -1247,6 +1268,7 @@ def evidence(s3, case_id, question):
                     merits_pleading, operational_pleading, section_start,
                     affirmative_defenses, affirmative_defense_continuation,
                     claim_pleading, relief_pleading,
+                    prayer_continuation,
                 ))
             prior_page = page
     mandatory_ids=set()
@@ -1319,6 +1341,11 @@ def evidence(s3, case_id, question):
                 if row[5] and row[signal_index] and per_section.get(section,0) < section_page_limit(row):
                     if reserve(row) and not attack_surface_question:
                         mandatory_ids.add((row[3], row[1], row[2]))
+        for row in sorted(ranked, key=lambda item: (item[1].casefold(), item[2], -item[0])):
+            section=(row[3],row[1],row[7])
+            if row[5] and row[12] and per_section.get(section,0) < section_page_limit(row):
+                if reserve(row) and not attack_surface_question:
+                    mandatory_ids.add((row[3], row[1], row[2]))
         # Then reserve additional affirmative-defense headings and immediate
         # continuation pages, subject to the unchanged global budget.
         for row in ranked:
@@ -1416,14 +1443,14 @@ def evidence(s3, case_id, question):
         (source, filename, page)
         for _score, filename, page, source, _candidate, merits_pleading,
         _operational, _section_start, _defense, _continuation,
-        claim_pleading, _relief_pleading in rows
+        claim_pleading, _relief_pleading, _prayer_continuation in rows
         if merits_pleading and claim_pleading
     }.intersection(selected_ids)
     selected_relief_ids = {
         (source, filename, page)
         for _score, filename, page, source, _candidate, merits_pleading,
         _operational, _section_start, _defense, _continuation,
-        _claim_pleading, relief_pleading in rows
+        _claim_pleading, relief_pleading, _prayer_continuation in rows
         if merits_pleading and relief_pleading
     }.intersection(selected_ids)
     coverage = {

@@ -1176,6 +1176,37 @@ class RecordWidePleadingCoverageTests(unittest.TestCase):
         )
         self.assertNotIn("COMPLAINT_2.pdf", {page["filename"] for page in pages})
 
+    def test_main_action_slice_keeps_multi_page_prayer_continuation(self):
+        class MultiPagePrayerS3(FakeS3):
+            pages = [
+                {"filename": "COMPLAINT_2.pdf", "page_number": 1,
+                 "text": "SUPREME COURT. Plaintiffs against defendants."},
+                {"filename": "COMPLAINT_2.pdf", "page_number": 2,
+                 "text": "FIRST CAUSE OF ACTION. Private nuisance."},
+                {"filename": "COMPLAINT_2.pdf", "page_number": 3,
+                 "text": "Supporting allegations."},
+                {"filename": "COMPLAINT_2.pdf", "page_number": 4,
+                 "text": "WHEREFORE plaintiffs demand declaratory judgment."},
+                {"filename": "COMPLAINT_2.pdf", "page_number": 5,
+                 "text": "A. An injunction abating the condition."},
+                {"filename": "COMPLAINT_2.pdf", "page_number": 6,
+                 "text": "B. Compensatory and punitive monetary recovery."},
+                {"filename": "COMPLAINT_2.pdf", "page_number": 7,
+                 "text": "C. Such other and further relief as the Court deems just."},
+            ]
+
+        pages = WORKER.evidence(
+            MultiPagePrayerS3(),
+            "NY-Suffolk-600371-2021-DeSousa-v-Calvagno-II-Karcher",
+            WORKER.RETRIEVAL_VALIDATION_PROFILES["main-action"],
+        )
+
+        selected = {
+            page["page_number"] for page in pages
+            if page["filename"] == "COMPLAINT_2.pdf"
+        }
+        self.assertTrue({4, 5, 6, 7}.issubset(selected))
+
     def test_party_specific_every_counterclaim_question_uses_crossclaim_slice(self):
         class PartySpecificCrossClaimS3(FakeS3):
             pages = [
