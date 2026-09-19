@@ -127,6 +127,25 @@ PROCEDURAL_POSTURE_QUESTION_RE = re.compile(
     r"summary[ -]judg(?:ment|ment motion)|merits decision|procedural disposition)\b",
     re.IGNORECASE,
 )
+RETRIEVAL_VALIDATION_PROFILES = {
+    "main-action": (
+        "Identify the plaintiffs claims in the main action against the defendants "
+        "including defenses requested relief death substitution jurisdiction and "
+        "summary judgment procedural disposition"
+    ),
+    "counter-cross": (
+        "Identify all counterclaims and cross claims including asserting parties "
+        "target parties defenses and requested relief"
+    ),
+    "third-party": (
+        "Validate the third party claims layer separately from the main action "
+        "including parties claims defenses and requested relief"
+    ),
+    "consolidated": (
+        "Prepare one consolidated map in order Main case Counterclaims and cross "
+        "claims Third party claims Identify parties claims defenses and relief"
+    ),
+}
 # v4 reports need case-specific conflicts, not generic contract boilerplate.
 # Filings are strongest; orders and sworn/testimonial materials follow.
 ATTACK_SURFACE_PRIMARY_FILENAME_RE = re.compile(
@@ -1795,16 +1814,21 @@ def write_worker_status(s3, status, **fields):
                   Metadata={"sha256": hashlib.sha256(raw).hexdigest()})
 
 def main():
-    parser=argparse.ArgumentParser(); parser.add_argument("--case-id"); parser.add_argument("--request-id"); parser.add_argument("--scan-pending", action="store_true"); parser.add_argument("--diagnose-retrieval", action="store_true"); parser.add_argument("--validate-retrieval", action="store_true"); parser.add_argument("--question"); args=parser.parse_args()
+    parser=argparse.ArgumentParser(); parser.add_argument("--case-id"); parser.add_argument("--request-id"); parser.add_argument("--scan-pending", action="store_true"); parser.add_argument("--diagnose-retrieval", action="store_true"); parser.add_argument("--validate-retrieval", action="store_true"); parser.add_argument("--question"); parser.add_argument("--profile", choices=sorted(RETRIEVAL_VALIDATION_PROFILES)); args=parser.parse_args()
     if args.validate_retrieval:
         if args.scan_pending or args.diagnose_retrieval or args.request_id:
             raise SystemExit("retrieval validation cannot process or diagnose requests")
         if not valid_case_id(args.case_id or ""):
             raise SystemExit("invalid case identifier")
-        if not (args.question or "").strip():
-            raise SystemExit("retrieval validation requires --question")
+        if bool((args.question or "").strip()) == bool(args.profile):
+            raise SystemExit("retrieval validation requires exactly one of --question or --profile")
+        question = (
+            RETRIEVAL_VALIDATION_PROFILES[args.profile]
+            if args.profile
+            else args.question.strip()
+        )
         print(json.dumps(
-            validate_retrieval(client(), args.case_id, args.question.strip()),
+            validate_retrieval(client(), args.case_id, question),
             sort_keys=True,
             separators=(",", ":"),
         ))
