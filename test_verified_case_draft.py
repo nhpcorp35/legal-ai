@@ -828,6 +828,9 @@ class RecordWidePleadingCoverageTests(unittest.TestCase):
             "Identify the plaintiffs claims against Hudson 36 LLC and Hudson 37 LLC; "
             "cite the operative complaint and answer pages."
         ))
+        self.assertIsNotNone(WORKER.MAIN_ACTION_ONLY_QUESTION_RE.search(
+            "Identify the plaintiffs' claims against Calvagno and Karcher."
+        ))
 
     def test_main_action_excludes_nyscef_abbreviated_related_pleadings(self):
         class ProductionNamesS3(FakeS3):
@@ -856,6 +859,52 @@ class RecordWidePleadingCoverageTests(unittest.TestCase):
         self.assertFalse(any("THIRD_PAR" in filename for filename in selected))
         self.assertFalse(any("CROSS_C" in filename for filename in selected))
         self.assertFalse(any("BILL_OF_PARTICULARS" in filename for filename in selected))
+
+
+    def test_main_action_excludes_derivative_answer_exhibits_before_defense_gate(self):
+        class DerivativeAnswerCopiesS3(FakeS3):
+            pages = [
+                {
+                    "filename": "SUMMONS___COMPLAINT_1.pdf",
+                    "page_number": 1,
+                    "text": (
+                        "Thomas DeSousa, plaintiff, against Joseph Calvagno II "
+                        "and Patrick Karcher, defendants."
+                    ),
+                },
+                {
+                    "filename": "ANSWER_2.pdf",
+                    "page_number": 1,
+                    "text": "Joseph Calvagno II answers the verified complaint.",
+                },
+                {
+                    "filename": "ANSWER_2.pdf",
+                    "page_number": 3,
+                    "text": "AS FOR A FIRST AFFIRMATIVE DEFENSE.",
+                },
+            ] + [
+                {
+                    "filename": f"EXHIBIT_{index}_ANSWER_COPY.pdf",
+                    "page_number": 2,
+                    "text": (
+                        "AS FOR A FIRST AFFIRMATIVE DEFENSE parties claims "
+                        "defenses relief."
+                    ),
+                }
+                for index in range(WORKER.MAX_PAGES + 1)
+            ]
+
+        pages = WORKER.evidence(
+            DerivativeAnswerCopiesS3(),
+            "NY-Suffolk-600371-2021-DeSousa-v-Calvagno-II-Karcher",
+            (
+                "Identify the plaintiffs' claims against Joseph Calvagno II "
+                "and Patrick Karcher, the requested relief, and defenses."
+            ),
+        )
+        selected = {(page["filename"], page["page_number"]) for page in pages}
+        self.assertIn(("ANSWER_2.pdf", 3), selected)
+        self.assertFalse(any(filename.startswith("EXHIBIT_") for filename, _ in selected))
 
 
     def test_counterclaim_crossclaim_question_excludes_main_and_third_party_layers(self):
