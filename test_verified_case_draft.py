@@ -1642,6 +1642,46 @@ class SzymczykFilenameCoverageTests(unittest.TestCase):
         }
         self.assertIn(("ANSWER_2.pdf", 4), selected)
 
+    def test_procedural_posture_question_reserves_death_substitution_order(self):
+        filler = "claims defenses relief summary judgment"
+
+        class ProceduralOrderS3(FakeS3):
+            pages = [
+                {
+                    "filename": "COMPLAINT_1.pdf",
+                    "page_number": 1,
+                    "text": "Plaintiffs against defendants for private nuisance.",
+                },
+                {
+                    "filename": "ORDER_151.pdf",
+                    "page_number": 3,
+                    "text": (
+                        "Motion denied due to death of Thomas DeSousa; "
+                        "substitution pending and jurisdiction stayed."
+                    ),
+                },
+            ] + [
+                {
+                    "filename": f"CORRESPONDENCE_{index}.pdf",
+                    "page_number": 1,
+                    "text": filler,
+                }
+                for index in range(WORKER.MAX_PAGES + 5)
+            ]
+
+        pages = WORKER.evidence(
+            ProceduralOrderS3(),
+            "NY-Suffolk-600371-2021-DeSousa-v-Calvagno-II-Karcher",
+            (
+                "Identify the plaintiffs' claims against defendants and the "
+                "effect of death, substitution, and jurisdiction on summary judgment."
+            ),
+        )
+        self.assertIn(
+            ("ORDER_151.pdf", 3),
+            {(page["filename"], page["page_number"]) for page in pages},
+        )
+
     def test_pre_generation_gate_blocks_when_required_defense_pages_exceed_budget(self):
         class TooManyDefenseSectionsS3(FakeS3):
             pages = [
