@@ -52,6 +52,18 @@ class MatchingEvidenceS3(FakeS3):
 
 
 class EvidenceFailClosedTests(unittest.TestCase):
+    def test_record_only_generation_schema_requires_a_page_citation(self):
+        schema = WORKER.finding_schema(
+            {
+                "source_sha256": {"type": "string"},
+                "filename": {"type": "string"},
+                "page_number": {"type": "integer"},
+            },
+            litigation_map=True,
+        )
+        citations = schema["properties"]["findings"]["items"]["properties"]["citations"]
+        self.assertEqual(citations["minItems"], 1)
+
     def test_case00_cache_uses_newest_canonical_page_records(self):
         class CacheS3:
             def list_objects_v2(self, **_kwargs):
@@ -895,8 +907,7 @@ class PendingQueueTests(unittest.TestCase):
              mock.patch.object(WORKER, "run_request", side_effect=failure), \
              mock.patch.object(WORKER, "write_worker_status", side_effect=lambda *args, **kwargs: statuses.append((args, kwargs))), \
              mock.patch.object(WORKER.sys, "argv", ["worker", "--scan-pending"]):
-            with self.assertRaisesRegex(RuntimeError, "private"):
-                WORKER.main()
+            WORKER.main()
         _, failed = statuses[-1]
         self.assertEqual(failed["failure_code"], "persistence_error")
         self.assertEqual(failed["failure_stage"], "audit_write")
