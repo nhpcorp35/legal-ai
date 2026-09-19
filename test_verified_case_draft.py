@@ -594,6 +594,24 @@ class PartyRoleEvidenceTests(unittest.TestCase):
 
 
 class PendingQueueTests(unittest.TestCase):
+    def test_composed_finding_uses_cited_name_and_drops_incomplete_relief_tail(self):
+        finding = {
+            "section": "Main case",
+            "statement": "Diance C. DeSousa: nuisance; defenses: denial; relief: damages, other just.",
+            "citations": [{
+                "source_sha256": "a" * 64,
+                "filename": "Diane_C_DeSousa_v_Richard_Calvagno_COMPLAINT.pdf",
+                "page_number": 1,
+            }],
+            "authority_citations": [],
+        }
+        cleaned = WORKER.clean_composed_finding(finding)
+        self.assertEqual(
+            cleaned["statement"],
+            "Diane C. DeSousa: nuisance; defenses: denial; relief: damages.",
+        )
+        self.assertEqual(finding["statement"], "Diance C. DeSousa: nuisance; defenses: denial; relief: damages, other just.")
+
     class QueueS3:
         def list_objects_v2(self, **kwargs):
             if kwargs.get("Prefix") == "cases/":
