@@ -907,6 +907,49 @@ class RecordWidePleadingCoverageTests(unittest.TestCase):
         self.assertFalse(any(filename.startswith("EXHIBIT_") for filename, _ in selected))
 
 
+    def test_main_action_deduplicates_identical_answers_across_source_sets(self):
+        answer_pages = [
+            (1, "Joseph Calvagno II answers the verified complaint."),
+            (3, "AS FOR A FIRST AFFIRMATIVE DEFENSE."),
+        ]
+
+        class DuplicateSourceAnswersS3(FakeS3):
+            pages = [
+                {
+                    "filename": "SUMMONS___COMPLAINT_1.pdf",
+                    "page_number": 1,
+                    "text": (
+                        "Thomas DeSousa, plaintiff, against Joseph Calvagno II "
+                        "and Patrick Karcher, defendants."
+                    ),
+                },
+            ] + [
+                {
+                    "source_sha256": f"{index:064x}",
+                    "filename": f"ANSWER_COPY_{index}.pdf",
+                    "page_number": page,
+                    "text": text,
+                }
+                for index in range(WORKER.MAX_PAGES + 1)
+                for page, text in answer_pages
+            ]
+
+        pages = WORKER.evidence(
+            DuplicateSourceAnswersS3(),
+            "NY-Suffolk-600371-2021-DeSousa-v-Calvagno-II-Karcher",
+            (
+                "Identify the plaintiffs' claims against Joseph Calvagno II "
+                "and Patrick Karcher, the requested relief, and defenses."
+            ),
+        )
+        selected_answers = {
+            (page["source_sha256"], page["filename"])
+            for page in pages
+            if "ANSWER_COPY" in page["filename"]
+        }
+        self.assertEqual(len(selected_answers), 1)
+
+
     def test_counterclaim_crossclaim_question_excludes_main_and_third_party_layers(self):
         class LayeredCrossClaimS3(FakeS3):
             pages = [
