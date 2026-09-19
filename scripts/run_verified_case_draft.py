@@ -816,6 +816,51 @@ def read_json_object(s3, object_key):
     return value
 
 
+def one_edit_apart(left: str, right: str) -> bool:
+    """Return whether two same-case words differ by one insertion/deletion/substitution."""
+    left, right = left.casefold(), right.casefold()
+    if abs(len(left) - len(right)) > 1 or left == right:
+        return False
+    if len(left) == len(right):
+        return sum(a != b for a, b in zip(left, right)) == 1
+    shorter, longer = (left, right) if len(left) < len(right) else (right, left)
+    index = mismatches = 0
+    for char in longer:
+        if index < len(shorter) and char == shorter[index]:
+            index += 1
+        else:
+            mismatches += 1
+            if mismatches > 1:
+                return False
+    return True
+
+
+def clean_composed_finding(finding):
+    """Apply source-bound presentation cleanup without changing legal substance."""
+    cleaned = json.loads(json.dumps(finding))
+    statement = cleaned.get("statement", "")
+    filename_tokens = {
+        token for cite in cleaned.get("citations", [])
+        for token in re.findall(r"[A-Za-z]{4,}", str(cite.get("filename", "")))
+    }
+    # A caption-derived person name has a constrained shape. Correct a given
+    # name only when exactly one cited-filename token is one edit away.
+    def canonical_given_name(match):
+        word = match.group(1)
+        choices = sorted({token for token in filename_tokens if one_edit_apart(word, token)})
+        return (choices[0] if len(choices) == 1 else word) + match.group(2)
+    statement = re.sub(
+        r"\b([A-Z][a-z]{3,})(\s+[A-Z]\.\s+[A-Z][A-Za-z]+)",
+        canonical_given_name,
+        statement,
+    )
+    # Drop only a terminal, visibly incomplete boilerplate fragment. Never
+    # synthesize the missing words or alter an enumerated relief category.
+    statement = re.sub(r",\s*other\s+just\.\s*$", ".", statement, flags=re.IGNORECASE)
+    cleaned["statement"] = statement
+    return cleaned
+
+
 def compose_validated_layers(s3, case_id, question):
     """Compose separately READY and validated litigation-map layers without a model call."""
     prefix = f"cases/{case_id}/derived/internal-drafts/"
@@ -890,7 +935,9 @@ def compose_validated_layers(s3, case_id, question):
     citations = []
     for section in required_sections:
         _source_request, source_draft = source_drafts[section]
-        finding = next(item for item in source_draft["findings"] if item.get("section") == section)
+        finding = clean_composed_finding(next(
+            item for item in source_draft["findings"] if item.get("section") == section
+        ))
         findings.append(finding)
         citations.extend(finding.get("citations", []))
     unique_citations = {
