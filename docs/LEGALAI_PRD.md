@@ -378,6 +378,8 @@ judgment.
   source preview and answer generation. "Get LegalAI answer" is now the first
   primary action; the optional source preview explicitly states that it does
   not answer the question or call the answer model.
+- Moved the free-form question panel above the optional preset attack-surfaces
+  report so the normal attorney workflow appears first.
 
 
 ## Daily attorney-goal alignment

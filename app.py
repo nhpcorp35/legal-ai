@@ -211,6 +211,29 @@ def inject_attorney_ui(html):
     return text
 
 
+def prioritize_attorney_question_panel(html):
+    """Place the free-form LegalAI question before the optional preset report."""
+    text = str(html or "")
+    question_marker = '<label for="question">What should the attorney-review draft address?</label>'
+    preset_marker = '<input type="hidden" name="action" value="top-attack-surfaces">'
+    question_at = text.find(question_marker)
+    preset_at = text.find(preset_marker)
+    if question_at == -1 or preset_at == -1 or question_at < preset_at:
+        return text
+    question_start = text.rfind('<section class="panel">', 0, question_at)
+    question_end = text.find("</section>", question_at)
+    if question_start == -1 or question_end == -1:
+        return text
+    question_end += len("</section>")
+    question_panel = text[question_start:question_end]
+    without_question = text[:question_start] + text[question_end:]
+    preset_at = without_question.find(preset_marker)
+    preset_start = without_question.rfind('<section class="panel">', 0, preset_at)
+    if preset_at == -1 or preset_start == -1:
+        return text
+    return without_question[:preset_start] + question_panel + without_question[preset_start:]
+
+
 @app.after_request
 def ensure_html_favicon(response):
     """Guarantee every HTML response includes favicon + attorney chrome."""
@@ -223,6 +246,7 @@ def ensure_html_favicon(response):
         return response
     updated = inject_favicon_link(html)
     updated = inject_attorney_ui(updated)
+    updated = prioritize_attorney_question_panel(updated)
     if updated != html:
         response.set_data(updated)
     return response

@@ -261,6 +261,10 @@ class AttorneyUiConsistencyTests(unittest.TestCase):
             body,
         )
         self.assertLess(body.index("Get LegalAI answer"), body.index("Preview sources only (optional)"))
+        self.assertLess(
+            body.index("What should the attorney-review draft address?"),
+            body.index("v4.0 Top Attack Surfaces Report"),
+        )
         self.assertIn('action="/workspace/matters/', body)
         self.assertIn('#retrieval-preview"', body)
         self.assertIn('id="retrieval-preview"', body)
