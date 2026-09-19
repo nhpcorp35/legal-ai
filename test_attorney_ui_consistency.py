@@ -528,6 +528,38 @@ class AttorneyUiConsistencyTests(unittest.TestCase):
             regenerate_from=request_id,
         )
 
+    def test_answered_questions_hides_superseded_layers_after_final_composition(self):
+        older_layer = {
+            "request_id": "draft-100-aaaaaaaaaaaa",
+            "question": "Validate the counterclaim layer separately.",
+            "requested_by": "allen@example.com",
+            "created_at": 100,
+            "status": "READY",
+            "draft": {"summary": "Older layer.", "findings": [], "missing_information": []},
+        }
+        final_composition = {
+            "request_id": "draft-200-bbbbbbbbbbbb",
+            "question": "Prepare the cleaned final consolidated verified pleading map.",
+            "requested_by": "allen@example.com",
+            "created_at": 200,
+            "status": "READY",
+            "draft": {"summary": "Final composition.", "findings": [], "missing_information": []},
+        }
+        with patch.object(
+            legalai, "load_registered_cases", return_value=[{"case_id": CASE_ID, "stage": "Verified source indexed"}]
+        ), patch.object(
+            legalai, "load_draft_requests", return_value=[final_composition, older_layer]
+        ):
+            response = self.client.get(
+                f"/workspace/matters/{CASE_ID}/drafts",
+                headers=_auth_headers(),
+            )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.get_data(as_text=True)
+        self.assertIn(final_composition["question"], body)
+        self.assertNotIn(older_layer["question"], body)
+
     def test_legacy_answer_keeps_record_link_and_uses_missing_information_list(self):
         request_id = "draft-11-abcdef123456"
         ready_item = {
