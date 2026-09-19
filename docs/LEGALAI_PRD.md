@@ -366,6 +366,15 @@ judgment.
   `draft-1789743093-4556c89d89db` completed READY with a single correctly
   scoped counterclaim/cross-claim section and operative-page citations.
 
+### 2026-09-19
+
+- Simplified every verified-matter card around three plain-language attorney
+  actions: ask LegalAI a question, search case documents, and view the source
+  map. The question workflow is now the first and visually primary action.
+- Added regression coverage for the action labels, supporting explanations,
+  destination, visual priority, and ordering; 102 focused tests passed before
+  publication.
+
 
 ## Daily attorney-goal alignment
 
@@ -391,3 +400,10 @@ Engineering activity alone does not count as progress. The evidence must show an
 - **Goal advanced:** Accurate, source-grounded counterclaim/cross-claim mapping as a separate litigation layer, without forcing unrelated main-case material into the answer.
 - **How / evidence:** Main `156ec5e0076a99f9b10d61e7f364b2b83c58e43c`; 73 passing tests; successful worker/executor deployments; controlled draft `draft-1789743093-4556c89d89db` completed READY with operative-page citations.
 - **Remaining gap:** Validate the third-party-claim layer separately, then test a concise consolidated synthesis that explains why prioritized issues matter under governing procedure and law.
+
+### 2026-09-19 alignment checkpoint
+
+- **Movement:** YES
+- **Goal advanced:** Make the attorney-review workflow self-explanatory so a reviewer can immediately distinguish asking LegalAI from searching or browsing the record.
+- **How / evidence:** The question action is first and visually primary on every verified-matter card, with plain-language descriptions; 102 focused tests passed.
+- **Remaining gap:** Verify the revised workspace in production, then collect the reviewer’s full MVP accuracy, usefulness, citation, and workflow assessment.

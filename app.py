@@ -3702,19 +3702,20 @@ def attorney_workspace():
     # legacy in-app source-map cache is unavailable at web-process startup.
     case00_questions = [
         {
-            "id": "Search",
-            "label": "Search verified record",
+            "id": "Ask LegalAI a question",
+            "label": "Get a source-supported answer from the verified record.",
+            "url": "/workspace/case-00/draft",
+            "primary": True,
+        },
+        {
+            "id": "Search case documents",
+            "label": "Find specific words, names, or phrases.",
             "url": "/workspace/case-00/search",
         },
         {
-            "id": "Source map",
-            "label": "View verified record map",
+            "id": "View source map",
+            "label": "Browse the indexed case documents.",
             "url": "/workspace/case-00/sources",
-        },
-        {
-            "id": "Prepare",
-            "label": "Ask a new review question",
-            "url": "/workspace/case-00/draft",
         },
     ]
     if case00_answered:
@@ -3753,19 +3754,20 @@ def attorney_workspace():
                 questions.extend(
                     [
                         {
-                            "id": "Search",
-                            "label": "Search verified record",
+                            "id": "Ask LegalAI a question",
+                            "label": "Get a source-supported answer from the verified record.",
+                            "url": f"/workspace/matters/{matter_url}/draft",
+                            "primary": True,
+                        },
+                        {
+                            "id": "Search case documents",
+                            "label": "Find specific words, names, or phrases.",
                             "url": f"/workspace/matters/{matter_url}/search",
                         },
                         {
-                            "id": "Source map",
-                            "label": "View verified record map",
+                            "id": "View source map",
+                            "label": "Browse the indexed case documents.",
                             "url": f"/workspace/matters/{matter_url}/sources",
-                        },
-                        {
-                            "id": "Prepare",
-                            "label": "Ask a new review question",
-                            "url": f"/workspace/matters/{matter_url}/draft",
                         },
                     ]
                 )
@@ -3815,8 +3817,7 @@ def attorney_workspace():
                 {
                     "name": case["case_id"],
                     "description": (
-                        "Verified record ready for review. Search or open the source record, "
-                        "then add the attorney-selected question for an internal draft."
+                        "Verified record ready for attorney review."
                         if case["stage"] == "Verified source indexed"
                         else f'{case["stage"]}. Verification and review preparation are in progress.'
                     ),
@@ -3855,7 +3856,7 @@ def attorney_workspace():
             }
         )
     return render_template_string(
-        """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>LegalAI Attorney Workspace</title><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:940px;margin:0 auto;padding:48px 24px 64px}header{border-bottom:1px solid #cbd5e1;padding-bottom:24px;margin-bottom:30px}h1{margin:0 0 10px;font-size:clamp(2rem,5vw,3.25rem)}h2{margin:0 0 9px;font-size:1.4rem}p{font-size:1.05rem;line-height:1.55}.meta{color:#52606d;font-size:.96rem}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(275px,1fr));gap:20px}article,.empty,.notice{background:white;border:1px solid #cbd5e1;border-radius:10px;padding:24px;box-shadow:0 2px 8px #0f172a10}.notice{border-left:4px solid #b45309;background:#fffbeb;margin-bottom:20px}ul{padding-left:0;list-style:none;margin:20px 0 0}li+li{margin-top:10px}a{display:block;border:1px solid #245b83;border-radius:6px;color:#123f63;font-weight:bold;padding:10px 12px;text-decoration:none}a:hover,a:focus{background:#e6f1f8}</style></head><body><main><header><h1>LegalAI Attorney Workspace</h1><p class="meta">Signed in as {{ reviewer }}.</p><p>Select a prepared matter. Each question opens a source-supported candidate for your review; your decision and notes are then archived.</p></header>{% if gateway_error %}<section class="notice" role="alert"><h2>Review gateway unavailable</h2><p>{{ gateway_error }}</p></section>{% endif %}{% if matters %}<section class="grid" aria-label="Prepared matters">{% for matter in matters %}<article><h2>{{ matter.name }}</h2><p>{{ matter.description }}</p><ul>{% for question in matter.questions %}<li><a href="{{ question.url }}">{{ question.id }} — {{ question.label }}</a></li>{% endfor %}</ul></article>{% endfor %}</section>{% elif not gateway_error %}<section class="empty"><h2>No prepared matters are available</h2><p>Please try again later.</p></section>{% endif %}</main></body></html>""",
+        """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>LegalAI Attorney Workspace</title><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:940px;margin:0 auto;padding:48px 24px 64px}header{border-bottom:1px solid #cbd5e1;padding-bottom:24px;margin-bottom:30px}h1{margin:0 0 10px;font-size:clamp(2rem,5vw,3.25rem)}h2{margin:0 0 9px;font-size:1.4rem}p{font-size:1.05rem;line-height:1.55}.meta{color:#52606d;font-size:.96rem}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(275px,1fr));gap:20px}article,.empty,.notice{background:white;border:1px solid #cbd5e1;border-radius:10px;padding:24px;box-shadow:0 2px 8px #0f172a10}.notice{border-left:4px solid #b45309;background:#fffbeb;margin-bottom:20px}ul{padding-left:0;list-style:none;margin:20px 0 0}li+li{margin-top:10px}a{display:block;border:1px solid #245b83;border-radius:6px;color:#123f63;padding:11px 12px;text-decoration:none}a:hover,a:focus{background:#e6f1f8}a.primary{background:#123f63;color:white}a.primary:hover,a.primary:focus{background:#0b304d}.action-title{display:block;font-weight:bold}.action-help{display:block;margin-top:4px;font-size:.9rem;line-height:1.35;font-weight:normal}</style></head><body><main><header><h1>LegalAI Attorney Workspace</h1><p class="meta">Signed in as {{ reviewer }}.</p><p>Choose a matter, then ask LegalAI a question, search its documents, or browse its source map.</p></header>{% if gateway_error %}<section class="notice" role="alert"><h2>Review gateway unavailable</h2><p>{{ gateway_error }}</p></section>{% endif %}{% if matters %}<section class="grid" aria-label="Prepared matters">{% for matter in matters %}<article><h2>{{ matter.name }}</h2><p>{{ matter.description }}</p><ul>{% for question in matter.questions %}<li><a{% if question.primary %} class="primary"{% endif %} href="{{ question.url }}"><span class="action-title">{{ question.id }}</span><span class="action-help">{{ question.label }}</span></a></li>{% endfor %}</ul></article>{% endfor %}</section>{% elif not gateway_error %}<section class="empty"><h2>No prepared matters are available</h2><p>Please try again later.</p></section>{% endif %}</main></body></html>""",
         reviewer=reviewer,
         matters=matters,
         gateway_error=gateway_error,
