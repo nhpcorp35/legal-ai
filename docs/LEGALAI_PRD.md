@@ -374,6 +374,10 @@ judgment.
 - Added regression coverage for the action labels, supporting explanations,
   destination, visual priority, and ordering; 102 focused tests passed before
   publication.
+- Clarified the question form after live attorney use exposed confusion between
+  source preview and answer generation. "Get LegalAI answer" is now the first
+  primary action; the optional source preview explicitly states that it does
+  not answer the question or call the answer model.
 
 
 ## Daily attorney-goal alignment
@@ -405,5 +409,5 @@ Engineering activity alone does not count as progress. The evidence must show an
 
 - **Movement:** YES
 - **Goal advanced:** Make the attorney-review workflow self-explanatory so a reviewer can immediately distinguish asking LegalAI from searching or browsing the record.
-- **How / evidence:** The question action is first and visually primary on every verified-matter card, with plain-language descriptions; 102 focused tests passed.
+- **How / evidence:** The question action is first and visually primary on every verified-matter card and question form, while the optional preview is explicitly labeled as source-only; 102 focused tests passed.
 - **Remaining gap:** Verify the revised workspace in production, then collect the reviewer’s full MVP accuracy, usefulness, citation, and workflow assessment.

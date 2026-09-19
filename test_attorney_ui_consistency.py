@@ -252,9 +252,15 @@ class AttorneyUiConsistencyTests(unittest.TestCase):
             )
         self.assertEqual(response.status_code, 200)
         body = response.get_data(as_text=True)
-        self.assertIn("Retrieval preview — no model called", body)
+        self.assertIn("Source preview only — no answer generated", body)
         self.assertIn("Complaint.pdf — p. 7", body)
-        self.assertIn("Preview retrieval — free", body)
+        self.assertIn("Get LegalAI answer", body)
+        self.assertIn("Preview sources only (optional)", body)
+        self.assertIn(
+            "The optional preview shows source pages only. It does not answer your question or call the answer model.",
+            body,
+        )
+        self.assertLess(body.index("Get LegalAI answer"), body.index("Preview sources only (optional)"))
         self.assertIn('action="/workspace/matters/', body)
         self.assertIn('#retrieval-preview"', body)
         self.assertIn('id="retrieval-preview"', body)
