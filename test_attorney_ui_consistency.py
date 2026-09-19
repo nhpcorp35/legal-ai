@@ -565,6 +565,40 @@ class AttorneyUiConsistencyTests(unittest.TestCase):
         )
         self.assertNotIn("First item; Second", body)
 
+    def test_answer_renders_duplicate_record_citation_only_once(self):
+        request_id = "draft-13-abcdef123456"
+        citation = {
+            "source_sha256": "b" * 64,
+            "filename": "Repeated.pdf",
+            "page_number": 3,
+        }
+        ready_item = {
+            "request_id": request_id,
+            "question": "What are the claims?",
+            "requested_by": "allen@example.com",
+            "status": "READY",
+            "draft": {
+                "summary": "Summary.",
+                "findings": [{
+                    "statement": "Finding.",
+                    "citations": [citation, dict(citation), dict(citation)],
+                }],
+                "missing_information": [],
+            },
+        }
+        with patch.object(legalai, "load_exact_draft_request", return_value=ready_item):
+            response = self.client.get(
+                f"/workspace/matters/{CASE_ID}/drafts/{request_id}",
+                headers=_auth_headers(),
+            )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.get_data(as_text=True)
+        self.assertEqual(
+            body.count("Open verified source — p. 3 · Repeated.pdf"),
+            1,
+        )
+
     def test_retrieval_audit_separates_authorities_and_supports_legacy_audits(self):
         request_id = "draft-12-abcdef123456"
         current_audit = {
