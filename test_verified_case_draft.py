@@ -92,6 +92,20 @@ class EvidenceFailClosedTests(unittest.TestCase):
         self.assertEqual(report["selected_document_count"], 1)
         self.assertEqual(report["pleading_document_count"], 1)
         self.assertEqual(
+            set(report["coverage"]),
+            {
+                "party_role_candidate_count",
+                "party_role_retrieved_count",
+                "party_role_outside_initial_slice",
+                "claim_page_count",
+                "relief_page_count",
+                "verified_pleading_inventory_count",
+                "third_party_action_count",
+                "third_party_answered_action_count",
+                "third_party_unresolved_action_count",
+            },
+        )
+        self.assertEqual(
             report["pleading_signal_counts"]["causes of action or relief"],
             1,
         )
