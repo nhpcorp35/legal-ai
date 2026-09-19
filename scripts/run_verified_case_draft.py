@@ -1422,10 +1422,40 @@ def pleading_map(pages):
             continue
         entry = filings.setdefault(filename, {"filename": filename, "citations": [], "signals": set()})
         entry["citations"].append({key: page[key] for key in ("source_sha256", "filename", "page_number")})
-        for label, pattern in (("caption or filing opening", r"\\b(supreme court|plaintiff|defendant)\\b"), ("causes of action or relief", r"\\b(cause of action|wherefore|prayer for relief)\\b"), ("answer or denial", r"\\b(answer|den(?:y|ies|ied))\\b"), ("affirmative defense", r"\\baffirmative\\s+defen[cs]e"), ("cross-claim or counterclaim", r"\\b(cross[ -]?claim|counter[ -]?claim)\\b"), ("third-party pleading", r"\\b(third[ -]?party|fourth[ -]?party)\\b")):
+        for label, pattern in (("caption or filing opening", r"\b(supreme court|plaintiff|defendant)\b"), ("causes of action or relief", r"\b(cause of action|wherefore|prayer for relief)\b"), ("answer or denial", r"\b(answer|den(?:y|ies|ied))\b"), ("affirmative defense", r"\baffirmative\s+defen[cs]e"), ("cross-claim or counterclaim", r"\b(cross[ -]?claim|counter[ -]?claim)\b"), ("third-party pleading", r"\b(third[ -]?party|fourth[ -]?party)\b")):
             if re.search(pattern, page["text"], re.IGNORECASE):
                 entry["signals"].add(label)
     return [{"filename": item["filename"], "citations": item["citations"], "signals": sorted(item["signals"])} for item in sorted(filings.values(), key=lambda item: item["filename"].casefold())]
+
+
+def validate_retrieval(s3, case_id, question):
+    """Run the production evidence gate without a model call or B2 write."""
+    pages = evidence(s3, case_id, question)
+    coverage = getattr(pages, "coverage", {}) or {}
+    filings = pleading_map(pages)
+    return {
+        "case_id": case_id,
+        "status": "PASSED",
+        "model_called": False,
+        "selected_page_count": len(pages),
+        "context_character_count": sum(len(page["text"]) for page in pages),
+        "selected_document_count": len({
+            (page["source_sha256"], page["filename"]) for page in pages
+        }),
+        "pleading_document_count": len(filings),
+        "pleading_signal_counts": {
+            signal: sum(signal in filing["signals"] for filing in filings)
+            for signal in (
+                "caption or filing opening",
+                "causes of action or relief",
+                "answer or denial",
+                "affirmative defense",
+                "cross-claim or counterclaim",
+                "third-party pleading",
+            )
+        },
+        "coverage": coverage,
+    }
 
 def authority_prompt(authorities):
     """Return verified authority content suitable for model rule analysis."""
@@ -1765,7 +1795,20 @@ def write_worker_status(s3, status, **fields):
                   Metadata={"sha256": hashlib.sha256(raw).hexdigest()})
 
 def main():
-    parser=argparse.ArgumentParser(); parser.add_argument("--case-id"); parser.add_argument("--request-id"); parser.add_argument("--scan-pending", action="store_true"); parser.add_argument("--diagnose-retrieval", action="store_true"); args=parser.parse_args()
+    parser=argparse.ArgumentParser(); parser.add_argument("--case-id"); parser.add_argument("--request-id"); parser.add_argument("--scan-pending", action="store_true"); parser.add_argument("--diagnose-retrieval", action="store_true"); parser.add_argument("--validate-retrieval", action="store_true"); parser.add_argument("--question"); args=parser.parse_args()
+    if args.validate_retrieval:
+        if args.scan_pending or args.diagnose_retrieval or args.request_id:
+            raise SystemExit("retrieval validation cannot process or diagnose requests")
+        if not valid_case_id(args.case_id or ""):
+            raise SystemExit("invalid case identifier")
+        if not (args.question or "").strip():
+            raise SystemExit("retrieval validation requires --question")
+        print(json.dumps(
+            validate_retrieval(client(), args.case_id, args.question.strip()),
+            sort_keys=True,
+            separators=(",", ":"),
+        ))
+        return
     if args.diagnose_retrieval:
         if args.scan_pending: raise SystemExit("diagnostic mode cannot scan pending requests")
         if not valid_case_id(args.case_id or ""): raise SystemExit("invalid case identifier")
