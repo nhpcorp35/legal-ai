@@ -1790,7 +1790,20 @@ def litigation_map_question(question: str) -> bool:
 def finding_schema(page_citation_properties, *, attorney_sections=False, litigation_map=False, max_findings=8, statement_max_length=900):
     """Build the strict source-aware finding schema for either worker."""
     page_required = list(page_citation_properties)
-    finding_properties = {"statement":{"type":"string","maxLength":statement_max_length},"citations":{"type":"array","items":{"type":"object","additionalProperties":False,"required":page_required,"properties":page_citation_properties}},"authority_citations":{"type":"array","items":{"type":"string"}}}
+    citation_schema = {
+        "type": "array",
+        "items": {
+            "type": "object", "additionalProperties": False,
+            "required": page_required, "properties": page_citation_properties,
+        },
+    }
+    if not attorney_sections:
+        # Record-only findings have no authority fallback. Enforce the same
+        # citation invariant in the generation schema that validate() applies
+        # afterward, preventing a paid response from being rejected solely for
+        # an empty citations array.
+        citation_schema["minItems"] = 1
+    finding_properties = {"statement":{"type":"string","maxLength":statement_max_length},"citations":citation_schema,"authority_citations":{"type":"array","items":{"type":"string"}}}
     finding_required = ["statement", "citations", "authority_citations"]
     sections = ATTORNEY_ANSWER_SECTIONS if attorney_sections else LITIGATION_MAP_SECTIONS if litigation_map else ()
     if sections:
@@ -2093,7 +2106,11 @@ def main():
                                 **diagnostics,
                                 **({"case_id": next_request[0], "request_id": next_request[1]}
                                    if next_request else {}))
-            raise
+            # run_request already persisted the request-level FAILED state and
+            # safe diagnostics. A rejected request must not crash the cron
+            # container; the next scheduled invocation must remain available
+            # to process the next queued request.
+            return
         return
     if not valid_case_id(args.case_id or ""): raise SystemExit("invalid case identifier")
     s3=client()
