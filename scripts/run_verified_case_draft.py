@@ -1246,19 +1246,13 @@ def evidence(s3, case_id, question):
             if not attack_surface_question
             else set()
         )
-        # First reserve every filing/section opening, then each expressly
-        # identified cause/cross-claim/counterclaim and prayer page. This keeps
-        # captions, operative labels, and requested relief together before
-        # defense continuations can consume a section's allowance.
+        # First reserve every filing/section opening, then the first required
+        # defense page. Claims and prayer pages follow. This ordering matches
+        # the gate: optional operative pages must never consume a section's
+        # allowance before a mandatory defense page.
         for row in ranked:
             if row[5] and row[2] == row[7] and reserve(row) and not attack_surface_question:
                 mandatory_ids.add((row[3], row[1], row[2]))
-        for signal_index in (10, 11):
-            for row in sorted(ranked, key=lambda item: (item[1].casefold(), item[2], -item[0])):
-                section=(row[3],row[1],row[7])
-                if row[5] and row[signal_index] and per_section.get(section,0) < section_page_limit(row):
-                    if reserve(row) and not attack_surface_question:
-                        mandatory_ids.add((row[3], row[1], row[2]))
         for row in ranked:
             section=(row[3],row[1],row[7])
             if (
@@ -1268,6 +1262,12 @@ def evidence(s3, case_id, question):
             ):
                 if reserve(row) and not attack_surface_question:
                     mandatory_ids.add((row[3], row[1], row[2]))
+        for signal_index in (10, 11):
+            for row in sorted(ranked, key=lambda item: (item[1].casefold(), item[2], -item[0])):
+                section=(row[3],row[1],row[7])
+                if row[5] and row[signal_index] and per_section.get(section,0) < section_page_limit(row):
+                    if reserve(row) and not attack_surface_question:
+                        mandatory_ids.add((row[3], row[1], row[2]))
         # Then reserve additional affirmative-defense headings and immediate
         # continuation pages, subject to the unchanged global budget.
         for row in ranked:

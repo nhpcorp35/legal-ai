@@ -1606,6 +1606,42 @@ class SzymczykFilenameCoverageTests(unittest.TestCase):
             {(page["filename"], page["page_number"]) for page in pages},
         )
 
+    def test_first_defense_precedes_claim_and_relief_within_answer_page_limit(self):
+        class AnswerPagePriorityS3(FakeS3):
+            pages = [
+                {
+                    "filename": "ANSWER_2.pdf",
+                    "page_number": 1,
+                    "text": "Defendant answers the verified complaint.",
+                },
+                {
+                    "filename": "ANSWER_2.pdf",
+                    "page_number": 2,
+                    "text": "FIRST CAUSE OF ACTION.",
+                },
+                {
+                    "filename": "ANSWER_2.pdf",
+                    "page_number": 3,
+                    "text": "WHEREFORE defendant requests dismissal.",
+                },
+                {
+                    "filename": "ANSWER_2.pdf",
+                    "page_number": 4,
+                    "text": "AS FOR A FIRST AFFIRMATIVE DEFENSE.",
+                },
+            ]
+
+        pages = WORKER.evidence(
+            AnswerPagePriorityS3(),
+            "NY-Suffolk-600371-2021-DeSousa-v-Calvagno-II-Karcher",
+            "Identify the plaintiffs' claims against defendants, relief, and defenses.",
+        )
+        selected = {
+            (page["filename"], page["page_number"])
+            for page in pages
+        }
+        self.assertIn(("ANSWER_2.pdf", 4), selected)
+
     def test_pre_generation_gate_blocks_when_required_defense_pages_exceed_budget(self):
         class TooManyDefenseSectionsS3(FakeS3):
             pages = [
