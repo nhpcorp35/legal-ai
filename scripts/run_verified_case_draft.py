@@ -68,7 +68,7 @@ PLEADING_FOCUSED_QUESTION_RE = re.compile(
 )
 MAIN_ACTION_ONLY_QUESTION_RE = re.compile(
     r"\bmain (?:action|case)(?: only)?\b|"
-    r"\bplaintiff(?:[\'’]s|s)?\s+claims\s+against\b|"
+    r"\bplaintiff(?:[\'’]s|s[\'’]?)?\s+claims\s+against\b|"
     r"\boperative\s+complaint\s+and\s+answer\s+pages\b",
     re.IGNORECASE,
 )
@@ -987,6 +987,16 @@ def evidence(s3, case_id, question):
             # third-party pleadings.  Requiring each duplicate copy exhausts
             # the bounded page budget before generation.  Keep the filed
             # summons/complaints and answers; exclude derivative copies.
+            continue
+        if main_action_only_question and re.search(
+            r"\b(?:exhibit|affidavit|affirmation|notice|stipulation)\b",
+            normalized_document_filename,
+            re.IGNORECASE,
+        ):
+            # Main-action corpora can likewise contain dozens of motion
+            # exhibits whose filenames embed copies of the complaint or
+            # answers. Treating each copy as an operative pleading creates a
+            # false mandatory-defense overflow before generation.
             continue
         if third_party_only_question and not re.search(
             r"\b(?:third[ -]?(?:party|par)|fourth[ -]?(?:party|par))\b",
