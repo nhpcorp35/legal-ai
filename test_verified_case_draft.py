@@ -52,6 +52,32 @@ class MatchingEvidenceS3(FakeS3):
 
 
 class EvidenceFailClosedTests(unittest.TestCase):
+    def test_case00_cache_uses_newest_canonical_page_records(self):
+        class CacheS3:
+            def list_objects_v2(self, **_kwargs):
+                return {"Contents": [
+                    {
+                        "Key": WORKER.CASE00_RUNTIME_CACHE_PREFIX
+                        + "old" + WORKER.CASE00_PAGE_CACHE_SUFFIX,
+                        "LastModified": "2026-08-01T00:00:00Z",
+                    },
+                    {
+                        "Key": WORKER.CASE00_RUNTIME_CACHE_PREFIX
+                        + "new" + WORKER.CASE00_PAGE_CACHE_SUFFIX,
+                        "LastModified": "2026-08-02T00:00:00Z",
+                    },
+                ], "IsTruncated": False}
+
+            def get_object(self, **kwargs):
+                page = 2 if "/new/" in kwargs["Key"] else 1
+                return {"Body": io.BytesIO(json.dumps({"pages": [
+                    {"source_filename": "Complaint.pdf", "page_number": page,
+                     "text": "Cause of action."}
+                ]}).encode())}
+
+        pages = WORKER.case00_cached_pages(CacheS3())
+        self.assertEqual(pages[0]["page_number"], 2)
+
     def test_case00_uses_shared_model_free_validation_boundary(self):
         pages = [
             {

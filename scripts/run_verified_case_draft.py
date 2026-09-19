@@ -1450,22 +1450,58 @@ def pleading_map(pages):
     return [{"filename": item["filename"], "citations": item["citations"], "signals": sorted(item["signals"])} for item in sorted(filings.values(), key=lambda item: item["filename"].casefold())]
 
 
+CASE00_RUNTIME_CACHE_PREFIX = (
+    "Benchmarks/Case-00-Triborough/derived/runtime-cache/"
+)
+CASE00_PAGE_CACHE_SUFFIX = "/derived/page-extraction/canonical_page_records.json"
+
+
+def case00_cached_pages(s3):
+    """Read the newest canonical Case-00 page cache without rebuilding PDFs."""
+    objects = [
+        item for item in listed_objects(
+            s3,
+            Bucket=os.environ["B2_BUCKET"],
+            Prefix=CASE00_RUNTIME_CACHE_PREFIX,
+            MaxKeys=1000,
+        )
+        if str(item.get("Key", "")).endswith(CASE00_PAGE_CACHE_SUFFIX)
+    ]
+    if not objects:
+        return None
+    newest = max(
+        objects,
+        key=lambda item: (str(item.get("LastModified", "")), item["Key"]),
+    )
+    payload = json.loads(
+        s3.get_object(Bucket=os.environ["B2_BUCKET"], Key=newest["Key"])["Body"]
+        .read()
+        .decode()
+    )
+    pages = payload.get("pages") if isinstance(payload, dict) else None
+    if not isinstance(pages, list) or not pages:
+        raise ValueError("invalid Case-00 canonical page cache")
+    return pages
+
+
 def case00_evidence(question):
     """Load the immutable Case-00 corpus through its canonical legacy adapter."""
     from scripts import rebuild_case00_derived as rebuild
 
     root = Path(__file__).resolve().parents[1] / "data" / "case-00-triborough"
     source_prefix = "Benchmarks/Case-00-Triborough/original/Tribrough Full Docket/"
-    with tempfile.TemporaryDirectory(prefix="case00-retrieval-validation-") as temp:
-        cfg = rebuild.B2Config.from_env()
-        b2 = rebuild.create_b2_client(cfg)
-        source = rebuild.materialize_b2_prefix(
-            source_prefix, Path(temp), client=b2, config=cfg
-        )
-        docs = rebuild.ingest_source_directory(
-            source, root / "nyscef_filing_inventory.json"
-        )
-        pages = rebuild.build_canonical_page_records(docs)["pages"]
+    cfg = rebuild.B2Config.from_env()
+    b2 = rebuild.create_b2_client(cfg)
+    pages = case00_cached_pages(b2)
+    if pages is None:
+        with tempfile.TemporaryDirectory(prefix="case00-retrieval-validation-") as temp:
+            source = rebuild.materialize_b2_prefix(
+                source_prefix, Path(temp), client=b2, config=cfg
+            )
+            docs = rebuild.ingest_source_directory(
+                source, root / "nyscef_filing_inventory.json"
+            )
+            pages = rebuild.build_canonical_page_records(docs)["pages"]
 
     normalized_pages = []
     for page in pages:
