@@ -52,6 +52,32 @@ class MatchingEvidenceS3(FakeS3):
 
 
 class EvidenceFailClosedTests(unittest.TestCase):
+    def test_retrieval_validation_is_read_only_and_model_free(self):
+        report = WORKER.validate_retrieval(
+            type(
+                "RetrievalValidationS3",
+                (FakeS3,),
+                {
+                    "pages": [{
+                        "filename": "Complaint.pdf",
+                        "page_number": 3,
+                        "text": "FIRST CAUSE OF ACTION: breach of contract.",
+                    }]
+                },
+            )(),
+            "NY-Suffolk-600371-2021-DeSousa-v-Calvagno-II-Karcher",
+            "What breach of contract claims appear in the complaint?",
+        )
+        self.assertEqual(report["status"], "PASSED")
+        self.assertFalse(report["model_called"])
+        self.assertEqual(report["selected_page_count"], 1)
+        self.assertEqual(report["selected_document_count"], 1)
+        self.assertEqual(report["pleading_document_count"], 1)
+        self.assertEqual(
+            report["pleading_signal_counts"]["causes of action or relief"],
+            1,
+        )
+
     def test_no_match_does_not_select_arbitrary_verified_pages(self):
         with self.assertRaisesRegex(ValueError, "no matching verified evidence"):
             WORKER.evidence(
@@ -886,7 +912,6 @@ class RecordWidePleadingCoverageTests(unittest.TestCase):
         self.assertFalse(any("CROSS_C" in filename for filename in selected))
         self.assertFalse(any("BILL_OF_PARTICULARS" in filename for filename in selected))
 
-
     def test_main_action_excludes_derivative_answer_exhibits_before_defense_gate(self):
         class DerivativeAnswerCopiesS3(FakeS3):
             pages = [
@@ -931,7 +956,6 @@ class RecordWidePleadingCoverageTests(unittest.TestCase):
         selected = {(page["filename"], page["page_number"]) for page in pages}
         self.assertIn(("ANSWER_2.pdf", 3), selected)
         self.assertFalse(any(filename.startswith("EXHIBIT_") for filename, _ in selected))
-
 
     def test_main_action_deduplicates_identical_answers_across_source_sets(self):
         answer_pages = [
