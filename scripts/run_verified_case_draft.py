@@ -78,6 +78,12 @@ CROSS_CLAIM_ONLY_QUESTION_RE = re.compile(
     r"\bmain action\b.*\b(?:counterclaims?|cross[ -]?claims?)\b",
     re.IGNORECASE,
 )
+COUNTER_CROSS_FILING_RE = re.compile(
+    r"\b(?:cross[ -]?(?:claims?|c)|counter(?:[ -]?claims?|c)|"
+    r"reply\s+to\s+(?:cross[ -]?claims?|counterclaims?)|"
+    r"answer\s+to\s+(?:cross[ -]?claims?|counterclaims?))\b",
+    re.IGNORECASE,
+)
 THIRD_PARTY_ONLY_QUESTION_RE = re.compile(
     r"\bthird[ -]?party(?:[ -]?claims?)?\s+layer\b|"
     r"\b(?:validate|identify|map)\b.*\bthird[ -]?party\s+claims?\b.*\bseparately\b|"
@@ -95,7 +101,9 @@ CROSS_CLAIM_ASSERTING_PARTY_RE = re.compile(
 PLEADING_CLAIM_TEXT_RE = re.compile(
     r"\b(?:cause of action|cross[ -]?claim|counter[ -]?claim|"
     r"negligence|breach of contract|contractual indemnification|"
-    r"common[ -]?law indemnification|contribution)\b|"
+    r"common[ -]?law indemnification|contribution|malicious prosecution|"
+    r"private nuisance|harassment|menacing|intentional infliction of "
+    r"emotional distress)\b|"
     r"\blabor\s+law\s*(?:§|section|sec\.?\s*)?\s*(?:200|240|241)\b",
     re.IGNORECASE,
 )
@@ -1061,6 +1069,7 @@ def evidence(s3, case_id, question):
             [normalized_document_filename]
             + [text[:900].casefold() for _, text in sorted(document_pages)]
         )
+        counter_cross_filing = bool(COUNTER_CROSS_FILING_RE.search(document_identity))
         if third_party_only_question and re.search(
             r"\b(?:exhibit|affidavit|affirmation|notice|stipulation)\b",
             normalized_document_filename,
@@ -1091,6 +1100,8 @@ def evidence(s3, case_id, question):
             document_text = " ".join(text.casefold() for _, text in document_pages)
             if cross_claim_party not in document_text:
                 continue
+        if cross_claim_only_question and not counter_cross_filing:
+            continue
         section_start = 1
         prior_page = None
         affirmative_defense_run_remaining = 0
@@ -1106,16 +1117,11 @@ def evidence(s3, case_id, question):
             if cross_claim_only_question and merits_pleading:
                 # Keep this layer independent from the main complaint/answer
                 # and successive third-party pleadings. The filename or the
-                # operative page text must expressly identify a counterclaim,
-                # cross-claim, or a reply/answer directed to one.
-                filing_identity = f"{pleading_filename} {text[:700]}"
-                if not re.search(
-                    r"\b(?:cross[ -]?(?:claims?|c)|counter[ -]?(?:claims?|c)|"
-                    r"reply\s+to\s+(?:cross[ -]?claims?|counterclaims?)|"
-                    r"answer\s+to\s+(?:cross[ -]?claims?|counterclaims?))\b",
-                    filing_identity,
-                    re.IGNORECASE,
-                ):
+                # complete document must identify this layer. Once it does,
+                # retain its caption/opening and operative pages even when an
+                # individual page omits the words counterclaim/cross-claim.
+                # Causes of action and prayers commonly do exactly that.
+                if not counter_cross_filing:
                     continue
             if main_action_only_question and merits_pleading:
                 # A main-action request must not make every successive
@@ -1264,6 +1270,11 @@ def evidence(s3, case_id, question):
             return True
         def section_page_limit(row):
             normalized = normalized_filename(row[1])
+            if cross_claim_only_question:
+                # A counterclaim pleading commonly needs a caption, several
+                # separately headed causes, defenses, and a prayer. The normal
+                # three-page answer cap silently drops those operative pages.
+                return MERITS_COMPLAINT_PAGES_PER_FILING
             if ("complaint" in normalized or "summons" in normalized) and "answer" not in normalized:
                 return MERITS_COMPLAINT_PAGES_PER_FILING
             return MERITS_PLEADING_PAGES_PER_FILING

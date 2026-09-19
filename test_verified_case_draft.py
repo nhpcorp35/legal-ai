@@ -1119,6 +1119,43 @@ class RecordWidePleadingCoverageTests(unittest.TestCase):
         self.assertNotIn("ANSWER_3.pdf", selected)
         self.assertNotIn("ANSWER_TO_THIRD_PAR_10.pdf", selected)
 
+    def test_counterclaim_slice_keeps_caption_all_claims_and_prayer(self):
+        class MultiClaimCounterS3(FakeS3):
+            pages = [
+                {"filename": "ANSWER_WITH_COUNTER_4.pdf", "page_number": 1,
+                 "text": "SUPREME COURT. Richard Roe, defendant and counterclaimant, against Pat Doe."},
+                {"filename": "ANSWER_WITH_COUNTER_4.pdf", "page_number": 2,
+                 "text": "FIRST COUNTERCLAIM. Malicious prosecution."},
+                {"filename": "ANSWER_WITH_COUNTER_4.pdf", "page_number": 3,
+                 "text": "SECOND COUNTERCLAIM. Private nuisance."},
+                {"filename": "ANSWER_WITH_COUNTER_4.pdf", "page_number": 4,
+                 "text": "THIRD COUNTERCLAIM. Harassment."},
+                {"filename": "ANSWER_WITH_COUNTER_4.pdf", "page_number": 5,
+                 "text": "FOURTH COUNTERCLAIM. Menacing."},
+                {"filename": "ANSWER_WITH_COUNTER_4.pdf", "page_number": 6,
+                 "text": "FIFTH CAUSE OF ACTION. Intentional infliction of emotional distress."},
+                {"filename": "ANSWER_WITH_COUNTER_4.pdf", "page_number": 7,
+                 "text": "WHEREFORE counterclaimant demands judgment and punitive damages."},
+                {"filename": "COMPLAINT_2.pdf", "page_number": 1,
+                 "text": "Plaintiff alleges an unrelated main-action claim."},
+            ]
+
+        pages = WORKER.evidence(
+            MultiClaimCounterS3(),
+            "NY-Suffolk-600371-2021-DeSousa-v-Calvagno-II-Karcher",
+            "Separately validate only the counterclaim and cross-claim layer, including parties, claims, defenses, and relief.",
+        )
+
+        self.assertEqual(
+            set(range(1, 8)),
+            {
+                page["page_number"]
+                for page in pages
+                if page["filename"] == "ANSWER_WITH_COUNTER_4.pdf"
+            },
+        )
+        self.assertNotIn("COMPLAINT_2.pdf", {page["filename"] for page in pages})
+
     def test_party_specific_every_counterclaim_question_uses_crossclaim_slice(self):
         class PartySpecificCrossClaimS3(FakeS3):
             pages = [
