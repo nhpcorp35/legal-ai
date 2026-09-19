@@ -847,9 +847,9 @@ def compose_validated_layers(s3, case_id, question):
             continue
         sections = [item.get("section") for item in findings if isinstance(item, dict)]
         draft_question = str(draft.get("question", ""))
-        if "Main case" in sections and not CONSOLIDATED_LITIGATION_MAP_RE.search(draft_question):
+        if sections == ["Main case"] and not CONSOLIDATED_LITIGATION_MAP_RE.search(draft_question):
             candidates["Main case"].append((request_id, draft))
-        if sections == ["Counterclaims and cross-claims"] and "quality facilit" in draft_question.casefold():
+        if sections == ["Counterclaims and cross-claims"] and not CONSOLIDATED_LITIGATION_MAP_RE.search(draft_question):
             candidates["Counterclaims and cross-claims"].append((request_id, draft))
         if sections == ["Third-party claims"] and THIRD_PARTY_ONLY_QUESTION_RE.search(draft_question):
             try:
@@ -859,20 +859,36 @@ def compose_validated_layers(s3, case_id, question):
             actions = audit.get("coverage", {}).get("third_party_actions", [])
             if [action.get("ordinal") for action in actions if isinstance(action, dict)] == list(THIRD_PARTY_ORDINALS):
                 candidates["Third-party claims"].append((request_id, draft, audit))
-    if any(not candidates[section] for section in LITIGATION_MAP_SECTIONS):
+    if candidates["Third-party claims"]:
+        third_party_present = True
+    else:
+        try:
+            evidence(s3, case_id, RETRIEVAL_VALIDATION_PROFILES["third-party"])
+        except PreGenerationGateError as exc:
+            if str(exc) != "missing_third_party_complaint":
+                raise
+            third_party_present = False
+        else:
+            third_party_present = True
+    required_sections = ["Main case", "Counterclaims and cross-claims"]
+    if third_party_present:
+        required_sections.append("Third-party claims")
+    if any(not candidates[section] for section in required_sections):
         raise PreGenerationGateError("missing_validated_layer")
 
     main_request, main_draft = candidates["Main case"][0]
     counter_request, counter_draft = candidates["Counterclaims and cross-claims"][0]
-    third_request, third_draft, third_audit = candidates["Third-party claims"][0]
     source_drafts = {
         "Main case": (main_request, main_draft),
         "Counterclaims and cross-claims": (counter_request, counter_draft),
-        "Third-party claims": (third_request, third_draft),
     }
+    third_audit = None
+    if third_party_present:
+        third_request, third_draft, third_audit = candidates["Third-party claims"][0]
+        source_drafts["Third-party claims"] = (third_request, third_draft)
     findings = []
     citations = []
-    for section in LITIGATION_MAP_SECTIONS:
+    for section in required_sections:
         _source_request, source_draft = source_drafts[section]
         finding = next(item for item in source_draft["findings"] if item.get("section") == section)
         findings.append(finding)
@@ -883,14 +899,16 @@ def compose_validated_layers(s3, case_id, question):
         if isinstance(cite, dict)
     }
     pages = [{**cite, "text": ""} for cite in unique_citations.values()]
-    coverage = {
-        "third_party_actions": third_audit["coverage"]["third_party_actions"],
-        "composition_sources": {
-            section: source_drafts[section][0] for section in LITIGATION_MAP_SECTIONS
-        },
-    }
+    coverage = {"composition_sources": {
+        section: source_drafts[section][0] for section in required_sections
+    }}
+    if third_audit:
+        coverage["third_party_actions"] = third_audit["coverage"]["third_party_actions"]
     result = {
-        "summary": "The verified pleadings map main-action claims, counterclaims and cross-claims, and four successive third-party actions.",
+        "summary": (
+            "The verified pleadings map main-action claims, counterclaims and cross-claims"
+            + (", and the validated third-party actions." if third_party_present else ".")
+        ),
         "findings": findings,
         "missing_information": [],
         "limitations": [
@@ -1970,10 +1988,13 @@ def validate(result, pages, authorities=(), question="", coverage=None):
             and not third_party_only
             and not consolidated
         )
+        consolidated_sections = list(
+            (coverage or {}).get("composition_sources", LITIGATION_MAP_SECTIONS)
+        )
         invalid_scope = (
             (cross_claim_only and sections != ["Counterclaims and cross-claims"])
             or (third_party_only and sections != ["Third-party claims"])
-            or (consolidated and sections != list(LITIGATION_MAP_SECTIONS))
+            or (consolidated and sections != consolidated_sections)
         )
         missing_main_case = (
             not cross_claim_only
