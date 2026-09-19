@@ -122,6 +122,11 @@ THIRD_PARTY_CAPTION_STOPWORDS = frozenset({
 })
 TOP_ATTACK_SURFACES_MARKER = "v4.0 top attack surfaces report"
 V4_PROCEDURAL_ORDER_TEXT_RE = re.compile(r"\b(?:death|deceased|substitut(?:e|ion)|representative|jurisdiction)\b", re.IGNORECASE)
+PROCEDURAL_POSTURE_QUESTION_RE = re.compile(
+    r"\b(?:death|deceased|substitut(?:e|ion)|representative|jurisdiction|"
+    r"summary[ -]judg(?:ment|ment motion)|merits decision|procedural disposition)\b",
+    re.IGNORECASE,
+)
 # v4 reports need case-specific conflicts, not generic contract boilerplate.
 # Filings are strongest; orders and sworn/testimonial materials follow.
 ATTACK_SURFACE_PRIMARY_FILENAME_RE = re.compile(
@@ -922,6 +927,9 @@ def evidence(s3, case_id, question):
     # filing-led coverage before contract exhibits are considered.
     pleading_focused_question = bool(PLEADING_FOCUSED_QUESTION_RE.search(question))
     attack_surface_question = TOP_ATTACK_SURFACES_MARKER in question.casefold()
+    procedural_posture_question = bool(
+        PROCEDURAL_POSTURE_QUESTION_RE.search(question)
+    )
     consolidated_question = bool(CONSOLIDATED_LITIGATION_MAP_RE.search(question))
     third_party_only_question = bool(THIRD_PARTY_ONLY_QUESTION_RE.search(question))
     cross_claim_only_question = (
@@ -1181,6 +1189,16 @@ def evidence(s3, case_id, question):
                     coverage_score += 10
                 if ATTACK_SURFACE_PRIMARY_FILENAME_RE.search(pleading_filename) and V4_PROCEDURAL_ORDER_TEXT_RE.search(text):
                     coverage_score += 45
+            elif (
+                procedural_posture_question
+                and ATTACK_SURFACE_PRIMARY_FILENAME_RE.search(pleading_filename)
+                and V4_PROCEDURAL_ORDER_TEXT_RE.search(text)
+            ):
+                # Questions about death, substitution, jurisdiction, or a
+                # dispositive motion require the controlling procedural record
+                # alongside the pleadings. This is filing-type and text based,
+                # never case-name based.
+                coverage_score += 45
             # A party/claims question can require a non-pleading record page
             # that directly addresses ownership, residence, or control. Keep
             # this narrow so advocacy alone is not elevated into a fact.
@@ -1305,7 +1323,28 @@ def evidence(s3, case_id, question):
                 if (row[3], row[1], row[2]) not in material_ids
             ]
         else:
-            ordered = merits + [row for row in ranked if (row[3], row[1], row[2]) not in merit_ids]
+            procedural_rows = [
+                row for row in ranked
+                if (
+                    procedural_posture_question
+                    and (row[3], row[1], row[2]) not in merit_ids
+                    and ATTACK_SURFACE_PRIMARY_FILENAME_RE.search(
+                        normalized_filename(row[1])
+                    )
+                    and V4_PROCEDURAL_ORDER_TEXT_RE.search(row[4]["text"])
+                )
+            ]
+            procedural_ids = {
+                (row[3], row[1], row[2])
+                for row in procedural_rows
+            }
+            ordered = merits + procedural_rows + [
+                row for row in ranked
+                if (
+                    (row[3], row[1], row[2]) not in merit_ids
+                    and (row[3], row[1], row[2]) not in procedural_ids
+                )
+            ]
     ordered_items = targeted_pages + [row[4] for row in ordered]
     for item in ordered_items:
         filename, page, source = item["filename"], item["page_number"], item["source_sha256"]
