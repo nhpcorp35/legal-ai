@@ -164,6 +164,26 @@ class EvidenceFailClosedTests(unittest.TestCase):
             1,
         )
 
+    def test_third_party_validation_reports_absent_layer_without_model(self):
+        class NoThirdPartyS3(FakeS3):
+            pages = [{
+                "filename": "COMPLAINT_1.pdf",
+                "page_number": 1,
+                "text": "Plaintiff alleges private nuisance against defendants.",
+            }]
+
+        report = WORKER.validate_retrieval(
+            NoThirdPartyS3(),
+            "NY-Suffolk-600371-2021-DeSousa-v-Calvagno-II-Karcher",
+            WORKER.RETRIEVAL_VALIDATION_PROFILES["third-party"],
+        )
+
+        self.assertEqual(report["status"], "PASSED")
+        self.assertFalse(report["model_called"])
+        self.assertFalse(report["layer_present"])
+        self.assertEqual(report["gate_reason"], "missing_third_party_complaint")
+        self.assertEqual(report["selected_page_count"], 0)
+
     def test_no_match_does_not_select_arbitrary_verified_pages(self):
         with self.assertRaisesRegex(ValueError, "no matching verified evidence"):
             WORKER.evidence(

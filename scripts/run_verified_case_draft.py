@@ -1593,7 +1593,35 @@ def retrieval_evidence(s3, case_id, question):
 
 def validate_retrieval(s3, case_id, question):
     """Run the production evidence gate without a model call or B2 write."""
-    pages = retrieval_evidence(s3, case_id, question)
+    try:
+        pages = retrieval_evidence(s3, case_id, question)
+    except PreGenerationGateError as exc:
+        if (
+            str(exc) == "missing_third_party_complaint"
+            and THIRD_PARTY_ONLY_QUESTION_RE.search(question)
+        ):
+            # Absence is a valid result for a layer-existence check. Report it
+            # explicitly without treating the case as broken or spending a
+            # model call to narrate an empty layer.
+            return {
+                "case_id": case_id,
+                "status": "PASSED",
+                "model_called": False,
+                "layer": "third-party",
+                "layer_present": False,
+                "gate_reason": "missing_third_party_complaint",
+                "selected_page_count": 0,
+                "context_character_count": 0,
+                "selected_document_count": 0,
+                "pleading_document_count": 0,
+                "pleading_signal_counts": {},
+                "coverage": {
+                    "third_party_action_count": 0,
+                    "third_party_answered_action_count": 0,
+                    "third_party_unresolved_action_count": 0,
+                },
+            }
+        raise
     coverage = getattr(pages, "coverage", {}) or {}
     filings = pleading_map(pages)
     party_roles = coverage.get("party_role_evidence", {})
