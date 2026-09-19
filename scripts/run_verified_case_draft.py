@@ -254,7 +254,12 @@ def third_party_caption_tokens(filename, document_pages):
 def third_party_action_slices(documents):
     """Group operative complaints and answers into successive actions."""
     filings = []
-    for (source, filename), document_pages in documents.items():
+    selection_documents = (
+        deduplicate_exact_documents(documents)
+        if main_action_only_question
+        else documents
+    )
+    for (source, filename), document_pages in selection_documents.items():
         normalized = normalized_filename(filename)
         identity = " ".join(
             [normalized]
@@ -580,6 +585,32 @@ def valid_case_id(value: str) -> bool:
 def normalized_filename(value: str) -> str:
     """Make generated archive filenames safe for procedural classification."""
     return re.sub(r"[^a-z0-9]+", " ", value.casefold()).strip()
+
+
+def deduplicate_exact_documents(documents):
+    """Keep one citable copy of each byte-independent page-text sequence."""
+    unique = {}
+    seen_signatures = set()
+    for identity, pages in sorted(
+        documents.items(),
+        key=lambda item: (normalized_filename(item[0][1]), item[0][0]),
+    ):
+        signature_payload = [
+            (page, " ".join(text.casefold().split()))
+            for page, text in sorted(pages)
+        ]
+        signature = hashlib.sha256(
+            json.dumps(
+                signature_payload,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        if signature in seen_signatures:
+            continue
+        seen_signatures.add(signature)
+        unique[identity] = pages
+    return unique
 
 
 def client():
