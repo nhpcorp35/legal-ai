@@ -1452,6 +1452,9 @@ def validate_retrieval(s3, case_id, question):
     pages = evidence(s3, case_id, question)
     coverage = getattr(pages, "coverage", {}) or {}
     filings = pleading_map(pages)
+    party_roles = coverage.get("party_role_evidence", {})
+    operatives = coverage.get("pleading_operatives", {})
+    third_party_actions = coverage.get("third_party_actions", [])
     return {
         "case_id": case_id,
         "status": "PASSED",
@@ -1473,7 +1476,27 @@ def validate_retrieval(s3, case_id, question):
                 "third-party pleading",
             )
         },
-        "coverage": coverage,
+        "coverage": {
+            "party_role_candidate_count": party_roles.get("candidate_count", 0),
+            "party_role_retrieved_count": party_roles.get("retrieved_count", 0),
+            "party_role_outside_initial_slice": bool(
+                party_roles.get("outside_initial_slice", False)
+            ),
+            "claim_page_count": operatives.get("claim_page_count", 0),
+            "relief_page_count": operatives.get("relief_page_count", 0),
+            "verified_pleading_inventory_count": len(
+                coverage.get("verified_pleading_inventory", [])
+            ),
+            "third_party_action_count": len(third_party_actions),
+            "third_party_answered_action_count": sum(
+                bool(action.get("answer_present"))
+                for action in third_party_actions
+            ),
+            "third_party_unresolved_action_count": sum(
+                bool(action.get("unresolved"))
+                for action in third_party_actions
+            ),
+        },
     }
 
 def authority_prompt(authorities):
