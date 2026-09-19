@@ -263,12 +263,7 @@ def third_party_caption_tokens(filename, document_pages):
 def third_party_action_slices(documents):
     """Group operative complaints and answers into successive actions."""
     filings = []
-    selection_documents = (
-        deduplicate_exact_documents(documents)
-        if main_action_only_question
-        else documents
-    )
-    for (source, filename), document_pages in selection_documents.items():
+    for (source, filename), document_pages in documents.items():
         normalized = normalized_filename(filename)
         identity = " ".join(
             [normalized]
@@ -1025,7 +1020,12 @@ def evidence(s3, case_id, question):
                     :TARGETED_THIRD_PARTY_COMPLAINT_PAGE_LIMIT
                 ]
             ]
-    for (source, filename), document_pages in documents.items():
+    selection_documents = (
+        deduplicate_exact_documents(documents)
+        if main_action_only_question
+        else documents
+    )
+    for (source, filename), document_pages in selection_documents.items():
         normalized_document_filename = normalized_filename(filename)
         document_identity = " ".join(
             [normalized_document_filename]
