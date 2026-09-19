@@ -2,7 +2,7 @@
 """Create one bounded, cited, internal-only draft from verified B2 page indexes."""
 from __future__ import annotations
 
-import argparse, hashlib, json, os, re, socket, sys, urllib.error, urllib.request
+import argparse, hashlib, json, os, re, socket, sys, tempfile, urllib.error, urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -207,6 +207,7 @@ PRE_GENERATION_GATE_REASONS = frozenset({
     "noncontiguous_third_party_actions",
     "retrieval_replay_passed_current_code",
     "third_party_action_slices_exceed_context",
+    "unresolved_third_party_action",
     "unmatched_third_party_answer",
 })
 PRE_GENERATION_GATE_DETAILS = frozenset({
@@ -1016,6 +1017,8 @@ def evidence(s3, case_id, question):
     consolidated_action_audit = []
     if consolidated_question:
         targeted_pages, consolidated_action_audit = select_third_party_action_pages(documents)
+        if any(action.get("unresolved") for action in consolidated_action_audit):
+            raise PreGenerationGateError("unresolved_third_party_action")
     if targeted_third_party_complaint:
         candidates = []
         for (source, filename), document_pages in documents.items():
@@ -1447,9 +1450,103 @@ def pleading_map(pages):
     return [{"filename": item["filename"], "citations": item["citations"], "signals": sorted(item["signals"])} for item in sorted(filings.values(), key=lambda item: item["filename"].casefold())]
 
 
+def case00_evidence(question):
+    """Load the immutable Case-00 corpus through its canonical legacy adapter."""
+    from scripts import rebuild_case00_derived as rebuild
+
+    root = Path(__file__).resolve().parents[1] / "data" / "case-00-triborough"
+    source_prefix = "Benchmarks/Case-00-Triborough/original/Tribrough Full Docket/"
+    with tempfile.TemporaryDirectory(prefix="case00-retrieval-validation-") as temp:
+        cfg = rebuild.B2Config.from_env()
+        b2 = rebuild.create_b2_client(cfg)
+        source = rebuild.materialize_b2_prefix(
+            source_prefix, Path(temp), client=b2, config=cfg
+        )
+        docs = rebuild.ingest_source_directory(
+            source, root / "nyscef_filing_inventory.json"
+        )
+        pages = rebuild.build_canonical_page_records(docs)["pages"]
+
+    normalized_pages = []
+    for page in pages:
+        filename = page.get("source_filename")
+        page_number = page.get("page_number")
+        text = " ".join(str(page.get("text", "")).split())
+        if text and isinstance(filename, str) and isinstance(page_number, int):
+            normalized_pages.append({
+                "source_sha256": CASE00_BENCHMARK_ID,
+                "filename": filename,
+                "page_number": page_number,
+                "text": text,
+            })
+    return normalized_pages
+
+
+def retrieval_evidence(s3, case_id, question):
+    """Route every verified corpus through one model-free validation boundary."""
+    if case_id == CASE00_BENCHMARK_ID:
+        pages = case00_evidence(question)
+        selected = []
+        selected_ids = set()
+        total = 0
+        terms = words(question)
+        ranked = sorted(
+            pages,
+            key=lambda page: (
+                -sum(page["text"].casefold().count(term) for term in terms),
+                page["filename"].casefold(),
+                page["page_number"],
+            ),
+        )
+        def reserve(page):
+            nonlocal total
+            identity = (page["filename"], page["page_number"])
+            if identity in selected_ids:
+                return
+            text = page["text"][:MAX_PAGE_CHARS]
+            if len(selected) >= MAX_PAGES or total + len(text) > MAX_CONTEXT_CHARS:
+                return
+            selected.append({**page, "text": text})
+            selected_ids.add(identity)
+            total += len(text)
+
+        filings = {}
+        for page in pages:
+            if PLEADING_FILENAME_RE.search(normalized_filename(page["filename"])):
+                filings.setdefault(page["filename"], []).append(page)
+        for filename in sorted(filings, key=str.casefold):
+            ordered = sorted(filings[filename], key=lambda page: page["page_number"])
+            reserve(ordered[0])
+            reserve(ordered[-1])
+            kept = 0
+            for page in ordered:
+                if kept >= 4:
+                    break
+                if PLEADING_OPERATIONAL_TEXT_RE.search(page["text"]):
+                    before = len(selected_ids)
+                    reserve(page)
+                    kept += len(selected_ids) > before
+        for page in ranked:
+            reserve(page)
+        if not selected:
+            raise ValueError("no matching verified evidence")
+        return EvidenceSelection(selected, {
+            "party_role_evidence": {},
+            "pleading_operatives": {},
+            "verified_pleading_inventory": verified_pleading_inventory({
+                (CASE00_BENCHMARK_ID, filename): [
+                    (page["page_number"], page["text"])
+                    for page in pages if page["filename"] == filename
+                ]
+                for filename in {page["filename"] for page in pages}
+            }),
+        })
+    return evidence(s3, case_id, question)
+
+
 def validate_retrieval(s3, case_id, question):
     """Run the production evidence gate without a model call or B2 write."""
-    pages = evidence(s3, case_id, question)
+    pages = retrieval_evidence(s3, case_id, question)
     coverage = getattr(pages, "coverage", {}) or {}
     filings = pleading_map(pages)
     party_roles = coverage.get("party_role_evidence", {})

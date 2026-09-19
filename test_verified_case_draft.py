@@ -52,6 +52,34 @@ class MatchingEvidenceS3(FakeS3):
 
 
 class EvidenceFailClosedTests(unittest.TestCase):
+    def test_case00_uses_shared_model_free_validation_boundary(self):
+        pages = [
+            {
+                "source_sha256": WORKER.CASE00_BENCHMARK_ID,
+                "filename": "Complaint.pdf",
+                "page_number": 1,
+                "text": "Plaintiff alleges a cause of action.",
+            }
+        ] + [
+            {
+                "source_sha256": WORKER.CASE00_BENCHMARK_ID,
+                "filename": f"Correspondence {index}.pdf",
+                "page_number": 1,
+                "text": "main case counterclaims cross claims third party claims relief",
+            }
+            for index in range(WORKER.MAX_PAGES + 5)
+        ]
+        with mock.patch.object(WORKER, "case00_evidence", return_value=pages):
+            report = WORKER.validate_retrieval(
+                object(),
+                WORKER.CASE00_BENCHMARK_ID,
+                WORKER.RETRIEVAL_VALIDATION_PROFILES["consolidated"],
+            )
+        self.assertEqual(report["status"], "PASSED")
+        self.assertFalse(report["model_called"])
+        self.assertLessEqual(report["selected_page_count"], WORKER.MAX_PAGES)
+        self.assertEqual(report["pleading_document_count"], 1)
+
     def test_retrieval_validation_profiles_cover_each_supported_layer(self):
         self.assertEqual(
             set(WORKER.RETRIEVAL_VALIDATION_PROFILES),
@@ -1273,6 +1301,25 @@ class SzymczykFilenameCoverageTests(unittest.TestCase):
             [action["ordinal"] for action in pages.coverage["third_party_actions"]],
             ["first", "second", "third", "fourth"],
         )
+
+    def test_consolidated_map_fails_closed_on_unanswered_third_party_action(self):
+        class UnansweredActionS3(FakeS3):
+            pages = [
+                {"filename": "COMPLAINT_1.pdf", "page_number": 1,
+                 "text": "Plaintiff against Defendant for negligence."},
+                {"filename": "THIRD_PARTY_SUMMONS_5.pdf", "page_number": 1,
+                 "text": "Third-party complaint. Alpha against Able."},
+            ]
+
+        with self.assertRaisesRegex(
+            WORKER.PreGenerationGateError,
+            "unresolved_third_party_action",
+        ):
+            WORKER.evidence(
+                UnansweredActionS3(),
+                "NY-NewYork-158068-2018-Szymczyk-v-Hudson-36-37",
+                WORKER.RETRIEVAL_VALIDATION_PROFILES["consolidated"],
+            )
 
     def test_third_party_layer_groups_same_ordinal_complaint_filings(self):
         class SplitComplaintS3(FakeS3):
