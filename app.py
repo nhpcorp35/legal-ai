@@ -2912,12 +2912,27 @@ def findings_with_verified_authorities(findings):
         authority_ids = finding.get("authority_citations", [])
         if not isinstance(authority_ids, list):
             authority_ids = []
+        citations = []
+        seen_citations = set()
+        raw_citations = finding.get("citations", [])
+        if not isinstance(raw_citations, list):
+            raw_citations = []
+        for citation in raw_citations:
+            if not isinstance(citation, dict):
+                continue
+            identity = (
+                citation.get("source_sha256"),
+                citation.get("filename"),
+                citation.get("page_number"),
+            )
+            if identity in seen_citations:
+                continue
+            seen_citations.add(identity)
+            citations.append(citation)
         rendered.append({
             "section": finding.get("section", ""),
             "statement": finding.get("statement", ""),
-            "citations": finding.get("citations", [])
-            if isinstance(finding.get("citations", []), list)
-            else [],
+            "citations": citations,
             "authorities": [
                 _VERIFIED_AUTHORITY_BY_ID[authority_id]
                 for authority_id in authority_ids
