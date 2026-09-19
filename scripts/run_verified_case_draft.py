@@ -159,9 +159,10 @@ ATTACK_SURFACE_NON_FIRST_HAND_RE = re.compile(
 class PreGenerationGateError(ValueError):
     """Raised when mandatory pleading coverage cannot fit before a model call."""
 
-    def __init__(self, reason, detail=None):
+    def __init__(self, reason, detail=None, metrics=None):
         super().__init__(reason)
         self.detail = detail
+        self.metrics = metrics if isinstance(metrics, dict) else {}
 
 
 class EvidenceSelection(list):
@@ -187,6 +188,14 @@ PRE_GENERATION_GATE_REASONS = frozenset({
 PRE_GENERATION_GATE_DETAILS = frozenset({
     "duplicate_explicit_ordinal",
     "multiple_unlabeled_complaints",
+})
+PRE_GENERATION_GATE_METRICS = frozenset({
+    "candidate_document_count",
+    "candidate_section_count",
+    "context_character_count",
+    "mandatory_page_count",
+    "missing_mandatory_page_count",
+    "selected_page_count",
 })
 INCOMPLETE_OUTPUT_FIELDS = (
     "counterclaims_and_cross_claims",
@@ -656,6 +665,16 @@ def failure_diagnostics(exc, stage):
         )
         if exc.detail in PRE_GENERATION_GATE_DETAILS:
             details["gate_detail"] = exc.detail
+        gate_metrics = {
+            key: value
+            for key, value in exc.metrics.items()
+            if key in PRE_GENERATION_GATE_METRICS
+            and isinstance(value, int)
+            and not isinstance(value, bool)
+            and value >= 0
+        }
+        if gate_metrics:
+            details["gate_metrics"] = gate_metrics
     elif code == "model_output_validation":
         validation_reason = str(exc).strip().casefold().replace("-", " ").replace(" ", "_")
         details["validation_reason"] = (
@@ -726,16 +745,19 @@ def diagnose_failed_retrieval(s3, case_id, request_id):
         diagnostics = failure_diagnostics(exc, "evidence_retrieval")
         gate_reason = diagnostics["gate_reason"]
         gate_detail = diagnostics.get("gate_detail")
+        gate_metrics = diagnostics.get("gate_metrics")
     else:
         gate_reason = "retrieval_replay_passed_current_code"
         gate_detail = None
+        gate_metrics = None
     put(s3, case_id, request_id, "status.json", {
         **status,
         "gate_reason": gate_reason,
         **({"gate_detail": gate_detail} if gate_detail else {}),
+        **({"gate_metrics": gate_metrics} if gate_metrics else {}),
         "retrieval_diagnosed_at": datetime.now(timezone.utc).isoformat(),
     })
-    return gate_reason, gate_detail
+    return gate_reason, gate_detail, gate_metrics
 
 
 def listed_objects(s3, **kwargs):
@@ -1305,7 +1327,17 @@ def evidence(s3, case_id, question):
     if missing_mandatory:
         # Never spend a model call on a pleading map that dropped a required
         # first affirmative-defense page. The bounded details stay internal.
-        raise PreGenerationGateError("missing_first_affirmative_defense_page")
+        raise PreGenerationGateError(
+            "missing_first_affirmative_defense_page",
+            metrics={
+                "candidate_document_count": len(selection_documents),
+                "candidate_section_count": len(first_defense_page),
+                "context_character_count": total,
+                "mandatory_page_count": len(mandatory_ids),
+                "missing_mandatory_page_count": len(missing_mandatory),
+                "selected_page_count": len(selected),
+            },
+        )
     selected_party_role_ids = party_role_candidates.intersection(selected_ids)
     outside_party_role_ids = party_role_candidates.difference(selected_ids)
     selected_claim_ids = {
@@ -1699,7 +1731,9 @@ def main():
         if args.scan_pending: raise SystemExit("diagnostic mode cannot scan pending requests")
         if not valid_case_id(args.case_id or ""): raise SystemExit("invalid case identifier")
         if not re.fullmatch(r"draft-[0-9]+-[0-9a-f]{12}", args.request_id or ""): raise SystemExit("invalid request identifier")
-        gate_reason, gate_detail = diagnose_failed_retrieval(client(), args.case_id, args.request_id)
+        gate_reason, gate_detail, gate_metrics = diagnose_failed_retrieval(
+            client(), args.case_id, args.request_id
+        )
         print(json.dumps({
             "case_id": args.case_id,
             "request_id": args.request_id,
@@ -1708,6 +1742,7 @@ def main():
             "failure_stage": "evidence_retrieval",
             "gate_reason": gate_reason,
             **({"gate_detail": gate_detail} if gate_detail else {}),
+            **({"gate_metrics": gate_metrics} if gate_metrics else {}),
             "model_called": False,
         }, sort_keys=True, separators=(",", ":")))
         return

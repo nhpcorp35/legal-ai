@@ -695,9 +695,12 @@ class PendingQueueTests(unittest.TestCase):
              mock.patch.object(WORKER, "evidence", side_effect=WORKER.PreGenerationGateError("ambiguous_third_party_answer")), \
              mock.patch.object(WORKER, "generate") as generate, \
              mock.patch.object(WORKER, "put", side_effect=lambda *args: writes.append(args[3:])):
-            reason, detail = WORKER.diagnose_failed_retrieval(s3, case_id, request_id)
+            reason, detail, metrics = WORKER.diagnose_failed_retrieval(
+                s3, case_id, request_id
+            )
         self.assertEqual(reason, "ambiguous_third_party_answer")
         self.assertIsNone(detail)
+        self.assertIsNone(metrics)
         self.assertEqual(writes[0][0], "status.json")
         self.assertEqual(writes[0][1]["gate_reason"], reason)
         self.assertEqual(writes[0][1]["updated_at"], status["updated_at"])
@@ -721,6 +724,29 @@ class PendingQueueTests(unittest.TestCase):
             "evidence_retrieval",
         )
         self.assertNotIn("gate_detail", private)
+
+    def test_pre_generation_gate_metrics_are_count_only_and_allowlisted(self):
+        diagnostics = WORKER.failure_diagnostics(
+            WORKER.PreGenerationGateError(
+                "missing_first_affirmative_defense_page",
+                metrics={
+                    "mandatory_page_count": 48,
+                    "missing_mandatory_page_count": 3,
+                    "selected_page_count": 45,
+                    "private_filename": "Answer.pdf",
+                    "candidate_section_count": True,
+                },
+            ),
+            "evidence_retrieval",
+        )
+        self.assertEqual(
+            diagnostics["gate_metrics"],
+            {
+                "mandatory_page_count": 48,
+                "missing_mandatory_page_count": 3,
+                "selected_page_count": 45,
+            },
+        )
 
     def test_scan_worker_status_preserves_request_failure_diagnostics(self):
         case_id = "NY-NewYork-158068-2018-Szymczyk-v-Hudson-36-37"
