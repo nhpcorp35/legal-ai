@@ -300,6 +300,7 @@ MODEL_VALIDATION_REASONS = frozenset({
     "incomplete_output_third_party_claims",
     "incomplete_third_party_actions",
     "invalid_litigation_map_sections",
+    "invalid_strategic_analysis_sections",
     "invalid_output",
     "uncited_output",
     "unverified_authority_citation",
@@ -2013,7 +2014,7 @@ def generate(question, pages, coverage=None, authorities=None):
         instructions += " For the v4.0 Top Attack Surfaces Report, do not prepend or return a claims-map summary. If a supplied order shows a motion was disposed of because a party died and substitution is pending, identify it as a procedural disposition, not a merits decision, and state only the procedural consequence shown by that order."
         instructions += " For the v4.0 Top Attack Surfaces Report, prioritize identified pleadings, orders, sworn testimony, and party-specific exhibits over generic contract excerpts. Use a generic contract provision only where it directly conflicts with, limits, or corroborates a party-identified filing or evidence in the supplied pages. Return no more than eight findings ordered from highest to lower materiality; return fewer when fewer qualify. Start every finding with 'Rank N — [Contradiction / Credibility / Procedural weakness] —'. For every finding, use this attorney-readable sequence in the statement: (1) identify the affected party or litigation position only when expressly named in the supplied pages; (2) state the specific record proposition on each side of the tension, including the source type or filing where useful; (3) explain why the two propositions create the asserted vulnerability; and (4) state any material limit. Never use a broad label such as 'causation record' or 'notice challenge' without the particular propositions that support it. A contradiction must cite each of the two conflicting verified propositions. A credibility vulnerability must identify the person or party and the concrete inconsistency, omission, or conflict; if the record does not identify one, do not call it a credibility issue. A procedural weakness must identify the party position, pleading, order, burden, remedy, notice, timing, preservation, or posture actually shown. Do not rank a defense merely because its factual proof, operative pleading, policy, or other supporting material is absent from the supplied excerpts. It qualifies only when the supplied pages show an affirmative mismatch with a contract, order, testimony, or other identified evidence, or when a court actually addressed the position. Do not invent a weakness from silence, characterize advocacy as fact, or convert alternative pleading or a denial into a contradiction. A pleading may establish procedural posture only. Do not make a factual or credibility finding from an attorney affirmation, counsel statement, service affidavit, or a party’s characterization of an absent exhibit, deposition, report, or other evidence. When the underlying first-hand material is not among the supplied pages, identify that limitation and omit the finding rather than treating advocacy as proof."
     elif strategic_question:
-        instructions += " For this strategic-analysis question, the following instructions override the earlier compact litigation-map format. Give a direct attorney answer, not a source list. Use these sections in order: Case framework; Evidence; Competing positions; Assessment. First identify who is who and the material property, transaction, event, or physical layout. Then extract the concrete opinions and factual premises from each expert or fact witness, including measurements and regulatory constraints. Compare the parties' best arguments point by point, identifying the evidence and law each side cites. A case, statute, or regulation appearing only inside a filing is an attributed party position, not independently verified law; describe it that way and cite the filing page. State a governing legal rule as verified law only when its authority id is supplied in legal_authorities. Rank the material weaknesses or strengths, explain why each affects the requested party, give the strongest counterargument, and state the unresolved fact or authority that could change the assessment. Do not merely say that interference, breach, causation, or another element is shown; explain the specific evidence and competing position. The summary must answer the question directly in no more than 90 words. Return no more than eight findings and avoid repeating the same fact in multiple sections."
+        instructions += " For this strategic-analysis question, the following instructions override the earlier compact litigation-map format. Give a direct attorney answer, not a source list. Use all four sections in this order: Case framework; Evidence; Competing positions; Assessment. Each section must appear at least once; multiple findings within a section are allowed but sections must never move backward. First identify who is who and the material property, transaction, event, or physical layout. Then extract the concrete opinions and factual premises from each expert or fact witness, including measurements and regulatory constraints. Compare the parties' best arguments point by point, identifying the evidence and law each side cites. A case, statute, or regulation appearing only inside a filing is an attributed party position, not independently verified law; describe it that way and cite the filing page. State a governing legal rule as verified law only when its authority id is supplied in legal_authorities. Rank the material weaknesses or strengths, explain why each affects the requested party, give the strongest counterargument, and state the unresolved fact or authority that could change the assessment. Do not merely say that interference, breach, causation, or another element is shown; explain the specific evidence and competing position. The summary must answer the question directly in no more than 90 words. Return no more than eight findings and avoid repeating the same fact in multiple sections."
     elif authorities:
         instructions += " For this authority-backed question, the following instructions override the earlier compact litigation-map format."
         instructions += " End the summary with a complete sentence; never truncate a sentence to fill the schema limit."
@@ -2153,11 +2154,16 @@ def validate(result, pages, authorities=(), question="", coverage=None):
                     raise ValueError("incomplete third-party actions")
     if strategic_question:
         sections = [item.get("section") for item in result["findings"]]
-        expected = [
-            section for section in STRATEGIC_ANALYSIS_SECTIONS
-            if section in sections
-        ]
-        if sections != expected or "Assessment" not in sections:
+        positions = {
+            section: index
+            for index, section in enumerate(STRATEGIC_ANALYSIS_SECTIONS)
+        }
+        section_positions = [positions.get(section, -1) for section in sections]
+        if (
+            set(sections) != set(STRATEGIC_ANALYSIS_SECTIONS)
+            or any(position < 0 for position in section_positions)
+            or section_positions != sorted(section_positions)
+        ):
             raise ValueError("invalid strategic-analysis sections")
     if litigation_map_question(question) and not authorities and not strategic_question and TOP_ATTACK_SURFACES_MARKER not in question.casefold():
         sections = [item.get("section") for item in result["findings"]]

@@ -2055,9 +2055,26 @@ class StrategicAnalysisRetrievalTests(unittest.TestCase):
         self.assertIs(
             WORKER.validate(valid, [page], question=self.QUESTION), valid
         )
+        repeated = result([
+            "Case framework",
+            "Evidence",
+            "Evidence",
+            "Competing positions",
+            "Assessment",
+            "Assessment",
+        ])
+        self.assertIs(
+            WORKER.validate(repeated, [page], question=self.QUESTION), repeated
+        )
         with self.assertRaisesRegex(ValueError, "invalid strategic-analysis sections"):
             WORKER.validate(
                 result(["Assessment", "Evidence"]),
+                [page],
+                question=self.QUESTION,
+            )
+        with self.assertRaisesRegex(ValueError, "invalid strategic-analysis sections"):
+            WORKER.validate(
+                result(["Case framework", "Evidence", "Assessment"]),
                 [page],
                 question=self.QUESTION,
             )
