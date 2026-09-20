@@ -381,6 +381,22 @@ judgment.
 - Moved the free-form question panel above the optional preset attack-surfaces
   report so the normal attorney workflow appears first.
 
+### 2026-09-20
+
+- Added a general strategic-analysis path for evaluative attorney questions
+  about strengths, weaknesses, competing positions, and likely dispositive
+  issues. This is question-intent based and contains no matter-specific rule.
+- Strategic retrieval now preserves a balanced, bounded case-theory packet:
+  operative pleadings, expert opinions, concrete measurements or physical
+  facts, law cited in the record, and both sides' stated positions.
+- Strategic drafts must answer directly in ordered sections covering the case
+  framework, evidence, competing positions, and assessment. They must identify
+  the strongest counterargument and distinguish verified authority from law
+  merely cited in a party filing.
+- Preserved reviewer isolation: an attempt to read another reviewer's exact
+  draft and audit failed closed as designed. No access-control bypass was
+  added, and no paid regeneration was started.
+
 
 ## Daily attorney-goal alignment
 
@@ -413,3 +429,10 @@ Engineering activity alone does not count as progress. The evidence must show an
 - **Goal advanced:** Make the attorney-review workflow self-explanatory so a reviewer can immediately distinguish asking LegalAI from searching or browsing the record.
 - **How / evidence:** The question action is first and visually primary on every verified-matter card and question form, while the optional preview is explicitly labeled as source-only; 102 focused tests passed.
 - **Remaining gap:** Verify the revised workspace in production, then collect the reviewer’s full MVP accuracy, usefulness, citation, and workflow assessment.
+
+### 2026-09-20 alignment checkpoint
+
+- **Movement:** YES
+- **Goal advanced:** Convert source retrieval into balanced, attorney-useful litigation assessment for ordinary evaluative questions.
+- **How / evidence:** Added generic strategic-intent retrieval and answer contracts; 127 worker/UI/review tests and 295 deterministic cognition tests passed, with model calls mocked or disabled.
+- **Remaining gap:** Publish and deploy the tested worker change, run one controlled post-deployment evaluation, and obtain attorney scoring before declaring substantive MVP acceptance.

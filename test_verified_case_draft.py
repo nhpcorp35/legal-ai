@@ -1944,6 +1944,125 @@ class SzymczykFilenameCoverageTests(unittest.TestCase):
             )
 
 
+class StrategicAnalysisRetrievalTests(unittest.TestCase):
+    QUESTION = "What elements or issues are weakest for Defendants?"
+
+    def test_generic_weakness_question_selects_full_case_theory_categories(self):
+        class StrategicS3(FakeS3):
+            pages = [
+                {
+                    "filename": "Complaint.pdf",
+                    "page_number": 1,
+                    "text": "Plaintiff alleges interference and seeks equitable relief.",
+                },
+                {
+                    "filename": "Plaintiff Expert Affidavit.pdf",
+                    "page_number": 7,
+                    "text": "Licensed professional engineer expert opinion based on the site plan.",
+                },
+                {
+                    "filename": "Survey.pdf",
+                    "page_number": 3,
+                    "text": "The waterfront boundary measures 120 feet and the setback is 50 feet.",
+                },
+                {
+                    "filename": "Plaintiff Memorandum.pdf",
+                    "page_number": 12,
+                    "text": "Plaintiff argues that the DEC regulation and riparian navigation rule require equitable access.",
+                },
+                {
+                    "filename": "Defendant Brief.pdf",
+                    "page_number": 9,
+                    "text": "Defendant contends that its permit supersedes plaintiff's claimed access right.",
+                },
+            ]
+
+        pages = WORKER.evidence(
+            StrategicS3(),
+            "NY-Suffolk-600371-2021-DeSousa-v-Calvagno-II-Karcher",
+            self.QUESTION,
+        )
+        selected = {(page["filename"], page["page_number"]) for page in pages}
+        for expected in (
+            ("Plaintiff Expert Affidavit.pdf", 7),
+            ("Survey.pdf", 3),
+            ("Plaintiff Memorandum.pdf", 12),
+            ("Defendant Brief.pdf", 9),
+        ):
+            self.assertIn(expected, selected)
+
+    def test_strategic_prompt_requires_direct_balanced_assessment(self):
+        page = {
+            "source_sha256": "a" * 64,
+            "filename": "Expert Affidavit.pdf",
+            "page_number": 7,
+            "text": "The expert gives an opinion about the disputed condition.",
+        }
+        result = {
+            "summary": "The verified record identifies a material weakness.",
+            "findings": [{
+                "section": "Assessment",
+                "statement": "The expert opinion supports plaintiff, while defendants retain a factual counterargument.",
+                "citations": [{key: page[key] for key in ("source_sha256", "filename", "page_number")}],
+                "authority_citations": [],
+            }],
+            "missing_information": [],
+            "limitations": [],
+        }
+        response = mock.MagicMock()
+        response.read.return_value = json.dumps({
+            "output": [{"content": [{"text": json.dumps(result)}]}]
+        }).encode()
+        response.__enter__.return_value = response
+        with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}), mock.patch.object(WORKER.urllib.request, "urlopen", return_value=response) as urlopen:
+            WORKER.generate(self.QUESTION, [page])
+
+        payload = json.loads(urlopen.call_args.args[0].data.decode())
+        prompt = json.loads(payload["input"])
+        schema = payload["text"]["format"]["schema"]
+        self.assertIn("Give a direct attorney answer, not a source list", prompt["instructions"])
+        self.assertIn("extract the concrete opinions", prompt["instructions"])
+        self.assertIn("Compare the parties' best arguments point by point", prompt["instructions"])
+        self.assertIn("give the strongest counterargument", prompt["instructions"])
+        self.assertEqual(
+            schema["properties"]["findings"]["items"]["properties"]["section"]["enum"],
+            list(WORKER.STRATEGIC_ANALYSIS_SECTIONS),
+        )
+
+    def test_strategic_validation_requires_ordered_assessment(self):
+        page = {
+            "source_sha256": "a" * 64,
+            "filename": "Expert Affidavit.pdf",
+            "page_number": 7,
+            "text": "Expert opinion.",
+        }
+        cite = {key: page[key] for key in ("source_sha256", "filename", "page_number")}
+
+        def result(sections):
+            return {
+                "summary": "The record supports a qualified assessment.",
+                "findings": [{
+                    "section": section,
+                    "statement": "The cited evidence supports this part of the assessment.",
+                    "citations": [cite],
+                    "authority_citations": [],
+                } for section in sections],
+                "missing_information": [],
+                "limitations": [],
+            }
+
+        valid = result(list(WORKER.STRATEGIC_ANALYSIS_SECTIONS))
+        self.assertIs(
+            WORKER.validate(valid, [page], question=self.QUESTION), valid
+        )
+        with self.assertRaisesRegex(ValueError, "invalid strategic-analysis sections"):
+            WORKER.validate(
+                result(["Assessment", "Evidence"]),
+                [page],
+                question=self.QUESTION,
+            )
+
+
 class AttackSurfaceRetrievalTests(unittest.TestCase):
     def test_v4_prompt_requires_named_party_propositions_and_two_sided_citations(self):
         result = {

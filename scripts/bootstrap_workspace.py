@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import importlib
 from pathlib import Path
 import subprocess
 import sys
@@ -34,6 +35,10 @@ def main() -> int:
         cwd=REPOSITORY_ROOT,
         check=True,
     )
+    # The running interpreter may have cached a failed lookup before pip
+    # created the package directories. Refresh import discovery before the
+    # post-install verification in this same process.
+    importlib.invalidate_caches()
     still_missing = missing_imports()
     if still_missing:
         print(

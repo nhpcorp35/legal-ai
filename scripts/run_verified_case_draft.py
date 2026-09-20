@@ -133,6 +133,46 @@ THIRD_PARTY_CAPTION_STOPWORDS = frozenset({
     "plaintiffs", "second", "summons", "third", "verified",
 })
 TOP_ATTACK_SURFACES_MARKER = "v4.0 top attack surfaces report"
+STRATEGIC_ANALYSIS_QUESTION_RE = re.compile(
+    r"\b(?:weakest|strongest|strengths?|weaknesses?|shortcomings?|"
+    r"vulnerabilit(?:y|ies)|likely\s+to\s+(?:win|lose)|"
+    r"which\s+(?:side|argument|position)|compare\s+(?:the\s+)?"
+    r"(?:parties|positions|arguments)|evaluate|assessment|"
+    r"summary[ -]?judgment\s+prospects?|attack\s+surfaces?)\b",
+    re.IGNORECASE,
+)
+STRATEGIC_SOURCE_FILENAME_RE = re.compile(
+    r"\b(?:expert|affidavit|affirmation|report|memorandum|memo|brief|"
+    r"order|decision|judgment|survey|site[ _-]?plan|permit|application)\b",
+    re.IGNORECASE,
+)
+STRATEGIC_EXPERT_TEXT_RE = re.compile(
+    r"\b(?:expert|professional\s+(?:engineer|surveyor)|"
+    r"reasonable\s+(?:engineering|professional)\s+certainty|"
+    r"expert\s+(?:opinion|report)|I\s+(?:conclude|opine)|"
+    r"licensed\s+(?:engineer|surveyor))\b",
+    re.IGNORECASE,
+)
+STRATEGIC_MEASUREMENT_TEXT_RE = re.compile(
+    r"\b\d+(?:\.\d+)?\s*(?:feet|foot|ft\.?|inches?|acres?|"
+    r"square\s+feet|percent|%)\b|\b(?:dimensions?|measurements?|"
+    r"boundary|property\s+line|setback|waterfront|site\s+plan|survey)\b",
+    re.IGNORECASE,
+)
+STRATEGIC_LAW_TEXT_RE = re.compile(
+    r"\b(?:statut(?:e|ory)|regulation|regulatory|(?:N\.?Y\.?)?\s*"
+    r"ECL|CPLR|DEC|code|ordinance|riparian|navigation|equity|"
+    r"equitable|precedent|court\s+held)\b|\b\d+\s+NY(?:2d|3d)\b",
+    re.IGNORECASE,
+)
+STRATEGIC_POSITION_TEXT_RE = re.compile(
+    r"\b(?:plaintiff|defendant|claimant|petitioner|respondent|movant)\b"
+    r".{0,180}\b(?:alleges?|argues?|contends?|asserts?|maintains?|"
+    r"opposes?|denies?|claims?)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+STRATEGIC_MERITS_PAGE_LIMIT = 14
+STRATEGIC_CATEGORY_PAGE_LIMIT = 8
 V4_PROCEDURAL_ORDER_TEXT_RE = re.compile(r"\b(?:death|deceased|substitut(?:e|ion)|representative|jurisdiction)\b", re.IGNORECASE)
 PROCEDURAL_POSTURE_QUESTION_RE = re.compile(
     r"\b(?:death|deceased|substitut(?:e|ion)|representative|jurisdiction|"
@@ -1024,6 +1064,11 @@ def evidence(s3, case_id, question):
     # filing-led coverage before contract exhibits are considered.
     pleading_focused_question = bool(PLEADING_FOCUSED_QUESTION_RE.search(question))
     attack_surface_question = TOP_ATTACK_SURFACES_MARKER in question.casefold()
+    strategic_analysis_question = (
+        bool(STRATEGIC_ANALYSIS_QUESTION_RE.search(question))
+        and not litigation_map_question(question)
+        and not attack_surface_question
+    )
     procedural_posture_question = bool(
         PROCEDURAL_POSTURE_QUESTION_RE.search(question)
     )
@@ -1042,7 +1087,12 @@ def evidence(s3, case_id, question):
     )
     # The v4 report is intentionally filing-led even though its prompt uses
     # analytical terms rather than a pleading's exact title.
-    filing_led_question = broad_record_question or pleading_focused_question or attack_surface_question
+    filing_led_question = (
+        broad_record_question
+        or pleading_focused_question
+        or attack_surface_question
+        or strategic_analysis_question
+    )
     targeted_third_party_complaint = bool(
         THIRD_PARTY_COMPLAINT_QUESTION_RE.search(question)
     ) and not third_party_only_question
@@ -1244,6 +1294,12 @@ def evidence(s3, case_id, question):
             operational_pleading = bool(PLEADING_OPERATIONAL_TEXT_RE.search(text))
             claim_pleading = bool(PLEADING_CLAIM_TEXT_RE.search(text))
             relief_pleading = bool(PLEADING_RELIEF_TEXT_RE.search(text))
+            strategic_expert = bool(STRATEGIC_EXPERT_TEXT_RE.search(text))
+            strategic_measurement = bool(
+                STRATEGIC_MEASUREMENT_TEXT_RE.search(text)
+            )
+            strategic_law = bool(STRATEGIC_LAW_TEXT_RE.search(text))
+            strategic_position = bool(STRATEGIC_POSITION_TEXT_RE.search(text))
             prayer_continuation = (
                 prayer_run_remaining > 0
                 and prior_page is not None
@@ -1303,6 +1359,22 @@ def evidence(s3, case_id, question):
                     coverage_score += 10
                 if ATTACK_SURFACE_PRIMARY_FILENAME_RE.search(pleading_filename) and V4_PROCEDURAL_ORDER_TEXT_RE.search(text):
                     coverage_score += 45
+            elif strategic_analysis_question:
+                # Analytical questions need a balanced case-theory packet,
+                # even when the attorney's natural-language question contains
+                # only generic words such as "weakest issues." Reserve expert
+                # opinions, concrete physical facts, law cited in the record,
+                # and both sides' positions by source type and text signals.
+                if STRATEGIC_SOURCE_FILENAME_RE.search(pleading_filename):
+                    coverage_score += 18
+                if strategic_expert:
+                    coverage_score += 45
+                if strategic_measurement:
+                    coverage_score += 36
+                if strategic_law:
+                    coverage_score += 34
+                if strategic_position:
+                    coverage_score += 30
             elif (
                 procedural_posture_question
                 and ATTACK_SURFACE_PRIMARY_FILENAME_RE.search(pleading_filename)
@@ -1334,6 +1406,8 @@ def evidence(s3, case_id, question):
                     affirmative_defenses, affirmative_defense_continuation,
                     claim_pleading, relief_pleading,
                     prayer_continuation,
+                    strategic_expert, strategic_measurement,
+                    strategic_law, strategic_position,
                 ))
             prior_page = page
     mandatory_ids=set()
@@ -1345,6 +1419,8 @@ def evidence(s3, case_id, question):
         merits_limit = (
             ATTACK_SURFACE_MERITS_PLEADING_PAGE_LIMIT
             if attack_surface_question
+            else STRATEGIC_MERITS_PAGE_LIMIT
+            if strategic_analysis_question
             else MERITS_PLEADING_PAGE_LIMIT
         )
         def reserve(row):
@@ -1381,7 +1457,7 @@ def evidence(s3, case_id, question):
                 (section[0], section[1], page)
                 for section, page in first_defense_page.items()
             }
-            if not attack_surface_question
+            if not attack_surface_question and not strategic_analysis_question
             else set()
         )
         # First reserve every filing/section opening, then the first required
@@ -1389,8 +1465,9 @@ def evidence(s3, case_id, question):
         # the gate: optional operative pages must never consume a section's
         # allowance before a mandatory defense page.
         for row in ranked:
-            if row[5] and row[2] == row[7] and reserve(row) and not attack_surface_question:
-                mandatory_ids.add((row[3], row[1], row[2]))
+            if row[5] and row[2] == row[7] and reserve(row):
+                if not attack_surface_question and not strategic_analysis_question:
+                    mandatory_ids.add((row[3], row[1], row[2]))
         for row in ranked:
             section=(row[3],row[1],row[7])
             if (
@@ -1398,19 +1475,22 @@ def evidence(s3, case_id, question):
                 and row[2] == first_defense_page.get(section)
                 and per_section.get(section,0) < section_page_limit(row)
             ):
-                if reserve(row) and not attack_surface_question:
-                    mandatory_ids.add((row[3], row[1], row[2]))
+                if reserve(row):
+                    if not attack_surface_question and not strategic_analysis_question:
+                        mandatory_ids.add((row[3], row[1], row[2]))
         for signal_index in (10, 11):
             for row in sorted(ranked, key=lambda item: (item[1].casefold(), item[2], -item[0])):
                 section=(row[3],row[1],row[7])
                 if row[5] and row[signal_index] and per_section.get(section,0) < section_page_limit(row):
-                    if reserve(row) and not attack_surface_question:
-                        mandatory_ids.add((row[3], row[1], row[2]))
+                    if reserve(row):
+                        if not attack_surface_question and not strategic_analysis_question:
+                            mandatory_ids.add((row[3], row[1], row[2]))
         for row in sorted(ranked, key=lambda item: (item[1].casefold(), item[2], -item[0])):
             section=(row[3],row[1],row[7])
             if row[5] and row[12] and per_section.get(section,0) < section_page_limit(row):
-                if reserve(row) and not attack_surface_question:
-                    mandatory_ids.add((row[3], row[1], row[2]))
+                if reserve(row):
+                    if not attack_surface_question and not strategic_analysis_question:
+                        mandatory_ids.add((row[3], row[1], row[2]))
         # Then reserve additional affirmative-defense headings and immediate
         # continuation pages, subject to the unchanged global budget.
         for row in ranked:
@@ -1446,6 +1526,33 @@ def evidence(s3, case_id, question):
             ordered = merits + primary + exhibits + [
                 row for row in remaining
                 if (row[3], row[1], row[2]) not in material_ids
+            ]
+        elif strategic_analysis_question:
+            remaining = [
+                row for row in ranked
+                if (row[3], row[1], row[2]) not in merit_ids
+            ]
+            strategic_rows = []
+            strategic_ids = set()
+
+            def reserve_strategy(signal_index):
+                kept = 0
+                for row in remaining:
+                    identity = (row[3], row[1], row[2])
+                    if identity in strategic_ids or not row[signal_index]:
+                        continue
+                    strategic_rows.append(row)
+                    strategic_ids.add(identity)
+                    kept += 1
+                    if kept >= STRATEGIC_CATEGORY_PAGE_LIMIT:
+                        break
+
+            # Preserve category diversity before general relevance ranking.
+            for signal_index in (13, 14, 15, 16):
+                reserve_strategy(signal_index)
+            ordered = merits + strategic_rows + [
+                row for row in remaining
+                if (row[3], row[1], row[2]) not in strategic_ids
             ]
         else:
             procedural_rows = [
@@ -1508,14 +1615,18 @@ def evidence(s3, case_id, question):
         (source, filename, page)
         for _score, filename, page, source, _candidate, merits_pleading,
         _operational, _section_start, _defense, _continuation,
-        claim_pleading, _relief_pleading, _prayer_continuation in rows
+        claim_pleading, _relief_pleading, _prayer_continuation,
+        _strategic_expert, _strategic_measurement, _strategic_law,
+        _strategic_position in rows
         if merits_pleading and claim_pleading
     }.intersection(selected_ids)
     selected_relief_ids = {
         (source, filename, page)
         for _score, filename, page, source, _candidate, merits_pleading,
         _operational, _section_start, _defense, _continuation,
-        _claim_pleading, relief_pleading, _prayer_continuation in rows
+        _claim_pleading, relief_pleading, _prayer_continuation,
+        _strategic_expert, _strategic_measurement, _strategic_law,
+        _strategic_position in rows
         if merits_pleading and relief_pleading
     }.intersection(selected_ids)
     coverage = {
@@ -1782,6 +1893,12 @@ ATTORNEY_ANSWER_SECTIONS = (
     "Policy-by-policy analysis",
     "Bottom line",
 )
+STRATEGIC_ANALYSIS_SECTIONS = (
+    "Case framework",
+    "Evidence",
+    "Competing positions",
+    "Assessment",
+)
 LITIGATION_MAP_SECTIONS = (
     "Main case",
     "Counterclaims and cross-claims",
@@ -1852,7 +1969,7 @@ def litigation_map_question(question: str) -> bool:
     return bool(LITIGATION_MAP_QUESTION_RE.search(question)) or len(BROAD_RECORD_TERMS.intersection(terms)) >= 2
 
 
-def finding_schema(page_citation_properties, *, attorney_sections=False, litigation_map=False, max_findings=8, statement_max_length=900):
+def finding_schema(page_citation_properties, *, attorney_sections=False, litigation_map=False, strategic_analysis=False, max_findings=8, statement_max_length=900):
     """Build the strict source-aware finding schema for either worker."""
     page_required = list(page_citation_properties)
     citation_schema = {
@@ -1870,7 +1987,15 @@ def finding_schema(page_citation_properties, *, attorney_sections=False, litigat
         citation_schema["minItems"] = 1
     finding_properties = {"statement":{"type":"string","maxLength":statement_max_length},"citations":citation_schema,"authority_citations":{"type":"array","items":{"type":"string"}}}
     finding_required = ["statement", "citations", "authority_citations"]
-    sections = ATTORNEY_ANSWER_SECTIONS if attorney_sections else LITIGATION_MAP_SECTIONS if litigation_map else ()
+    sections = (
+        STRATEGIC_ANALYSIS_SECTIONS
+        if strategic_analysis
+        else ATTORNEY_ANSWER_SECTIONS
+        if attorney_sections
+        else LITIGATION_MAP_SECTIONS
+        if litigation_map
+        else ()
+    )
     if sections:
         finding_properties = {"section":{"type":"string","enum":list(sections)}, **finding_properties}
         finding_required = ["section", *finding_required]
@@ -1879,13 +2004,16 @@ def finding_schema(page_citation_properties, *, attorney_sections=False, litigat
 
 def generate(question, pages, coverage=None, authorities=None):
     authorities = tuple(match_verified_authorities(question) if authorities is None else authorities)
-    map_question = litigation_map_question(question) and not authorities and TOP_ATTACK_SURFACES_MARKER not in question.casefold()
+    strategic_question = bool(STRATEGIC_ANALYSIS_QUESTION_RE.search(question)) and not litigation_map_question(question) and TOP_ATTACK_SURFACES_MARKER not in question.casefold()
+    map_question = litigation_map_question(question) and not authorities and not strategic_question and TOP_ATTACK_SURFACES_MARKER not in question.casefold()
     third_party_action_count = len((coverage or {}).get("third_party_actions", []))
-    schema=finding_schema({"source_sha256":{"type":"string"},"filename":{"type":"string"},"page_number":{"type":"integer","minimum":1}}, attorney_sections=bool(authorities), litigation_map=map_question, max_findings=len(LITIGATION_MAP_SECTIONS) if map_question else 8, statement_max_length=2400 if third_party_action_count > 1 else 900)
+    schema=finding_schema({"source_sha256":{"type":"string"},"filename":{"type":"string"},"page_number":{"type":"integer","minimum":1}}, attorney_sections=bool(authorities) and not strategic_question, litigation_map=map_question, strategic_analysis=strategic_question, max_findings=len(LITIGATION_MAP_SECTIONS) if map_question else 8, statement_max_length=2400 if third_party_action_count > 1 else 1200 if strategic_question else 900)
     instructions = "Use only the supplied verified excerpts and legal authorities. This is an internal attorney-review draft, not legal advice or a conclusion. Make no unsupported inference. Case-record facts cite only page citations in citations; legal rules cite only authority ids in authority_citations; application findings should cite both where appropriate. Do not overstate court level, controlling effect, or proposition scope. Every finding must have at least one verified source across those two arrays. Before stating that information is missing or calling something an open question, check the entire supplied record-wide excerpt set, including caption pages and operative pages from related pleadings. Never call a page range missing merely because it was not selected into the bounded retrieval slice; describe the bounded retrieval limitation instead. Use the filing map only as a navigation aid; verify every proposition against its cited pages. Treat pleaded alternatives, denials, and defenses as attributed litigation positions, not established facts or contradictions. For a question about parties, claims, defenses, or relief, return a compact litigation map, not a memo; it must be attorney-readable. The summary must be one sentence of no more than 28 words and may name only claim categories, counterclaim categories, and categories of missing material; do not include party roles, ownership, control, or other factual positions. Return at most one finding for each populated heading, in this exact order: (1) Main case; (2) counterclaims and cross-claims; (3) third-party claims. Put the exact heading in the section field. Each finding must use this one-line shape: '[expressly named parties and short roles]: [claim labels]; defenses: [short labels]; relief: [short label].' Use labels only (for example, breach, lien foreclosure, negligence, statute of limitations, payment); do not explain allegations, evidence, legal standards, or why a position may succeed. In the claims field, list only an expressly asserted cause-of-action label; do not place a plaintiff-side ownership position, party-role statement, necessary-party label, or other non-claim there. In the defenses field, list only a defense attributed to the responding party; do not place a plaintiff-side allegation, ownership position, necessary-party label, or other non-defense there. List no more than three material defense labels for each party. Collapse any additional routine defenses into the single label 'affirmative defenses'; do not enumerate waiver, estoppel, laches, unclean hands, comparative fault, or similar boilerplate separately unless one is the only material defense expressly identified in the supplied record. Omit an empty heading rather than narrating that it is empty. List only the parties named in the caption or operative pleading. Do not invent, infer, or call out an unnamed party from a missing or partial caption. List a John Doe, XYZ entity, or other placeholder only if a supplied verified pleading expressly names it. If a supplied order shows that a motion was disposed of because a party died and substitution is pending, label it a procedural disposition, not a merits decision; state only the procedural consequence shown by that order. Do not use dense narrative. End every summary, finding, missing-information item, and limitation with a complete sentence; never truncate text to fill a schema limit. End the Counterclaims and cross-claims finding with its relief label and a period, never with a quotation mark, dash, colon, semicolon, or conjunction. When supplied pages contain both an ownership assertion and a party's nonresidence or no-control statement, present both as attributed, competing record positions with citations; do not omit either or treat either as conclusively established. Do not portray a pleading typo or general denial as case-dispositive unless a supplied court ruling makes it so. Identify missing information only when it remains unsupported after that record-wide check."
     if TOP_ATTACK_SURFACES_MARKER in question.casefold():
         instructions += " For the v4.0 Top Attack Surfaces Report, do not prepend or return a claims-map summary. If a supplied order shows a motion was disposed of because a party died and substitution is pending, identify it as a procedural disposition, not a merits decision, and state only the procedural consequence shown by that order."
         instructions += " For the v4.0 Top Attack Surfaces Report, prioritize identified pleadings, orders, sworn testimony, and party-specific exhibits over generic contract excerpts. Use a generic contract provision only where it directly conflicts with, limits, or corroborates a party-identified filing or evidence in the supplied pages. Return no more than eight findings ordered from highest to lower materiality; return fewer when fewer qualify. Start every finding with 'Rank N — [Contradiction / Credibility / Procedural weakness] —'. For every finding, use this attorney-readable sequence in the statement: (1) identify the affected party or litigation position only when expressly named in the supplied pages; (2) state the specific record proposition on each side of the tension, including the source type or filing where useful; (3) explain why the two propositions create the asserted vulnerability; and (4) state any material limit. Never use a broad label such as 'causation record' or 'notice challenge' without the particular propositions that support it. A contradiction must cite each of the two conflicting verified propositions. A credibility vulnerability must identify the person or party and the concrete inconsistency, omission, or conflict; if the record does not identify one, do not call it a credibility issue. A procedural weakness must identify the party position, pleading, order, burden, remedy, notice, timing, preservation, or posture actually shown. Do not rank a defense merely because its factual proof, operative pleading, policy, or other supporting material is absent from the supplied excerpts. It qualifies only when the supplied pages show an affirmative mismatch with a contract, order, testimony, or other identified evidence, or when a court actually addressed the position. Do not invent a weakness from silence, characterize advocacy as fact, or convert alternative pleading or a denial into a contradiction. A pleading may establish procedural posture only. Do not make a factual or credibility finding from an attorney affirmation, counsel statement, service affidavit, or a party’s characterization of an absent exhibit, deposition, report, or other evidence. When the underlying first-hand material is not among the supplied pages, identify that limitation and omit the finding rather than treating advocacy as proof."
+    elif strategic_question:
+        instructions += " For this strategic-analysis question, the following instructions override the earlier compact litigation-map format. Give a direct attorney answer, not a source list. Use these sections in order: Case framework; Evidence; Competing positions; Assessment. First identify who is who and the material property, transaction, event, or physical layout. Then extract the concrete opinions and factual premises from each expert or fact witness, including measurements and regulatory constraints. Compare the parties' best arguments point by point, identifying the evidence and law each side cites. A case, statute, or regulation appearing only inside a filing is an attributed party position, not independently verified law; describe it that way and cite the filing page. State a governing legal rule as verified law only when its authority id is supplied in legal_authorities. Rank the material weaknesses or strengths, explain why each affects the requested party, give the strongest counterargument, and state the unresolved fact or authority that could change the assessment. Do not merely say that interference, breach, causation, or another element is shown; explain the specific evidence and competing position. The summary must answer the question directly in no more than 90 words. Return no more than eight findings and avoid repeating the same fact in multiple sections."
     elif authorities:
         instructions += " For this authority-backed question, the following instructions override the earlier compact litigation-map format."
         instructions += " End the summary with a complete sentence; never truncate a sentence to fill the schema limit."
@@ -1920,7 +2048,8 @@ def validate(result, pages, authorities=(), question="", coverage=None):
             if not isinstance(cite,dict) or (cite.get("source_sha256"),cite.get("filename"),cite.get("page_number")) not in allowed: raise ValueError("unverified citation")
         if any(not isinstance(authority_id, str) or authority_id not in allowed_authorities for authority_id in finding["authority_citations"]):
             raise ValueError("unverified authority citation")
-    strict_output = litigation_map_question(question) or TOP_ATTACK_SURFACES_MARKER in question.casefold()
+    strategic_question = bool(STRATEGIC_ANALYSIS_QUESTION_RE.search(question)) and not litigation_map_question(question) and TOP_ATTACK_SURFACES_MARKER not in question.casefold()
+    strict_output = litigation_map_question(question) or TOP_ATTACK_SURFACES_MARKER in question.casefold() or strategic_question
     if strict_output:
         # JSON-schema generation guarantees bounded strings but not terminal
         # punctuation. Normalize otherwise complete prose deterministically;
@@ -2022,7 +2151,15 @@ def validate(result, pages, authorities=(), question="", coverage=None):
                     re.IGNORECASE,
                 ):
                     raise ValueError("incomplete third-party actions")
-    if litigation_map_question(question) and not authorities and TOP_ATTACK_SURFACES_MARKER not in question.casefold():
+    if strategic_question:
+        sections = [item.get("section") for item in result["findings"]]
+        expected = [
+            section for section in STRATEGIC_ANALYSIS_SECTIONS
+            if section in sections
+        ]
+        if sections != expected or "Assessment" not in sections:
+            raise ValueError("invalid strategic-analysis sections")
+    if litigation_map_question(question) and not authorities and not strategic_question and TOP_ATTACK_SURFACES_MARKER not in question.casefold():
         sections = [item.get("section") for item in result["findings"]]
         expected = [section for section in LITIGATION_MAP_SECTIONS if section in sections]
         third_party_only = bool(THIRD_PARTY_ONLY_QUESTION_RE.search(question))
