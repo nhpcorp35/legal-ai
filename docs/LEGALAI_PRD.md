@@ -1,11 +1,32 @@
 # LegalAI PRD (Living)
 
 **Status:** Active  
-**Last updated:** 2026-09-18
+**Last updated:** 2026-09-20
 **Authority:** Canonical product requirements and milestone register for LegalAI.  
 **Related (unchanged scopes):** `docs/HAL_CONTROL_ROOM.md` (orchestration contract); `docs/MISSION_CONTROL_OPTIMIZATION_AUTHORITY.md` (Mission Control cost/reliability register).
 
 ---
+
+### 2026-09-20 — Reviewer-agnostic operator regeneration
+
+- Added an authenticated operator endpoint for regenerating any configured
+  reviewer's completed draft without changing reviewer ownership.
+- The original READY draft remains immutable and the replacement is linked by
+  `source_request_id` and `replacement_request_id`.
+- Every action requires an explicit paid-generation confirmation and a bounded
+  idempotency key so transport retries cannot create duplicate paid runs.
+- The operator, reviewer, case, original draft, replacement draft, and timestamp
+  are archived under the case's canonical B2 operator-regeneration prefix, with
+  a local append-only cache for service continuity.
+- Reviewer identity mismatches, incomplete drafts, reused action IDs with
+  different targets, missing authorization, and missing cost confirmation fail
+  closed before generation.
+- **Daily attorney-goal alignment: YES.** Goal advanced: remove reviewer manual
+  regeneration while preserving reviewer isolation and auditability. Verified
+  change: five focused operator-regeneration tests and the deterministic
+  attorney-workspace suite pass. Remaining gap: publish and deploy the endpoint,
+  then use it for the requested Rennick regeneration and verify the
+  reviewer-owned replacement reaches READY.
 
 ### 2026-09-17 — Verified-draft production hardening and operator log
 

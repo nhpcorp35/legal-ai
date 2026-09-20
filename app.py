@@ -2725,6 +2725,227 @@ def _operator_review_api_authorized():
     )
 
 
+_operator_regeneration_lock = threading.Lock()
+
+
+def _operator_regeneration_audit_path():
+    """Return the append-only local audit path for operator regenerations."""
+    base = os.environ.get("LEGALAI_REVIEW_DATA_DIR", "/app/data")
+    return os.path.join(base, "operator-regenerations.jsonl")
+
+
+def _operator_regeneration_b2_client():
+    required = {
+        name: os.environ.get(name, "")
+        for name in (
+            "B2_ENDPOINT", "B2_REGION", "B2_KEY_ID",
+            "B2_APPLICATION_KEY", "B2_BUCKET",
+        )
+    }
+    if not all(required.values()):
+        return None, None
+    return boto3.client(
+        "s3",
+        endpoint_url=required["B2_ENDPOINT"].rstrip("/"),
+        region_name=required["B2_REGION"],
+        aws_access_key_id=required["B2_KEY_ID"],
+        aws_secret_access_key=required["B2_APPLICATION_KEY"],
+    ), required["B2_BUCKET"]
+
+
+def _operator_regeneration_object_key(case_id, action_id):
+    return f"cases/{case_id}/derived/operator-regenerations/{action_id}.json"
+
+
+def _find_operator_regeneration_in_b2(case_id, action_id):
+    client, bucket = _operator_regeneration_b2_client()
+    if client is None:
+        return None
+    try:
+        response = client.get_object(
+            Bucket=bucket,
+            Key=_operator_regeneration_object_key(case_id, action_id),
+        )
+    except Exception as exc:
+        error = getattr(exc, "response", {}).get("Error", {})
+        if error.get("Code") in {"NoSuchKey", "404", "NotFound"}:
+            return None
+        raise OSError("canonical operator-regeneration lookup failed") from exc
+    try:
+        record = json.loads(response["Body"].read().decode("utf-8"))
+    except (KeyError, TypeError, ValueError, UnicodeDecodeError) as exc:
+        raise OSError("canonical operator-regeneration record invalid") from exc
+    return record if isinstance(record, dict) else None
+
+
+def _find_operator_regeneration(action_id):
+    """Return an existing operator regeneration by idempotency key."""
+    try:
+        with open(_operator_regeneration_audit_path(), encoding="utf-8") as stream:
+            for line in stream:
+                try:
+                    record = json.loads(line)
+                except (TypeError, ValueError):
+                    continue
+                if isinstance(record, dict) and record.get("action_id") == action_id:
+                    return record
+    except FileNotFoundError:
+        return None
+    return None
+
+
+def _archive_operator_regeneration(record):
+    """Archive one bounded operator record to canonical B2, then local cache."""
+    raw = json.dumps(
+        record, sort_keys=True, ensure_ascii=False, separators=(",", ":")
+    ).encode("utf-8")
+    client, bucket = _operator_regeneration_b2_client()
+    if client is not None:
+        digest = hashlib.sha256(raw).hexdigest()
+        try:
+            client.put_object(
+                Bucket=bucket,
+                Key=_operator_regeneration_object_key(
+                    record["case_id"], record["action_id"]
+                ),
+                Body=raw,
+                ContentType="application/json",
+                Metadata={"sha256": digest},
+            )
+        except Exception as exc:
+            raise OSError("canonical operator-regeneration archive failed") from exc
+    path = _operator_regeneration_audit_path()
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    with open(path, "a", encoding="utf-8") as stream:
+        stream.write(json.dumps(record, sort_keys=True, ensure_ascii=False) + "\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+@app.route("/internal/drafts/regenerate", methods=["POST"])
+def internal_operator_draft_regenerate():
+    """Regenerate for any configured reviewer without changing draft ownership.
+
+    This is an operator-only control plane.  The original reviewer remains the
+    owner, the original READY draft remains immutable, and action_id makes a
+    paid generation idempotent across client retries.
+    """
+    if not _operator_review_api_authorized():
+        return Response(
+            json.dumps({"ok": False, "error": "unauthorized"}),
+            status=401,
+            mimetype="application/json",
+        )
+    payload = request.get_json(silent=True)
+    payload = payload if isinstance(payload, dict) else {}
+    case_id = clean_text(payload.get("case_id", ""))
+    request_id = clean_text(payload.get("request_id", ""))
+    reviewer = clean_text(payload.get("reviewer", "")).lower()
+    operator = clean_text(payload.get("operator", "")).lower()
+    action_id = clean_text(payload.get("action_id", ""))
+    paid_generation_confirmed = payload.get("paid_generation_confirmed") is True
+    if (
+        reviewer not in review_accounts()
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,180}", case_id)
+        or not operator
+        or not re.fullmatch(r"draft-[0-9]+-[0-9a-f]{12}", request_id)
+        or not re.fullmatch(r"operator-regen-[A-Za-z0-9._-]{8,96}", action_id)
+    ):
+        return Response(
+            json.dumps({"ok": False, "error": "invalid operator regeneration identity"}),
+            status=400,
+            mimetype="application/json",
+        )
+    if not paid_generation_confirmed:
+        return Response(
+            json.dumps({"ok": False, "error": "paid generation confirmation required"}),
+            status=409,
+            mimetype="application/json",
+        )
+    with _operator_regeneration_lock:
+        try:
+            existing = _find_operator_regeneration_in_b2(case_id, action_id)
+        except OSError:
+            return Response(
+                json.dumps({"ok": False, "error": "operator audit lookup failed"}),
+                status=503,
+                mimetype="application/json",
+            )
+        if existing is None:
+            existing = _find_operator_regeneration(action_id)
+        if existing is not None:
+            identity = (existing.get("case_id"), existing.get("source_request_id"), existing.get("reviewer"))
+            if identity != (case_id, request_id, reviewer):
+                return Response(
+                    json.dumps({"ok": False, "error": "action id already used"}),
+                    status=409,
+                    mimetype="application/json",
+                )
+            return Response(
+                json.dumps({"ok": True, "reused": True, "regeneration": existing}),
+                status=200,
+                mimetype="application/json",
+            )
+        prior = load_exact_draft_request(case_id, request_id)
+        if not isinstance(prior, dict) or prior.get("status") != "READY":
+            return Response(
+                json.dumps({"ok": False, "error": "source draft is not completed"}),
+                status=409,
+                mimetype="application/json",
+            )
+        if clean_text(prior.get("requested_by", "")).lower() != reviewer:
+            return Response(
+                json.dumps({"ok": False, "error": "source draft reviewer mismatch"}),
+                status=403,
+                mimetype="application/json",
+            )
+        question = clean_text(prior.get("question", ""))
+        if not question:
+            return Response(
+                json.dumps({"ok": False, "error": "source draft question missing"}),
+                status=409,
+                mimetype="application/json",
+            )
+        replacement = create_draft_request(
+            case_id, question, reviewer, regenerate_from=request_id
+        )
+        if not isinstance(replacement, dict) or not replacement.get("request_id"):
+            return Response(
+                json.dumps({"ok": False, "error": "replacement draft request failed"}),
+                status=503,
+                mimetype="application/json",
+            )
+        record = {
+            "schema_version": "legalai-operator-regeneration.v1",
+            "action_id": action_id,
+            "created_at": int(time.time()),
+            "operator": operator,
+            "reviewer": reviewer,
+            "case_id": case_id,
+            "source_request_id": request_id,
+            "replacement_request_id": replacement["request_id"],
+        }
+        try:
+            _archive_operator_regeneration(record)
+        except OSError:
+            # The paid request may already exist. Fail closed and preserve its
+            # returned ID in the response so operators do not retry blindly.
+            return Response(
+                json.dumps({
+                    "ok": False,
+                    "error": "operator audit archive failed",
+                    "replacement_request_id": replacement["request_id"],
+                }),
+                status=503,
+                mimetype="application/json",
+            )
+    return Response(
+        json.dumps({"ok": True, "reused": False, "regeneration": record}),
+        status=201,
+        mimetype="application/json",
+    )
+
+
 @app.route("/internal/reviews", methods=["GET", "POST"])
 def internal_review_api():
     """Protected operator path for idempotent review submission and verification."""
