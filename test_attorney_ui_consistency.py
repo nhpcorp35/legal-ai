@@ -570,6 +570,36 @@ class AttorneyUiConsistencyTests(unittest.TestCase):
         self.assertIn(final_composition["question"], body)
         self.assertNotIn(older_layer["question"], body)
 
+    def test_workspace_answer_count_matches_visible_answered_questions(self):
+        older_layer = {
+            "request_id": "draft-100-aaaaaaaaaaaa",
+            "question": "Validate the counterclaim layer separately.",
+            "requested_by": "allen@example.com",
+            "created_at": 100,
+            "status": "READY",
+            "draft": {"summary": "Older layer.", "findings": [], "missing_information": []},
+        }
+        final_composition = {
+            "request_id": "draft-200-bbbbbbbbbbbb",
+            "question": "Prepare the cleaned final consolidated verified pleading map.",
+            "requested_by": "allen@example.com",
+            "created_at": 200,
+            "status": "READY",
+            "draft": {"summary": "Final composition.", "findings": [], "missing_information": []},
+        }
+        registered = [{"case_id": CASE_ID, "stage": "Verified source indexed"}]
+        with patch.object(legalai, "available_case00_review_questions", return_value=[]), patch.object(
+            legalai, "load_registered_cases", return_value=registered
+        ), patch.object(
+            legalai, "load_draft_requests", return_value=[final_composition, older_layer]
+        ):
+            response = self.client.get("/workspace", headers=_auth_headers())
+
+        self.assertEqual(response.status_code, 200)
+        body = response.get_data(as_text=True)
+        self.assertIn("Answered questions (1)", body)
+        self.assertNotIn("Answered questions (2)", body)
+
     def test_legacy_answer_keeps_record_link_and_uses_missing_information_list(self):
         request_id = "draft-11-abcdef123456"
         ready_item = {

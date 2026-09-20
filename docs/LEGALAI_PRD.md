@@ -426,6 +426,9 @@ judgment.
   document is identified as expert material, the selector preserves a balanced
   bounded slice across multiple expert documents instead of retaining only
   pages that repeat the word "expert."
+- Unified the workspace answer count with the answered-page visibility rule.
+  Superseded validation-layer drafts remain immutable and auditable, but no
+  longer inflate the attorney-facing count after a final consolidated answer.
 
 
 ## Daily attorney-goal alignment
@@ -466,3 +469,10 @@ Engineering activity alone does not count as progress. The evidence must show an
 - **Goal advanced:** Convert source retrieval into balanced, attorney-useful litigation assessment for ordinary evaluative questions.
 - **How / evidence:** Added generic strategic-intent retrieval and answer contracts; controlled draft `draft-1789916937-369f852c7e37` reached READY; 128 worker/UI/review tests and 295 deterministic cognition tests passed.
 - **Remaining gap:** Obtain attorney scoring on the revised strategic answer before declaring substantive MVP acceptance.
+
+### 2026-09-20 workspace-count alignment checkpoint
+
+- **Movement:** YES
+- **Goal advanced:** Make the attorney-review workspace accurately communicate how many current answers are available.
+- **How / evidence:** The dashboard and answered page now share one visibility rule; 24 focused UI tests passed, including a superseded layer plus its final consolidated answer.
+- **Remaining gap:** Verify the corrected count in production and obtain attorney scoring on the revised strategic answer.
