@@ -173,6 +173,8 @@ STRATEGIC_POSITION_TEXT_RE = re.compile(
 )
 STRATEGIC_MERITS_PAGE_LIMIT = 14
 STRATEGIC_CATEGORY_PAGE_LIMIT = 8
+STRATEGIC_EXPERT_PAGE_LIMIT = 18
+STRATEGIC_EXPERT_PAGES_PER_DOCUMENT = 8
 V4_PROCEDURAL_ORDER_TEXT_RE = re.compile(r"\b(?:death|deceased|substitut(?:e|ion)|representative|jurisdiction)\b", re.IGNORECASE)
 PROCEDURAL_POSTURE_QUESTION_RE = re.compile(
     r"\b(?:death|deceased|substitut(?:e|ion)|representative|jurisdiction|"
@@ -1189,6 +1191,14 @@ def evidence(s3, case_id, question):
             [normalized_document_filename]
             + [text[:900].casefold() for _, text in sorted(document_pages)]
         )
+        strategic_expert_document = bool(
+            STRATEGIC_EXPERT_TEXT_RE.search(document_identity)
+            or re.search(
+                r"\b(?:expert|engineer|surveyor|technical[ _-]?report)\b",
+                normalized_document_filename,
+                re.IGNORECASE,
+            )
+        )
         counter_cross_filing = bool(COUNTER_CROSS_FILING_RE.search(document_identity))
         if third_party_only_question and re.search(
             r"\b(?:exhibit|affidavit|affirmation|notice|stipulation)\b",
@@ -1295,7 +1305,10 @@ def evidence(s3, case_id, question):
             operational_pleading = bool(PLEADING_OPERATIONAL_TEXT_RE.search(text))
             claim_pleading = bool(PLEADING_CLAIM_TEXT_RE.search(text))
             relief_pleading = bool(PLEADING_RELIEF_TEXT_RE.search(text))
-            strategic_expert = bool(STRATEGIC_EXPERT_TEXT_RE.search(text))
+            strategic_expert = bool(
+                STRATEGIC_EXPERT_TEXT_RE.search(text)
+                or strategic_expert_document
+            )
             strategic_measurement = bool(
                 STRATEGIC_MEASUREMENT_TEXT_RE.search(text)
             )
@@ -1536,20 +1549,35 @@ def evidence(s3, case_id, question):
             strategic_rows = []
             strategic_ids = set()
 
-            def reserve_strategy(signal_index):
+            def reserve_strategy(signal_index, *, limit=STRATEGIC_CATEGORY_PAGE_LIMIT, per_document=None):
                 kept = 0
+                document_counts = {}
                 for row in remaining:
                     identity = (row[3], row[1], row[2])
                     if identity in strategic_ids or not row[signal_index]:
                         continue
+                    document_identity = (row[3], row[1])
+                    if (
+                        per_document is not None
+                        and document_counts.get(document_identity, 0) >= per_document
+                    ):
+                        continue
                     strategic_rows.append(row)
                     strategic_ids.add(identity)
+                    document_counts[document_identity] = (
+                        document_counts.get(document_identity, 0) + 1
+                    )
                     kept += 1
-                    if kept >= STRATEGIC_CATEGORY_PAGE_LIMIT:
+                    if kept >= limit:
                         break
 
             # Preserve category diversity before general relevance ranking.
-            for signal_index in (13, 14, 15, 16):
+            reserve_strategy(
+                13,
+                limit=STRATEGIC_EXPERT_PAGE_LIMIT,
+                per_document=STRATEGIC_EXPERT_PAGES_PER_DOCUMENT,
+            )
+            for signal_index in (14, 15, 16):
                 reserve_strategy(signal_index)
             ordered = merits + strategic_rows + [
                 row for row in remaining

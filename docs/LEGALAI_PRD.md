@@ -395,7 +395,16 @@ judgment.
   merely cited in a party filing.
 - Preserved reviewer isolation: an attempt to read another reviewer's exact
   draft and audit failed closed as designed. No access-control bypass was
-  added, and no paid regeneration was started.
+  added, and no paid regeneration was started during that access check.
+- Controlled production evaluation `draft-1789916937-369f852c7e37` reached
+  READY and demonstrated the new case-framework, expert-evidence,
+  competing-position, and ranked-assessment structure. Inspection then exposed
+  a remaining bounded-slice weakness: a referenced expert's detailed numerical
+  calculations were not selected.
+- Expanded expert-document retrieval generically after that inspection. Once a
+  document is identified as expert material, the selector preserves a balanced
+  bounded slice across multiple expert documents instead of retaining only
+  pages that repeat the word "expert."
 
 
 ## Daily attorney-goal alignment
@@ -434,5 +443,5 @@ Engineering activity alone does not count as progress. The evidence must show an
 
 - **Movement:** YES
 - **Goal advanced:** Convert source retrieval into balanced, attorney-useful litigation assessment for ordinary evaluative questions.
-- **How / evidence:** Added generic strategic-intent retrieval and answer contracts; 127 worker/UI/review tests and 295 deterministic cognition tests passed, with model calls mocked or disabled.
-- **Remaining gap:** Publish and deploy the tested worker change, run one controlled post-deployment evaluation, and obtain attorney scoring before declaring substantive MVP acceptance.
+- **How / evidence:** Added generic strategic-intent retrieval and answer contracts; controlled draft `draft-1789916937-369f852c7e37` reached READY; 128 worker/UI/review tests and 295 deterministic cognition tests passed.
+- **Remaining gap:** Obtain attorney scoring on the revised strategic answer before declaring substantive MVP acceptance.

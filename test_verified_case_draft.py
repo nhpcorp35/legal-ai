@@ -1991,6 +1991,45 @@ class StrategicAnalysisRetrievalTests(unittest.TestCase):
         ):
             self.assertIn(expected, selected)
 
+    def test_expert_document_pages_are_expanded_and_balanced(self):
+        class ExpertDocumentsS3(FakeS3):
+            pages = [
+                {
+                    "filename": "Plaintiff Affidavit.pdf",
+                    "page_number": page,
+                    "text": (
+                        "Retained professional engineer gives an expert opinion."
+                        if page == 1
+                        else f"Plaintiff calculation detail page {page}."
+                    ),
+                }
+                for page in range(1, 11)
+            ] + [
+                {
+                    "filename": "Defendant Affidavit.pdf",
+                    "page_number": page,
+                    "text": (
+                        "Licensed surveyor gives an expert opinion."
+                        if page == 1
+                        else f"Defendant calculation detail page {page}."
+                    ),
+                }
+                for page in range(1, 11)
+            ]
+
+        pages = WORKER.evidence(
+            ExpertDocumentsS3(),
+            "NY-Suffolk-600371-2021-DeSousa-v-Calvagno-II-Karcher",
+            self.QUESTION,
+        )
+        by_document = {}
+        for page in pages:
+            by_document.setdefault(page["filename"], set()).add(page["page_number"])
+        self.assertGreaterEqual(len(by_document["Plaintiff Affidavit.pdf"]), 6)
+        self.assertGreaterEqual(len(by_document["Defendant Affidavit.pdf"]), 6)
+        self.assertIn(6, by_document["Plaintiff Affidavit.pdf"])
+        self.assertIn(6, by_document["Defendant Affidavit.pdf"])
+
     def test_strategic_prompt_requires_direct_balanced_assessment(self):
         page = {
             "source_sha256": "a" * 64,
