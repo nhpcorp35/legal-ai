@@ -2153,6 +2153,122 @@ class StrategicAnalysisRetrievalTests(unittest.TestCase):
         self.assertIn("issue_engine", context)
         self.assertIn("contradiction_engine", context)
 
+    def test_john_framework_acceptance_requires_experts_dec_drawings_and_cited_authority(self):
+        """Regression for the four gaps identified in the attorney's framework review."""
+        question = (
+            "Assess the defendants' riparian-access position. Weigh the expert "
+            "opinions, DEC record, drawings showing available maneuvering room, "
+            "and authorities cited by the parties; identify the strongest answer "
+            "to each side rather than merely summarizing the filings."
+        )
+        framework_pages = [
+            {
+                "source_sha256": "a" * 64,
+                "filename": "Austin Preliminary Expert Report.pdf",
+                "page_number": 4,
+                "text": (
+                    "Professional engineer Austin gives a preliminary opinion that a "
+                    "one-quarter allocation supports a twenty-foot corridor. Austin "
+                    "acknowledges the rule is not adopted law and describes design "
+                    "engineering experience, not regulatory expertise."
+                ),
+            },
+            {
+                "source_sha256": "a" * 64,
+                "filename": "NYS DEC Permit and Inspection File.pdf",
+                "page_number": 12,
+                "text": (
+                    "Department of Environmental Conservation permit, approved plan, "
+                    "inspection, and certificate records address the dock work."
+                ),
+            },
+            {
+                "source_sha256": "a" * 64,
+                "filename": "Survey and Dock Layout Drawing.pdf",
+                "page_number": 2,
+                "text": (
+                    "Survey drawing and site plan show vessel locations, a forty-foot "
+                    "turning area, measurements, and available maneuvering space."
+                ),
+            },
+            {
+                "source_sha256": "a" * 64,
+                "filename": "Plaintiffs Memorandum of Law.pdf",
+                "page_number": 8,
+                "text": (
+                    "Plaintiffs argue that 123 N.Y.3d 456 and a riparian navigation "
+                    "rule support equitable access; the cited authority is their position."
+                ),
+            },
+        ]
+
+        framework_s3 = FakeS3()
+        framework_s3.pages = framework_pages
+
+        selected = WORKER.evidence(
+            framework_s3,
+            "NY-Suffolk-600371-2021-DeSousa-v-Calvagno-II-Karcher",
+            question,
+        )
+        self.assertEqual(
+            {page["filename"] for page in selected},
+            {page["filename"] for page in framework_pages},
+        )
+
+        result = {
+            "summary": "The record requires a comparative assessment of the expert, agency, drawing, and cited-authority evidence.",
+            "findings": [{
+                "section": section,
+                "statement": "The cited record supports this part of the comparative assessment.",
+                "citations": [{key: framework_pages[0][key] for key in ("source_sha256", "filename", "page_number")}],
+                "authority_citations": [],
+            } for section in WORKER.STRATEGIC_ANALYSIS_SECTIONS],
+            "missing_information": [],
+            "limitations": [],
+        }
+        response = mock.MagicMock()
+        response.read.return_value = json.dumps({
+            "output": [{"content": [{"text": json.dumps(result)}]}]
+        }).encode()
+        response.__enter__.return_value = response
+        with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}), mock.patch.object(
+            WORKER.urllib.request, "urlopen", return_value=response
+        ) as urlopen:
+            WORKER.generate(question, selected)
+
+        prompt = json.loads(json.loads(urlopen.call_args.args[0].data.decode())["input"])
+        classifications = {
+            item["filename"]: item
+            for item in prompt["litigation_reasoning_context"]["page_classifications"]
+        }
+        self.assertEqual(
+            classifications["Austin Preliminary Expert Report.pdf"]["source_type"],
+            "expert_opinion",
+        )
+        self.assertEqual(
+            classifications["Austin Preliminary Expert Report.pdf"]["legal_status"],
+            "record_evidence_not_law",
+        )
+        self.assertEqual(
+            classifications["Austin Preliminary Expert Report.pdf"]["expert_qualification_scope"],
+            "design_or_technical",
+        )
+        self.assertEqual(
+            classifications["NYS DEC Permit and Inspection File.pdf"]["source_type"],
+            "regulatory_record",
+        )
+        self.assertEqual(
+            classifications["Survey and Dock Layout Drawing.pdf"]["source_type"],
+            "visual_or_measurement_evidence",
+        )
+        self.assertEqual(
+            classifications["Plaintiffs Memorandum of Law.pdf"]["legal_status"],
+            "party_position_not_verified_law",
+        )
+        self.assertIn("Analyze supplied DEC", prompt["instructions"])
+        self.assertIn("drawings, surveys, plans, photographs, and measurements", prompt["instructions"])
+        self.assertIn("cases and rules cited in party filings as attributed positions", prompt["instructions"])
+
     def test_motion_recommendation_has_dedicated_contract(self):
         question = "I need to make a motion. Which motions should I consider?"
         page = {
