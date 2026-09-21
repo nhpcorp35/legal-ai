@@ -76,9 +76,15 @@ class AttorneyWorkspaceNoIntakeTests(unittest.TestCase):
         self.assertIn(f"/workspace/matters/{CASE_ID}/search", body)
         self.assertIn(f"/workspace/matters/{CASE_ID}/sources", body)
         self.assertIn(f"/workspace/matters/{CASE_ID}/draft", body)
-        self.assertIn("Search verified record", body)
-        self.assertIn("View verified record map", body)
-        self.assertIn("Ask a new review question", body)
+        self.assertIn("Ask LegalAI a question", body)
+        self.assertIn("Get a source-supported answer from the verified record.", body)
+        self.assertIn("Search case documents", body)
+        self.assertIn("Find specific words, names, or phrases.", body)
+        self.assertIn("View source map", body)
+        self.assertIn("Browse the indexed case documents.", body)
+        self.assertIn('class="primary" href="/workspace/case-00/draft"', body)
+        self.assertLess(body.index("Ask LegalAI a question"), body.index("Search case documents"))
+        self.assertLess(body.index("Search case documents"), body.index("View source map"))
 
 
 if __name__ == "__main__":

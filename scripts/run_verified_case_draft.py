@@ -2,7 +2,7 @@
 """Create one bounded, cited, internal-only draft from verified B2 page indexes."""
 from __future__ import annotations
 
-import argparse, hashlib, json, os, re, socket, sys, urllib.error, urllib.request
+import argparse, hashlib, json, os, re, socket, sys, tempfile, urllib.error, urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -16,6 +16,12 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from engines.verified_authority_registry import match_verified_authorities
+from engines.litigation_reasoning import (
+    MOTION_RECOMMENDATION_RE,
+    MOTION_RESPONSE_RE,
+    build_reasoning_context,
+    question_mode,
+)
 
 MAX_PAGES, MAX_PAGE_CHARS, MAX_CONTEXT_CHARS = 45, 2200, 75000
 CONSOLIDATED_MAX_PAGES, CONSOLIDATED_MAX_CONTEXT_CHARS = 80, 130000
@@ -68,7 +74,7 @@ PLEADING_FOCUSED_QUESTION_RE = re.compile(
 )
 MAIN_ACTION_ONLY_QUESTION_RE = re.compile(
     r"\bmain (?:action|case)(?: only)?\b|"
-    r"\bplaintiff(?:[\'’]s|s)?\s+claims\s+against\b|"
+    r"\bplaintiff(?:[\'’]s|s[\'’]?)?\s+claims\s+against\b|"
     r"\boperative\s+complaint\s+and\s+answer\s+pages\b",
     re.IGNORECASE,
 )
@@ -76,6 +82,12 @@ CROSS_CLAIM_ONLY_QUESTION_RE = re.compile(
     r"\b(?:(?:all|every)\s+)?counterclaims?\s+and\s+cross[ -]?claims?\b|"
     r"\bcross[ -]?claims?\s+and\s+counterclaims?\b|"
     r"\bmain action\b.*\b(?:counterclaims?|cross[ -]?claims?)\b",
+    re.IGNORECASE,
+)
+COUNTER_CROSS_FILING_RE = re.compile(
+    r"\b(?:cross[ -]?(?:claims?|c)|counter(?:[ -]?claims?|c)|"
+    r"reply\s+to\s+(?:cross[ -]?claims?|counterclaims?)|"
+    r"answer\s+to\s+(?:cross[ -]?claims?|counterclaims?))\b",
     re.IGNORECASE,
 )
 THIRD_PARTY_ONLY_QUESTION_RE = re.compile(
@@ -95,7 +107,9 @@ CROSS_CLAIM_ASSERTING_PARTY_RE = re.compile(
 PLEADING_CLAIM_TEXT_RE = re.compile(
     r"\b(?:cause of action|cross[ -]?claim|counter[ -]?claim|"
     r"negligence|breach of contract|contractual indemnification|"
-    r"common[ -]?law indemnification|contribution)\b|"
+    r"common[ -]?law indemnification|contribution|malicious prosecution|"
+    r"private nuisance|harassment|menacing|intentional infliction of "
+    r"emotional distress)\b|"
     r"\blabor\s+law\s*(?:§|section|sec\.?\s*)?\s*(?:200|240|241)\b",
     re.IGNORECASE,
 )
@@ -103,6 +117,10 @@ PLEADING_RELIEF_TEXT_RE = re.compile(
     r"\b(?:wherefore|prayer for relief|demands? judgment|requests? judgment|"
     r"judgment (?:be )?(?:entered|granted)|dismiss(?:al|ing)|"
     r"damages(?:,|\s+and|\s+in)|costs? and disbursements)\b",
+    re.IGNORECASE,
+)
+PLEADING_PRAYER_START_RE = re.compile(
+    r"\b(?:wherefore|prayer for relief)\b",
     re.IGNORECASE,
 )
 THIRD_PARTY_COMPLAINT_QUESTION_RE = re.compile(
@@ -121,7 +139,76 @@ THIRD_PARTY_CAPTION_STOPWORDS = frozenset({
     "plaintiffs", "second", "summons", "third", "verified",
 })
 TOP_ATTACK_SURFACES_MARKER = "v4.0 top attack surfaces report"
+STRATEGIC_ANALYSIS_QUESTION_RE = re.compile(
+    r"\b(?:weakest|strongest|strengths?|weaknesses?|shortcomings?|"
+    r"vulnerabilit(?:y|ies)|likely\s+to\s+(?:win|lose)|"
+    r"which\s+(?:side|argument|position)|compare\s+(?:the\s+)?"
+    r"(?:parties|positions|arguments)|evaluate|assessment|"
+    r"summary[ -]?judgment\s+prospects?|attack\s+surfaces?|"
+    r"motions?\s+(?:should|could|can)\s+(?:i|we|counsel)|"
+    r"motions?\s+(?:to\s+)?consider|answer\s+(?:the\s+)?motion|"
+    r"oppose\s+(?:the\s+)?motion|respond\s+to\s+(?:the\s+)?motion)\b",
+    re.IGNORECASE,
+)
+STRATEGIC_SOURCE_FILENAME_RE = re.compile(
+    r"\b(?:expert|affidavit|affirmation|report|memorandum|memo|brief|"
+    r"order|decision|judgment|survey|site[ _-]?plan|permit|application)\b",
+    re.IGNORECASE,
+)
+STRATEGIC_EXPERT_TEXT_RE = re.compile(
+    r"\b(?:expert|professional\s+(?:engineer|surveyor)|"
+    r"reasonable\s+(?:engineering|professional)\s+certainty|"
+    r"expert\s+(?:opinion|report)|I\s+(?:conclude|opine)|"
+    r"licensed\s+(?:engineer|surveyor))\b",
+    re.IGNORECASE,
+)
+STRATEGIC_MEASUREMENT_TEXT_RE = re.compile(
+    r"\b\d+(?:\.\d+)?\s*(?:feet|foot|ft\.?|inches?|acres?|"
+    r"square\s+feet|percent|%)\b|\b(?:dimensions?|measurements?|"
+    r"boundary|property\s+line|setback|waterfront|site\s+plan|survey)\b",
+    re.IGNORECASE,
+)
+STRATEGIC_LAW_TEXT_RE = re.compile(
+    r"\b(?:statut(?:e|ory)|regulation|regulatory|(?:N\.?Y\.?)?\s*"
+    r"ECL|CPLR|DEC|code|ordinance|riparian|navigation|equity|"
+    r"equitable|precedent|court\s+held)\b|\b\d+\s+NY(?:2d|3d)\b",
+    re.IGNORECASE,
+)
+STRATEGIC_POSITION_TEXT_RE = re.compile(
+    r"\b(?:plaintiff|defendant|claimant|petitioner|respondent|movant)\b"
+    r".{0,180}\b(?:alleges?|argues?|contends?|asserts?|maintains?|"
+    r"opposes?|denies?|claims?)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+STRATEGIC_MERITS_PAGE_LIMIT = 14
+STRATEGIC_CATEGORY_PAGE_LIMIT = 8
+STRATEGIC_EXPERT_PAGE_LIMIT = 18
+STRATEGIC_EXPERT_PAGES_PER_DOCUMENT = 8
 V4_PROCEDURAL_ORDER_TEXT_RE = re.compile(r"\b(?:death|deceased|substitut(?:e|ion)|representative|jurisdiction)\b", re.IGNORECASE)
+PROCEDURAL_POSTURE_QUESTION_RE = re.compile(
+    r"\b(?:death|deceased|substitut(?:e|ion)|representative|jurisdiction|"
+    r"summary[ -]judg(?:ment|ment motion)|merits decision|procedural disposition)\b",
+    re.IGNORECASE,
+)
+RETRIEVAL_VALIDATION_PROFILES = {
+    "main-action": (
+        "Identify the plaintiffs claims in the main action against the defendants "
+        "including defenses requested relief death substitution jurisdiction and "
+        "summary judgment procedural disposition"
+    ),
+    "counter-cross": (
+        "Identify all counterclaims and cross claims including asserting parties "
+        "target parties defenses and requested relief"
+    ),
+    "third-party": (
+        "Validate the third party claims layer separately from the main action "
+        "including parties claims defenses and requested relief"
+    ),
+    "consolidated": (
+        "Prepare one consolidated map in order Main case Counterclaims and cross "
+        "claims Third party claims Identify parties claims defenses and relief"
+    ),
+}
 # v4 reports need case-specific conflicts, not generic contract boilerplate.
 # Filings are strongest; orders and sworn/testimonial materials follow.
 ATTACK_SURFACE_PRIMARY_FILENAME_RE = re.compile(
@@ -159,9 +246,10 @@ ATTACK_SURFACE_NON_FIRST_HAND_RE = re.compile(
 class PreGenerationGateError(ValueError):
     """Raised when mandatory pleading coverage cannot fit before a model call."""
 
-    def __init__(self, reason, detail=None):
+    def __init__(self, reason, detail=None, metrics=None):
         super().__init__(reason)
         self.detail = detail
+        self.metrics = metrics if isinstance(metrics, dict) else {}
 
 
 class EvidenceSelection(list):
@@ -182,11 +270,20 @@ PRE_GENERATION_GATE_REASONS = frozenset({
     "noncontiguous_third_party_actions",
     "retrieval_replay_passed_current_code",
     "third_party_action_slices_exceed_context",
+    "unresolved_third_party_action",
     "unmatched_third_party_answer",
 })
 PRE_GENERATION_GATE_DETAILS = frozenset({
     "duplicate_explicit_ordinal",
     "multiple_unlabeled_complaints",
+})
+PRE_GENERATION_GATE_METRICS = frozenset({
+    "candidate_document_count",
+    "candidate_section_count",
+    "context_character_count",
+    "mandatory_page_count",
+    "missing_mandatory_page_count",
+    "selected_page_count",
 })
 INCOMPLETE_OUTPUT_FIELDS = (
     "counterclaims_and_cross_claims",
@@ -214,6 +311,7 @@ MODEL_VALIDATION_REASONS = frozenset({
     "incomplete_output_third_party_claims",
     "incomplete_third_party_actions",
     "invalid_litigation_map_sections",
+    "invalid_strategic_analysis_sections",
     "invalid_output",
     "uncited_output",
     "unverified_authority_citation",
@@ -582,6 +680,32 @@ def normalized_filename(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", value.casefold()).strip()
 
 
+def deduplicate_exact_documents(documents):
+    """Keep one citable copy of each byte-independent page-text sequence."""
+    unique = {}
+    seen_signatures = set()
+    for identity, pages in sorted(
+        documents.items(),
+        key=lambda item: (normalized_filename(item[0][1]), item[0][0]),
+    ):
+        signature_payload = [
+            (page, " ".join(text.casefold().split()))
+            for page, text in sorted(pages)
+        ]
+        signature = hashlib.sha256(
+            json.dumps(
+                signature_payload,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        if signature in seen_signatures:
+            continue
+        seen_signatures.add(signature)
+        unique[identity] = pages
+    return unique
+
+
 def client():
     return boto3.client("s3", endpoint_url=os.environ["B2_ENDPOINT"].rstrip("/"), region_name=os.environ["B2_REGION"], aws_access_key_id=os.environ["B2_KEY_ID"], aws_secret_access_key=os.environ["B2_APPLICATION_KEY"])
 
@@ -625,6 +749,16 @@ def failure_diagnostics(exc, stage):
         )
         if exc.detail in PRE_GENERATION_GATE_DETAILS:
             details["gate_detail"] = exc.detail
+        gate_metrics = {
+            key: value
+            for key, value in exc.metrics.items()
+            if key in PRE_GENERATION_GATE_METRICS
+            and isinstance(value, int)
+            and not isinstance(value, bool)
+            and value >= 0
+        }
+        if gate_metrics:
+            details["gate_metrics"] = gate_metrics
     elif code == "model_output_validation":
         validation_reason = str(exc).strip().casefold().replace("-", " ").replace(" ", "_")
         details["validation_reason"] = (
@@ -695,16 +829,19 @@ def diagnose_failed_retrieval(s3, case_id, request_id):
         diagnostics = failure_diagnostics(exc, "evidence_retrieval")
         gate_reason = diagnostics["gate_reason"]
         gate_detail = diagnostics.get("gate_detail")
+        gate_metrics = diagnostics.get("gate_metrics")
     else:
         gate_reason = "retrieval_replay_passed_current_code"
         gate_detail = None
+        gate_metrics = None
     put(s3, case_id, request_id, "status.json", {
         **status,
         "gate_reason": gate_reason,
         **({"gate_detail": gate_detail} if gate_detail else {}),
+        **({"gate_metrics": gate_metrics} if gate_metrics else {}),
         "retrieval_diagnosed_at": datetime.now(timezone.utc).isoformat(),
     })
-    return gate_reason, gate_detail
+    return gate_reason, gate_detail, gate_metrics
 
 
 def listed_objects(s3, **kwargs):
@@ -729,6 +866,51 @@ def read_json_object(s3, object_key):
     if not isinstance(value, dict):
         raise ValueError("invalid stored json object")
     return value
+
+
+def one_edit_apart(left: str, right: str) -> bool:
+    """Return whether two same-case words differ by one insertion/deletion/substitution."""
+    left, right = left.casefold(), right.casefold()
+    if abs(len(left) - len(right)) > 1 or left == right:
+        return False
+    if len(left) == len(right):
+        return sum(a != b for a, b in zip(left, right)) == 1
+    shorter, longer = (left, right) if len(left) < len(right) else (right, left)
+    index = mismatches = 0
+    for char in longer:
+        if index < len(shorter) and char == shorter[index]:
+            index += 1
+        else:
+            mismatches += 1
+            if mismatches > 1:
+                return False
+    return True
+
+
+def clean_composed_finding(finding):
+    """Apply source-bound presentation cleanup without changing legal substance."""
+    cleaned = json.loads(json.dumps(finding))
+    statement = cleaned.get("statement", "")
+    filename_tokens = {
+        token for cite in cleaned.get("citations", [])
+        for token in re.findall(r"[A-Za-z]{4,}", str(cite.get("filename", "")))
+    }
+    # A caption-derived person name has a constrained shape. Correct a given
+    # name only when exactly one cited-filename token is one edit away.
+    def canonical_given_name(match):
+        word = match.group(1)
+        choices = sorted({token for token in filename_tokens if one_edit_apart(word, token)})
+        return (choices[0] if len(choices) == 1 else word) + match.group(2)
+    statement = re.sub(
+        r"\b([A-Z][a-z]{3,})(\s+[A-Z]\.\s+[A-Z][A-Za-z]+)",
+        canonical_given_name,
+        statement,
+    )
+    # Drop only a terminal, visibly incomplete boilerplate fragment. Never
+    # synthesize the missing words or alter an enumerated relief category.
+    statement = re.sub(r",\s*other\s+just\.\s*$", ".", statement, flags=re.IGNORECASE)
+    cleaned["statement"] = statement
+    return cleaned
 
 
 def compose_validated_layers(s3, case_id, question):
@@ -762,9 +944,9 @@ def compose_validated_layers(s3, case_id, question):
             continue
         sections = [item.get("section") for item in findings if isinstance(item, dict)]
         draft_question = str(draft.get("question", ""))
-        if "Main case" in sections and not CONSOLIDATED_LITIGATION_MAP_RE.search(draft_question):
+        if sections == ["Main case"] and not CONSOLIDATED_LITIGATION_MAP_RE.search(draft_question):
             candidates["Main case"].append((request_id, draft))
-        if sections == ["Counterclaims and cross-claims"] and "quality facilit" in draft_question.casefold():
+        if sections == ["Counterclaims and cross-claims"] and not CONSOLIDATED_LITIGATION_MAP_RE.search(draft_question):
             candidates["Counterclaims and cross-claims"].append((request_id, draft))
         if sections == ["Third-party claims"] and THIRD_PARTY_ONLY_QUESTION_RE.search(draft_question):
             try:
@@ -774,22 +956,40 @@ def compose_validated_layers(s3, case_id, question):
             actions = audit.get("coverage", {}).get("third_party_actions", [])
             if [action.get("ordinal") for action in actions if isinstance(action, dict)] == list(THIRD_PARTY_ORDINALS):
                 candidates["Third-party claims"].append((request_id, draft, audit))
-    if any(not candidates[section] for section in LITIGATION_MAP_SECTIONS):
+    if candidates["Third-party claims"]:
+        third_party_present = True
+    else:
+        try:
+            evidence(s3, case_id, RETRIEVAL_VALIDATION_PROFILES["third-party"])
+        except PreGenerationGateError as exc:
+            if str(exc) != "missing_third_party_complaint":
+                raise
+            third_party_present = False
+        else:
+            third_party_present = True
+    required_sections = ["Main case", "Counterclaims and cross-claims"]
+    if third_party_present:
+        required_sections.append("Third-party claims")
+    if any(not candidates[section] for section in required_sections):
         raise PreGenerationGateError("missing_validated_layer")
 
     main_request, main_draft = candidates["Main case"][0]
     counter_request, counter_draft = candidates["Counterclaims and cross-claims"][0]
-    third_request, third_draft, third_audit = candidates["Third-party claims"][0]
     source_drafts = {
         "Main case": (main_request, main_draft),
         "Counterclaims and cross-claims": (counter_request, counter_draft),
-        "Third-party claims": (third_request, third_draft),
     }
+    third_audit = None
+    if third_party_present:
+        third_request, third_draft, third_audit = candidates["Third-party claims"][0]
+        source_drafts["Third-party claims"] = (third_request, third_draft)
     findings = []
     citations = []
-    for section in LITIGATION_MAP_SECTIONS:
+    for section in required_sections:
         _source_request, source_draft = source_drafts[section]
-        finding = next(item for item in source_draft["findings"] if item.get("section") == section)
+        finding = clean_composed_finding(next(
+            item for item in source_draft["findings"] if item.get("section") == section
+        ))
         findings.append(finding)
         citations.extend(finding.get("citations", []))
     unique_citations = {
@@ -798,14 +998,16 @@ def compose_validated_layers(s3, case_id, question):
         if isinstance(cite, dict)
     }
     pages = [{**cite, "text": ""} for cite in unique_citations.values()]
-    coverage = {
-        "third_party_actions": third_audit["coverage"]["third_party_actions"],
-        "composition_sources": {
-            section: source_drafts[section][0] for section in LITIGATION_MAP_SECTIONS
-        },
-    }
+    coverage = {"composition_sources": {
+        section: source_drafts[section][0] for section in required_sections
+    }}
+    if third_audit:
+        coverage["third_party_actions"] = third_audit["coverage"]["third_party_actions"]
     result = {
-        "summary": "The verified pleadings map main-action claims, counterclaims and cross-claims, and four successive third-party actions.",
+        "summary": (
+            "The verified pleadings map main-action claims, counterclaims and cross-claims"
+            + (", and the validated third-party actions." if third_party_present else ".")
+        ),
         "findings": findings,
         "missing_information": [],
         "limitations": [
@@ -874,6 +1076,14 @@ def evidence(s3, case_id, question):
     # filing-led coverage before contract exhibits are considered.
     pleading_focused_question = bool(PLEADING_FOCUSED_QUESTION_RE.search(question))
     attack_surface_question = TOP_ATTACK_SURFACES_MARKER in question.casefold()
+    strategic_analysis_question = (
+        bool(STRATEGIC_ANALYSIS_QUESTION_RE.search(question))
+        and not litigation_map_question(question)
+        and not attack_surface_question
+    )
+    procedural_posture_question = bool(
+        PROCEDURAL_POSTURE_QUESTION_RE.search(question)
+    )
     consolidated_question = bool(CONSOLIDATED_LITIGATION_MAP_RE.search(question))
     third_party_only_question = bool(THIRD_PARTY_ONLY_QUESTION_RE.search(question))
     cross_claim_only_question = (
@@ -889,7 +1099,12 @@ def evidence(s3, case_id, question):
     )
     # The v4 report is intentionally filing-led even though its prompt uses
     # analytical terms rather than a pleading's exact title.
-    filing_led_question = broad_record_question or pleading_focused_question or attack_surface_question
+    filing_led_question = (
+        broad_record_question
+        or pleading_focused_question
+        or attack_surface_question
+        or strategic_analysis_question
+    )
     targeted_third_party_complaint = bool(
         THIRD_PARTY_COMPLAINT_QUESTION_RE.search(question)
     ) and not third_party_only_question
@@ -941,6 +1156,8 @@ def evidence(s3, case_id, question):
     consolidated_action_audit = []
     if consolidated_question:
         targeted_pages, consolidated_action_audit = select_third_party_action_pages(documents)
+        if any(action.get("unresolved") for action in consolidated_action_audit):
+            raise PreGenerationGateError("unresolved_third_party_action")
     if targeted_third_party_complaint:
         candidates = []
         for (source, filename), document_pages in documents.items():
@@ -972,12 +1189,26 @@ def evidence(s3, case_id, question):
                     :TARGETED_THIRD_PARTY_COMPLAINT_PAGE_LIMIT
                 ]
             ]
-    for (source, filename), document_pages in documents.items():
+    selection_documents = (
+        deduplicate_exact_documents(documents)
+        if main_action_only_question
+        else documents
+    )
+    for (source, filename), document_pages in selection_documents.items():
         normalized_document_filename = normalized_filename(filename)
         document_identity = " ".join(
             [normalized_document_filename]
             + [text[:900].casefold() for _, text in sorted(document_pages)]
         )
+        strategic_expert_document = bool(
+            STRATEGIC_EXPERT_TEXT_RE.search(document_identity)
+            or re.search(
+                r"\b(?:expert|engineer|surveyor|technical[ _-]?report)\b",
+                normalized_document_filename,
+                re.IGNORECASE,
+            )
+        )
+        counter_cross_filing = bool(COUNTER_CROSS_FILING_RE.search(document_identity))
         if third_party_only_question and re.search(
             r"\b(?:exhibit|affidavit|affirmation|notice|stipulation)\b",
             normalized_document_filename,
@@ -987,6 +1218,16 @@ def evidence(s3, case_id, question):
             # third-party pleadings.  Requiring each duplicate copy exhausts
             # the bounded page budget before generation.  Keep the filed
             # summons/complaints and answers; exclude derivative copies.
+            continue
+        if main_action_only_question and re.search(
+            r"\b(?:exhibit|affidavit|affirmation|notice|stipulation)\b",
+            normalized_document_filename,
+            re.IGNORECASE,
+        ):
+            # Main-action corpora can likewise contain dozens of motion
+            # exhibits whose filenames embed copies of the complaint or
+            # answers. Treating each copy as an operative pleading creates a
+            # false mandatory-defense overflow before generation.
             continue
         if third_party_only_question and not re.search(
             r"\b(?:third[ -]?(?:party|par)|fourth[ -]?(?:party|par))\b",
@@ -998,9 +1239,12 @@ def evidence(s3, case_id, question):
             document_text = " ".join(text.casefold() for _, text in document_pages)
             if cross_claim_party not in document_text:
                 continue
+        if cross_claim_only_question and not counter_cross_filing:
+            continue
         section_start = 1
         prior_page = None
         affirmative_defense_run_remaining = 0
+        prayer_run_remaining = 0
         for page, text in sorted(document_pages):
             pleading_filename = normalized_filename(filename)
             merits_pleading = bool(PLEADING_FILENAME_RE.search(pleading_filename))
@@ -1013,16 +1257,11 @@ def evidence(s3, case_id, question):
             if cross_claim_only_question and merits_pleading:
                 # Keep this layer independent from the main complaint/answer
                 # and successive third-party pleadings. The filename or the
-                # operative page text must expressly identify a counterclaim,
-                # cross-claim, or a reply/answer directed to one.
-                filing_identity = f"{pleading_filename} {text[:700]}"
-                if not re.search(
-                    r"\b(?:cross[ -]?(?:claims?|c)|counter[ -]?(?:claims?|c)|"
-                    r"reply\s+to\s+(?:cross[ -]?claims?|counterclaims?)|"
-                    r"answer\s+to\s+(?:cross[ -]?claims?|counterclaims?))\b",
-                    filing_identity,
-                    re.IGNORECASE,
-                ):
+                # complete document must identify this layer. Once it does,
+                # retain its caption/opening and operative pages even when an
+                # individual page omits the words counterclaim/cross-claim.
+                # Causes of action and prayers commonly do exactly that.
+                if not counter_cross_filing:
                     continue
             if main_action_only_question and merits_pleading:
                 # A main-action request must not make every successive
@@ -1075,6 +1314,29 @@ def evidence(s3, case_id, question):
             operational_pleading = bool(PLEADING_OPERATIONAL_TEXT_RE.search(text))
             claim_pleading = bool(PLEADING_CLAIM_TEXT_RE.search(text))
             relief_pleading = bool(PLEADING_RELIEF_TEXT_RE.search(text))
+            strategic_expert = bool(
+                STRATEGIC_EXPERT_TEXT_RE.search(text)
+                or strategic_expert_document
+            )
+            strategic_measurement = bool(
+                STRATEGIC_MEASUREMENT_TEXT_RE.search(text)
+            )
+            strategic_law = bool(STRATEGIC_LAW_TEXT_RE.search(text))
+            strategic_position = bool(STRATEGIC_POSITION_TEXT_RE.search(text))
+            prayer_continuation = (
+                prayer_run_remaining > 0
+                and prior_page is not None
+                and page == prior_page + 1
+            )
+            if PLEADING_PRAYER_START_RE.search(text):
+                # Multi-part prayers often continue for several pages without
+                # repeating WHEREFORE. Preserve the bounded continuation so
+                # later relief categories are not silently dropped.
+                prayer_run_remaining = 4
+            elif prayer_continuation:
+                prayer_run_remaining -= 1
+            else:
+                prayer_run_remaining = 0
             if filing_led_question and merits_pleading:
                 # Retain a filing-led record map: each section's caption plus
                 # claim, defense, or prayer pages.
@@ -1093,6 +1355,8 @@ def evidence(s3, case_id, question):
                     coverage_score += 12
                 if relief_pleading:
                     coverage_score += 12
+                if prayer_continuation:
+                    coverage_score += 10
                 # Party role and ownership allegations may sit between the
                 # caption and formal causes of action. Retain them for a
                 # party/claims/defenses request rather than inferring a role
@@ -1118,6 +1382,32 @@ def evidence(s3, case_id, question):
                     coverage_score += 10
                 if ATTACK_SURFACE_PRIMARY_FILENAME_RE.search(pleading_filename) and V4_PROCEDURAL_ORDER_TEXT_RE.search(text):
                     coverage_score += 45
+            elif strategic_analysis_question:
+                # Analytical questions need a balanced case-theory packet,
+                # even when the attorney's natural-language question contains
+                # only generic words such as "weakest issues." Reserve expert
+                # opinions, concrete physical facts, law cited in the record,
+                # and both sides' positions by source type and text signals.
+                if STRATEGIC_SOURCE_FILENAME_RE.search(pleading_filename):
+                    coverage_score += 18
+                if strategic_expert:
+                    coverage_score += 45
+                if strategic_measurement:
+                    coverage_score += 36
+                if strategic_law:
+                    coverage_score += 34
+                if strategic_position:
+                    coverage_score += 30
+            elif (
+                procedural_posture_question
+                and ATTACK_SURFACE_PRIMARY_FILENAME_RE.search(pleading_filename)
+                and V4_PROCEDURAL_ORDER_TEXT_RE.search(text)
+            ):
+                # Questions about death, substitution, jurisdiction, or a
+                # dispositive motion require the controlling procedural record
+                # alongside the pleadings. This is filing-type and text based,
+                # never case-name based.
+                coverage_score += 45
             # A party/claims question can require a non-pleading record page
             # that directly addresses ownership, residence, or control. Keep
             # this narrow so advocacy alone is not elevated into a fact.
@@ -1138,6 +1428,9 @@ def evidence(s3, case_id, question):
                     merits_pleading, operational_pleading, section_start,
                     affirmative_defenses, affirmative_defense_continuation,
                     claim_pleading, relief_pleading,
+                    prayer_continuation,
+                    strategic_expert, strategic_measurement,
+                    strategic_law, strategic_position,
                 ))
             prior_page = page
     mandatory_ids=set()
@@ -1149,6 +1442,8 @@ def evidence(s3, case_id, question):
         merits_limit = (
             ATTACK_SURFACE_MERITS_PLEADING_PAGE_LIMIT
             if attack_surface_question
+            else STRATEGIC_MERITS_PAGE_LIMIT
+            if strategic_analysis_question
             else MERITS_PLEADING_PAGE_LIMIT
         )
         def reserve(row):
@@ -1161,6 +1456,11 @@ def evidence(s3, case_id, question):
             return True
         def section_page_limit(row):
             normalized = normalized_filename(row[1])
+            if cross_claim_only_question:
+                # A counterclaim pleading commonly needs a caption, several
+                # separately headed causes, defenses, and a prayer. The normal
+                # three-page answer cap silently drops those operative pages.
+                return MERITS_COMPLAINT_PAGES_PER_FILING
             if ("complaint" in normalized or "summons" in normalized) and "answer" not in normalized:
                 return MERITS_COMPLAINT_PAGES_PER_FILING
             return MERITS_PLEADING_PAGES_PER_FILING
@@ -1180,22 +1480,17 @@ def evidence(s3, case_id, question):
                 (section[0], section[1], page)
                 for section, page in first_defense_page.items()
             }
-            if not attack_surface_question
+            if not attack_surface_question and not strategic_analysis_question
             else set()
         )
-        # First reserve every filing/section opening, then each expressly
-        # identified cause/cross-claim/counterclaim and prayer page. This keeps
-        # captions, operative labels, and requested relief together before
-        # defense continuations can consume a section's allowance.
+        # First reserve every filing/section opening, then the first required
+        # defense page. Claims and prayer pages follow. This ordering matches
+        # the gate: optional operative pages must never consume a section's
+        # allowance before a mandatory defense page.
         for row in ranked:
-            if row[5] and row[2] == row[7] and reserve(row) and not attack_surface_question:
-                mandatory_ids.add((row[3], row[1], row[2]))
-        for signal_index in (10, 11):
-            for row in sorted(ranked, key=lambda item: (item[1].casefold(), item[2], -item[0])):
-                section=(row[3],row[1],row[7])
-                if row[5] and row[signal_index] and per_section.get(section,0) < section_page_limit(row):
-                    if reserve(row) and not attack_surface_question:
-                        mandatory_ids.add((row[3], row[1], row[2]))
+            if row[5] and row[2] == row[7] and reserve(row):
+                if not attack_surface_question and not strategic_analysis_question:
+                    mandatory_ids.add((row[3], row[1], row[2]))
         for row in ranked:
             section=(row[3],row[1],row[7])
             if (
@@ -1203,8 +1498,22 @@ def evidence(s3, case_id, question):
                 and row[2] == first_defense_page.get(section)
                 and per_section.get(section,0) < section_page_limit(row)
             ):
-                if reserve(row) and not attack_surface_question:
-                    mandatory_ids.add((row[3], row[1], row[2]))
+                if reserve(row):
+                    if not attack_surface_question and not strategic_analysis_question:
+                        mandatory_ids.add((row[3], row[1], row[2]))
+        for signal_index in (10, 11):
+            for row in sorted(ranked, key=lambda item: (item[1].casefold(), item[2], -item[0])):
+                section=(row[3],row[1],row[7])
+                if row[5] and row[signal_index] and per_section.get(section,0) < section_page_limit(row):
+                    if reserve(row):
+                        if not attack_surface_question and not strategic_analysis_question:
+                            mandatory_ids.add((row[3], row[1], row[2]))
+        for row in sorted(ranked, key=lambda item: (item[1].casefold(), item[2], -item[0])):
+            section=(row[3],row[1],row[7])
+            if row[5] and row[12] and per_section.get(section,0) < section_page_limit(row):
+                if reserve(row):
+                    if not attack_surface_question and not strategic_analysis_question:
+                        mandatory_ids.add((row[3], row[1], row[2]))
         # Then reserve additional affirmative-defense headings and immediate
         # continuation pages, subject to the unchanged global budget.
         for row in ranked:
@@ -1241,8 +1550,71 @@ def evidence(s3, case_id, question):
                 row for row in remaining
                 if (row[3], row[1], row[2]) not in material_ids
             ]
+        elif strategic_analysis_question:
+            remaining = [
+                row for row in ranked
+                if (row[3], row[1], row[2]) not in merit_ids
+            ]
+            strategic_rows = []
+            strategic_ids = set()
+
+            def reserve_strategy(signal_index, *, limit=STRATEGIC_CATEGORY_PAGE_LIMIT, per_document=None):
+                kept = 0
+                document_counts = {}
+                for row in remaining:
+                    identity = (row[3], row[1], row[2])
+                    if identity in strategic_ids or not row[signal_index]:
+                        continue
+                    document_identity = (row[3], row[1])
+                    if (
+                        per_document is not None
+                        and document_counts.get(document_identity, 0) >= per_document
+                    ):
+                        continue
+                    strategic_rows.append(row)
+                    strategic_ids.add(identity)
+                    document_counts[document_identity] = (
+                        document_counts.get(document_identity, 0) + 1
+                    )
+                    kept += 1
+                    if kept >= limit:
+                        break
+
+            # Preserve category diversity before general relevance ranking.
+            reserve_strategy(
+                13,
+                limit=STRATEGIC_EXPERT_PAGE_LIMIT,
+                per_document=STRATEGIC_EXPERT_PAGES_PER_DOCUMENT,
+            )
+            for signal_index in (14, 15, 16):
+                reserve_strategy(signal_index)
+            ordered = merits + strategic_rows + [
+                row for row in remaining
+                if (row[3], row[1], row[2]) not in strategic_ids
+            ]
         else:
-            ordered = merits + [row for row in ranked if (row[3], row[1], row[2]) not in merit_ids]
+            procedural_rows = [
+                row for row in ranked
+                if (
+                    procedural_posture_question
+                    and (row[3], row[1], row[2]) not in merit_ids
+                    and ATTACK_SURFACE_PRIMARY_FILENAME_RE.search(
+                        normalized_filename(row[1])
+                    )
+                    and V4_PROCEDURAL_ORDER_TEXT_RE.search(row[4]["text"])
+                )
+            ]
+            procedural_ids = {
+                (row[3], row[1], row[2])
+                for row in procedural_rows
+            }
+            ordered = merits + procedural_rows + [
+                row for row in ranked
+                if (
+                    (row[3], row[1], row[2]) not in merit_ids
+                    and (row[3], row[1], row[2]) not in procedural_ids
+                )
+            ]
     ordered_items = targeted_pages + [row[4] for row in ordered]
     for item in ordered_items:
         filename, page, source = item["filename"], item["page_number"], item["source_sha256"]
@@ -1264,21 +1636,35 @@ def evidence(s3, case_id, question):
     if missing_mandatory:
         # Never spend a model call on a pleading map that dropped a required
         # first affirmative-defense page. The bounded details stay internal.
-        raise PreGenerationGateError("missing_first_affirmative_defense_page")
+        raise PreGenerationGateError(
+            "missing_first_affirmative_defense_page",
+            metrics={
+                "candidate_document_count": len(selection_documents),
+                "candidate_section_count": len(first_defense_page),
+                "context_character_count": total,
+                "mandatory_page_count": len(mandatory_ids),
+                "missing_mandatory_page_count": len(missing_mandatory),
+                "selected_page_count": len(selected),
+            },
+        )
     selected_party_role_ids = party_role_candidates.intersection(selected_ids)
     outside_party_role_ids = party_role_candidates.difference(selected_ids)
     selected_claim_ids = {
         (source, filename, page)
         for _score, filename, page, source, _candidate, merits_pleading,
         _operational, _section_start, _defense, _continuation,
-        claim_pleading, _relief_pleading in rows
+        claim_pleading, _relief_pleading, _prayer_continuation,
+        _strategic_expert, _strategic_measurement, _strategic_law,
+        _strategic_position in rows
         if merits_pleading and claim_pleading
     }.intersection(selected_ids)
     selected_relief_ids = {
         (source, filename, page)
         for _score, filename, page, source, _candidate, merits_pleading,
         _operational, _section_start, _defense, _continuation,
-        _claim_pleading, relief_pleading in rows
+        _claim_pleading, relief_pleading, _prayer_continuation,
+        _strategic_expert, _strategic_measurement, _strategic_law,
+        _strategic_position in rows
         if merits_pleading and relief_pleading
     }.intersection(selected_ids)
     coverage = {
@@ -1310,10 +1696,221 @@ def pleading_map(pages):
             continue
         entry = filings.setdefault(filename, {"filename": filename, "citations": [], "signals": set()})
         entry["citations"].append({key: page[key] for key in ("source_sha256", "filename", "page_number")})
-        for label, pattern in (("caption or filing opening", r"\\b(supreme court|plaintiff|defendant)\\b"), ("causes of action or relief", r"\\b(cause of action|wherefore|prayer for relief)\\b"), ("answer or denial", r"\\b(answer|den(?:y|ies|ied))\\b"), ("affirmative defense", r"\\baffirmative\\s+defen[cs]e"), ("cross-claim or counterclaim", r"\\b(cross[ -]?claim|counter[ -]?claim)\\b"), ("third-party pleading", r"\\b(third[ -]?party|fourth[ -]?party)\\b")):
+        for label, pattern in (("caption or filing opening", r"\b(supreme court|plaintiff|defendant)\b"), ("causes of action or relief", r"\b(cause of action|wherefore|prayer for relief)\b"), ("answer or denial", r"\b(answer|den(?:y|ies|ied))\b"), ("affirmative defense", r"\baffirmative\s+defen[cs]e"), ("cross-claim or counterclaim", r"\b(cross[ -]?claim|counter[ -]?claim)\b"), ("third-party pleading", r"\b(third[ -]?party|fourth[ -]?party)\b")):
             if re.search(pattern, page["text"], re.IGNORECASE):
                 entry["signals"].add(label)
     return [{"filename": item["filename"], "citations": item["citations"], "signals": sorted(item["signals"])} for item in sorted(filings.values(), key=lambda item: item["filename"].casefold())]
+
+
+CASE00_RUNTIME_CACHE_PREFIX = (
+    "Benchmarks/Case-00-Triborough/derived/runtime-cache/"
+)
+CASE00_PAGE_CACHE_SUFFIX = "/derived/page-extraction/canonical_page_records.json"
+
+
+def case00_cached_pages(s3):
+    """Read the newest canonical Case-00 page cache without rebuilding PDFs."""
+    objects = [
+        item for item in listed_objects(
+            s3,
+            Bucket=os.environ["B2_BUCKET"],
+            Prefix=CASE00_RUNTIME_CACHE_PREFIX,
+            MaxKeys=1000,
+        )
+        if str(item.get("Key", "")).endswith(CASE00_PAGE_CACHE_SUFFIX)
+    ]
+    if not objects:
+        return None
+    newest = max(
+        objects,
+        key=lambda item: (str(item.get("LastModified", "")), item["Key"]),
+    )
+    payload = json.loads(
+        s3.get_object(Bucket=os.environ["B2_BUCKET"], Key=newest["Key"])["Body"]
+        .read()
+        .decode()
+    )
+    pages = payload.get("pages") if isinstance(payload, dict) else None
+    if not isinstance(pages, list) or not pages:
+        raise ValueError("invalid Case-00 canonical page cache")
+    return pages
+
+
+def case00_evidence(question):
+    """Load the immutable Case-00 corpus through its canonical legacy adapter."""
+    from scripts import rebuild_case00_derived as rebuild
+
+    root = Path(__file__).resolve().parents[1] / "data" / "case-00-triborough"
+    source_prefix = "Benchmarks/Case-00-Triborough/original/Tribrough Full Docket/"
+    cfg = rebuild.B2Config.from_env()
+    b2 = rebuild.create_b2_client(cfg)
+    pages = case00_cached_pages(b2)
+    if pages is None:
+        with tempfile.TemporaryDirectory(prefix="case00-retrieval-validation-") as temp:
+            source = rebuild.materialize_b2_prefix(
+                source_prefix, Path(temp), client=b2, config=cfg
+            )
+            docs = rebuild.ingest_source_directory(
+                source, root / "nyscef_filing_inventory.json"
+            )
+            pages = rebuild.build_canonical_page_records(docs)["pages"]
+
+    normalized_pages = []
+    for page in pages:
+        filename = page.get("source_filename")
+        page_number = page.get("page_number")
+        text = " ".join(str(page.get("text", "")).split())
+        if text and isinstance(filename, str) and isinstance(page_number, int):
+            normalized_pages.append({
+                "source_sha256": CASE00_BENCHMARK_ID,
+                "filename": filename,
+                "page_number": page_number,
+                "text": text,
+            })
+    return normalized_pages
+
+
+def retrieval_evidence(s3, case_id, question):
+    """Route every verified corpus through one model-free validation boundary."""
+    if case_id == CASE00_BENCHMARK_ID:
+        pages = case00_evidence(question)
+        selected = []
+        selected_ids = set()
+        total = 0
+        terms = words(question)
+        ranked = sorted(
+            pages,
+            key=lambda page: (
+                -sum(page["text"].casefold().count(term) for term in terms),
+                page["filename"].casefold(),
+                page["page_number"],
+            ),
+        )
+        def reserve(page):
+            nonlocal total
+            identity = (page["filename"], page["page_number"])
+            if identity in selected_ids:
+                return
+            text = page["text"][:MAX_PAGE_CHARS]
+            if len(selected) >= MAX_PAGES or total + len(text) > MAX_CONTEXT_CHARS:
+                return
+            selected.append({**page, "text": text})
+            selected_ids.add(identity)
+            total += len(text)
+
+        filings = {}
+        for page in pages:
+            if PLEADING_FILENAME_RE.search(normalized_filename(page["filename"])):
+                filings.setdefault(page["filename"], []).append(page)
+        for filename in sorted(filings, key=str.casefold):
+            ordered = sorted(filings[filename], key=lambda page: page["page_number"])
+            reserve(ordered[0])
+            reserve(ordered[-1])
+            kept = 0
+            for page in ordered:
+                if kept >= 4:
+                    break
+                if PLEADING_OPERATIONAL_TEXT_RE.search(page["text"]):
+                    before = len(selected_ids)
+                    reserve(page)
+                    kept += len(selected_ids) > before
+        for page in ranked:
+            reserve(page)
+        if not selected:
+            raise ValueError("no matching verified evidence")
+        return EvidenceSelection(selected, {
+            "party_role_evidence": {},
+            "pleading_operatives": {},
+            "verified_pleading_inventory": verified_pleading_inventory({
+                (CASE00_BENCHMARK_ID, filename): [
+                    (page["page_number"], page["text"])
+                    for page in pages if page["filename"] == filename
+                ]
+                for filename in {page["filename"] for page in pages}
+            }),
+        })
+    return evidence(s3, case_id, question)
+
+
+def validate_retrieval(s3, case_id, question):
+    """Run the production evidence gate without a model call or B2 write."""
+    try:
+        pages = retrieval_evidence(s3, case_id, question)
+    except PreGenerationGateError as exc:
+        if (
+            str(exc) == "missing_third_party_complaint"
+            and THIRD_PARTY_ONLY_QUESTION_RE.search(question)
+        ):
+            # Absence is a valid result for a layer-existence check. Report it
+            # explicitly without treating the case as broken or spending a
+            # model call to narrate an empty layer.
+            return {
+                "case_id": case_id,
+                "status": "PASSED",
+                "model_called": False,
+                "layer": "third-party",
+                "layer_present": False,
+                "gate_reason": "missing_third_party_complaint",
+                "selected_page_count": 0,
+                "context_character_count": 0,
+                "selected_document_count": 0,
+                "pleading_document_count": 0,
+                "pleading_signal_counts": {},
+                "coverage": {
+                    "third_party_action_count": 0,
+                    "third_party_answered_action_count": 0,
+                    "third_party_unresolved_action_count": 0,
+                },
+            }
+        raise
+    coverage = getattr(pages, "coverage", {}) or {}
+    filings = pleading_map(pages)
+    party_roles = coverage.get("party_role_evidence", {})
+    operatives = coverage.get("pleading_operatives", {})
+    third_party_actions = coverage.get("third_party_actions", [])
+    return {
+        "case_id": case_id,
+        "status": "PASSED",
+        "model_called": False,
+        "selected_page_count": len(pages),
+        "context_character_count": sum(len(page["text"]) for page in pages),
+        "selected_document_count": len({
+            (page["source_sha256"], page["filename"]) for page in pages
+        }),
+        "pleading_document_count": len(filings),
+        "pleading_signal_counts": {
+            signal: sum(signal in filing["signals"] for filing in filings)
+            for signal in (
+                "caption or filing opening",
+                "causes of action or relief",
+                "answer or denial",
+                "affirmative defense",
+                "cross-claim or counterclaim",
+                "third-party pleading",
+            )
+        },
+        "coverage": {
+            "party_role_candidate_count": party_roles.get("candidate_count", 0),
+            "party_role_retrieved_count": party_roles.get("retrieved_count", 0),
+            "party_role_outside_initial_slice": bool(
+                party_roles.get("outside_initial_slice", False)
+            ),
+            "claim_page_count": operatives.get("claim_page_count", 0),
+            "relief_page_count": operatives.get("relief_page_count", 0),
+            "verified_pleading_inventory_count": len(
+                coverage.get("verified_pleading_inventory", [])
+            ),
+            "third_party_action_count": len(third_party_actions),
+            "third_party_answered_action_count": sum(
+                bool(action.get("answer_present"))
+                for action in third_party_actions
+            ),
+            "third_party_unresolved_action_count": sum(
+                bool(action.get("unresolved"))
+                for action in third_party_actions
+            ),
+        },
+    }
 
 def authority_prompt(authorities):
     """Return verified authority content suitable for model rule analysis."""
@@ -1333,6 +1930,28 @@ ATTORNEY_ANSWER_SECTIONS = (
     "Application",
     "Policy-by-policy analysis",
     "Bottom line",
+)
+STRATEGIC_ANALYSIS_SECTIONS = (
+    "Case framework",
+    "Evidence",
+    "Competing positions",
+    "Assessment",
+)
+MOTION_RECOMMENDATION_SECTIONS = (
+    "Objective and posture",
+    "Candidate motions",
+    "Record support",
+    "Likely opposition",
+    "Gaps and prerequisites",
+    "Recommendation",
+)
+MOTION_RESPONSE_SECTIONS = (
+    "Motion and burden",
+    "Opponent showing",
+    "Response grounds",
+    "Evidence to submit",
+    "Procedural objections",
+    "Recommendation",
 )
 LITIGATION_MAP_SECTIONS = (
     "Main case",
@@ -1404,12 +2023,37 @@ def litigation_map_question(question: str) -> bool:
     return bool(LITIGATION_MAP_QUESTION_RE.search(question)) or len(BROAD_RECORD_TERMS.intersection(terms)) >= 2
 
 
-def finding_schema(page_citation_properties, *, attorney_sections=False, litigation_map=False, max_findings=8, statement_max_length=900):
+def finding_schema(page_citation_properties, *, attorney_sections=False, litigation_map=False, strategic_analysis=False, reasoning_mode="strategic_analysis", max_findings=8, statement_max_length=900):
     """Build the strict source-aware finding schema for either worker."""
     page_required = list(page_citation_properties)
-    finding_properties = {"statement":{"type":"string","maxLength":statement_max_length},"citations":{"type":"array","items":{"type":"object","additionalProperties":False,"required":page_required,"properties":page_citation_properties}},"authority_citations":{"type":"array","items":{"type":"string"}}}
+    citation_schema = {
+        "type": "array",
+        "items": {
+            "type": "object", "additionalProperties": False,
+            "required": page_required, "properties": page_citation_properties,
+        },
+    }
+    if not attorney_sections:
+        # Record-only findings have no authority fallback. Enforce the same
+        # citation invariant in the generation schema that validate() applies
+        # afterward, preventing a paid response from being rejected solely for
+        # an empty citations array.
+        citation_schema["minItems"] = 1
+    finding_properties = {"statement":{"type":"string","maxLength":statement_max_length},"citations":citation_schema,"authority_citations":{"type":"array","items":{"type":"string"}}}
     finding_required = ["statement", "citations", "authority_citations"]
-    sections = ATTORNEY_ANSWER_SECTIONS if attorney_sections else LITIGATION_MAP_SECTIONS if litigation_map else ()
+    sections = (
+        MOTION_RECOMMENDATION_SECTIONS
+        if strategic_analysis and reasoning_mode == "motion_recommendation"
+        else MOTION_RESPONSE_SECTIONS
+        if strategic_analysis and reasoning_mode == "motion_response"
+        else STRATEGIC_ANALYSIS_SECTIONS
+        if strategic_analysis
+        else ATTORNEY_ANSWER_SECTIONS
+        if attorney_sections
+        else LITIGATION_MAP_SECTIONS
+        if litigation_map
+        else ()
+    )
     if sections:
         finding_properties = {"section":{"type":"string","enum":list(sections)}, **finding_properties}
         finding_required = ["section", *finding_required]
@@ -1418,18 +2062,36 @@ def finding_schema(page_citation_properties, *, attorney_sections=False, litigat
 
 def generate(question, pages, coverage=None, authorities=None):
     authorities = tuple(match_verified_authorities(question) if authorities is None else authorities)
-    map_question = litigation_map_question(question) and not authorities and TOP_ATTACK_SURFACES_MARKER not in question.casefold()
+    detected_reasoning_mode = question_mode(question)
+    strategic_question = (
+        bool(STRATEGIC_ANALYSIS_QUESTION_RE.search(question))
+        or detected_reasoning_mode != "strategic_analysis"
+    ) and not litigation_map_question(question) and TOP_ATTACK_SURFACES_MARKER not in question.casefold()
+    map_question = litigation_map_question(question) and not authorities and not strategic_question and TOP_ATTACK_SURFACES_MARKER not in question.casefold()
     third_party_action_count = len((coverage or {}).get("third_party_actions", []))
-    schema=finding_schema({"source_sha256":{"type":"string"},"filename":{"type":"string"},"page_number":{"type":"integer","minimum":1}}, attorney_sections=bool(authorities), litigation_map=map_question, max_findings=len(LITIGATION_MAP_SECTIONS) if map_question else 8, statement_max_length=2400 if third_party_action_count > 1 else 900)
+    reasoning_mode = detected_reasoning_mode if strategic_question else ""
+    reasoning_context = build_reasoning_context(question, pages) if strategic_question else None
+    schema=finding_schema({"source_sha256":{"type":"string"},"filename":{"type":"string"},"page_number":{"type":"integer","minimum":1}}, attorney_sections=bool(authorities) and not strategic_question, litigation_map=map_question, strategic_analysis=strategic_question, reasoning_mode=reasoning_mode, max_findings=len(LITIGATION_MAP_SECTIONS) if map_question else 8, statement_max_length=2400 if third_party_action_count > 1 else 1200 if strategic_question else 900)
     instructions = "Use only the supplied verified excerpts and legal authorities. This is an internal attorney-review draft, not legal advice or a conclusion. Make no unsupported inference. Case-record facts cite only page citations in citations; legal rules cite only authority ids in authority_citations; application findings should cite both where appropriate. Do not overstate court level, controlling effect, or proposition scope. Every finding must have at least one verified source across those two arrays. Before stating that information is missing or calling something an open question, check the entire supplied record-wide excerpt set, including caption pages and operative pages from related pleadings. Never call a page range missing merely because it was not selected into the bounded retrieval slice; describe the bounded retrieval limitation instead. Use the filing map only as a navigation aid; verify every proposition against its cited pages. Treat pleaded alternatives, denials, and defenses as attributed litigation positions, not established facts or contradictions. For a question about parties, claims, defenses, or relief, return a compact litigation map, not a memo; it must be attorney-readable. The summary must be one sentence of no more than 28 words and may name only claim categories, counterclaim categories, and categories of missing material; do not include party roles, ownership, control, or other factual positions. Return at most one finding for each populated heading, in this exact order: (1) Main case; (2) counterclaims and cross-claims; (3) third-party claims. Put the exact heading in the section field. Each finding must use this one-line shape: '[expressly named parties and short roles]: [claim labels]; defenses: [short labels]; relief: [short label].' Use labels only (for example, breach, lien foreclosure, negligence, statute of limitations, payment); do not explain allegations, evidence, legal standards, or why a position may succeed. In the claims field, list only an expressly asserted cause-of-action label; do not place a plaintiff-side ownership position, party-role statement, necessary-party label, or other non-claim there. In the defenses field, list only a defense attributed to the responding party; do not place a plaintiff-side allegation, ownership position, necessary-party label, or other non-defense there. List no more than three material defense labels for each party. Collapse any additional routine defenses into the single label 'affirmative defenses'; do not enumerate waiver, estoppel, laches, unclean hands, comparative fault, or similar boilerplate separately unless one is the only material defense expressly identified in the supplied record. Omit an empty heading rather than narrating that it is empty. List only the parties named in the caption or operative pleading. Do not invent, infer, or call out an unnamed party from a missing or partial caption. List a John Doe, XYZ entity, or other placeholder only if a supplied verified pleading expressly names it. If a supplied order shows that a motion was disposed of because a party died and substitution is pending, label it a procedural disposition, not a merits decision; state only the procedural consequence shown by that order. Do not use dense narrative. End every summary, finding, missing-information item, and limitation with a complete sentence; never truncate text to fill a schema limit. End the Counterclaims and cross-claims finding with its relief label and a period, never with a quotation mark, dash, colon, semicolon, or conjunction. When supplied pages contain both an ownership assertion and a party's nonresidence or no-control statement, present both as attributed, competing record positions with citations; do not omit either or treat either as conclusively established. Do not portray a pleading typo or general denial as case-dispositive unless a supplied court ruling makes it so. Identify missing information only when it remains unsupported after that record-wide check."
     if TOP_ATTACK_SURFACES_MARKER in question.casefold():
         instructions += " For the v4.0 Top Attack Surfaces Report, do not prepend or return a claims-map summary. If a supplied order shows a motion was disposed of because a party died and substitution is pending, identify it as a procedural disposition, not a merits decision, and state only the procedural consequence shown by that order."
         instructions += " For the v4.0 Top Attack Surfaces Report, prioritize identified pleadings, orders, sworn testimony, and party-specific exhibits over generic contract excerpts. Use a generic contract provision only where it directly conflicts with, limits, or corroborates a party-identified filing or evidence in the supplied pages. Return no more than eight findings ordered from highest to lower materiality; return fewer when fewer qualify. Start every finding with 'Rank N — [Contradiction / Credibility / Procedural weakness] —'. For every finding, use this attorney-readable sequence in the statement: (1) identify the affected party or litigation position only when expressly named in the supplied pages; (2) state the specific record proposition on each side of the tension, including the source type or filing where useful; (3) explain why the two propositions create the asserted vulnerability; and (4) state any material limit. Never use a broad label such as 'causation record' or 'notice challenge' without the particular propositions that support it. A contradiction must cite each of the two conflicting verified propositions. A credibility vulnerability must identify the person or party and the concrete inconsistency, omission, or conflict; if the record does not identify one, do not call it a credibility issue. A procedural weakness must identify the party position, pleading, order, burden, remedy, notice, timing, preservation, or posture actually shown. Do not rank a defense merely because its factual proof, operative pleading, policy, or other supporting material is absent from the supplied excerpts. It qualifies only when the supplied pages show an affirmative mismatch with a contract, order, testimony, or other identified evidence, or when a court actually addressed the position. Do not invent a weakness from silence, characterize advocacy as fact, or convert alternative pleading or a denial into a contradiction. A pleading may establish procedural posture only. Do not make a factual or credibility finding from an attorney affirmation, counsel statement, service affidavit, or a party’s characterization of an absent exhibit, deposition, report, or other evidence. When the underlying first-hand material is not among the supplied pages, identify that limitation and omit the finding rather than treating advocacy as proof."
+    elif strategic_question:
+        instructions += " For this strategic-analysis question, the following instructions override the earlier compact litigation-map format. Give a direct attorney answer, not a source list. Treat the supplied litigation_reasoning_context as deterministic routing and classification metadata only, never as independent proof. Expert opinion is evidence, not law; distinguish design or technical experience from regulatory experience. Analyze supplied DEC or other regulatory material and supplied drawings, surveys, plans, photographs, and measurements instead of calling them missing. Weigh cases and rules cited in party filings as attributed positions unless independently supplied in legal_authorities."
+        if reasoning_mode == "motion_recommendation":
+            instructions += " The attorney asks which motions to consider. Use every section in this exact order: Objective and posture; Candidate motions; Record support; Likely opposition; Gaps and prerequisites; Recommendation. Identify only motions supported by the verified posture and record. For each candidate, state the target, required showing only when verified authority supplies it, record support, strongest opposition, prerequisite proof or procedural step, and comparative reason to prioritize or reject it. Do not recommend a motion merely because the record mentions its name. The summary must directly identify the best-supported motion option or state that the verified record is not yet sufficient to choose one."
+        elif reasoning_mode == "motion_response":
+            instructions += " The attorney asks how to answer an opponent's motion. Use every section in this exact order: Motion and burden; Opponent showing; Response grounds; Evidence to submit; Procedural objections; Recommendation. Identify the relief sought and procedural posture, test each asserted ground against the verified record, separate merits responses from procedural objections, identify admissible or first-hand proof to submit, and rank the strongest response. Do not invent a deadline, burden, element, or doctrine not supplied by verified authority."
+        else:
+            instructions += " Use all four sections in this order: Case framework; Evidence; Competing positions; Assessment. Each section must appear at least once; multiple findings within a section are allowed but sections must never move backward. First identify who is who and the material property, transaction, event, or physical layout. Then extract the concrete opinions and factual premises from each expert or fact witness, including measurements and regulatory constraints. Compare the parties' best arguments point by point, identifying the evidence and law each side cites. Rank the material weaknesses or strengths, explain why each affects the requested party, give the strongest counterargument, and state the unresolved fact or authority that could change the assessment."
+        instructions += " Do not merely say that interference, breach, causation, or another element is shown; explain the specific evidence and competing position. The summary must answer the question directly in no more than 90 words. Return no more than eight findings and avoid repeating the same fact in multiple sections."
     elif authorities:
         instructions += " For this authority-backed question, the following instructions override the earlier compact litigation-map format."
         instructions += " End the summary with a complete sentence; never truncate a sentence to fill the schema limit."
         instructions += " Produce a concise attorney answer, not a memorandum. The summary must be a two-sentence executive answer of no more than 70 words. Return no more than eight non-repetitive findings total, each no more than 110 words, using the section field in this order: Legal standard; Application; Policy-by-policy analysis; Bottom line. Use at most two findings per section. State each legal rule once; apply it by reference rather than repeating it. Distinguish primary and excess policies only where the supplied record permits. Put absent proof only in missing_information, as no more than eight short, prioritized bullets; do not repeat missing evidence in the findings or limitations. The Bottom line must give the present record-based assessment and the evidence that would most change it, without predicting an outcome unsupported by the sources."
     prompt={"question":question,"instructions":instructions,"pleading_map":pleading_map(pages),"pages":pages,"legal_authorities":authority_prompt(authorities)}
+    if reasoning_context is not None:
+        prompt["litigation_reasoning_context"] = reasoning_context
     if coverage and coverage.get("verified_pleading_inventory"):
         prompt["verified_pleading_inventory"] = coverage["verified_pleading_inventory"]
         prompt["instructions"] += " The verified_pleading_inventory is authoritative presence metadata for the complete verified corpus. A listed filing exists in the verified record even when only selected pages appear in pages. Never call a listed filing missing, absent, unavailable, not supplied, or not provided. If selected excerpts do not establish a requested detail, identify that exact detail as unresolved rather than claiming that the filing itself is missing."
@@ -1459,7 +2121,8 @@ def validate(result, pages, authorities=(), question="", coverage=None):
             if not isinstance(cite,dict) or (cite.get("source_sha256"),cite.get("filename"),cite.get("page_number")) not in allowed: raise ValueError("unverified citation")
         if any(not isinstance(authority_id, str) or authority_id not in allowed_authorities for authority_id in finding["authority_citations"]):
             raise ValueError("unverified authority citation")
-    strict_output = litigation_map_question(question) or TOP_ATTACK_SURFACES_MARKER in question.casefold()
+    strategic_question = bool(STRATEGIC_ANALYSIS_QUESTION_RE.search(question)) and not litigation_map_question(question) and TOP_ATTACK_SURFACES_MARKER not in question.casefold()
+    strict_output = litigation_map_question(question) or TOP_ATTACK_SURFACES_MARKER in question.casefold() or strategic_question
     if strict_output:
         # JSON-schema generation guarantees bounded strings but not terminal
         # punctuation. Normalize otherwise complete prose deterministically;
@@ -1561,7 +2224,27 @@ def validate(result, pages, authorities=(), question="", coverage=None):
                     re.IGNORECASE,
                 ):
                     raise ValueError("incomplete third-party actions")
-    if litigation_map_question(question) and not authorities and TOP_ATTACK_SURFACES_MARKER not in question.casefold():
+    if strategic_question:
+        sections = [item.get("section") for item in result["findings"]]
+        expected_sections = (
+            MOTION_RECOMMENDATION_SECTIONS
+            if question_mode(question) == "motion_recommendation"
+            else MOTION_RESPONSE_SECTIONS
+            if question_mode(question) == "motion_response"
+            else STRATEGIC_ANALYSIS_SECTIONS
+        )
+        positions = {
+            section: index
+            for index, section in enumerate(expected_sections)
+        }
+        section_positions = [positions.get(section, -1) for section in sections]
+        if (
+            set(sections) != set(expected_sections)
+            or any(position < 0 for position in section_positions)
+            or section_positions != sorted(section_positions)
+        ):
+            raise ValueError("invalid strategic-analysis sections")
+    if litigation_map_question(question) and not authorities and not strategic_question and TOP_ATTACK_SURFACES_MARKER not in question.casefold():
         sections = [item.get("section") for item in result["findings"]]
         expected = [section for section in LITIGATION_MAP_SECTIONS if section in sections]
         third_party_only = bool(THIRD_PARTY_ONLY_QUESTION_RE.search(question))
@@ -1574,10 +2257,13 @@ def validate(result, pages, authorities=(), question="", coverage=None):
             and not third_party_only
             and not consolidated
         )
+        consolidated_sections = list(
+            (coverage or {}).get("composition_sources", LITIGATION_MAP_SECTIONS)
+        )
         invalid_scope = (
             (cross_claim_only and sections != ["Counterclaims and cross-claims"])
             or (third_party_only and sections != ["Third-party claims"])
-            or (consolidated and sections != list(LITIGATION_MAP_SECTIONS))
+            or (consolidated and sections != consolidated_sections)
         )
         missing_main_case = (
             not cross_claim_only
@@ -1653,12 +2339,32 @@ def write_worker_status(s3, status, **fields):
                   Metadata={"sha256": hashlib.sha256(raw).hexdigest()})
 
 def main():
-    parser=argparse.ArgumentParser(); parser.add_argument("--case-id"); parser.add_argument("--request-id"); parser.add_argument("--scan-pending", action="store_true"); parser.add_argument("--diagnose-retrieval", action="store_true"); args=parser.parse_args()
+    parser=argparse.ArgumentParser(); parser.add_argument("--case-id"); parser.add_argument("--request-id"); parser.add_argument("--scan-pending", action="store_true"); parser.add_argument("--diagnose-retrieval", action="store_true"); parser.add_argument("--validate-retrieval", action="store_true"); parser.add_argument("--question"); parser.add_argument("--profile", choices=sorted(RETRIEVAL_VALIDATION_PROFILES)); args=parser.parse_args()
+    if args.validate_retrieval:
+        if args.scan_pending or args.diagnose_retrieval or args.request_id:
+            raise SystemExit("retrieval validation cannot process or diagnose requests")
+        if not valid_case_id(args.case_id or ""):
+            raise SystemExit("invalid case identifier")
+        if bool((args.question or "").strip()) == bool(args.profile):
+            raise SystemExit("retrieval validation requires exactly one of --question or --profile")
+        question = (
+            RETRIEVAL_VALIDATION_PROFILES[args.profile]
+            if args.profile
+            else args.question.strip()
+        )
+        print(json.dumps(
+            validate_retrieval(client(), args.case_id, question),
+            sort_keys=True,
+            separators=(",", ":"),
+        ))
+        return
     if args.diagnose_retrieval:
         if args.scan_pending: raise SystemExit("diagnostic mode cannot scan pending requests")
         if not valid_case_id(args.case_id or ""): raise SystemExit("invalid case identifier")
         if not re.fullmatch(r"draft-[0-9]+-[0-9a-f]{12}", args.request_id or ""): raise SystemExit("invalid request identifier")
-        gate_reason, gate_detail = diagnose_failed_retrieval(client(), args.case_id, args.request_id)
+        gate_reason, gate_detail, gate_metrics = diagnose_failed_retrieval(
+            client(), args.case_id, args.request_id
+        )
         print(json.dumps({
             "case_id": args.case_id,
             "request_id": args.request_id,
@@ -1667,6 +2373,7 @@ def main():
             "failure_stage": "evidence_retrieval",
             "gate_reason": gate_reason,
             **({"gate_detail": gate_detail} if gate_detail else {}),
+            **({"gate_metrics": gate_metrics} if gate_metrics else {}),
             "model_called": False,
         }, sort_keys=True, separators=(",", ":")))
         return
@@ -1689,7 +2396,11 @@ def main():
                                 **diagnostics,
                                 **({"case_id": next_request[0], "request_id": next_request[1]}
                                    if next_request else {}))
-            raise
+            # run_request already persisted the request-level FAILED state and
+            # safe diagnostics. A rejected request must not crash the cron
+            # container; the next scheduled invocation must remain available
+            # to process the next queued request.
+            return
         return
     if not valid_case_id(args.case_id or ""): raise SystemExit("invalid case identifier")
     s3=client()

@@ -252,9 +252,19 @@ class AttorneyUiConsistencyTests(unittest.TestCase):
             )
         self.assertEqual(response.status_code, 200)
         body = response.get_data(as_text=True)
-        self.assertIn("Retrieval preview — no model called", body)
+        self.assertIn("Source preview only — no answer generated", body)
         self.assertIn("Complaint.pdf — p. 7", body)
-        self.assertIn("Preview retrieval — free", body)
+        self.assertIn("Get LegalAI answer", body)
+        self.assertIn("Preview sources only (optional)", body)
+        self.assertIn(
+            "The optional preview shows source pages only. It does not answer your question or call the answer model.",
+            body,
+        )
+        self.assertLess(body.index("Get LegalAI answer"), body.index("Preview sources only (optional)"))
+        self.assertLess(
+            body.index("What should the attorney-review draft address?"),
+            body.index("v4.0 Top Attack Surfaces Report"),
+        )
         self.assertIn('action="/workspace/matters/', body)
         self.assertIn('#retrieval-preview"', body)
         self.assertIn('id="retrieval-preview"', body)
@@ -528,6 +538,38 @@ class AttorneyUiConsistencyTests(unittest.TestCase):
             regenerate_from=request_id,
         )
 
+    def test_answered_questions_hides_superseded_layers_after_final_composition(self):
+        older_layer = {
+            "request_id": "draft-100-aaaaaaaaaaaa",
+            "question": "Validate the counterclaim layer separately.",
+            "requested_by": "allen@example.com",
+            "created_at": 100,
+            "status": "READY",
+            "draft": {"summary": "Older layer.", "findings": [], "missing_information": []},
+        }
+        final_composition = {
+            "request_id": "draft-200-bbbbbbbbbbbb",
+            "question": "Prepare the cleaned final consolidated verified pleading map.",
+            "requested_by": "allen@example.com",
+            "created_at": 200,
+            "status": "READY",
+            "draft": {"summary": "Final composition.", "findings": [], "missing_information": []},
+        }
+        with patch.object(
+            legalai, "load_registered_cases", return_value=[{"case_id": CASE_ID, "stage": "Verified source indexed"}]
+        ), patch.object(
+            legalai, "load_draft_requests", return_value=[final_composition, older_layer]
+        ):
+            response = self.client.get(
+                f"/workspace/matters/{CASE_ID}/drafts",
+                headers=_auth_headers(),
+            )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.get_data(as_text=True)
+        self.assertIn(final_composition["question"], body)
+        self.assertNotIn(older_layer["question"], body)
+
     def test_legacy_answer_keeps_record_link_and_uses_missing_information_list(self):
         request_id = "draft-11-abcdef123456"
         ready_item = {
@@ -564,6 +606,40 @@ class AttorneyUiConsistencyTests(unittest.TestCase):
             body,
         )
         self.assertNotIn("First item; Second", body)
+
+    def test_answer_renders_duplicate_record_citation_only_once(self):
+        request_id = "draft-13-abcdef123456"
+        citation = {
+            "source_sha256": "b" * 64,
+            "filename": "Repeated.pdf",
+            "page_number": 3,
+        }
+        ready_item = {
+            "request_id": request_id,
+            "question": "What are the claims?",
+            "requested_by": "allen@example.com",
+            "status": "READY",
+            "draft": {
+                "summary": "Summary.",
+                "findings": [{
+                    "statement": "Finding.",
+                    "citations": [citation, dict(citation), dict(citation)],
+                }],
+                "missing_information": [],
+            },
+        }
+        with patch.object(legalai, "load_exact_draft_request", return_value=ready_item):
+            response = self.client.get(
+                f"/workspace/matters/{CASE_ID}/drafts/{request_id}",
+                headers=_auth_headers(),
+            )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.get_data(as_text=True)
+        self.assertEqual(
+            body.count("Open verified source — p. 3 · Repeated.pdf"),
+            1,
+        )
 
     def test_retrieval_audit_separates_authorities_and_supports_legacy_audits(self):
         request_id = "draft-12-abcdef123456"

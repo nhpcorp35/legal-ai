@@ -211,6 +211,29 @@ def inject_attorney_ui(html):
     return text
 
 
+def prioritize_attorney_question_panel(html):
+    """Place the free-form LegalAI question before the optional preset report."""
+    text = str(html or "")
+    question_marker = '<label for="question">What should the attorney-review draft address?</label>'
+    preset_marker = '<input type="hidden" name="action" value="top-attack-surfaces">'
+    question_at = text.find(question_marker)
+    preset_at = text.find(preset_marker)
+    if question_at == -1 or preset_at == -1 or question_at < preset_at:
+        return text
+    question_start = text.rfind('<section class="panel">', 0, question_at)
+    question_end = text.find("</section>", question_at)
+    if question_start == -1 or question_end == -1:
+        return text
+    question_end += len("</section>")
+    question_panel = text[question_start:question_end]
+    without_question = text[:question_start] + text[question_end:]
+    preset_at = without_question.find(preset_marker)
+    preset_start = without_question.rfind('<section class="panel">', 0, preset_at)
+    if preset_at == -1 or preset_start == -1:
+        return text
+    return without_question[:preset_start] + question_panel + without_question[preset_start:]
+
+
 @app.after_request
 def ensure_html_favicon(response):
     """Guarantee every HTML response includes favicon + attorney chrome."""
@@ -223,6 +246,7 @@ def ensure_html_favicon(response):
         return response
     updated = inject_favicon_link(html)
     updated = inject_attorney_ui(updated)
+    updated = prioritize_attorney_question_panel(updated)
     if updated != html:
         response.set_data(updated)
     return response
@@ -2912,12 +2936,27 @@ def findings_with_verified_authorities(findings):
         authority_ids = finding.get("authority_citations", [])
         if not isinstance(authority_ids, list):
             authority_ids = []
+        citations = []
+        seen_citations = set()
+        raw_citations = finding.get("citations", [])
+        if not isinstance(raw_citations, list):
+            raw_citations = []
+        for citation in raw_citations:
+            if not isinstance(citation, dict):
+                continue
+            identity = (
+                citation.get("source_sha256"),
+                citation.get("filename"),
+                citation.get("page_number"),
+            )
+            if identity in seen_citations:
+                continue
+            seen_citations.add(identity)
+            citations.append(citation)
         rendered.append({
             "section": finding.get("section", ""),
             "statement": finding.get("statement", ""),
-            "citations": finding.get("citations", [])
-            if isinstance(finding.get("citations", []), list)
-            else [],
+            "citations": citations,
             "authorities": [
                 _VERIFIED_AUTHORITY_BY_ID[authority_id]
                 for authority_id in authority_ids
@@ -3687,19 +3726,20 @@ def attorney_workspace():
     # legacy in-app source-map cache is unavailable at web-process startup.
     case00_questions = [
         {
-            "id": "Search",
-            "label": "Search verified record",
+            "id": "Ask LegalAI a question",
+            "label": "Get a source-supported answer from the verified record.",
+            "url": "/workspace/case-00/draft",
+            "primary": True,
+        },
+        {
+            "id": "Search case documents",
+            "label": "Find specific words, names, or phrases.",
             "url": "/workspace/case-00/search",
         },
         {
-            "id": "Source map",
-            "label": "View verified record map",
+            "id": "View source map",
+            "label": "Browse the indexed case documents.",
             "url": "/workspace/case-00/sources",
-        },
-        {
-            "id": "Prepare",
-            "label": "Ask a new review question",
-            "url": "/workspace/case-00/draft",
         },
     ]
     if case00_answered:
@@ -3738,19 +3778,20 @@ def attorney_workspace():
                 questions.extend(
                     [
                         {
-                            "id": "Search",
-                            "label": "Search verified record",
+                            "id": "Ask LegalAI a question",
+                            "label": "Get a source-supported answer from the verified record.",
+                            "url": f"/workspace/matters/{matter_url}/draft",
+                            "primary": True,
+                        },
+                        {
+                            "id": "Search case documents",
+                            "label": "Find specific words, names, or phrases.",
                             "url": f"/workspace/matters/{matter_url}/search",
                         },
                         {
-                            "id": "Source map",
-                            "label": "View verified record map",
+                            "id": "View source map",
+                            "label": "Browse the indexed case documents.",
                             "url": f"/workspace/matters/{matter_url}/sources",
-                        },
-                        {
-                            "id": "Prepare",
-                            "label": "Ask a new review question",
-                            "url": f"/workspace/matters/{matter_url}/draft",
                         },
                     ]
                 )
@@ -3800,8 +3841,7 @@ def attorney_workspace():
                 {
                     "name": case["case_id"],
                     "description": (
-                        "Verified record ready for review. Search or open the source record, "
-                        "then add the attorney-selected question for an internal draft."
+                        "Verified record ready for attorney review."
                         if case["stage"] == "Verified source indexed"
                         else f'{case["stage"]}. Verification and review preparation are in progress.'
                     ),
@@ -3840,7 +3880,7 @@ def attorney_workspace():
             }
         )
     return render_template_string(
-        """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>LegalAI Attorney Workspace</title><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:940px;margin:0 auto;padding:48px 24px 64px}header{border-bottom:1px solid #cbd5e1;padding-bottom:24px;margin-bottom:30px}h1{margin:0 0 10px;font-size:clamp(2rem,5vw,3.25rem)}h2{margin:0 0 9px;font-size:1.4rem}p{font-size:1.05rem;line-height:1.55}.meta{color:#52606d;font-size:.96rem}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(275px,1fr));gap:20px}article,.empty,.notice{background:white;border:1px solid #cbd5e1;border-radius:10px;padding:24px;box-shadow:0 2px 8px #0f172a10}.notice{border-left:4px solid #b45309;background:#fffbeb;margin-bottom:20px}ul{padding-left:0;list-style:none;margin:20px 0 0}li+li{margin-top:10px}a{display:block;border:1px solid #245b83;border-radius:6px;color:#123f63;font-weight:bold;padding:10px 12px;text-decoration:none}a:hover,a:focus{background:#e6f1f8}</style></head><body><main><header><h1>LegalAI Attorney Workspace</h1><p class="meta">Signed in as {{ reviewer }}.</p><p>Select a prepared matter. Each question opens a source-supported candidate for your review; your decision and notes are then archived.</p></header>{% if gateway_error %}<section class="notice" role="alert"><h2>Review gateway unavailable</h2><p>{{ gateway_error }}</p></section>{% endif %}{% if matters %}<section class="grid" aria-label="Prepared matters">{% for matter in matters %}<article><h2>{{ matter.name }}</h2><p>{{ matter.description }}</p><ul>{% for question in matter.questions %}<li><a href="{{ question.url }}">{{ question.id }} — {{ question.label }}</a></li>{% endfor %}</ul></article>{% endfor %}</section>{% elif not gateway_error %}<section class="empty"><h2>No prepared matters are available</h2><p>Please try again later.</p></section>{% endif %}</main></body></html>""",
+        """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>LegalAI Attorney Workspace</title><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:940px;margin:0 auto;padding:48px 24px 64px}header{border-bottom:1px solid #cbd5e1;padding-bottom:24px;margin-bottom:30px}h1{margin:0 0 10px;font-size:clamp(2rem,5vw,3.25rem)}h2{margin:0 0 9px;font-size:1.4rem}p{font-size:1.05rem;line-height:1.55}.meta{color:#52606d;font-size:.96rem}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(275px,1fr));gap:20px}article,.empty,.notice{background:white;border:1px solid #cbd5e1;border-radius:10px;padding:24px;box-shadow:0 2px 8px #0f172a10}.notice{border-left:4px solid #b45309;background:#fffbeb;margin-bottom:20px}ul{padding-left:0;list-style:none;margin:20px 0 0}li+li{margin-top:10px}a{display:block;border:1px solid #245b83;border-radius:6px;color:#123f63;padding:11px 12px;text-decoration:none}a:hover,a:focus{background:#e6f1f8}a.primary{background:#123f63;color:white}a.primary:hover,a.primary:focus{background:#0b304d}.action-title{display:block;font-weight:bold}.action-help{display:block;margin-top:4px;font-size:.9rem;line-height:1.35;font-weight:normal}</style></head><body><main><header><h1>LegalAI Attorney Workspace</h1><p class="meta">Signed in as {{ reviewer }}.</p><p>Choose a matter, then ask LegalAI a question, search its documents, or browse its source map.</p></header>{% if gateway_error %}<section class="notice" role="alert"><h2>Review gateway unavailable</h2><p>{{ gateway_error }}</p></section>{% endif %}{% if matters %}<section class="grid" aria-label="Prepared matters">{% for matter in matters %}<article><h2>{{ matter.name }}</h2><p>{{ matter.description }}</p><ul>{% for question in matter.questions %}<li><a{% if question.primary %} class="primary"{% endif %} href="{{ question.url }}"><span class="action-title">{{ question.id }}</span><span class="action-help">{{ question.label }}</span></a></li>{% endfor %}</ul></article>{% endfor %}</section>{% elif not gateway_error %}<section class="empty"><h2>No prepared matters are available</h2><p>Please try again later.</p></section>{% endif %}</main></body></html>""",
         reviewer=reviewer,
         matters=matters,
         gateway_error=gateway_error,
@@ -4162,7 +4202,7 @@ def workspace_matter_draft(case_id):
             if item["status"] in {"QUEUED", "RUNNING"}
         ]
     return render_template_string(
-        """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Prepare Internal Draft</title><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:820px;margin:0 auto;padding:42px 24px 64px}a{color:#123f63}h1{margin:0 0 8px;font-size:clamp(2rem,5vw,3rem)}p,li{font-size:1.05rem;line-height:1.55}.meta{color:#52606d}.panel{background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:22px;margin-top:26px;box-shadow:0 2px 8px #0f172a10}label{display:block;font-weight:bold;margin-bottom:8px}textarea{box-sizing:border-box;width:100%;font:inherit;line-height:1.45;padding:12px;border:1px solid #64748b;border-radius:6px}button{margin-top:12px;margin-right:8px;background:#123f63;color:#fff;border:0;border-radius:6px;padding:11px 15px;font:inherit;font-weight:bold;cursor:pointer}.secondary{background:#fff;color:#123f63;border:1px solid #123f63}.notice{border-left:4px solid #b45309;padding:12px 14px;background:#fffbeb}.success{border-left-color:#15803d;background:#f0fdf4}.answer-cta{display:inline-block;margin-top:12px;background:#123f63;color:#fff;border-radius:6px;padding:11px 15px;font-weight:bold;text-decoration:none}.preview-list{max-height:360px;overflow:auto;padding-right:8px}.preview-list li{font-size:.9rem;overflow-wrap:anywhere}</style></head><body><main><p><a href="/workspace">← Attorney workspace</a></p><h1>Prepare internal review draft</h1><p class="meta">{{ case_id }}</p><p>Questions are processed automatically from the verified record. Results are internal attorney-review drafts only; nothing is sent to an attorney and no legal conclusion is approved.</p>{% if queued_requests %}<section class="panel"><strong>Questions processing</strong>{% for item in queued_requests %}<p data-processing-request="{{ item.request_id }}"><strong>{{ item.status }}</strong> — {{ item.question }}<br><span class="meta">Requested by {{ item.requested_by }}</span></p>{% if item.question|lower|trim == 'is this a test?' %}<form method="post"><input type="hidden" name="action" value="discard-test"><input type="hidden" name="request_id" value="{{ item.request_id }}"><button class="secondary" type="submit">Remove temporary test</button></form>{% endif %}{% endfor %}</section>{% endif %}{% if confirmation %}<section class="panel success" id="draft-confirmation">{% if submitted_status == 'READY' %}<strong>Your answered question is ready.</strong><p><a class="answer-cta" href="{{ url_for('workspace_matter_draft_detail', case_id=case_id, request_id=confirmation.request_id) }}">View answered question →</a></p>{% if confirmation.reused %}<p class="meta">This identical question already exists. To intentionally refresh it after a system update, use the guarded control below; ordinary duplicate submissions remain blocked.</p><form method="post"><input type="hidden" name="action" value="regenerate"><input type="hidden" name="request_id" value="{{ confirmation.request_id }}"><button class="secondary" type="submit">Regenerate this completed draft</button></form>{% endif %}{% else %}<strong data-draft-status>{% if confirmation.reused %}Existing internal draft shown.{% else %}Automatic draft job queued.{% endif %}</strong><p data-draft-message>{% if confirmation.reused %}This identical question already has an internal draft request, so no duplicate was created.{% else %}Your question will appear under Answered questions when its citation checks complete.{% endif %}</p>{% endif %}</section>{% endif %}{% if discarded %}<section class="panel success"><strong>Temporary test removed from the workspace.</strong><p>Its internal audit record remains preserved; no source material or attorney packet changed.</p></section>{% endif %}<section class="panel"><strong>v4.0 Top Attack Surfaces Report</strong><p>Ranked, attorney-review-only contradictions, credibility vulnerabilities, and procedural weaknesses supported by verified pages.</p><form method="post"><input type="hidden" name="action" value="top-attack-surfaces"><button class="secondary" type="submit">Prepare v4.0 report</button></form></section><section class="panel"><form method="post" action="{{ url_for('workspace_matter_draft', case_id=case_id) }}#retrieval-preview"><label for="question">What should the attorney-review draft address?</label><textarea id="question" name="question" rows="5" maxlength="1000" required placeholder="Example: What relief is requested in the verified complaint, and what support is present in the record?">{{ question }}</textarea><button class="secondary" type="submit" name="action" value="preview">Preview retrieval — free</button><button type="submit" name="action" value="create">Ask a new review question</button></form></section>{% if retrieval_preview %}<section id="retrieval-preview" class="panel {{ 'notice' if retrieval_preview.blocked_reason else 'success' }}" tabindex="-1"><strong>Retrieval preview — no model called</strong>{% if retrieval_preview.blocked_reason %}<p><strong>Blocked:</strong> {{ retrieval_preview.blocked_reason }}</p>{% else %}<p>{{ retrieval_preview.page_count }} of {{ retrieval_preview.page_limit }} page slots selected · {{ retrieval_preview.context_characters }} of {{ retrieval_preview.context_limit }} context characters.</p><p><strong>{{ retrieval_preview.pleadings|length }} verified pleadings detected.</strong></p>{% for warning in retrieval_preview.warnings %}<p class="notice">{{ warning }}</p>{% endfor %}<ul class="preview-list">{% for cite in retrieval_preview.citations %}<li>{{ cite.filename }} — p. {{ cite.page_number }}</li>{% endfor %}</ul>{% endif %}</section>{% endif %}{% if error %}<p id="retrieval-preview" class="notice" role="alert" tabindex="-1">{{ error }}</p>{% endif %}{% if retrieval_preview or error %}<script>document.getElementById('retrieval-preview')?.focus();</script>{% endif %}{% if confirmation and submitted_status != 'READY' %}<script>(() => {const endpoint={{ url_for('workspace_matter_draft_status', case_id=case_id, request_id=confirmation.request_id)|tojson }};const requestId={{ confirmation.request_id|tojson }};const panel=document.getElementById('draft-confirmation');const status=panel.querySelector('[data-draft-status]');const message=panel.querySelector('[data-draft-message]');const processing=document.querySelector('[data-processing-request="'+requestId+'"]');let attempts=0;const timer=window.setInterval(check,15000);async function check(){attempts+=1;try{const response=await fetch(endpoint,{cache:'no-store',credentials:'same-origin'});if(!response.ok){if(response.status===404&&attempts>=2){status.textContent='Status is still syncing';message.textContent='Your draft remains safely queued while the status record catches up.';}return;}const update=await response.json();if(update.status==='READY'&&update.answer_url){window.clearInterval(timer);window.location.assign(update.answer_url+'?completed=1');}else if(update.status==='FAILED'){window.clearInterval(timer);panel.classList.remove('success');panel.classList.add('notice');status.textContent='This internal draft failed.';message.textContent='Failure code: '+(update.failure_code||'unspecified_failure')+'. No automatic retry was started.';processing?.remove();}else if(update.status==='RUNNING'){status.textContent='Question processing';}}catch(_error){}if(attempts>=40)window.clearInterval(timer);}check();})();</script>{% endif %}</main></body></html>""",
+        """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Prepare Internal Draft</title><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:820px;margin:0 auto;padding:42px 24px 64px}a{color:#123f63}h1{margin:0 0 8px;font-size:clamp(2rem,5vw,3rem)}p,li{font-size:1.05rem;line-height:1.55}.meta{color:#52606d}.panel{background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:22px;margin-top:26px;box-shadow:0 2px 8px #0f172a10}label{display:block;font-weight:bold;margin-bottom:8px}textarea{box-sizing:border-box;width:100%;font:inherit;line-height:1.45;padding:12px;border:1px solid #64748b;border-radius:6px}button{margin-top:12px;margin-right:8px;background:#123f63;color:#fff;border:0;border-radius:6px;padding:11px 15px;font:inherit;font-weight:bold;cursor:pointer}.secondary{background:#fff;color:#123f63;border:1px solid #123f63}.notice{border-left:4px solid #b45309;padding:12px 14px;background:#fffbeb}.success{border-left-color:#15803d;background:#f0fdf4}.answer-cta{display:inline-block;margin-top:12px;background:#123f63;color:#fff;border-radius:6px;padding:11px 15px;font-weight:bold;text-decoration:none}.preview-list{max-height:360px;overflow:auto;padding-right:8px}.preview-list li{font-size:.9rem;overflow-wrap:anywhere}</style></head><body><main><p><a href="/workspace">← Attorney workspace</a></p><h1>Prepare internal review draft</h1><p class="meta">{{ case_id }}</p><p>Questions are processed automatically from the verified record. Results are internal attorney-review drafts only; nothing is sent to an attorney and no legal conclusion is approved.</p>{% if queued_requests %}<section class="panel"><strong>Questions processing</strong>{% for item in queued_requests %}<p data-processing-request="{{ item.request_id }}"><strong>{{ item.status }}</strong> — {{ item.question }}<br><span class="meta">Requested by {{ item.requested_by }}</span></p>{% if item.question|lower|trim == 'is this a test?' %}<form method="post"><input type="hidden" name="action" value="discard-test"><input type="hidden" name="request_id" value="{{ item.request_id }}"><button class="secondary" type="submit">Remove temporary test</button></form>{% endif %}{% endfor %}</section>{% endif %}{% if confirmation %}<section class="panel success" id="draft-confirmation">{% if submitted_status == 'READY' %}<strong>Your answered question is ready.</strong><p><a class="answer-cta" href="{{ url_for('workspace_matter_draft_detail', case_id=case_id, request_id=confirmation.request_id) }}">View answered question →</a></p>{% if confirmation.reused %}<p class="meta">This identical question already exists. To intentionally refresh it after a system update, use the guarded control below; ordinary duplicate submissions remain blocked.</p><form method="post"><input type="hidden" name="action" value="regenerate"><input type="hidden" name="request_id" value="{{ confirmation.request_id }}"><button class="secondary" type="submit">Regenerate this completed draft</button></form>{% endif %}{% else %}<strong data-draft-status>{% if confirmation.reused %}Existing internal draft shown.{% else %}Automatic draft job queued.{% endif %}</strong><p data-draft-message>{% if confirmation.reused %}This identical question already has an internal draft request, so no duplicate was created.{% else %}Your question will appear under Answered questions when its citation checks complete.{% endif %}</p>{% endif %}</section>{% endif %}{% if discarded %}<section class="panel success"><strong>Temporary test removed from the workspace.</strong><p>Its internal audit record remains preserved; no source material or attorney packet changed.</p></section>{% endif %}<section class="panel"><strong>v4.0 Top Attack Surfaces Report</strong><p>Ranked, attorney-review-only contradictions, credibility vulnerabilities, and procedural weaknesses supported by verified pages.</p><form method="post"><input type="hidden" name="action" value="top-attack-surfaces"><button class="secondary" type="submit">Prepare v4.0 report</button></form></section><section class="panel"><form method="post" action="{{ url_for('workspace_matter_draft', case_id=case_id) }}#retrieval-preview"><label for="question">What should the attorney-review draft address?</label><textarea id="question" name="question" rows="5" maxlength="1000" required placeholder="Example: What relief is requested in the verified complaint, and what support is present in the record?">{{ question }}</textarea><button type="submit" name="action" value="create">Get LegalAI answer</button><button class="secondary" type="submit" name="action" value="preview">Preview sources only (optional)</button><p class="meta">The optional preview shows source pages only. It does not answer your question or call the answer model.</p></form></section>{% if retrieval_preview %}<section id="retrieval-preview" class="panel {{ 'notice' if retrieval_preview.blocked_reason else 'success' }}" tabindex="-1"><strong>Source preview only — no answer generated</strong>{% if retrieval_preview.blocked_reason %}<p><strong>Blocked:</strong> {{ retrieval_preview.blocked_reason }}</p>{% else %}<p>{{ retrieval_preview.page_count }} of {{ retrieval_preview.page_limit }} page slots selected · {{ retrieval_preview.context_characters }} of {{ retrieval_preview.context_limit }} context characters.</p><p><strong>{{ retrieval_preview.pleadings|length }} verified pleadings detected.</strong></p>{% for warning in retrieval_preview.warnings %}<p class="notice">{{ warning }}</p>{% endfor %}<ul class="preview-list">{% for cite in retrieval_preview.citations %}<li>{{ cite.filename }} — p. {{ cite.page_number }}</li>{% endfor %}</ul>{% endif %}</section>{% endif %}{% if error %}<p id="retrieval-preview" class="notice" role="alert" tabindex="-1">{{ error }}</p>{% endif %}{% if retrieval_preview or error %}<script>document.getElementById('retrieval-preview')?.focus();</script>{% endif %}{% if confirmation and submitted_status != 'READY' %}<script>(() => {const endpoint={{ url_for('workspace_matter_draft_status', case_id=case_id, request_id=confirmation.request_id)|tojson }};const requestId={{ confirmation.request_id|tojson }};const panel=document.getElementById('draft-confirmation');const status=panel.querySelector('[data-draft-status]');const message=panel.querySelector('[data-draft-message]');const processing=document.querySelector('[data-processing-request="'+requestId+'"]');let attempts=0;const timer=window.setInterval(check,15000);async function check(){attempts+=1;try{const response=await fetch(endpoint,{cache:'no-store',credentials:'same-origin'});if(!response.ok){if(response.status===404&&attempts>=2){status.textContent='Status is still syncing';message.textContent='Your draft remains safely queued while the status record catches up.';}return;}const update=await response.json();if(update.status==='READY'&&update.answer_url){window.clearInterval(timer);window.location.assign(update.answer_url+'?completed=1');}else if(update.status==='FAILED'){window.clearInterval(timer);panel.classList.remove('success');panel.classList.add('notice');status.textContent='This internal draft failed.';message.textContent='Failure code: '+(update.failure_code||'unspecified_failure')+'. No automatic retry was started.';processing?.remove();}else if(update.status==='RUNNING'){status.textContent='Question processing';}}catch(_error){}if(attempts>=40)window.clearInterval(timer);}check();})();</script>{% endif %}</main></body></html>""",
         case_id=case_id,
         question=question,
         confirmation=confirmation,
@@ -4220,6 +4260,18 @@ def workspace_matter_drafts(case_id):
         if registered.get(case_id) != "Verified source indexed":
             abort(404)
     answered = [item for item in (load_draft_requests(case_id) or []) if item["status"] == "READY" and item["draft"]]
+    final_compositions = [
+        item for item in answered
+        if str(item.get("question", "")).casefold().startswith(
+            "prepare the cleaned final consolidated verified pleading map"
+        )
+    ]
+    if final_compositions:
+        # Preserve every immutable draft and audit in storage while keeping the
+        # attorney-facing list focused on the newest accepted composition and
+        # any work created after it.
+        cutoff = max(int(item.get("created_at", 0)) for item in final_compositions)
+        answered = [item for item in answered if int(item.get("created_at", 0)) >= cutoff]
     return render_template_string(
         """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Answered Questions</title><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:900px;margin:0 auto;padding:42px 24px 64px}a{color:#123f63}h1{margin:0 0 8px;font-size:clamp(2rem,5vw,3rem)}p{font-size:1.05rem;line-height:1.55}.meta{color:#52606d}.question{display:block;background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:20px;margin-top:16px;box-shadow:0 2px 8px #0f172a10;text-decoration:none;color:#172331}.question:hover{border-color:#123f63}.question strong{color:#123f63}</style></head><body><main><p><a href="/workspace">← Attorney workspace</a> · <a href="{{ url_for('workspace_matter_draft', case_id=case_id) }}">Ask a new review question</a></p><h1>Answered questions</h1><p class="meta">{{ case_id }}</p>{% if answered %}{% for item in answered %}<article class="question"><strong>Answered</strong><p>{{ item.question }}</p><span class="meta">Requested by {{ item.requested_by }}</span><p><a href="{{ url_for('workspace_matter_draft_detail', case_id=case_id, request_id=item.request_id) }}">Open answer →</a></p>{% if item.requested_by == reviewer %}<p><a href="{{ url_for('workspace_matter_draft_audit', case_id=case_id, request_id=item.request_id) }}">View retrieval audit →</a></p>{% endif %}<form method="post" action="{{ url_for('workspace_matter_draft', case_id=case_id) }}"><input type="hidden" name="action" value="regenerate"><input type="hidden" name="request_id" value="{{ item.request_id }}"><button type="submit">Regenerate this draft</button></form></article>{% endfor %}{% else %}<p>No answered questions yet.</p>{% endif %}</main></body></html>""",
         case_id=case_id,

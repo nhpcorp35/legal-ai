@@ -366,6 +366,46 @@ judgment.
   `draft-1789743093-4556c89d89db` completed READY with a single correctly
   scoped counterclaim/cross-claim section and operative-page citations.
 
+### 2026-09-19
+
+- Simplified every verified-matter card around three plain-language attorney
+  actions: ask LegalAI a question, search case documents, and view the source
+  map. The question workflow is now the first and visually primary action.
+- Added regression coverage for the action labels, supporting explanations,
+  destination, visual priority, and ordering; 102 focused tests passed before
+  publication.
+- Clarified the question form after live attorney use exposed confusion between
+  source preview and answer generation. "Get LegalAI answer" is now the first
+  primary action; the optional source preview explicitly states that it does
+  not answer the question or call the answer model.
+- Moved the free-form question panel above the optional preset attack-surfaces
+  report so the normal attorney workflow appears first.
+
+### 2026-09-20
+
+- Added a general strategic-analysis path for evaluative attorney questions
+  about strengths, weaknesses, competing positions, and likely dispositive
+  issues. This is question-intent based and contains no matter-specific rule.
+- Strategic retrieval now preserves a balanced, bounded case-theory packet:
+  operative pleadings, expert opinions, concrete measurements or physical
+  facts, law cited in the record, and both sides' stated positions.
+- Strategic drafts must answer directly in ordered sections covering the case
+  framework, evidence, competing positions, and assessment. They must identify
+  the strongest counterargument and distinguish verified authority from law
+  merely cited in a party filing.
+- Preserved reviewer isolation: an attempt to read another reviewer's exact
+  draft and audit failed closed as designed. No access-control bypass was
+  added, and no paid regeneration was started during that access check.
+- Controlled production evaluation `draft-1789916937-369f852c7e37` reached
+  READY and demonstrated the new case-framework, expert-evidence,
+  competing-position, and ranked-assessment structure. Inspection then exposed
+  a remaining bounded-slice weakness: a referenced expert's detailed numerical
+  calculations were not selected.
+- Expanded expert-document retrieval generically after that inspection. Once a
+  document is identified as expert material, the selector preserves a balanced
+  bounded slice across multiple expert documents instead of retaining only
+  pages that repeat the word "expert."
+
 
 ## Daily attorney-goal alignment
 
@@ -391,3 +431,17 @@ Engineering activity alone does not count as progress. The evidence must show an
 - **Goal advanced:** Accurate, source-grounded counterclaim/cross-claim mapping as a separate litigation layer, without forcing unrelated main-case material into the answer.
 - **How / evidence:** Main `156ec5e0076a99f9b10d61e7f364b2b83c58e43c`; 73 passing tests; successful worker/executor deployments; controlled draft `draft-1789743093-4556c89d89db` completed READY with operative-page citations.
 - **Remaining gap:** Validate the third-party-claim layer separately, then test a concise consolidated synthesis that explains why prioritized issues matter under governing procedure and law.
+
+### 2026-09-19 alignment checkpoint
+
+- **Movement:** YES
+- **Goal advanced:** Make the attorney-review workflow self-explanatory so a reviewer can immediately distinguish asking LegalAI from searching or browsing the record.
+- **How / evidence:** The question action is first and visually primary on every verified-matter card and question form, while the optional preview is explicitly labeled as source-only; 102 focused tests passed.
+- **Remaining gap:** Verify the revised workspace in production, then collect the reviewer’s full MVP accuracy, usefulness, citation, and workflow assessment.
+
+### 2026-09-20 alignment checkpoint
+
+- **Movement:** YES
+- **Goal advanced:** Convert source retrieval into balanced, attorney-useful litigation assessment for ordinary evaluative questions.
+- **How / evidence:** Added generic strategic-intent retrieval and answer contracts; controlled draft `draft-1789916937-369f852c7e37` reached READY; 128 worker/UI/review tests and 295 deterministic cognition tests passed.
+- **Remaining gap:** Obtain attorney scoring on the revised strategic answer before declaring substantive MVP acceptance.

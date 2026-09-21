@@ -52,6 +52,150 @@ class MatchingEvidenceS3(FakeS3):
 
 
 class EvidenceFailClosedTests(unittest.TestCase):
+    def test_record_only_generation_schema_requires_a_page_citation(self):
+        schema = WORKER.finding_schema(
+            {
+                "source_sha256": {"type": "string"},
+                "filename": {"type": "string"},
+                "page_number": {"type": "integer"},
+            },
+            litigation_map=True,
+        )
+        citations = schema["properties"]["findings"]["items"]["properties"]["citations"]
+        self.assertEqual(citations["minItems"], 1)
+
+    def test_case00_cache_uses_newest_canonical_page_records(self):
+        class CacheS3:
+            def list_objects_v2(self, **_kwargs):
+                return {"Contents": [
+                    {
+                        "Key": WORKER.CASE00_RUNTIME_CACHE_PREFIX
+                        + "old" + WORKER.CASE00_PAGE_CACHE_SUFFIX,
+                        "LastModified": "2026-08-01T00:00:00Z",
+                    },
+                    {
+                        "Key": WORKER.CASE00_RUNTIME_CACHE_PREFIX
+                        + "new" + WORKER.CASE00_PAGE_CACHE_SUFFIX,
+                        "LastModified": "2026-08-02T00:00:00Z",
+                    },
+                ], "IsTruncated": False}
+
+            def get_object(self, **kwargs):
+                page = 2 if "/new/" in kwargs["Key"] else 1
+                return {"Body": io.BytesIO(json.dumps({"pages": [
+                    {"source_filename": "Complaint.pdf", "page_number": page,
+                     "text": "Cause of action."}
+                ]}).encode())}
+
+        pages = WORKER.case00_cached_pages(CacheS3())
+        self.assertEqual(pages[0]["page_number"], 2)
+
+    def test_case00_uses_shared_model_free_validation_boundary(self):
+        pages = [
+            {
+                "source_sha256": WORKER.CASE00_BENCHMARK_ID,
+                "filename": "Complaint.pdf",
+                "page_number": 1,
+                "text": "Plaintiff alleges a cause of action.",
+            }
+        ] + [
+            {
+                "source_sha256": WORKER.CASE00_BENCHMARK_ID,
+                "filename": f"Correspondence {index}.pdf",
+                "page_number": 1,
+                "text": "main case counterclaims cross claims third party claims relief",
+            }
+            for index in range(WORKER.MAX_PAGES + 5)
+        ]
+        with mock.patch.object(WORKER, "case00_evidence", return_value=pages):
+            report = WORKER.validate_retrieval(
+                object(),
+                WORKER.CASE00_BENCHMARK_ID,
+                WORKER.RETRIEVAL_VALIDATION_PROFILES["consolidated"],
+            )
+        self.assertEqual(report["status"], "PASSED")
+        self.assertFalse(report["model_called"])
+        self.assertLessEqual(report["selected_page_count"], WORKER.MAX_PAGES)
+        self.assertEqual(report["pleading_document_count"], 1)
+
+    def test_retrieval_validation_profiles_cover_each_supported_layer(self):
+        self.assertEqual(
+            set(WORKER.RETRIEVAL_VALIDATION_PROFILES),
+            {"main-action", "counter-cross", "third-party", "consolidated"},
+        )
+        self.assertTrue(WORKER.MAIN_ACTION_ONLY_QUESTION_RE.search(
+            WORKER.RETRIEVAL_VALIDATION_PROFILES["main-action"]
+        ))
+        self.assertTrue(WORKER.CROSS_CLAIM_ONLY_QUESTION_RE.search(
+            WORKER.RETRIEVAL_VALIDATION_PROFILES["counter-cross"]
+        ))
+        self.assertTrue(WORKER.THIRD_PARTY_ONLY_QUESTION_RE.search(
+            WORKER.RETRIEVAL_VALIDATION_PROFILES["third-party"]
+        ))
+        self.assertTrue(WORKER.CONSOLIDATED_LITIGATION_MAP_RE.search(
+            WORKER.RETRIEVAL_VALIDATION_PROFILES["consolidated"]
+        ))
+
+    def test_retrieval_validation_is_read_only_and_model_free(self):
+        report = WORKER.validate_retrieval(
+            type(
+                "RetrievalValidationS3",
+                (FakeS3,),
+                {
+                    "pages": [{
+                        "filename": "Complaint.pdf",
+                        "page_number": 3,
+                        "text": "FIRST CAUSE OF ACTION: breach of contract.",
+                    }]
+                },
+            )(),
+            "NY-Suffolk-600371-2021-DeSousa-v-Calvagno-II-Karcher",
+            "What breach of contract claims appear in the complaint?",
+        )
+        self.assertEqual(report["status"], "PASSED")
+        self.assertFalse(report["model_called"])
+        self.assertEqual(report["selected_page_count"], 1)
+        self.assertEqual(report["selected_document_count"], 1)
+        self.assertEqual(report["pleading_document_count"], 1)
+        self.assertEqual(
+            set(report["coverage"]),
+            {
+                "party_role_candidate_count",
+                "party_role_retrieved_count",
+                "party_role_outside_initial_slice",
+                "claim_page_count",
+                "relief_page_count",
+                "verified_pleading_inventory_count",
+                "third_party_action_count",
+                "third_party_answered_action_count",
+                "third_party_unresolved_action_count",
+            },
+        )
+        self.assertEqual(
+            report["pleading_signal_counts"]["causes of action or relief"],
+            1,
+        )
+
+    def test_third_party_validation_reports_absent_layer_without_model(self):
+        class NoThirdPartyS3(FakeS3):
+            pages = [{
+                "filename": "COMPLAINT_1.pdf",
+                "page_number": 1,
+                "text": "Plaintiff alleges private nuisance against defendants.",
+            }]
+
+        report = WORKER.validate_retrieval(
+            NoThirdPartyS3(),
+            "NY-Suffolk-600371-2021-DeSousa-v-Calvagno-II-Karcher",
+            WORKER.RETRIEVAL_VALIDATION_PROFILES["third-party"],
+        )
+
+        self.assertEqual(report["status"], "PASSED")
+        self.assertFalse(report["model_called"])
+        self.assertFalse(report["layer_present"])
+        self.assertEqual(report["gate_reason"], "missing_third_party_complaint")
+        self.assertEqual(report["selected_page_count"], 0)
+
     def test_no_match_does_not_select_arbitrary_verified_pages(self):
         with self.assertRaisesRegex(ValueError, "no matching verified evidence"):
             WORKER.evidence(
@@ -450,6 +594,24 @@ class PartyRoleEvidenceTests(unittest.TestCase):
 
 
 class PendingQueueTests(unittest.TestCase):
+    def test_composed_finding_uses_cited_name_and_drops_incomplete_relief_tail(self):
+        finding = {
+            "section": "Main case",
+            "statement": "Diance C. DeSousa: nuisance; defenses: denial; relief: damages, other just.",
+            "citations": [{
+                "source_sha256": "a" * 64,
+                "filename": "Diane_C_DeSousa_v_Richard_Calvagno_COMPLAINT.pdf",
+                "page_number": 1,
+            }],
+            "authority_citations": [],
+        }
+        cleaned = WORKER.clean_composed_finding(finding)
+        self.assertEqual(
+            cleaned["statement"],
+            "Diane C. DeSousa: nuisance; defenses: denial; relief: damages.",
+        )
+        self.assertEqual(finding["statement"], "Diance C. DeSousa: nuisance; defenses: denial; relief: damages, other just.")
+
     class QueueS3:
         def list_objects_v2(self, **kwargs):
             if kwargs.get("Prefix") == "cases/":
@@ -695,9 +857,12 @@ class PendingQueueTests(unittest.TestCase):
              mock.patch.object(WORKER, "evidence", side_effect=WORKER.PreGenerationGateError("ambiguous_third_party_answer")), \
              mock.patch.object(WORKER, "generate") as generate, \
              mock.patch.object(WORKER, "put", side_effect=lambda *args: writes.append(args[3:])):
-            reason, detail = WORKER.diagnose_failed_retrieval(s3, case_id, request_id)
+            reason, detail, metrics = WORKER.diagnose_failed_retrieval(
+                s3, case_id, request_id
+            )
         self.assertEqual(reason, "ambiguous_third_party_answer")
         self.assertIsNone(detail)
+        self.assertIsNone(metrics)
         self.assertEqual(writes[0][0], "status.json")
         self.assertEqual(writes[0][1]["gate_reason"], reason)
         self.assertEqual(writes[0][1]["updated_at"], status["updated_at"])
@@ -722,6 +887,29 @@ class PendingQueueTests(unittest.TestCase):
         )
         self.assertNotIn("gate_detail", private)
 
+    def test_pre_generation_gate_metrics_are_count_only_and_allowlisted(self):
+        diagnostics = WORKER.failure_diagnostics(
+            WORKER.PreGenerationGateError(
+                "missing_first_affirmative_defense_page",
+                metrics={
+                    "mandatory_page_count": 48,
+                    "missing_mandatory_page_count": 3,
+                    "selected_page_count": 45,
+                    "private_filename": "Answer.pdf",
+                    "candidate_section_count": True,
+                },
+            ),
+            "evidence_retrieval",
+        )
+        self.assertEqual(
+            diagnostics["gate_metrics"],
+            {
+                "mandatory_page_count": 48,
+                "missing_mandatory_page_count": 3,
+                "selected_page_count": 45,
+            },
+        )
+
     def test_scan_worker_status_preserves_request_failure_diagnostics(self):
         case_id = "NY-NewYork-158068-2018-Szymczyk-v-Hudson-36-37"
         request_id = "draft-3-cccccccccccc"
@@ -737,8 +925,7 @@ class PendingQueueTests(unittest.TestCase):
              mock.patch.object(WORKER, "run_request", side_effect=failure), \
              mock.patch.object(WORKER, "write_worker_status", side_effect=lambda *args, **kwargs: statuses.append((args, kwargs))), \
              mock.patch.object(WORKER.sys, "argv", ["worker", "--scan-pending"]):
-            with self.assertRaisesRegex(RuntimeError, "private"):
-                WORKER.main()
+            WORKER.main()
         _, failed = statuses[-1]
         self.assertEqual(failed["failure_code"], "persistence_error")
         self.assertEqual(failed["failure_stage"], "audit_write")
@@ -828,6 +1015,9 @@ class RecordWidePleadingCoverageTests(unittest.TestCase):
             "Identify the plaintiffs claims against Hudson 36 LLC and Hudson 37 LLC; "
             "cite the operative complaint and answer pages."
         ))
+        self.assertIsNotNone(WORKER.MAIN_ACTION_ONLY_QUESTION_RE.search(
+            "Identify the plaintiffs' claims against Calvagno and Karcher."
+        ))
 
     def test_main_action_excludes_nyscef_abbreviated_related_pleadings(self):
         class ProductionNamesS3(FakeS3):
@@ -856,6 +1046,93 @@ class RecordWidePleadingCoverageTests(unittest.TestCase):
         self.assertFalse(any("THIRD_PAR" in filename for filename in selected))
         self.assertFalse(any("CROSS_C" in filename for filename in selected))
         self.assertFalse(any("BILL_OF_PARTICULARS" in filename for filename in selected))
+
+    def test_main_action_excludes_derivative_answer_exhibits_before_defense_gate(self):
+        class DerivativeAnswerCopiesS3(FakeS3):
+            pages = [
+                {
+                    "filename": "SUMMONS___COMPLAINT_1.pdf",
+                    "page_number": 1,
+                    "text": (
+                        "Thomas DeSousa, plaintiff, against Joseph Calvagno II "
+                        "and Patrick Karcher, defendants."
+                    ),
+                },
+                {
+                    "filename": "ANSWER_2.pdf",
+                    "page_number": 1,
+                    "text": "Joseph Calvagno II answers the verified complaint.",
+                },
+                {
+                    "filename": "ANSWER_2.pdf",
+                    "page_number": 3,
+                    "text": "AS FOR A FIRST AFFIRMATIVE DEFENSE.",
+                },
+            ] + [
+                {
+                    "filename": f"EXHIBIT_{index}_ANSWER_COPY.pdf",
+                    "page_number": 2,
+                    "text": (
+                        "AS FOR A FIRST AFFIRMATIVE DEFENSE parties claims "
+                        "defenses relief."
+                    ),
+                }
+                for index in range(WORKER.MAX_PAGES + 1)
+            ]
+
+        pages = WORKER.evidence(
+            DerivativeAnswerCopiesS3(),
+            "NY-Suffolk-600371-2021-DeSousa-v-Calvagno-II-Karcher",
+            (
+                "Identify the plaintiffs' claims against Joseph Calvagno II "
+                "and Patrick Karcher, the requested relief, and defenses."
+            ),
+        )
+        selected = {(page["filename"], page["page_number"]) for page in pages}
+        self.assertIn(("ANSWER_2.pdf", 3), selected)
+        self.assertFalse(any(filename.startswith("EXHIBIT_") for filename, _ in selected))
+
+    def test_main_action_deduplicates_identical_answers_across_source_sets(self):
+        answer_pages = [
+            (1, "Joseph Calvagno II answers the verified complaint."),
+            (3, "AS FOR A FIRST AFFIRMATIVE DEFENSE."),
+        ]
+
+        class DuplicateSourceAnswersS3(FakeS3):
+            pages = [
+                {
+                    "filename": "SUMMONS___COMPLAINT_1.pdf",
+                    "page_number": 1,
+                    "text": (
+                        "Thomas DeSousa, plaintiff, against Joseph Calvagno II "
+                        "and Patrick Karcher, defendants."
+                    ),
+                },
+            ] + [
+                {
+                    "source_sha256": f"{index:064x}",
+                    "filename": f"ANSWER_COPY_{index}.pdf",
+                    "page_number": page,
+                    "text": text,
+                }
+                for index in range(WORKER.MAX_PAGES + 1)
+                for page, text in answer_pages
+            ]
+
+        pages = WORKER.evidence(
+            DuplicateSourceAnswersS3(),
+            "NY-Suffolk-600371-2021-DeSousa-v-Calvagno-II-Karcher",
+            (
+                "Identify the plaintiffs' claims against Joseph Calvagno II "
+                "and Patrick Karcher, the requested relief, and defenses."
+            ),
+        )
+        selected_answers = {
+            (page["source_sha256"], page["filename"])
+            for page in pages
+            if "ANSWER_COPY" in page["filename"]
+        }
+        self.assertEqual(len(selected_answers), 1)
 
 
     def test_counterclaim_crossclaim_question_excludes_main_and_third_party_layers(self):
@@ -890,6 +1167,74 @@ class RecordWidePleadingCoverageTests(unittest.TestCase):
         self.assertNotIn("SUMMONS___COMPLAINT_1.pdf", selected)
         self.assertNotIn("ANSWER_3.pdf", selected)
         self.assertNotIn("ANSWER_TO_THIRD_PAR_10.pdf", selected)
+
+    def test_counterclaim_slice_keeps_caption_all_claims_and_prayer(self):
+        class MultiClaimCounterS3(FakeS3):
+            pages = [
+                {"filename": "ANSWER_WITH_COUNTER_4.pdf", "page_number": 1,
+                 "text": "SUPREME COURT. Richard Roe, defendant and counterclaimant, against Pat Doe."},
+                {"filename": "ANSWER_WITH_COUNTER_4.pdf", "page_number": 2,
+                 "text": "FIRST COUNTERCLAIM. Malicious prosecution."},
+                {"filename": "ANSWER_WITH_COUNTER_4.pdf", "page_number": 3,
+                 "text": "SECOND COUNTERCLAIM. Private nuisance."},
+                {"filename": "ANSWER_WITH_COUNTER_4.pdf", "page_number": 4,
+                 "text": "THIRD COUNTERCLAIM. Harassment."},
+                {"filename": "ANSWER_WITH_COUNTER_4.pdf", "page_number": 5,
+                 "text": "FOURTH COUNTERCLAIM. Menacing."},
+                {"filename": "ANSWER_WITH_COUNTER_4.pdf", "page_number": 6,
+                 "text": "FIFTH CAUSE OF ACTION. Intentional infliction of emotional distress."},
+                {"filename": "ANSWER_WITH_COUNTER_4.pdf", "page_number": 7,
+                 "text": "WHEREFORE counterclaimant demands judgment and punitive damages."},
+                {"filename": "COMPLAINT_2.pdf", "page_number": 1,
+                 "text": "Plaintiff alleges an unrelated main-action claim."},
+            ]
+
+        pages = WORKER.evidence(
+            MultiClaimCounterS3(),
+            "NY-Suffolk-600371-2021-DeSousa-v-Calvagno-II-Karcher",
+            "Separately validate only the counterclaim and cross-claim layer, including parties, claims, defenses, and relief.",
+        )
+
+        self.assertEqual(
+            set(range(1, 8)),
+            {
+                page["page_number"]
+                for page in pages
+                if page["filename"] == "ANSWER_WITH_COUNTER_4.pdf"
+            },
+        )
+        self.assertNotIn("COMPLAINT_2.pdf", {page["filename"] for page in pages})
+
+    def test_main_action_slice_keeps_multi_page_prayer_continuation(self):
+        class MultiPagePrayerS3(FakeS3):
+            pages = [
+                {"filename": "COMPLAINT_2.pdf", "page_number": 1,
+                 "text": "SUPREME COURT. Plaintiffs against defendants."},
+                {"filename": "COMPLAINT_2.pdf", "page_number": 2,
+                 "text": "FIRST CAUSE OF ACTION. Private nuisance."},
+                {"filename": "COMPLAINT_2.pdf", "page_number": 3,
+                 "text": "Supporting allegations."},
+                {"filename": "COMPLAINT_2.pdf", "page_number": 4,
+                 "text": "WHEREFORE plaintiffs demand declaratory judgment."},
+                {"filename": "COMPLAINT_2.pdf", "page_number": 5,
+                 "text": "A. An injunction abating the condition."},
+                {"filename": "COMPLAINT_2.pdf", "page_number": 6,
+                 "text": "B. Compensatory and punitive monetary recovery."},
+                {"filename": "COMPLAINT_2.pdf", "page_number": 7,
+                 "text": "C. Such other and further relief as the Court deems just."},
+            ]
+
+        pages = WORKER.evidence(
+            MultiPagePrayerS3(),
+            "NY-Suffolk-600371-2021-DeSousa-v-Calvagno-II-Karcher",
+            WORKER.RETRIEVAL_VALIDATION_PROFILES["main-action"],
+        )
+
+        selected = {
+            page["page_number"] for page in pages
+            if page["filename"] == "COMPLAINT_2.pdf"
+        }
+        self.assertTrue({4, 5, 6, 7}.issubset(selected))
 
     def test_party_specific_every_counterclaim_question_uses_crossclaim_slice(self):
         class PartySpecificCrossClaimS3(FakeS3):
@@ -1099,6 +1444,25 @@ class SzymczykFilenameCoverageTests(unittest.TestCase):
             [action["ordinal"] for action in pages.coverage["third_party_actions"]],
             ["first", "second", "third", "fourth"],
         )
+
+    def test_consolidated_map_fails_closed_on_unanswered_third_party_action(self):
+        class UnansweredActionS3(FakeS3):
+            pages = [
+                {"filename": "COMPLAINT_1.pdf", "page_number": 1,
+                 "text": "Plaintiff against Defendant for negligence."},
+                {"filename": "THIRD_PARTY_SUMMONS_5.pdf", "page_number": 1,
+                 "text": "Third-party complaint. Alpha against Able."},
+            ]
+
+        with self.assertRaisesRegex(
+            WORKER.PreGenerationGateError,
+            "unresolved_third_party_action",
+        ):
+            WORKER.evidence(
+                UnansweredActionS3(),
+                "NY-NewYork-158068-2018-Szymczyk-v-Hudson-36-37",
+                WORKER.RETRIEVAL_VALIDATION_PROFILES["consolidated"],
+            )
 
     def test_third_party_layer_groups_same_ordinal_complaint_filings(self):
         class SplitComplaintS3(FakeS3):
@@ -1488,6 +1852,82 @@ class SzymczykFilenameCoverageTests(unittest.TestCase):
             {(page["filename"], page["page_number"]) for page in pages},
         )
 
+    def test_first_defense_precedes_claim_and_relief_within_answer_page_limit(self):
+        class AnswerPagePriorityS3(FakeS3):
+            pages = [
+                {
+                    "filename": "ANSWER_2.pdf",
+                    "page_number": 1,
+                    "text": "Defendant answers the verified complaint.",
+                },
+                {
+                    "filename": "ANSWER_2.pdf",
+                    "page_number": 2,
+                    "text": "FIRST CAUSE OF ACTION.",
+                },
+                {
+                    "filename": "ANSWER_2.pdf",
+                    "page_number": 3,
+                    "text": "WHEREFORE defendant requests dismissal.",
+                },
+                {
+                    "filename": "ANSWER_2.pdf",
+                    "page_number": 4,
+                    "text": "AS FOR A FIRST AFFIRMATIVE DEFENSE.",
+                },
+            ]
+
+        pages = WORKER.evidence(
+            AnswerPagePriorityS3(),
+            "NY-Suffolk-600371-2021-DeSousa-v-Calvagno-II-Karcher",
+            "Identify the plaintiffs' claims against defendants, relief, and defenses.",
+        )
+        selected = {
+            (page["filename"], page["page_number"])
+            for page in pages
+        }
+        self.assertIn(("ANSWER_2.pdf", 4), selected)
+
+    def test_procedural_posture_question_reserves_death_substitution_order(self):
+        filler = "claims defenses relief summary judgment"
+
+        class ProceduralOrderS3(FakeS3):
+            pages = [
+                {
+                    "filename": "COMPLAINT_1.pdf",
+                    "page_number": 1,
+                    "text": "Plaintiffs against defendants for private nuisance.",
+                },
+                {
+                    "filename": "ORDER_151.pdf",
+                    "page_number": 3,
+                    "text": (
+                        "Motion denied due to death of Thomas DeSousa; "
+                        "substitution pending and jurisdiction stayed."
+                    ),
+                },
+            ] + [
+                {
+                    "filename": f"CORRESPONDENCE_{index}.pdf",
+                    "page_number": 1,
+                    "text": filler,
+                }
+                for index in range(WORKER.MAX_PAGES + 5)
+            ]
+
+        pages = WORKER.evidence(
+            ProceduralOrderS3(),
+            "NY-Suffolk-600371-2021-DeSousa-v-Calvagno-II-Karcher",
+            (
+                "Identify the plaintiffs' claims against defendants and the "
+                "effect of death, substitution, and jurisdiction on summary judgment."
+            ),
+        )
+        self.assertIn(
+            ("ORDER_151.pdf", 3),
+            {(page["filename"], page["page_number"]) for page in pages},
+        )
+
     def test_pre_generation_gate_blocks_when_required_defense_pages_exceed_budget(self):
         class TooManyDefenseSectionsS3(FakeS3):
             pages = [
@@ -1502,6 +1942,286 @@ class SzymczykFilenameCoverageTests(unittest.TestCase):
                 "NY-Suffolk-600371-2021-DeSousa-v-Calvagno-II-Karcher",
                 "What are the parties, claims, defenses, and requested relief in the verified record?",
             )
+
+
+class StrategicAnalysisRetrievalTests(unittest.TestCase):
+    QUESTION = "What elements or issues are weakest for Defendants?"
+
+    def test_generic_weakness_question_selects_full_case_theory_categories(self):
+        class StrategicS3(FakeS3):
+            pages = [
+                {
+                    "filename": "Complaint.pdf",
+                    "page_number": 1,
+                    "text": "Plaintiff alleges interference and seeks equitable relief.",
+                },
+                {
+                    "filename": "Plaintiff Expert Affidavit.pdf",
+                    "page_number": 7,
+                    "text": "Licensed professional engineer expert opinion based on the site plan.",
+                },
+                {
+                    "filename": "Survey.pdf",
+                    "page_number": 3,
+                    "text": "The waterfront boundary measures 120 feet and the setback is 50 feet.",
+                },
+                {
+                    "filename": "Plaintiff Memorandum.pdf",
+                    "page_number": 12,
+                    "text": "Plaintiff argues that the DEC regulation and riparian navigation rule require equitable access.",
+                },
+                {
+                    "filename": "Defendant Brief.pdf",
+                    "page_number": 9,
+                    "text": "Defendant contends that its permit supersedes plaintiff's claimed access right.",
+                },
+            ]
+
+        pages = WORKER.evidence(
+            StrategicS3(),
+            "NY-Suffolk-600371-2021-DeSousa-v-Calvagno-II-Karcher",
+            self.QUESTION,
+        )
+        selected = {(page["filename"], page["page_number"]) for page in pages}
+        for expected in (
+            ("Plaintiff Expert Affidavit.pdf", 7),
+            ("Survey.pdf", 3),
+            ("Plaintiff Memorandum.pdf", 12),
+            ("Defendant Brief.pdf", 9),
+        ):
+            self.assertIn(expected, selected)
+
+    def test_expert_document_pages_are_expanded_and_balanced(self):
+        class ExpertDocumentsS3(FakeS3):
+            pages = [
+                {
+                    "filename": "Plaintiff Affidavit.pdf",
+                    "page_number": page,
+                    "text": (
+                        "Retained professional engineer gives an expert opinion."
+                        if page == 1
+                        else f"Plaintiff calculation detail page {page}."
+                    ),
+                }
+                for page in range(1, 11)
+            ] + [
+                {
+                    "filename": "Defendant Affidavit.pdf",
+                    "page_number": page,
+                    "text": (
+                        "Licensed surveyor gives an expert opinion."
+                        if page == 1
+                        else f"Defendant calculation detail page {page}."
+                    ),
+                }
+                for page in range(1, 11)
+            ]
+
+        pages = WORKER.evidence(
+            ExpertDocumentsS3(),
+            "NY-Suffolk-600371-2021-DeSousa-v-Calvagno-II-Karcher",
+            self.QUESTION,
+        )
+        by_document = {}
+        for page in pages:
+            by_document.setdefault(page["filename"], set()).add(page["page_number"])
+        self.assertGreaterEqual(len(by_document["Plaintiff Affidavit.pdf"]), 6)
+        self.assertGreaterEqual(len(by_document["Defendant Affidavit.pdf"]), 6)
+        self.assertIn(6, by_document["Plaintiff Affidavit.pdf"])
+        self.assertIn(6, by_document["Defendant Affidavit.pdf"])
+
+    def test_strategic_prompt_requires_direct_balanced_assessment(self):
+        page = {
+            "source_sha256": "a" * 64,
+            "filename": "Expert Affidavit.pdf",
+            "page_number": 7,
+            "text": "The expert gives an opinion about the disputed condition.",
+        }
+        result = {
+            "summary": "The verified record identifies a material weakness.",
+            "findings": [{
+                "section": "Assessment",
+                "statement": "The expert opinion supports plaintiff, while defendants retain a factual counterargument.",
+                "citations": [{key: page[key] for key in ("source_sha256", "filename", "page_number")}],
+                "authority_citations": [],
+            }],
+            "missing_information": [],
+            "limitations": [],
+        }
+        response = mock.MagicMock()
+        response.read.return_value = json.dumps({
+            "output": [{"content": [{"text": json.dumps(result)}]}]
+        }).encode()
+        response.__enter__.return_value = response
+        with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}), mock.patch.object(WORKER.urllib.request, "urlopen", return_value=response) as urlopen:
+            WORKER.generate(self.QUESTION, [page])
+
+        payload = json.loads(urlopen.call_args.args[0].data.decode())
+        prompt = json.loads(payload["input"])
+        schema = payload["text"]["format"]["schema"]
+        self.assertIn("Give a direct attorney answer, not a source list", prompt["instructions"])
+        self.assertIn("extract the concrete opinions", prompt["instructions"])
+        self.assertIn("Compare the parties' best arguments point by point", prompt["instructions"])
+        self.assertIn("give the strongest counterargument", prompt["instructions"])
+        self.assertEqual(
+            schema["properties"]["findings"]["items"]["properties"]["section"]["enum"],
+            list(WORKER.STRATEGIC_ANALYSIS_SECTIONS),
+        )
+
+    def test_strategic_validation_requires_ordered_assessment(self):
+        page = {
+            "source_sha256": "a" * 64,
+            "filename": "Expert Affidavit.pdf",
+            "page_number": 7,
+            "text": "Expert opinion.",
+        }
+        cite = {key: page[key] for key in ("source_sha256", "filename", "page_number")}
+
+        def result(sections):
+            return {
+                "summary": "The record supports a qualified assessment.",
+                "findings": [{
+                    "section": section,
+                    "statement": "The cited evidence supports this part of the assessment.",
+                    "citations": [cite],
+                    "authority_citations": [],
+                } for section in sections],
+                "missing_information": [],
+                "limitations": [],
+            }
+
+        valid = result(list(WORKER.STRATEGIC_ANALYSIS_SECTIONS))
+        self.assertIs(
+            WORKER.validate(valid, [page], question=self.QUESTION), valid
+        )
+        repeated = result([
+            "Case framework",
+            "Evidence",
+            "Evidence",
+            "Competing positions",
+            "Assessment",
+            "Assessment",
+        ])
+        self.assertIs(
+            WORKER.validate(repeated, [page], question=self.QUESTION), repeated
+        )
+        with self.assertRaisesRegex(ValueError, "invalid strategic-analysis sections"):
+            WORKER.validate(
+                result(["Assessment", "Evidence"]),
+                [page],
+                question=self.QUESTION,
+            )
+        with self.assertRaisesRegex(ValueError, "invalid strategic-analysis sections"):
+            WORKER.validate(
+                result(["Case framework", "Evidence", "Assessment"]),
+                [page],
+                question=self.QUESTION,
+            )
+
+    def test_strategic_prompt_integrates_existing_reasoning_engines_and_source_types(self):
+        page = {
+            "source_sha256": "a" * 64,
+            "filename": "Defendant Expert Report.pdf",
+            "page_number": 4,
+            "text": "Professional engineer offers an expert opinion based on design experience and cites a DEC permit.",
+        }
+        result = {
+            "summary": "The expert opinion is evidence rather than governing law.",
+            "findings": [{
+                "section": section,
+                "statement": "The cited record supports this qualified part of the assessment.",
+                "citations": [{key: page[key] for key in ("source_sha256", "filename", "page_number")}],
+                "authority_citations": [],
+            } for section in WORKER.STRATEGIC_ANALYSIS_SECTIONS],
+            "missing_information": [],
+            "limitations": [],
+        }
+        response = mock.MagicMock()
+        response.read.return_value = json.dumps({
+            "output": [{"content": [{"text": json.dumps(result)}]}]
+        }).encode()
+        response.__enter__.return_value = response
+        with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}), mock.patch.object(WORKER.urllib.request, "urlopen", return_value=response) as urlopen:
+            WORKER.generate(self.QUESTION, [page])
+
+        prompt = json.loads(json.loads(urlopen.call_args.args[0].data.decode())["input"])
+        context = prompt["litigation_reasoning_context"]
+        self.assertEqual(context["question_mode"], "strategic_analysis")
+        self.assertEqual(context["page_classifications"][0]["source_type"], "expert_opinion")
+        self.assertEqual(context["page_classifications"][0]["legal_status"], "record_evidence_not_law")
+        self.assertEqual(context["page_classifications"][0]["expert_qualification_scope"], "design_or_technical")
+        self.assertIn("issue_engine", context)
+        self.assertIn("contradiction_engine", context)
+
+    def test_motion_recommendation_has_dedicated_contract(self):
+        question = "I need to make a motion. Which motions should I consider?"
+        page = {
+            "source_sha256": "a" * 64,
+            "filename": "Decision and Order.pdf",
+            "page_number": 2,
+            "text": "The court ordered that discovery continue before dispositive motion practice.",
+        }
+        result = {
+            "summary": "The present record supports a qualified motion recommendation.",
+            "findings": [{
+                "section": section,
+                "statement": "The cited order controls this part of the recommendation.",
+                "citations": [{key: page[key] for key in ("source_sha256", "filename", "page_number")}],
+                "authority_citations": [],
+            } for section in WORKER.MOTION_RECOMMENDATION_SECTIONS],
+            "missing_information": [],
+            "limitations": [],
+        }
+        response = mock.MagicMock()
+        response.read.return_value = json.dumps({
+            "output": [{"content": [{"text": json.dumps(result)}]}]
+        }).encode()
+        response.__enter__.return_value = response
+        with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}), mock.patch.object(WORKER.urllib.request, "urlopen", return_value=response) as urlopen:
+            generated = WORKER.generate(question, [page])
+        payload = json.loads(urlopen.call_args.args[0].data.decode())
+        prompt = json.loads(payload["input"])
+        sections = payload["text"]["format"]["schema"]["properties"]["findings"]["items"]["properties"]["section"]["enum"]
+        self.assertEqual(prompt["litigation_reasoning_context"]["question_mode"], "motion_recommendation")
+        self.assertIn("which motions to consider", prompt["instructions"])
+        self.assertEqual(sections, list(WORKER.MOTION_RECOMMENDATION_SECTIONS))
+        self.assertIs(WORKER.validate(generated, [page], question=question), generated)
+
+    def test_motion_response_has_dedicated_contract(self):
+        question = "My opponent filed this motion. How should I answer it?"
+        page = {
+            "source_sha256": "b" * 64,
+            "filename": "Notice of Motion.pdf",
+            "page_number": 1,
+            "text": "Defendant moves for the relief stated in the accompanying papers.",
+        }
+        result = {
+            "summary": "The response should address the verified motion and preserve record-supported procedural objections.",
+            "findings": [{
+                "section": section,
+                "statement": "The cited motion supports this part of the response analysis.",
+                "citations": [{key: page[key] for key in ("source_sha256", "filename", "page_number")}],
+                "authority_citations": [],
+            } for section in WORKER.MOTION_RESPONSE_SECTIONS],
+            "missing_information": [],
+            "limitations": [],
+        }
+        response = mock.MagicMock()
+        response.read.return_value = json.dumps({
+            "output": [{"content": [{"text": json.dumps(result)}]}]
+        }).encode()
+        response.__enter__.return_value = response
+        with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}), mock.patch.object(WORKER.urllib.request, "urlopen", return_value=response) as urlopen:
+            generated = WORKER.generate(question, [page])
+
+        payload = json.loads(urlopen.call_args.args[0].data.decode())
+        prompt = json.loads(payload["input"])
+        sections = payload["text"]["format"]["schema"]["properties"]["findings"]["items"]["properties"]["section"]["enum"]
+        self.assertEqual(WORKER.question_mode(question), "motion_response")
+        self.assertEqual(prompt["litigation_reasoning_context"]["question_mode"], "motion_response")
+        self.assertIn("how to answer an opponent's motion", prompt["instructions"])
+        self.assertEqual(sections, list(WORKER.MOTION_RESPONSE_SECTIONS))
+        self.assertIs(WORKER.validate(generated, [page], question=question), generated)
 
 
 class AttackSurfaceRetrievalTests(unittest.TestCase):

@@ -47,6 +47,26 @@ When a task reaches DONE or BLOCKED after retries, or when status is requested, 
 
 Above all: never confuse intention with execution, and never report RUNNING or DONE without proof.
 
+## Fresh Workspace Preflight
+
+Run this preflight before repository tests, GitHub writes, or Railway operations
+in every fresh or potentially pruned workspace:
+
+1. Run `python scripts/bootstrap_workspace.py` before the first Python test.
+   Do not wait for an import failure to discover missing declared dependencies.
+2. Inspect the available GitHub write path before publishing. When the workspace
+   has no confirmed Git credentials, use the already-authorized GitHub connector
+   first; do not attempt an unauthenticated HTTPS push as a probe.
+3. Read the live connector schema before the first call to each external tool in
+   the session. Preserve parameter names exactly, including camel case such as
+   Railway's `projectId`, `serviceId`, and `environmentId`; never infer them
+   from another connector's conventions.
+4. Treat preflight failures as setup defects. Fix the setup once and update this
+   preflight when the failure is likely to recur.
+
+This preflight is mandatory but does not change authorization, retry, cost, or
+deployment-verification requirements.
+
 ## Execution Integrity Compliance Rule
 
 All future LegalAI execution and status reporting must comply with the LegalAI Execution Integrity Policy above. Before reporting RUNNING or DONE, confirm that the required evidence exists in the current tool or system state. If the evidence requirement is not satisfied, report NOT STARTED or BLOCKED as appropriate. Any retry must comply with the defined retry limits and audit-trail requirements. DONE is prohibited until the requested outcome has been successfully completed and independently verified.
