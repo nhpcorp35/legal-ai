@@ -16,6 +16,12 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from engines.verified_authority_registry import match_verified_authorities
+from engines.litigation_reasoning import (
+    MOTION_RECOMMENDATION_RE,
+    MOTION_RESPONSE_RE,
+    build_reasoning_context,
+    question_mode,
+)
 
 MAX_PAGES, MAX_PAGE_CHARS, MAX_CONTEXT_CHARS = 45, 2200, 75000
 CONSOLIDATED_MAX_PAGES, CONSOLIDATED_MAX_CONTEXT_CHARS = 80, 130000
@@ -138,7 +144,10 @@ STRATEGIC_ANALYSIS_QUESTION_RE = re.compile(
     r"vulnerabilit(?:y|ies)|likely\s+to\s+(?:win|lose)|"
     r"which\s+(?:side|argument|position)|compare\s+(?:the\s+)?"
     r"(?:parties|positions|arguments)|evaluate|assessment|"
-    r"summary[ -]?judgment\s+prospects?|attack\s+surfaces?)\b",
+    r"summary[ -]?judgment\s+prospects?|attack\s+surfaces?|"
+    r"motions?\s+(?:should|could|can)\s+(?:i|we|counsel)|"
+    r"motions?\s+(?:to\s+)?consider|answer\s+(?:the\s+)?motion|"
+    r"oppose\s+(?:the\s+)?motion|respond\s+to\s+(?:the\s+)?motion)\b",
     re.IGNORECASE,
 )
 STRATEGIC_SOURCE_FILENAME_RE = re.compile(
@@ -1928,6 +1937,22 @@ STRATEGIC_ANALYSIS_SECTIONS = (
     "Competing positions",
     "Assessment",
 )
+MOTION_RECOMMENDATION_SECTIONS = (
+    "Objective and posture",
+    "Candidate motions",
+    "Record support",
+    "Likely opposition",
+    "Gaps and prerequisites",
+    "Recommendation",
+)
+MOTION_RESPONSE_SECTIONS = (
+    "Motion and burden",
+    "Opponent showing",
+    "Response grounds",
+    "Evidence to submit",
+    "Procedural objections",
+    "Recommendation",
+)
 LITIGATION_MAP_SECTIONS = (
     "Main case",
     "Counterclaims and cross-claims",
@@ -1998,7 +2023,7 @@ def litigation_map_question(question: str) -> bool:
     return bool(LITIGATION_MAP_QUESTION_RE.search(question)) or len(BROAD_RECORD_TERMS.intersection(terms)) >= 2
 
 
-def finding_schema(page_citation_properties, *, attorney_sections=False, litigation_map=False, strategic_analysis=False, max_findings=8, statement_max_length=900):
+def finding_schema(page_citation_properties, *, attorney_sections=False, litigation_map=False, strategic_analysis=False, reasoning_mode="strategic_analysis", max_findings=8, statement_max_length=900):
     """Build the strict source-aware finding schema for either worker."""
     page_required = list(page_citation_properties)
     citation_schema = {
@@ -2017,7 +2042,11 @@ def finding_schema(page_citation_properties, *, attorney_sections=False, litigat
     finding_properties = {"statement":{"type":"string","maxLength":statement_max_length},"citations":citation_schema,"authority_citations":{"type":"array","items":{"type":"string"}}}
     finding_required = ["statement", "citations", "authority_citations"]
     sections = (
-        STRATEGIC_ANALYSIS_SECTIONS
+        MOTION_RECOMMENDATION_SECTIONS
+        if strategic_analysis and reasoning_mode == "motion_recommendation"
+        else MOTION_RESPONSE_SECTIONS
+        if strategic_analysis and reasoning_mode == "motion_response"
+        else STRATEGIC_ANALYSIS_SECTIONS
         if strategic_analysis
         else ATTORNEY_ANSWER_SECTIONS
         if attorney_sections
@@ -2033,21 +2062,36 @@ def finding_schema(page_citation_properties, *, attorney_sections=False, litigat
 
 def generate(question, pages, coverage=None, authorities=None):
     authorities = tuple(match_verified_authorities(question) if authorities is None else authorities)
-    strategic_question = bool(STRATEGIC_ANALYSIS_QUESTION_RE.search(question)) and not litigation_map_question(question) and TOP_ATTACK_SURFACES_MARKER not in question.casefold()
+    detected_reasoning_mode = question_mode(question)
+    strategic_question = (
+        bool(STRATEGIC_ANALYSIS_QUESTION_RE.search(question))
+        or detected_reasoning_mode != "strategic_analysis"
+    ) and not litigation_map_question(question) and TOP_ATTACK_SURFACES_MARKER not in question.casefold()
     map_question = litigation_map_question(question) and not authorities and not strategic_question and TOP_ATTACK_SURFACES_MARKER not in question.casefold()
     third_party_action_count = len((coverage or {}).get("third_party_actions", []))
-    schema=finding_schema({"source_sha256":{"type":"string"},"filename":{"type":"string"},"page_number":{"type":"integer","minimum":1}}, attorney_sections=bool(authorities) and not strategic_question, litigation_map=map_question, strategic_analysis=strategic_question, max_findings=len(LITIGATION_MAP_SECTIONS) if map_question else 8, statement_max_length=2400 if third_party_action_count > 1 else 1200 if strategic_question else 900)
+    reasoning_mode = detected_reasoning_mode if strategic_question else ""
+    reasoning_context = build_reasoning_context(question, pages) if strategic_question else None
+    schema=finding_schema({"source_sha256":{"type":"string"},"filename":{"type":"string"},"page_number":{"type":"integer","minimum":1}}, attorney_sections=bool(authorities) and not strategic_question, litigation_map=map_question, strategic_analysis=strategic_question, reasoning_mode=reasoning_mode, max_findings=len(LITIGATION_MAP_SECTIONS) if map_question else 8, statement_max_length=2400 if third_party_action_count > 1 else 1200 if strategic_question else 900)
     instructions = "Use only the supplied verified excerpts and legal authorities. This is an internal attorney-review draft, not legal advice or a conclusion. Make no unsupported inference. Case-record facts cite only page citations in citations; legal rules cite only authority ids in authority_citations; application findings should cite both where appropriate. Do not overstate court level, controlling effect, or proposition scope. Every finding must have at least one verified source across those two arrays. Before stating that information is missing or calling something an open question, check the entire supplied record-wide excerpt set, including caption pages and operative pages from related pleadings. Never call a page range missing merely because it was not selected into the bounded retrieval slice; describe the bounded retrieval limitation instead. Use the filing map only as a navigation aid; verify every proposition against its cited pages. Treat pleaded alternatives, denials, and defenses as attributed litigation positions, not established facts or contradictions. For a question about parties, claims, defenses, or relief, return a compact litigation map, not a memo; it must be attorney-readable. The summary must be one sentence of no more than 28 words and may name only claim categories, counterclaim categories, and categories of missing material; do not include party roles, ownership, control, or other factual positions. Return at most one finding for each populated heading, in this exact order: (1) Main case; (2) counterclaims and cross-claims; (3) third-party claims. Put the exact heading in the section field. Each finding must use this one-line shape: '[expressly named parties and short roles]: [claim labels]; defenses: [short labels]; relief: [short label].' Use labels only (for example, breach, lien foreclosure, negligence, statute of limitations, payment); do not explain allegations, evidence, legal standards, or why a position may succeed. In the claims field, list only an expressly asserted cause-of-action label; do not place a plaintiff-side ownership position, party-role statement, necessary-party label, or other non-claim there. In the defenses field, list only a defense attributed to the responding party; do not place a plaintiff-side allegation, ownership position, necessary-party label, or other non-defense there. List no more than three material defense labels for each party. Collapse any additional routine defenses into the single label 'affirmative defenses'; do not enumerate waiver, estoppel, laches, unclean hands, comparative fault, or similar boilerplate separately unless one is the only material defense expressly identified in the supplied record. Omit an empty heading rather than narrating that it is empty. List only the parties named in the caption or operative pleading. Do not invent, infer, or call out an unnamed party from a missing or partial caption. List a John Doe, XYZ entity, or other placeholder only if a supplied verified pleading expressly names it. If a supplied order shows that a motion was disposed of because a party died and substitution is pending, label it a procedural disposition, not a merits decision; state only the procedural consequence shown by that order. Do not use dense narrative. End every summary, finding, missing-information item, and limitation with a complete sentence; never truncate text to fill a schema limit. End the Counterclaims and cross-claims finding with its relief label and a period, never with a quotation mark, dash, colon, semicolon, or conjunction. When supplied pages contain both an ownership assertion and a party's nonresidence or no-control statement, present both as attributed, competing record positions with citations; do not omit either or treat either as conclusively established. Do not portray a pleading typo or general denial as case-dispositive unless a supplied court ruling makes it so. Identify missing information only when it remains unsupported after that record-wide check."
     if TOP_ATTACK_SURFACES_MARKER in question.casefold():
         instructions += " For the v4.0 Top Attack Surfaces Report, do not prepend or return a claims-map summary. If a supplied order shows a motion was disposed of because a party died and substitution is pending, identify it as a procedural disposition, not a merits decision, and state only the procedural consequence shown by that order."
         instructions += " For the v4.0 Top Attack Surfaces Report, prioritize identified pleadings, orders, sworn testimony, and party-specific exhibits over generic contract excerpts. Use a generic contract provision only where it directly conflicts with, limits, or corroborates a party-identified filing or evidence in the supplied pages. Return no more than eight findings ordered from highest to lower materiality; return fewer when fewer qualify. Start every finding with 'Rank N — [Contradiction / Credibility / Procedural weakness] —'. For every finding, use this attorney-readable sequence in the statement: (1) identify the affected party or litigation position only when expressly named in the supplied pages; (2) state the specific record proposition on each side of the tension, including the source type or filing where useful; (3) explain why the two propositions create the asserted vulnerability; and (4) state any material limit. Never use a broad label such as 'causation record' or 'notice challenge' without the particular propositions that support it. A contradiction must cite each of the two conflicting verified propositions. A credibility vulnerability must identify the person or party and the concrete inconsistency, omission, or conflict; if the record does not identify one, do not call it a credibility issue. A procedural weakness must identify the party position, pleading, order, burden, remedy, notice, timing, preservation, or posture actually shown. Do not rank a defense merely because its factual proof, operative pleading, policy, or other supporting material is absent from the supplied excerpts. It qualifies only when the supplied pages show an affirmative mismatch with a contract, order, testimony, or other identified evidence, or when a court actually addressed the position. Do not invent a weakness from silence, characterize advocacy as fact, or convert alternative pleading or a denial into a contradiction. A pleading may establish procedural posture only. Do not make a factual or credibility finding from an attorney affirmation, counsel statement, service affidavit, or a party’s characterization of an absent exhibit, deposition, report, or other evidence. When the underlying first-hand material is not among the supplied pages, identify that limitation and omit the finding rather than treating advocacy as proof."
     elif strategic_question:
-        instructions += " For this strategic-analysis question, the following instructions override the earlier compact litigation-map format. Give a direct attorney answer, not a source list. Use all four sections in this order: Case framework; Evidence; Competing positions; Assessment. Each section must appear at least once; multiple findings within a section are allowed but sections must never move backward. First identify who is who and the material property, transaction, event, or physical layout. Then extract the concrete opinions and factual premises from each expert or fact witness, including measurements and regulatory constraints. Compare the parties' best arguments point by point, identifying the evidence and law each side cites. A case, statute, or regulation appearing only inside a filing is an attributed party position, not independently verified law; describe it that way and cite the filing page. State a governing legal rule as verified law only when its authority id is supplied in legal_authorities. Rank the material weaknesses or strengths, explain why each affects the requested party, give the strongest counterargument, and state the unresolved fact or authority that could change the assessment. Do not merely say that interference, breach, causation, or another element is shown; explain the specific evidence and competing position. The summary must answer the question directly in no more than 90 words. Return no more than eight findings and avoid repeating the same fact in multiple sections."
+        instructions += " For this strategic-analysis question, the following instructions override the earlier compact litigation-map format. Give a direct attorney answer, not a source list. Treat the supplied litigation_reasoning_context as deterministic routing and classification metadata only, never as independent proof. Expert opinion is evidence, not law; distinguish design or technical experience from regulatory experience. Analyze supplied DEC or other regulatory material and supplied drawings, surveys, plans, photographs, and measurements instead of calling them missing. Weigh cases and rules cited in party filings as attributed positions unless independently supplied in legal_authorities."
+        if reasoning_mode == "motion_recommendation":
+            instructions += " The attorney asks which motions to consider. Use every section in this exact order: Objective and posture; Candidate motions; Record support; Likely opposition; Gaps and prerequisites; Recommendation. Identify only motions supported by the verified posture and record. For each candidate, state the target, required showing only when verified authority supplies it, record support, strongest opposition, prerequisite proof or procedural step, and comparative reason to prioritize or reject it. Do not recommend a motion merely because the record mentions its name. The summary must directly identify the best-supported motion option or state that the verified record is not yet sufficient to choose one."
+        elif reasoning_mode == "motion_response":
+            instructions += " The attorney asks how to answer an opponent's motion. Use every section in this exact order: Motion and burden; Opponent showing; Response grounds; Evidence to submit; Procedural objections; Recommendation. Identify the relief sought and procedural posture, test each asserted ground against the verified record, separate merits responses from procedural objections, identify admissible or first-hand proof to submit, and rank the strongest response. Do not invent a deadline, burden, element, or doctrine not supplied by verified authority."
+        else:
+            instructions += " Use all four sections in this order: Case framework; Evidence; Competing positions; Assessment. Each section must appear at least once; multiple findings within a section are allowed but sections must never move backward. First identify who is who and the material property, transaction, event, or physical layout. Then extract the concrete opinions and factual premises from each expert or fact witness, including measurements and regulatory constraints. Compare the parties' best arguments point by point, identifying the evidence and law each side cites. Rank the material weaknesses or strengths, explain why each affects the requested party, give the strongest counterargument, and state the unresolved fact or authority that could change the assessment."
+        instructions += " Do not merely say that interference, breach, causation, or another element is shown; explain the specific evidence and competing position. The summary must answer the question directly in no more than 90 words. Return no more than eight findings and avoid repeating the same fact in multiple sections."
     elif authorities:
         instructions += " For this authority-backed question, the following instructions override the earlier compact litigation-map format."
         instructions += " End the summary with a complete sentence; never truncate a sentence to fill the schema limit."
         instructions += " Produce a concise attorney answer, not a memorandum. The summary must be a two-sentence executive answer of no more than 70 words. Return no more than eight non-repetitive findings total, each no more than 110 words, using the section field in this order: Legal standard; Application; Policy-by-policy analysis; Bottom line. Use at most two findings per section. State each legal rule once; apply it by reference rather than repeating it. Distinguish primary and excess policies only where the supplied record permits. Put absent proof only in missing_information, as no more than eight short, prioritized bullets; do not repeat missing evidence in the findings or limitations. The Bottom line must give the present record-based assessment and the evidence that would most change it, without predicting an outcome unsupported by the sources."
     prompt={"question":question,"instructions":instructions,"pleading_map":pleading_map(pages),"pages":pages,"legal_authorities":authority_prompt(authorities)}
+    if reasoning_context is not None:
+        prompt["litigation_reasoning_context"] = reasoning_context
     if coverage and coverage.get("verified_pleading_inventory"):
         prompt["verified_pleading_inventory"] = coverage["verified_pleading_inventory"]
         prompt["instructions"] += " The verified_pleading_inventory is authoritative presence metadata for the complete verified corpus. A listed filing exists in the verified record even when only selected pages appear in pages. Never call a listed filing missing, absent, unavailable, not supplied, or not provided. If selected excerpts do not establish a requested detail, identify that exact detail as unresolved rather than claiming that the filing itself is missing."
@@ -2182,13 +2226,20 @@ def validate(result, pages, authorities=(), question="", coverage=None):
                     raise ValueError("incomplete third-party actions")
     if strategic_question:
         sections = [item.get("section") for item in result["findings"]]
+        expected_sections = (
+            MOTION_RECOMMENDATION_SECTIONS
+            if question_mode(question) == "motion_recommendation"
+            else MOTION_RESPONSE_SECTIONS
+            if question_mode(question) == "motion_response"
+            else STRATEGIC_ANALYSIS_SECTIONS
+        )
         positions = {
             section: index
-            for index, section in enumerate(STRATEGIC_ANALYSIS_SECTIONS)
+            for index, section in enumerate(expected_sections)
         }
         section_positions = [positions.get(section, -1) for section in sections]
         if (
-            set(sections) != set(STRATEGIC_ANALYSIS_SECTIONS)
+            set(sections) != set(expected_sections)
             or any(position < 0 for position in section_positions)
             or section_positions != sorted(section_positions)
         ):
