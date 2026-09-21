@@ -2118,6 +2118,111 @@ class StrategicAnalysisRetrievalTests(unittest.TestCase):
                 question=self.QUESTION,
             )
 
+    def test_strategic_prompt_integrates_existing_reasoning_engines_and_source_types(self):
+        page = {
+            "source_sha256": "a" * 64,
+            "filename": "Defendant Expert Report.pdf",
+            "page_number": 4,
+            "text": "Professional engineer offers an expert opinion based on design experience and cites a DEC permit.",
+        }
+        result = {
+            "summary": "The expert opinion is evidence rather than governing law.",
+            "findings": [{
+                "section": section,
+                "statement": "The cited record supports this qualified part of the assessment.",
+                "citations": [{key: page[key] for key in ("source_sha256", "filename", "page_number")}],
+                "authority_citations": [],
+            } for section in WORKER.STRATEGIC_ANALYSIS_SECTIONS],
+            "missing_information": [],
+            "limitations": [],
+        }
+        response = mock.MagicMock()
+        response.read.return_value = json.dumps({
+            "output": [{"content": [{"text": json.dumps(result)}]}]
+        }).encode()
+        response.__enter__.return_value = response
+        with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}), mock.patch.object(WORKER.urllib.request, "urlopen", return_value=response) as urlopen:
+            WORKER.generate(self.QUESTION, [page])
+
+        prompt = json.loads(json.loads(urlopen.call_args.args[0].data.decode())["input"])
+        context = prompt["litigation_reasoning_context"]
+        self.assertEqual(context["question_mode"], "strategic_analysis")
+        self.assertEqual(context["page_classifications"][0]["source_type"], "expert_opinion")
+        self.assertEqual(context["page_classifications"][0]["legal_status"], "record_evidence_not_law")
+        self.assertEqual(context["page_classifications"][0]["expert_qualification_scope"], "design_or_technical")
+        self.assertIn("issue_engine", context)
+        self.assertIn("contradiction_engine", context)
+
+    def test_motion_recommendation_has_dedicated_contract(self):
+        question = "I need to make a motion. Which motions should I consider?"
+        page = {
+            "source_sha256": "a" * 64,
+            "filename": "Decision and Order.pdf",
+            "page_number": 2,
+            "text": "The court ordered that discovery continue before dispositive motion practice.",
+        }
+        result = {
+            "summary": "The present record supports a qualified motion recommendation.",
+            "findings": [{
+                "section": section,
+                "statement": "The cited order controls this part of the recommendation.",
+                "citations": [{key: page[key] for key in ("source_sha256", "filename", "page_number")}],
+                "authority_citations": [],
+            } for section in WORKER.MOTION_RECOMMENDATION_SECTIONS],
+            "missing_information": [],
+            "limitations": [],
+        }
+        response = mock.MagicMock()
+        response.read.return_value = json.dumps({
+            "output": [{"content": [{"text": json.dumps(result)}]}]
+        }).encode()
+        response.__enter__.return_value = response
+        with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}), mock.patch.object(WORKER.urllib.request, "urlopen", return_value=response) as urlopen:
+            generated = WORKER.generate(question, [page])
+        payload = json.loads(urlopen.call_args.args[0].data.decode())
+        prompt = json.loads(payload["input"])
+        sections = payload["text"]["format"]["schema"]["properties"]["findings"]["items"]["properties"]["section"]["enum"]
+        self.assertEqual(prompt["litigation_reasoning_context"]["question_mode"], "motion_recommendation")
+        self.assertIn("which motions to consider", prompt["instructions"])
+        self.assertEqual(sections, list(WORKER.MOTION_RECOMMENDATION_SECTIONS))
+        self.assertIs(WORKER.validate(generated, [page], question=question), generated)
+
+    def test_motion_response_has_dedicated_contract(self):
+        question = "My opponent filed this motion. How should I answer it?"
+        page = {
+            "source_sha256": "b" * 64,
+            "filename": "Notice of Motion.pdf",
+            "page_number": 1,
+            "text": "Defendant moves for the relief stated in the accompanying papers.",
+        }
+        result = {
+            "summary": "The response should address the verified motion and preserve record-supported procedural objections.",
+            "findings": [{
+                "section": section,
+                "statement": "The cited motion supports this part of the response analysis.",
+                "citations": [{key: page[key] for key in ("source_sha256", "filename", "page_number")}],
+                "authority_citations": [],
+            } for section in WORKER.MOTION_RESPONSE_SECTIONS],
+            "missing_information": [],
+            "limitations": [],
+        }
+        response = mock.MagicMock()
+        response.read.return_value = json.dumps({
+            "output": [{"content": [{"text": json.dumps(result)}]}]
+        }).encode()
+        response.__enter__.return_value = response
+        with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}), mock.patch.object(WORKER.urllib.request, "urlopen", return_value=response) as urlopen:
+            generated = WORKER.generate(question, [page])
+
+        payload = json.loads(urlopen.call_args.args[0].data.decode())
+        prompt = json.loads(payload["input"])
+        sections = payload["text"]["format"]["schema"]["properties"]["findings"]["items"]["properties"]["section"]["enum"]
+        self.assertEqual(WORKER.question_mode(question), "motion_response")
+        self.assertEqual(prompt["litigation_reasoning_context"]["question_mode"], "motion_response")
+        self.assertIn("how to answer an opponent's motion", prompt["instructions"])
+        self.assertEqual(sections, list(WORKER.MOTION_RESPONSE_SECTIONS))
+        self.assertIs(WORKER.validate(generated, [page], question=question), generated)
+
 
 class AttackSurfaceRetrievalTests(unittest.TestCase):
     def test_v4_prompt_requires_named_party_propositions_and_two_sided_citations(self):
