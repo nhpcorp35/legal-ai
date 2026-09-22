@@ -2358,7 +2358,32 @@ def load_case_source_map(case_id):
     ]
 
 
+def run_framework_evidence_check(case_id):
+    """Run the bounded no-model framework check through the protected portal API."""
+    if case_id != RENNICK_FRAMEWORK_CASE_ID:
+        return None
+    gateway_url, secret = _review_gateway_credentials()
+    if not gateway_url or not secret:
+        return None
+    request_data = urllib.request.Request(
+        f"{gateway_url}/portal/cases/{urllib.parse.quote(case_id, safe='')}/framework-evidence",
+        data=b"{}",
+        headers={"Content-Type": "application/json", "X-LegalAI-Portal-Secret": secret},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request_data, timeout=120) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, urllib.error.HTTPError, ValueError, UnicodeDecodeError):
+        return None
+    if not isinstance(result, dict) or result.get("ok") is not True or result.get("model_called") is not False:
+        return None
+    categories = result.get("categories")
+    return categories if isinstance(categories, dict) else None
+
+
 CASE00_ID = "Case-00-Triborough"
+RENNICK_FRAMEWORK_CASE_ID = "NY-Nassau-613561-2026-Desousa-v-Rennick"
 TOP_ATTACK_SURFACES_QUESTION = (
     "Prepare the v4.0 Top Attack Surfaces Report from the verified record. "
     "Rank the most material source-supported attack surfaces, limited to: "
@@ -4046,6 +4071,14 @@ def attorney_workspace():
                             "url": f"/workspace/matters/{matter_url}/page-17-check",
                         }
                     )
+                if case["case_id"] == RENNICK_FRAMEWORK_CASE_ID:
+                    questions.append(
+                        {
+                            "id": "Evidence check",
+                            "label": "Run the no-model framework-evidence check.",
+                            "url": f"/workspace/matters/{matter_url}/framework-evidence",
+                        }
+                    )
                 if answered_count:
                     questions.append(
                         {
@@ -4292,6 +4325,21 @@ def workspace_szymczyk_page17_check(case_id):
     return render_template_string(
         """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Page 17 Diagnostic</title><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:900px;margin:0 auto;padding:42px 24px 64px}a{color:#123f63}p{font-size:1.05rem;line-height:1.55}.panel{background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:22px;margin-top:22px}</style></head><body><main><p><a href="{{ url_for('attorney_workspace') }}">← Attorney workspace</a></p><h1>Page 17 source/index check</h1><section class="panel"><p>{{ outcome }}</p><p>This check exposes no source text and makes no changes.</p></section></main></body></html>""",
         outcome=outcome,
+    )
+
+
+@app.route("/workspace/matters/<path:case_id>/framework-evidence", methods=["GET", "POST"])
+def workspace_framework_evidence(case_id):
+    """Allen-only, read-only framework evidence fallback for the Rennick record."""
+    if basic_review_user() is None:
+        return basic_auth_required_response()
+    if case_id != RENNICK_FRAMEWORK_CASE_ID:
+        abort(404)
+    categories = run_framework_evidence_check(case_id) if request.method == "POST" else None
+    unavailable = request.method == "POST" and categories is None
+    return render_template_string(
+        """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Framework evidence check</title><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:940px;margin:0 auto;padding:42px 24px 64px}a{color:#123f63}p{font-size:1.05rem;line-height:1.55}.panel,.result{background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:22px;margin-top:20px}button{background:#123f63;color:#fff;border:0;border-radius:6px;padding:11px 15px;font:inherit;font-weight:bold;cursor:pointer}.meta{color:#52606d}.notice{border-left:4px solid #b45309;padding:12px 14px;background:#fffbeb}.snippet{white-space:pre-wrap;overflow-wrap:anywhere}</style></head><body><main><p><a href="/workspace">← Attorney workspace</a></p><h1>Framework evidence check</h1><p class="meta">{{ case_id }}</p><p>Reads the immutable verified record only. It does not call a model, create a draft, or change B2.</p><section class="panel"><form method="post"><button type="submit">Run evidence check</button></form></section>{% if unavailable %}<p class="notice">The check is temporarily unavailable. No source or draft was changed.</p>{% endif %}{% if categories is not none %}<p><strong>Completed with no model call.</strong></p>{% for label, entries in categories.items() %}<h2>{{ label.replace('_', ' ').title() }}</h2>{% for entry in entries %}<article class="result"><p><strong>{{ entry.filename }}</strong> — PDF page {{ entry.page_number }}</p><p class="snippet">{{ entry.snippet }}</p></article>{% endfor %}{% else %}<p class="notice">No matching verified pages were found.</p>{% endfor %}{% endif %}</main></body></html>""",
+        case_id=case_id, categories=categories, unavailable=unavailable,
     )
 
 
