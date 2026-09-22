@@ -241,6 +241,14 @@ ATTACK_SURFACE_NON_FIRST_HAND_RE = re.compile(
     r"\b(?:counsel\s+(?:affirm|states?|argues?))\b|\b(?:affirmation\s+of\s+counsel)\b",
     re.IGNORECASE,
 )
+# A strategic answer may describe what a source says in Evidence, but the
+# opposing parties' allegations and denials belong in Competing positions.
+STRATEGIC_PARTY_POSITION_RE = re.compile(
+    r"\b(?P<party>plaintiffs?|defendants?)\b(?:\s+\w+){0,10}?\s+"
+    r"(?:allege|alleges|alleged|deny|denies|denied|contend|contends|contended|"
+    r"assert|asserts|asserted|plead|pleads|pleaded|argue|argues|argued)\b",
+    re.IGNORECASE,
+)
 
 
 class PreGenerationGateError(ValueError):
@@ -2077,7 +2085,7 @@ def generate(question, pages, coverage=None, authorities=None):
         instructions += " For the v4.0 Top Attack Surfaces Report, do not prepend or return a claims-map summary. If a supplied order shows a motion was disposed of because a party died and substitution is pending, identify it as a procedural disposition, not a merits decision, and state only the procedural consequence shown by that order."
         instructions += " For the v4.0 Top Attack Surfaces Report, prioritize identified pleadings, orders, sworn testimony, and party-specific exhibits over generic contract excerpts. Use a generic contract provision only where it directly conflicts with, limits, or corroborates a party-identified filing or evidence in the supplied pages. Return no more than eight findings ordered from highest to lower materiality; return fewer when fewer qualify. Start every finding with 'Rank N — [Contradiction / Credibility / Procedural weakness] —'. For every finding, use this attorney-readable sequence in the statement: (1) identify the affected party or litigation position only when expressly named in the supplied pages; (2) state the specific record proposition on each side of the tension, including the source type or filing where useful; (3) explain why the two propositions create the asserted vulnerability; and (4) state any material limit. Never use a broad label such as 'causation record' or 'notice challenge' without the particular propositions that support it. A contradiction must cite each of the two conflicting verified propositions. A credibility vulnerability must identify the person or party and the concrete inconsistency, omission, or conflict; if the record does not identify one, do not call it a credibility issue. A procedural weakness must identify the party position, pleading, order, burden, remedy, notice, timing, preservation, or posture actually shown. Do not rank a defense merely because its factual proof, operative pleading, policy, or other supporting material is absent from the supplied excerpts. It qualifies only when the supplied pages show an affirmative mismatch with a contract, order, testimony, or other identified evidence, or when a court actually addressed the position. Do not invent a weakness from silence, characterize advocacy as fact, or convert alternative pleading or a denial into a contradiction. A pleading may establish procedural posture only. Do not make a factual or credibility finding from an attorney affirmation, counsel statement, service affidavit, or a party’s characterization of an absent exhibit, deposition, report, or other evidence. When the underlying first-hand material is not among the supplied pages, identify that limitation and omit the finding rather than treating advocacy as proof."
     elif strategic_question:
-        instructions += " For this strategic-analysis question, the following instructions override the earlier compact litigation-map format. Give a direct attorney answer, not a source list. Treat the supplied litigation_reasoning_context as deterministic routing and classification metadata only, never as independent proof. Expert opinion is evidence, not law; distinguish design or technical experience from regulatory experience. Analyze supplied DEC or other regulatory material and supplied drawings, surveys, plans, photographs, and measurements instead of calling them missing. Weigh cases and rules cited in party filings as attributed positions unless independently supplied in legal_authorities."
+        instructions += " For this strategic-analysis question, the following instructions override the earlier compact litigation-map format. Give a direct attorney answer, not a source list. Treat the supplied litigation_reasoning_context as deterministic routing and classification metadata only, never as independent proof. Expert opinion is evidence, not law; distinguish design or technical experience from regulatory experience. Analyze supplied DEC or other regulatory material and supplied drawings, surveys, plans, photographs, and measurements instead of calling them missing. Weigh cases and rules cited in party filings as attributed positions unless independently supplied in legal_authorities. In the Evidence section, describe the source, its methodology or factual content, and its limits only; put both sides' allegations, denials, and advocacy in Competing positions."
         if reasoning_mode == "motion_recommendation":
             instructions += " The attorney asks which motions to consider. Use every section in this exact order: Objective and posture; Candidate motions; Record support; Likely opposition; Gaps and prerequisites; Recommendation. Identify only motions supported by the verified posture and record. For each candidate, state the target, required showing only when verified authority supplies it, record support, strongest opposition, prerequisite proof or procedural step, and comparative reason to prioritize or reject it. Do not recommend a motion merely because the record mentions its name. The summary must directly identify the best-supported motion option or state that the verified record is not yet sufficient to choose one."
         elif reasoning_mode == "motion_response":
@@ -2225,6 +2233,18 @@ def validate(result, pages, authorities=(), question="", coverage=None):
                 ):
                     raise ValueError("incomplete third-party actions")
     if strategic_question:
+        for finding in result["findings"]:
+            if finding.get("section") != "Evidence":
+                continue
+            position_parties = {
+                match.group("party").casefold()
+                for match in STRATEGIC_PARTY_POSITION_RE.finditer(
+                    str(finding.get("statement", ""))
+                )
+            }
+            if ({"plaintiff", "plaintiffs"}.intersection(position_parties)
+                    and {"defendant", "defendants"}.intersection(position_parties)):
+                raise ValueError("party positions placed in evidence")
         sections = [item.get("section") for item in result["findings"]]
         expected_sections = (
             MOTION_RECOMMENDATION_SECTIONS

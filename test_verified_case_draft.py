@@ -2118,6 +2118,21 @@ class StrategicAnalysisRetrievalTests(unittest.TestCase):
                 question=self.QUESTION,
             )
 
+    def test_strategic_validation_rejects_both_sides_positions_in_evidence(self):
+        page = {"source_sha256": "a" * 64, "filename": "Affidavit.pdf", "page_number": 1, "text": "Verified record."}
+        cite = {key: page[key] for key in ("source_sha256", "filename", "page_number")}
+        result = {
+            "summary": "The record supports a qualified assessment.",
+            "findings": [{
+                "section": section,
+                "statement": "Plaintiffs allege obstruction and Defendants deny it." if section == "Evidence" else "The cited record supports this part of the assessment.",
+                "citations": [cite], "authority_citations": [],
+            } for section in WORKER.STRATEGIC_ANALYSIS_SECTIONS],
+            "missing_information": [], "limitations": [],
+        }
+        with self.assertRaisesRegex(ValueError, "party positions placed in evidence"):
+            WORKER.validate(result, [page], question=self.QUESTION)
+
     def test_strategic_prompt_integrates_existing_reasoning_engines_and_source_types(self):
         page = {
             "source_sha256": "a" * 64,
