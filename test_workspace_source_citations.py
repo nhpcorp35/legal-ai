@@ -46,14 +46,19 @@ class WorkspaceSourceCitationTests(unittest.TestCase):
         self.assertIn("Complaint.pdf", response.get_data(as_text=True))
 
     def test_rennick_framework_check_is_authenticated_and_model_free(self):
-        categories = {
-            "expert_opinion": [
-                {"filename": "Austin.pdf", "page_number": 7, "snippet": "1/4 rule opinion"}
-            ]
+        result = {
+            "categories": {"expert_opinion": [{"filename": "Austin.pdf", "page_number": 7, "snippet": "1/4 rule opinion"}]},
+            "conflicts": [{
+                "name": "opinion_vs_authority",
+                "status": "candidate_tension",
+                "guardrail": "Expert methodology is evidence, not law.",
+                "left": {"record_role": "expert_opinion", "results": []},
+                "right": {"record_role": "legal_authority", "results": []},
+            }],
         }
         client = legalai.app.test_client()
         unauthorized = client.post(f"/workspace/matters/{CASE_ID}/framework-evidence")
-        with patch.object(legalai, "run_framework_evidence_check", return_value=categories):
+        with patch.object(legalai, "run_framework_evidence_check", return_value=result):
             response = client.post(
                 f"/workspace/matters/{CASE_ID}/framework-evidence", headers=_auth_headers()
             )
@@ -61,6 +66,8 @@ class WorkspaceSourceCitationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         page = response.get_data(as_text=True)
         self.assertIn("Completed with no model call.", page)
+        self.assertIn("Framework conflict map", page)
+        self.assertIn("Expert methodology is evidence, not law.", page)
         self.assertIn("1/4 rule opinion", page)
 
     def test_verified_pdf_requires_and_forwards_the_cited_source(self):

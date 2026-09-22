@@ -2379,7 +2379,13 @@ def run_framework_evidence_check(case_id):
     if not isinstance(result, dict) or result.get("ok") is not True or result.get("model_called") is not False:
         return None
     categories = result.get("categories")
-    return categories if isinstance(categories, dict) else None
+    conflict_map = result.get("conflict_map")
+    if not isinstance(categories, dict) or not isinstance(conflict_map, dict):
+        return None
+    conflicts = conflict_map.get("conflicts")
+    if not isinstance(conflicts, list) or conflict_map.get("model_called") is not False:
+        return None
+    return {"categories": categories, "conflicts": conflicts}
 
 
 CASE00_ID = "Case-00-Triborough"
@@ -4335,11 +4341,11 @@ def workspace_framework_evidence(case_id):
         return basic_auth_required_response()
     if case_id != RENNICK_FRAMEWORK_CASE_ID:
         abort(404)
-    categories = run_framework_evidence_check(case_id) if request.method == "POST" else None
-    unavailable = request.method == "POST" and categories is None
+    result = run_framework_evidence_check(case_id) if request.method == "POST" else None
+    unavailable = request.method == "POST" and result is None
     return render_template_string(
-        """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Framework evidence check</title><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:940px;margin:0 auto;padding:42px 24px 64px}a{color:#123f63}p{font-size:1.05rem;line-height:1.55}.panel,.result{background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:22px;margin-top:20px}button{background:#123f63;color:#fff;border:0;border-radius:6px;padding:11px 15px;font:inherit;font-weight:bold;cursor:pointer}.meta{color:#52606d}.notice{border-left:4px solid #b45309;padding:12px 14px;background:#fffbeb}.snippet{white-space:pre-wrap;overflow-wrap:anywhere}</style></head><body><main><p><a href="/workspace">← Attorney workspace</a></p><h1>Framework evidence check</h1><p class="meta">{{ case_id }}</p><p>Reads the immutable verified record only. It does not call a model, create a draft, or change B2.</p><section class="panel"><form method="post"><button type="submit">Run evidence check</button></form></section>{% if unavailable %}<p class="notice">The check is temporarily unavailable. No source or draft was changed.</p>{% endif %}{% if categories is not none %}<p><strong>Completed with no model call.</strong></p>{% for label, entries in categories.items() %}<h2>{{ label.replace('_', ' ').title() }}</h2>{% for entry in entries %}<article class="result"><p><strong>{{ entry.filename }}</strong> — PDF page {{ entry.page_number }}</p><p class="snippet">{{ entry.snippet }}</p></article>{% endfor %}{% else %}<p class="notice">No matching verified pages were found.</p>{% endfor %}{% endif %}</main></body></html>""",
-        case_id=case_id, categories=categories, unavailable=unavailable,
+        """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Framework evidence check</title><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:940px;margin:0 auto;padding:42px 24px 64px}a{color:#123f63}p{font-size:1.05rem;line-height:1.55}.panel,.result{background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:22px;margin-top:20px}button{background:#123f63;color:#fff;border:0;border-radius:6px;padding:11px 15px;font:inherit;font-weight:bold;cursor:pointer}.meta{color:#52606d}.notice{border-left:4px solid #b45309;padding:12px 14px;background:#fffbeb}.snippet{white-space:pre-wrap;overflow-wrap:anywhere}.lane{border-left:4px solid #245b83;padding-left:16px}</style></head><body><main><p><a href="/workspace">← Attorney workspace</a></p><h1>Framework evidence check</h1><p class="meta">{{ case_id }}</p><p>Reads the immutable verified record only. It does not call a model, create a draft, or change B2.</p><section class="panel"><form method="post"><button type="submit">Run evidence check</button></form></section>{% if unavailable %}<p class="notice">The check is temporarily unavailable. No source or draft was changed.</p>{% endif %}{% if result is not none %}<p><strong>Completed with no model call.</strong></p><h2>Framework conflict map</h2><p class="meta">Candidate tensions only—not findings of fact, liability, or governing law.</p>{% for lane in result.conflicts %}<section class="panel lane"><h3>{{ lane.name.replace('_', ' ').title() }}</h3><p>{{ lane.guardrail }}</p><p><strong>Status:</strong> {{ lane.status.replace('_', ' ') }}</p><h4>{{ lane.left.record_role.replace('_', ' ').title() }}</h4>{% for entry in lane.left.results %}<article class="result"><p><strong>{{ entry.filename }}</strong> — PDF page {{ entry.page_number }}</p><p class="snippet">{{ entry.snippet }}</p></article>{% endfor %}<h4>{{ lane.right.record_role.replace('_', ' ').title() }}</h4>{% for entry in lane.right.results %}<article class="result"><p><strong>{{ entry.filename }}</strong> — PDF page {{ entry.page_number }}</p><p class="snippet">{{ entry.snippet }}</p></article>{% endfor %}</section>{% endfor %}<h2>Evidence lanes</h2>{% for label, entries in result.categories.items() %}<h3>{{ label.replace('_', ' ').title() }}</h3>{% for entry in entries %}<article class="result"><p><strong>{{ entry.filename }}</strong> — PDF page {{ entry.page_number }}</p><p class="snippet">{{ entry.snippet }}</p></article>{% endfor %}{% else %}<p class="notice">No matching verified pages were found.</p>{% endfor %}{% endif %}</main></body></html>""",
+        case_id=case_id, result=result, unavailable=unavailable,
     )
 
 
