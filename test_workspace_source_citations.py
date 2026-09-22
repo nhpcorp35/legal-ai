@@ -48,6 +48,16 @@ class WorkspaceSourceCitationTests(unittest.TestCase):
     def test_rennick_framework_check_is_authenticated_and_model_free(self):
         result = {
             "categories": {"expert_opinion": [{"filename": "Austin.pdf", "page_number": 7, "snippet": "1/4 rule opinion"}]},
+            "authority_verification": {
+                "model_called": False,
+                "analysis_guardrail": "A party citation is not governing law.",
+                "candidates": [{
+                    "citation": "N.Y. Navigation Law \u00a7 15",
+                    "status": "party_cited_unverified",
+                    "verification_requirement": "Verify from an official source.",
+                    "record_citations": [{"filename": "Plaintiff Memorandum.pdf", "page_number": 4}],
+                }],
+            },
             "conflicts": [{
                 "name": "opinion_vs_authority",
                 "status": "candidate_tension",
@@ -67,6 +77,8 @@ class WorkspaceSourceCitationTests(unittest.TestCase):
         page = response.get_data(as_text=True)
         self.assertIn("Completed with no model call.", page)
         self.assertIn("Framework conflict map", page)
+        self.assertIn("Authority verification status", page)
+        self.assertIn("party cited unverified", page)
         self.assertIn("Expert methodology is evidence, not law.", page)
         self.assertIn("1/4 rule opinion", page)
 
