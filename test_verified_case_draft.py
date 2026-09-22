@@ -2133,6 +2133,15 @@ class StrategicAnalysisRetrievalTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "party positions placed in evidence"):
             WORKER.validate(result, [page], question=self.QUESTION)
 
+    def test_strategic_trigger_recognizes_decisive_defensibility_question(self):
+        question = (
+            "Identify the single factual and methodological finding most likely "
+            "to determine whether Defendants' vessel placement is defensible. "
+            "Show how each side would try to prove or disprove it."
+        )
+        self.assertIsNotNone(WORKER.STRATEGIC_ANALYSIS_QUESTION_RE.search(question))
+        self.assertFalse(WORKER.litigation_map_question(question))
+
     def test_strategic_prompt_integrates_existing_reasoning_engines_and_source_types(self):
         page = {
             "source_sha256": "a" * 64,
