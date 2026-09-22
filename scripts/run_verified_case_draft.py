@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import argparse, hashlib, json, os, re, socket, sys, tempfile, urllib.error, urllib.request
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import boto3
+from botocore.exceptions import ClientError
 
 # Railway executes this file by path, which otherwise exposes only ``scripts``
 # on sys.path. Keep the repository-root package import identical in script and
@@ -15,7 +17,6 @@ import boto3
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from engines.verified_authority_registry import match_verified_authorities
 from engines.litigation_reasoning import (
     MOTION_RECOMMENDATION_RE,
     MOTION_RESPONSE_RE,
@@ -28,6 +29,7 @@ CONSOLIDATED_MAX_PAGES, CONSOLIDATED_MAX_CONTEXT_CHARS = 80, 130000
 CASE_RE = re.compile(r"NY-[A-Za-z]+-[0-9]{6}-[0-9]{4}-[A-Za-z0-9-]{2,80}$")
 CASE00_BENCHMARK_ID = "Case-00-Triborough"
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
+REVIEWED_AUTHORITY_KEY = "derived/reviewed-authorities"
 BROAD_RECORD_TERMS = frozenset({"parties", "claims", "causes", "defenses", "relief"})
 PLEADING_FILENAME_RE = re.compile(
     r"\b(?:complaint|answer|reply|cross(?:[ _-]?claim|[ _-]?c\b)|"
@@ -1060,6 +1062,79 @@ def verified_sources(s3, case_id):
     return digests
 
 
+@dataclass(frozen=True)
+class ReviewedAuthority:
+    """A case-specific authority admitted only after independent review in B2."""
+    authority_id: str
+    citation: str
+    official_primary_source: str
+    exact_holding: str
+    filing_proposition: str
+    filing_record_citation: str
+    sha256: str
+
+    def as_canonical_dict(self):
+        return {
+            "authority_id": self.authority_id, "citation": self.citation,
+            "official_primary_source": self.official_primary_source,
+            "exact_holding": self.exact_holding,
+            "filing_proposition": self.filing_proposition,
+            "filing_record_citation": self.filing_record_citation,
+        }
+
+
+def _reviewed_authority_hash(value):
+    payload = {key: item for key, item in value.items() if key != "sha256"}
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def load_reviewed_authorities(s3, case_id):
+    """Load only complete, hash-verified authorities scoped to this case source.
+
+    Missing review objects yield no authority. A present but changed/incomplete
+    object is a hard failure: party citations must never become governing law.
+    """
+    authorities = []
+    for source_sha256 in verified_sources(s3, case_id):
+        object_key = f"cases/{case_id}/{REVIEWED_AUTHORITY_KEY}/{source_sha256}.json"
+        try:
+            raw = s3.get_object(Bucket=os.environ["B2_BUCKET"], Key=object_key)["Body"].read()
+        except ClientError as exc:
+            # A missing review record simply means no independently reviewed
+            # authority exists for that source. Do not fall back to registry data.
+            if exc.response.get("Error", {}).get("Code") in {"NoSuchKey", "404", "NotFound"}:
+                continue
+            raise
+        except KeyError:  # synthetic/local B2 test transport: absent key
+            continue
+        try:
+            value = json.loads(raw.decode())
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("invalid reviewed-authority record") from exc
+        required = {"schema_version", "case_id", "source_sha256", "records", "sha256"}
+        if (not isinstance(value, dict) or set(value) != required
+                or value.get("schema_version") != "legalai-reviewed-authorities.v1"
+                or value.get("case_id") != case_id or value.get("source_sha256") != source_sha256
+                or not isinstance(value.get("sha256"), str) or not SHA256_RE.fullmatch(value["sha256"])
+                or value["sha256"] != _reviewed_authority_hash(value)):
+            raise ValueError("reviewed-authority hash mismatch")
+        records = value.get("records")
+        fields = {"authority_id", "citation", "official_primary_source", "exact_holding", "filing_proposition", "filing_record_citation"}
+        if not isinstance(records, list) or not records:
+            raise ValueError("reviewed-authority record is incomplete")
+        for record in records:
+            if (not isinstance(record, dict) or set(record) != fields
+                    or not all(isinstance(record.get(key), str) and record[key].strip() for key in fields)
+                    or not record["official_primary_source"].startswith("https://www.nycourts.gov/")
+                    or not re.search(r"\bp\.\s*[1-9][0-9]*\b", record["filing_record_citation"], re.I)):
+                raise ValueError("reviewed-authority record is incomplete")
+            authorities.append(ReviewedAuthority(**record, sha256=value["sha256"]))
+    ids = [authority.authority_id for authority in authorities]
+    if len(ids) != len(set(ids)):
+        raise ValueError("duplicate reviewed authority")
+    return tuple(authorities)
+
+
 def attack_surface_first_hand_page(filename: str, text: str) -> bool:
     """Return whether a v4 factual source is first-hand rather than advocacy."""
     combined = f"{filename} {text[:1200]}"
@@ -1932,7 +2007,7 @@ def authority_audit(authorities):
     """Return bounded authority identity metadata without proposition text."""
     return [{
         key: getattr(authority, key)
-        for key in ("authority_id", "citation", "title", "source_url", "issuing_body", "date", "sha256")
+        for key in ("authority_id", "citation", "official_primary_source", "filing_record_citation", "sha256")
     } for authority in authorities]
 
 
@@ -2072,7 +2147,7 @@ def finding_schema(page_citation_properties, *, attorney_sections=False, litigat
 
 
 def generate(question, pages, coverage=None, authorities=None):
-    authorities = tuple(match_verified_authorities(question) if authorities is None else authorities)
+    authorities = tuple(() if authorities is None else authorities)
     detected_reasoning_mode = question_mode(question)
     strategic_question = (
         bool(STRATEGIC_ANALYSIS_QUESTION_RE.search(question))
@@ -2321,7 +2396,7 @@ def run_request(s3, case_id, request_id):
             stage = "evidence_retrieval"
             pages=evidence(s3,case_id,question)
             stage = "authority_selection"
-            authorities=match_verified_authorities(question)
+            authorities=load_reviewed_authorities(s3, case_id)
             coverage=getattr(pages,"coverage",None)
             stage = "model_request"
             generated=generate(question,pages,coverage,authorities)
