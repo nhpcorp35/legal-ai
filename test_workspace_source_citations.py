@@ -82,6 +82,26 @@ class WorkspaceSourceCitationTests(unittest.TestCase):
         self.assertIn("Expert methodology is evidence, not law.", page)
         self.assertIn("1/4 rule opinion", page)
 
+    def test_rennick_framework_check_caps_large_authority_audit_for_readability(self):
+        candidates = [{
+            "citation": f"N.Y. Navigation Law § {number}",
+            "status": "party_cited_unverified",
+            "verification_requirement": "Verify from an official source.",
+            "record_citations": [{"filename": "Memorandum.pdf", "page_number": number}],
+        } for number in range(1, 12)]
+        result = {
+            "categories": {}, "conflicts": [],
+            "authority_verification": {"model_called": False, "candidates": candidates},
+        }
+        with patch.object(legalai, "run_framework_evidence_check", return_value=result):
+            response = legalai.app.test_client().post(
+                f"/workspace/matters/{CASE_ID}/framework-evidence", headers=_auth_headers()
+            )
+        page = response.get_data(as_text=True)
+        self.assertIn("Showing the first 10 of 11", page)
+        self.assertIn("N.Y. Navigation Law § 10", page)
+        self.assertNotIn("N.Y. Navigation Law § 11", page)
+
     def test_verified_pdf_requires_and_forwards_the_cited_source(self):
         seen = {}
 
