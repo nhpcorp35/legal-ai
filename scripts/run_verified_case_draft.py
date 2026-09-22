@@ -1129,6 +1129,7 @@ def load_reviewed_authorities(s3, case_id):
                         "https://www.nycourts.gov/",
                         "https://www.nysenate.gov/",
                         "https://oysterbaytown.com/",
+                        "https://ecode360.com/",
                     ))
                     or not re.search(r"\bp\.\s*[1-9][0-9]*\b", record["filing_record_citation"], re.I)):
                 raise ValueError("reviewed-authority record is incomplete")
