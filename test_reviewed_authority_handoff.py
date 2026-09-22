@@ -55,5 +55,16 @@ class ReviewedAuthorityHandoffTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "hash mismatch"):
             self._load({key: json.dumps(value).encode()})
 
+    def test_reviewed_town_code_from_official_town_source_enters(self):
+        value = reviewed()
+        value["records"][0]["official_primary_source"] = (
+            "https://oysterbaytown.com/wp-content/uploads/Local-Law-Ch.-241-waterways-10.01.24.pdf"
+        )
+        value["sha256"] = worker._reviewed_authority_hash(value)
+        key = f"cases/{CASE}/derived/reviewed-authorities/{SOURCE}.json"
+        authorities = self._load({key: json.dumps(value).encode()})
+        self.assertEqual(len(authorities), 1)
+        self.assertTrue(authorities[0].official_primary_source.startswith("https://oysterbaytown.com/"))
+
 
 if __name__ == "__main__": unittest.main()
