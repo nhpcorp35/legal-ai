@@ -82,6 +82,31 @@ class WorkspaceSourceCitationTests(unittest.TestCase):
         self.assertIn("Expert methodology is evidence, not law.", page)
         self.assertIn("1/4 rule opinion", page)
 
+    def test_rennick_framework_check_shows_identity_match_without_calling_it_law(self):
+        result = {
+            "categories": {}, "conflicts": [],
+            "authority_verification": {"model_called": False, "candidates": [{
+                "citation": "193 A.D.3d 710",
+                "status": "official_primary_source_identified",
+                "verification_requirement": "The party's specific proposition remains unverified.",
+                "primary_source": {
+                    "title": "Kuzmicki v Bentley Yacht Club",
+                    "issuing_body": "Appellate Division, Second Department",
+                    "source_url": "https://www.nycourts.gov/reporter/files/bv/193AD3d.pdf",
+                    "reporter_page": 710,
+                },
+                "record_citations": [{"filename": "Affirmation.pdf", "page_number": 7}],
+            }]},
+        }
+        with patch.object(legalai, "run_framework_evidence_check", return_value=result):
+            response = legalai.app.test_client().post(
+                f"/workspace/matters/{CASE_ID}/framework-evidence", headers=_auth_headers()
+            )
+        page = response.get_data(as_text=True)
+        self.assertIn("official primary source identified", page)
+        self.assertIn("Kuzmicki v Bentley Yacht Club", page)
+        self.assertIn("The party&#39;s specific proposition remains unverified.", page)
+
     def test_rennick_framework_check_caps_large_authority_audit_for_readability(self):
         candidates = [{
             "citation": f"N.Y. Navigation Law § {number}",
