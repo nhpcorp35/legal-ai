@@ -2468,8 +2468,8 @@ class StrategicAnalysisRetrievalTests(unittest.TestCase):
         self.assertEqual(prompt["litigation_reasoning_context"]["question_mode"], "motion_recommendation")
         self.assertIn("which motions to consider", prompt["instructions"])
         self.assertIn("Keep each finding below 150 words", prompt["instructions"])
-        self.assertIn("Record support section must cite and analyze each supplied category", prompt["instructions"])
         self.assertIn("do not recommend filing a TRO-modification motion now", prompt["instructions"])
+        self.assertIn("return three separate Record support findings", prompt["instructions"])
         self.assertEqual(sections, list(WORKER.MOTION_RECOMMENDATION_SECTIONS))
         self.assertIs(WORKER.validate(generated, [page], question=question), generated)
 
