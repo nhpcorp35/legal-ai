@@ -187,10 +187,33 @@ STRATEGIC_POSITION_TEXT_RE = re.compile(
     r"opposes?|denies?|claims?)\b",
     re.IGNORECASE | re.DOTALL,
 )
-STRATEGIC_MERITS_PAGE_LIMIT = 14
-STRATEGIC_CATEGORY_PAGE_LIMIT = 8
-STRATEGIC_EXPERT_PAGE_LIMIT = 18
-STRATEGIC_EXPERT_PAGES_PER_DOCUMENT = 8
+# A strategic packet must fit into the fixed 45-page context window while
+# retaining primary posture and agency material. Previously the 18-page
+# expert reservation could consume the window before either was selected.
+STRATEGIC_MERITS_PAGE_LIMIT = 10
+STRATEGIC_CATEGORY_PAGE_LIMIT = 4
+STRATEGIC_EXPERT_PAGE_LIMIT = 12
+STRATEGIC_EXPERT_PAGES_PER_DOCUMENT = 6
+STRATEGIC_PROCEDURAL_PAGE_LIMIT = 5
+STRATEGIC_REGULATORY_PAGE_LIMIT = 4
+STRATEGIC_PROCEDURAL_RECORD_RE = re.compile(
+    r"\b(?:order\s+to\s+show\s+cause|temporary\s+restraining\s+order|"
+    r"\bTRO\b|preliminary\s+injunction|notice\s+of\s+motion|"
+    r"undertaking|bond)\b",
+    re.IGNORECASE,
+)
+DIRECT_REGULATORY_RECORD_RE = re.compile(
+    r"\b(?:New\s+York\s+State\s+Department\s+of\s+Environmental\s+Conservation|"
+    r"NYSDEC|Department\s+of\s+Environmental\s+Conservation|"
+    r"United\s+States\s+Army\s+Corps\s+of\s+Engineers|U\.?S\.?\s+Army\s+Corps)\b"
+    r".{0,300}\b(?:permit|permittee|facility|DECID|authorization|condition|inspection)\b|"
+    r"\b(?:DECID\s*(?:No\.?|#)?\s*[0-9-]+|NAN-\d{4}-\d+)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+STRATEGIC_ADVOCACY_FILENAME_RE = re.compile(
+    r"\b(?:affidavit|affirmation|memorandum|memo|brief|report)\b",
+    re.IGNORECASE,
+)
 V4_PROCEDURAL_ORDER_TEXT_RE = re.compile(r"\b(?:death|deceased|substitut(?:e|ion)|representative|jurisdiction)\b", re.IGNORECASE)
 PROCEDURAL_POSTURE_QUESTION_RE = re.compile(
     r"\b(?:death|deceased|substitut(?:e|ion)|representative|jurisdiction|"
@@ -1421,6 +1444,17 @@ def evidence(s3, case_id, question):
             )
             strategic_law = bool(STRATEGIC_LAW_TEXT_RE.search(text))
             strategic_position = bool(STRATEGIC_POSITION_TEXT_RE.search(text))
+            # Require direct issuer/permit signals, so an expert or brief
+            # discussing DEC is not elevated to an agency record.
+            strategic_regulatory = bool(
+                DIRECT_REGULATORY_RECORD_RE.search(text)
+                and not strategic_expert
+                and not STRATEGIC_ADVOCACY_FILENAME_RE.search(pleading_filename)
+            )
+            strategic_procedural = bool(
+                STRATEGIC_PROCEDURAL_RECORD_RE.search(text)
+                or STRATEGIC_PROCEDURAL_RECORD_RE.search(pleading_filename)
+            )
             prayer_continuation = (
                 prayer_run_remaining > 0
                 and prior_page is not None
@@ -1496,6 +1530,10 @@ def evidence(s3, case_id, question):
                     coverage_score += 34
                 if strategic_position:
                     coverage_score += 30
+                if strategic_regulatory:
+                    coverage_score += 42
+                if strategic_procedural:
+                    coverage_score += 44
             elif (
                 procedural_posture_question
                 and ATTACK_SURFACE_PRIMARY_FILENAME_RE.search(pleading_filename)
@@ -1528,7 +1566,8 @@ def evidence(s3, case_id, question):
                     claim_pleading, relief_pleading,
                     prayer_continuation,
                     strategic_expert, strategic_measurement,
-                    strategic_law, strategic_position,
+                    strategic_law, strategic_position, strategic_regulatory,
+                    strategic_procedural,
                 ))
             prior_page = page
     mandatory_ids=set()
@@ -1678,6 +1717,11 @@ def evidence(s3, case_id, question):
                     if kept >= limit:
                         break
 
+            # Preserve primary posture and agency material before opinions.
+            # This ordering keeps the actual TRO and permit conditions in a
+            # crowded record rather than relying only on expert descriptions.
+            reserve_strategy(18, limit=STRATEGIC_PROCEDURAL_PAGE_LIMIT, per_document=2)
+            reserve_strategy(17, limit=STRATEGIC_REGULATORY_PAGE_LIMIT, per_document=2)
             # Preserve category diversity before general relevance ranking.
             reserve_strategy(
                 13,
@@ -1753,7 +1797,7 @@ def evidence(s3, case_id, question):
         _operational, _section_start, _defense, _continuation,
         claim_pleading, _relief_pleading, _prayer_continuation,
         _strategic_expert, _strategic_measurement, _strategic_law,
-        _strategic_position in rows
+        _strategic_position, _strategic_regulatory, _strategic_procedural in rows
         if merits_pleading and claim_pleading
     }.intersection(selected_ids)
     selected_relief_ids = {
@@ -1762,7 +1806,7 @@ def evidence(s3, case_id, question):
         _operational, _section_start, _defense, _continuation,
         _claim_pleading, relief_pleading, _prayer_continuation,
         _strategic_expert, _strategic_measurement, _strategic_law,
-        _strategic_position in rows
+        _strategic_position, _strategic_regulatory, _strategic_procedural in rows
         if merits_pleading and relief_pleading
     }.intersection(selected_ids)
     coverage = {
