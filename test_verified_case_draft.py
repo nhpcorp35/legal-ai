@@ -2560,6 +2560,31 @@ class StrategicAnalysisRetrievalTests(unittest.TestCase):
         }
         self.assertIs(WORKER.validate(result, pages, question=question), result)
 
+    def test_motion_response_requires_each_direct_agency_record(self):
+        question = "My opponent filed this motion. How should I answer it?"
+        pages = [
+            {"source_sha256": "a" * 64, "filename": "Expert Report.pdf", "page_number": 1, "text": "Expert opinion."},
+            {"source_sha256": "b" * 64, "filename": "DEC Permit.pdf", "page_number": 2, "text": "NYSDEC Facility DECID 1-2824-03170 permit conditions."},
+            {"source_sha256": "c" * 64, "filename": "USACE Permit.pdf", "page_number": 3, "text": "U.S. Army Corps permit NAN-2016-00386."},
+            {"source_sha256": "d" * 64, "filename": "Survey.pdf", "page_number": 4, "text": "Survey measurements."},
+        ]
+        cites = [{key: page[key] for key in ("source_sha256", "filename", "page_number")} for page in pages]
+        result = {
+            "summary": "The response requires a measured record analysis.",
+            "findings": [
+                {"section": "Motion and burden", "statement": "The motion seeks preliminary relief.", "citations": [cites[0]], "authority_citations": []},
+                {"section": "Opponent showing", "statement": "The expert account is limited evidence.", "citations": [cites[0]], "authority_citations": []},
+                {"section": "Response grounds", "statement": "The DEC permit is direct regulatory evidence.", "citations": [cites[1]], "authority_citations": []},
+                {"section": "Evidence to submit", "statement": "The survey provides measurement evidence.", "citations": [cites[3]], "authority_citations": []},
+                {"section": "Procedural objections", "statement": "The posture remains contested.", "citations": [cites[0]], "authority_citations": []},
+                {"section": "Recommendation", "statement": "Oppose relief on the present record.", "citations": [cites[0]], "authority_citations": []},
+            ],
+            "missing_information": [],
+            "limitations": [],
+        }
+        with self.assertRaisesRegex(ValueError, "strategic direct agency records not analyzed: usace"):
+            WORKER.validate(result, pages, question=question)
+
 
 class AttackSurfaceRetrievalTests(unittest.TestCase):
     def test_v4_prompt_requires_named_party_propositions_and_two_sided_citations(self):
