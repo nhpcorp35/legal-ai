@@ -155,7 +155,7 @@ STRATEGIC_ANALYSIS_QUESTION_RE = re.compile(
     r"motions?\s+(?:should|could|can)\s+(?:i|we|counsel)|"
     r"motions?\s+(?:to\s+)?consider|answer\s+(?:the\s+)?motion|"
     r"oppose\s+(?:the\s+)?motion|respond\s+to\s+(?:the\s+)?motion|"
-    r"(?:my\s+)?opponent\s+(?:made|filed)\s+(?:this\s+)?motion)\b",
+    r"(?:my\s+)?opponent\s+(?:made|filed)\s+(?:(?:an?\s+)|this\s+)?motion)\b",
     re.IGNORECASE,
 )
 STRATEGIC_SOURCE_FILENAME_RE = re.compile(
@@ -1752,6 +1752,18 @@ def evidence(s3, case_id, question):
             # This ordering keeps the actual TRO and permit conditions in a
             # crowded record rather than relying only on expert descriptions.
             reserve_strategy(18, limit=STRATEGIC_PROCEDURAL_PAGE_LIMIT, per_document=2)
+            # Preserve one direct record for each identified agency before
+            # general regulatory ranking can fill the bounded packet.
+            for agency in ("nysdec", "usace"):
+                for row in remaining:
+                    identity = (row[3], row[1], row[2])
+                    if (
+                        identity not in strategic_ids
+                        and direct_agency_issuer(row[4]) == agency
+                    ):
+                        strategic_rows.append(row)
+                        strategic_ids.add(identity)
+                        break
             reserve_strategy(17, limit=STRATEGIC_REGULATORY_PAGE_LIMIT, per_document=2)
             # Preserve category diversity before general relevance ranking.
             reserve_strategy(
