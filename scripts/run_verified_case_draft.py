@@ -328,6 +328,9 @@ MODEL_VALIDATION_REASONS = frozenset({
     "invalid_litigation_map_sections",
     "invalid_strategic_analysis_sections",
     "invalid_output",
+    "party_positions_placed_in_evidence",
+    "expert_agency_account_lacks_source_status_disclosure",
+    "strategic_evidence_categories_not_analyzed",
     "uncited_output",
     "unverified_authority_citation",
     "unverified_citation",
@@ -776,6 +779,8 @@ def failure_diagnostics(exc, stage):
             details["gate_metrics"] = gate_metrics
     elif code == "model_output_validation":
         validation_reason = str(exc).strip().casefold().replace("-", " ").replace(" ", "_")
+        if validation_reason.startswith("strategic_evidence_categories_not_analyzed:"):
+            validation_reason = "strategic_evidence_categories_not_analyzed"
         details["validation_reason"] = (
             validation_reason
             if validation_reason in MODEL_VALIDATION_REASONS
