@@ -2161,6 +2161,37 @@ class StrategicAnalysisRetrievalTests(unittest.TestCase):
         result["findings"][1]["citations"] = citations
         self.assertIs(WORKER.validate(result, pages, question=self.QUESTION), result)
 
+    def test_strategic_validation_labels_expert_agency_account_without_record_citation(self):
+        page = {
+            "source_sha256": "a" * 64,
+            "filename": "Hamilton Expert Report.pdf",
+            "page_number": 3,
+            "text": "Expert report discusses a DEC permit and agency files.",
+        }
+        cite = {key: page[key] for key in ("source_sha256", "filename", "page_number")}
+        result = {
+            "summary": "The record requires a qualified assessment.",
+            "findings": [{
+                "section": section,
+                "statement": (
+                    "The expert describes DEC permit history."
+                    if section == "Evidence"
+                    else "The cited record supports this part of the assessment."
+                ),
+                "citations": [cite],
+                "authority_citations": [],
+            } for section in WORKER.STRATEGIC_ANALYSIS_SECTIONS],
+            "missing_information": [],
+            "limitations": [],
+        }
+        with self.assertRaisesRegex(ValueError, "expert agency account lacks source-status disclosure"):
+            WORKER.validate(result, [page], question=self.QUESTION)
+
+        result["findings"][1]["statement"] = (
+            "The expert describes DEC permit history. Underlying agency record is not cited."
+        )
+        self.assertIs(WORKER.validate(result, [page], question=self.QUESTION), result)
+
     def test_strategic_trigger_recognizes_decisive_defensibility_question(self):
         question = (
             "Identify the single factual and methodological finding most likely "
