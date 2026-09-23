@@ -2470,6 +2470,7 @@ class StrategicAnalysisRetrievalTests(unittest.TestCase):
         self.assertIn("Keep each finding below 150 words", prompt["instructions"])
         self.assertIn("do not recommend filing a TRO-modification motion now", prompt["instructions"])
         self.assertIn("return three separate Record support findings", prompt["instructions"])
+        self.assertIn("cite and analyze each agency's record", prompt["instructions"])
         self.assertEqual(sections, list(WORKER.MOTION_RECOMMENDATION_SECTIONS))
         self.assertIs(WORKER.validate(generated, [page], question=question), generated)
 
@@ -2508,6 +2509,33 @@ class StrategicAnalysisRetrievalTests(unittest.TestCase):
         self.assertIn("how to answer an opponent's motion", prompt["instructions"])
         self.assertEqual(sections, list(WORKER.MOTION_RESPONSE_SECTIONS))
         self.assertIs(WORKER.validate(generated, [page], question=question), generated)
+
+    def test_motion_recommendation_requires_each_direct_agency_record(self):
+        question = "I need to make a motion. Which motions should I consider?"
+        pages = [
+            {"source_sha256": "a" * 64, "filename": "Expert Report.pdf", "page_number": 1, "text": "Expert opinion."},
+            {"source_sha256": "b" * 64, "filename": "DEC Permit.pdf", "page_number": 2, "text": "NYSDEC Facility DECID 1-2824-03170 permit conditions."},
+            {"source_sha256": "c" * 64, "filename": "USACE Permit.pdf", "page_number": 3, "text": "U.S. Army Corps permit NAN-2016-00386."},
+            {"source_sha256": "d" * 64, "filename": "Survey.pdf", "page_number": 4, "text": "Survey measurements."},
+        ]
+        cites = [{key: page[key] for key in ("source_sha256", "filename", "page_number")} for page in pages]
+        result = {
+            "summary": "The record requires a measured procedural response.",
+            "findings": [
+                {"section": "Objective and posture", "statement": "The motion posture is unresolved.", "citations": [cites[0]], "authority_citations": []},
+                {"section": "Candidate motions", "statement": "A hearing request is the qualified option.", "citations": [cites[0]], "authority_citations": []},
+                {"section": "Record support", "statement": "The expert opinion is limited evidence.", "citations": [cites[0]], "authority_citations": []},
+                {"section": "Record support", "statement": "The DEC permit is direct regulatory evidence.", "citations": [cites[1]], "authority_citations": []},
+                {"section": "Record support", "statement": "The survey supplies measurement evidence.", "citations": [cites[3]], "authority_citations": []},
+                {"section": "Likely opposition", "statement": "The opponent will dispute the facts.", "citations": [cites[0]], "authority_citations": []},
+                {"section": "Gaps and prerequisites", "statement": "The USACE record must be analyzed.", "citations": [cites[0]], "authority_citations": []},
+                {"section": "Recommendation", "statement": "Do not file a merits motion now.", "citations": [cites[0]], "authority_citations": []},
+            ],
+            "missing_information": [],
+            "limitations": [],
+        }
+        with self.assertRaisesRegex(ValueError, "strategic direct agency records not analyzed: usace"):
+            WORKER.validate(result, pages, question=question)
 
     def test_motion_response_uses_its_record_analysis_sections_for_evidence_coverage(self):
         question = "My opponent filed this motion. How should I answer it?"
