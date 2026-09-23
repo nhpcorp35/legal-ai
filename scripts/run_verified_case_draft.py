@@ -2354,9 +2354,13 @@ def validate(result, pages, authorities=(), question="", coverage=None):
                 statement,
                 re.IGNORECASE,
             )
+            expert_account = (
+                "expert_opinion" in cited_types
+                or re.search(r"\b(?:expert|engineer|P\.?E\.?)\b", statement, re.IGNORECASE)
+            )
             if (
                 agency_terms
-                and "expert_opinion" in cited_types
+                and expert_account
                 and "regulatory_record" not in cited_types
                 and not re.search(
                     r"\bunderlying agency record is not cited\b",
