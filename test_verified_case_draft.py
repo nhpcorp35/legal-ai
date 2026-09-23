@@ -2257,6 +2257,7 @@ class StrategicAnalysisRetrievalTests(unittest.TestCase):
         self.assertEqual(context["page_classifications"][0]["expert_qualification_scope"], "design_or_technical")
         self.assertIn("issue_engine", context)
         self.assertIn("contradiction_engine", context)
+        self.assertIn("Each missing_information item must be a self-contained, complete sentence", prompt["instructions"])
 
     def test_john_framework_acceptance_requires_experts_dec_drawings_and_cited_authority(self):
         """Regression for the four gaps identified in the attorney's framework review."""
