@@ -2192,6 +2192,28 @@ class StrategicAnalysisRetrievalTests(unittest.TestCase):
         )
         self.assertIs(WORKER.validate(result, [page], question=self.QUESTION), result)
 
+    def test_strategic_validation_rejects_truncated_terminal_word(self):
+        page = {
+            "source_sha256": "a" * 64,
+            "filename": "Expert Report.pdf",
+            "page_number": 1,
+            "text": "Expert opinion.",
+        }
+        cite = {key: page[key] for key in ("source_sha256", "filename", "page_number")}
+        result = {
+            "summary": "The record requires a qualified assessment.",
+            "findings": [{
+                "section": section,
+                "statement": "The cited record supports this part of the assessment.",
+                "citations": [cite],
+                "authority_citations": [],
+            } for section in WORKER.STRATEGIC_ANALYSIS_SECTIONS],
+            "missing_information": ["The agency file could resolve the du."],
+            "limitations": [],
+        }
+        with self.assertRaisesRegex(ValueError, "incomplete output missing information invalid terminal"):
+            WORKER.validate(result, [page], question=self.QUESTION)
+
     def test_strategic_trigger_recognizes_decisive_defensibility_question(self):
         question = (
             "Identify the single factual and methodological finding most likely "

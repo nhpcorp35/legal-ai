@@ -2058,6 +2058,12 @@ LITIGATION_MAP_QUESTION_RE = re.compile(
 )
 INCOMPLETE_SENTENCE_RE = re.compile(r"(?:[,;:]|\b(?:and|or|the|a|an|to|of|for|with|by|from))\s*$", re.IGNORECASE)
 CLOSING_SENTENCE_MARK_RE = re.compile(r"[\'’\"”]\s*$")
+TRUNCATED_TERMINAL_WORD_RE = re.compile(r"\b([a-z]{1,2})\.$", re.IGNORECASE)
+VALID_SHORT_TERMINAL_WORDS = frozenset({
+    "a", "an", "as", "at", "by", "do", "go", "he", "if", "in", "is",
+    "it", "me", "my", "no", "of", "oh", "on", "or", "so", "to", "up",
+    "us", "we",
+})
 UNSELECTED_PAGES_MISSING_RE = re.compile(
     r"\b(?:pages?|pp?\.)\s*\d+(?:\s*[-–—]\s*\d+)?\s+(?:was|were|is|are)?\s*"
     r"(?:not\s+supplied|not\s+provided|missing|absent|unavailable)\b",
@@ -2266,6 +2272,11 @@ def validate(result, pages, authorities=(), question="", coverage=None):
                 or not item.strip()
                 or item.strip()[-1] not in ".?!"
                 or INCOMPLETE_SENTENCE_RE.search(item.strip())
+                or (
+                    (terminal_fragment := TRUNCATED_TERMINAL_WORD_RE.search(item.strip()))
+                    and terminal_fragment.group(1).casefold()
+                    not in VALID_SHORT_TERMINAL_WORDS
+                )
             ):
                 raise ValueError(f"incomplete output {label} invalid terminal")
         if any(UNSELECTED_PAGES_MISSING_RE.search(item) for item in text_items):
