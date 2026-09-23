@@ -154,7 +154,8 @@ STRATEGIC_ANALYSIS_QUESTION_RE = re.compile(
     r"summary[ -]?judgment\s+prospects?|attack\s+surfaces?|"
     r"motions?\s+(?:should|could|can)\s+(?:i|we|counsel)|"
     r"motions?\s+(?:to\s+)?consider|answer\s+(?:the\s+)?motion|"
-    r"oppose\s+(?:the\s+)?motion|respond\s+to\s+(?:the\s+)?motion)\b",
+    r"oppose\s+(?:the\s+)?motion|respond\s+to\s+(?:the\s+)?motion|"
+    r"(?:my\s+)?opponent\s+(?:made|filed)\s+(?:this\s+)?motion)\b",
     re.IGNORECASE,
 )
 STRATEGIC_SOURCE_FILENAME_RE = re.compile(
@@ -2259,7 +2260,7 @@ def generate(question, pages, coverage=None, authorities=None):
         if reasoning_mode == "motion_recommendation":
             instructions += " The attorney asks which motions to consider. Use every section in this exact order: Objective and posture; Candidate motions; Record support; Likely opposition; Gaps and prerequisites; Recommendation. Identify only motions supported by the verified posture and record. For each candidate, state the target, required showing only when verified authority supplies it, record support, strongest opposition, prerequisite proof or procedural step, and comparative reason to prioritize or reject it. When the supplied record includes expert opinion, a direct regulatory record, or drawing/measurement evidence, return three separate Record support findings before Likely opposition: one citing expert evidence, one citing the direct regulatory record, and one citing visual or measurement evidence. Do not combine or omit those categories, and do not put their analysis only in another section. When the supplied direct regulatory records identify more than one agency, cite and analyze each agency's record; an expert's account or a subpoena request cannot substitute for the direct record. If the exact signed TRO terms, duration, or current status are unresolved, do not recommend filing a TRO-modification motion now; instead identify the order as a prerequisite and limit any recommendation to preserving rights, obtaining the order, or seeking a record-supported conference or hearing. Do not recommend a motion merely because the record mentions its name. Keep each finding below 150 words and end it with a complete sentence; never end a finding with a connector, comma, colon, or semicolon. The summary must directly identify the best-supported motion option or state that the verified record is not yet sufficient to choose one."
         elif reasoning_mode == "motion_response":
-            instructions += " The attorney asks how to answer an opponent's motion. Use every section in this exact order: Motion and burden; Opponent showing; Response grounds; Evidence to submit; Procedural objections; Recommendation. Identify the relief sought and procedural posture, test each asserted ground against the verified record, separate merits responses from procedural objections, identify admissible or first-hand proof to submit, and rank the strongest response. Do not invent a deadline, burden, element, or doctrine not supplied by verified authority."
+            instructions += " The attorney asks how to answer an opponent's motion. Use every section in this exact order: Motion and burden; Opponent showing; Response grounds; Evidence to submit; Procedural objections; Recommendation. Identify the relief sought and procedural posture, test each asserted ground against the verified record, separate merits responses from procedural objections, identify admissible or first-hand proof to submit, and rank the strongest response. When supplied direct regulatory records identify more than one agency, cite and analyze each agency's record in the record-analysis sections; an expert's account or a subpoena request cannot substitute for a direct record. Do not invent a deadline, burden, element, or doctrine not supplied by verified authority."
         else:
             instructions += " Use all four sections in this order: Case framework; Evidence; Competing positions; Assessment. Each section must appear at least once; multiple findings within a section are allowed but sections must never move backward. First identify who is who and the material property, transaction, event, or physical layout. Then extract the concrete opinions and factual premises from each expert or fact witness, including measurements and regulatory constraints. Compare the parties' best arguments point by point, identifying the evidence and law each side cites. Rank the material weaknesses or strengths, explain why each affects the requested party, give the strongest counterargument, and state the unresolved fact or authority that could change the assessment."
         instructions += " Do not merely say that interference, breach, causation, or another element is shown; explain the specific evidence and competing position. The summary must answer the question directly in no more than 90 words. Return no more than eight findings and avoid repeating the same fact in multiple sections. Each missing_information item must be a self-contained, complete sentence describing one specific record, fact, or authority that could change the assessment. Before returning JSON, verify that every missing_information item ends with a period, question mark, or exclamation point and never ends with a connector such as and, or, but, because, or a comma."
@@ -2489,7 +2490,12 @@ def validate(result, pages, authorities=(), question="", coverage=None):
                 "strategic evidence categories not analyzed: "
                 + ", ".join(sorted(missing_evidence_types))
             )
-        if question_mode(question) == "motion_recommendation":
+        if question_mode(question) in {"motion_recommendation", "motion_response"}:
+            agency_sections = (
+                {"Record support"}
+                if question_mode(question) == "motion_recommendation"
+                else {"Opponent showing", "Response grounds", "Evidence to submit"}
+            )
             required_agencies = {
                 issuer
                 for page in pages
@@ -2498,7 +2504,7 @@ def validate(result, pages, authorities=(), question="", coverage=None):
             cited_agencies = {
                 issuer
                 for finding in result["findings"]
-                if finding.get("section") == "Record support"
+                if finding.get("section") in agency_sections
                 for cite in finding["citations"]
                 for page in pages
                 if (page["source_sha256"], page["filename"], page["page_number"])
