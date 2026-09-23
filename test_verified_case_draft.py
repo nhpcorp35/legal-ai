@@ -2320,6 +2320,7 @@ class StrategicAnalysisRetrievalTests(unittest.TestCase):
         self.assertIn("Analyze supplied DEC", prompt["instructions"])
         self.assertIn("drawings, surveys, plans, photographs, and measurements", prompt["instructions"])
         self.assertIn("cases and rules cited in party filings as attributed positions", prompt["instructions"])
+        self.assertIn("underlying agency record itself is cited", prompt["instructions"])
 
     def test_motion_recommendation_has_dedicated_contract(self):
         question = "I need to make a motion. Which motions should I consider?"
