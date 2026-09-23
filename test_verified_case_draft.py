@@ -2192,6 +2192,32 @@ class StrategicAnalysisRetrievalTests(unittest.TestCase):
         )
         self.assertIs(WORKER.validate(result, [page], question=self.QUESTION), result)
 
+    def test_strategic_validation_rejects_expert_agency_claim_cited_only_to_affirmation(self):
+        page = {
+            "source_sha256": "a" * 64,
+            "filename": "Affidavit or Affirmation.pdf",
+            "page_number": 3,
+            "text": "Affirmation attaching an engineer report.",
+        }
+        cite = {key: page[key] for key in ("source_sha256", "filename", "page_number")}
+        result = {
+            "summary": "The record requires a qualified assessment.",
+            "findings": [{
+                "section": section,
+                "statement": (
+                    "The engineering expert describes a DEC permit and says the agency record is cited by identifier."
+                    if section == "Evidence"
+                    else "The cited record supports this part of the assessment."
+                ),
+                "citations": [cite],
+                "authority_citations": [],
+            } for section in WORKER.STRATEGIC_ANALYSIS_SECTIONS],
+            "missing_information": [],
+            "limitations": [],
+        }
+        with self.assertRaisesRegex(ValueError, "expert agency account lacks source-status disclosure"):
+            WORKER.validate(result, [page], question=self.QUESTION)
+
     def test_strategic_validation_rejects_truncated_terminal_word(self):
         page = {
             "source_sha256": "a" * 64,
