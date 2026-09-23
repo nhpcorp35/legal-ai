@@ -13,8 +13,9 @@ from unittest import mock
 sys.modules.setdefault("boto3", types.SimpleNamespace(client=None))
 os.environ.setdefault("B2_BUCKET", "test-bucket")
 MODULE_PATH = pathlib.Path(__file__).with_name("scripts") / "run_verified_case_draft.py"
-SPEC = importlib.util.spec_from_file_location("verified_case_draft", MODULE_PATH)
+SPEC = importlib.util.spec_from_file_location("scripts.run_verified_case_draft", MODULE_PATH)
 WORKER = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = WORKER
 SPEC.loader.exec_module(WORKER)
 
 CASE00_PATH = pathlib.Path(__file__).with_name("scripts") / "run_case00_internal_draft.py"
@@ -2132,6 +2133,33 @@ class StrategicAnalysisRetrievalTests(unittest.TestCase):
         }
         with self.assertRaisesRegex(ValueError, "party positions placed in evidence"):
             WORKER.validate(result, [page], question=self.QUESTION)
+
+    def test_strategic_validation_requires_material_record_categories_in_evidence(self):
+        pages = [
+            {"source_sha256": "a" * 64, "filename": "Austin Expert Report.pdf", "page_number": 4, "text": "Professional engineer gives an expert opinion."},
+            {"source_sha256": "b" * 64, "filename": "DEC Permit File.pdf", "page_number": 12, "text": "Department of Environmental Conservation permit and inspection."},
+            {"source_sha256": "c" * 64, "filename": "Dock Layout Drawing.pdf", "page_number": 2, "text": "Survey drawing shows measurements and turning space."},
+        ]
+        citations = [
+            {key: page[key] for key in ("source_sha256", "filename", "page_number")}
+            for page in pages
+        ]
+        result = {
+            "summary": "The record requires a comparative assessment.",
+            "findings": [{
+                "section": section,
+                "statement": "The cited record supports this part of the assessment.",
+                "citations": [citations[0]],
+                "authority_citations": [],
+            } for section in WORKER.STRATEGIC_ANALYSIS_SECTIONS],
+            "missing_information": [],
+            "limitations": [],
+        }
+        with self.assertRaisesRegex(ValueError, "strategic evidence categories not analyzed"):
+            WORKER.validate(result, pages, question=self.QUESTION)
+
+        result["findings"][1]["citations"] = citations
+        self.assertIs(WORKER.validate(result, pages, question=self.QUESTION), result)
 
     def test_strategic_trigger_recognizes_decisive_defensibility_question(self):
         question = (

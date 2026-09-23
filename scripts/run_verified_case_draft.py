@@ -21,8 +21,10 @@ from engines.litigation_reasoning import (
     MOTION_RECOMMENDATION_RE,
     MOTION_RESPONSE_RE,
     build_reasoning_context,
+    classify_page,
     question_mode,
 )
+from engines.verified_authority_registry import match_verified_authorities
 
 MAX_PAGES, MAX_PAGE_CHARS, MAX_CONTEXT_CHARS = 45, 2200, 75000
 CONSOLIDATED_MAX_PAGES, CONSOLIDATED_MAX_CONTEXT_CHARS = 80, 130000
@@ -2328,6 +2330,40 @@ def validate(result, pages, authorities=(), question="", coverage=None):
             if ({"plaintiff", "plaintiffs"}.intersection(position_parties)
                     and {"defendant", "defendants"}.intersection(position_parties)):
                 raise ValueError("party positions placed in evidence")
+        # A strategic answer cannot satisfy the attorney's request by merely
+        # naming material record categories.  When the bounded record supplies
+        # an expert opinion, an agency/regulatory record, or a drawing/
+        # measurement source, the Evidence section must actually cite each
+        # supplied category.  This remains record-bound and does not impose a
+        # category that the retrieval did not return.
+        citation_types = {
+            (page["source_sha256"], page["filename"], page["page_number"]):
+            classify_page(page)["source_type"]
+            for page in pages
+        }
+        required_evidence_types = {
+            source_type
+            for source_type in citation_types.values()
+            if source_type in {
+                "expert_opinion",
+                "regulatory_record",
+                "visual_or_measurement_evidence",
+            }
+        }
+        evidence_types_used = {
+            citation_types.get(
+                (cite.get("source_sha256"), cite.get("filename"), cite.get("page_number"))
+            )
+            for finding in result["findings"]
+            if finding.get("section") == "Evidence"
+            for cite in finding["citations"]
+        }
+        missing_evidence_types = required_evidence_types - evidence_types_used
+        if missing_evidence_types:
+            raise ValueError(
+                "strategic evidence categories not analyzed: "
+                + ", ".join(sorted(missing_evidence_types))
+            )
         sections = [item.get("section") for item in result["findings"]]
         expected_sections = (
             MOTION_RECOMMENDATION_SECTIONS
