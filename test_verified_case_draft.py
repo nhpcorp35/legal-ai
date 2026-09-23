@@ -2001,6 +2001,31 @@ class StrategicAnalysisRetrievalTests(unittest.TestCase):
         ):
             self.assertIn(expected, selected)
 
+    def test_motion_packet_reserves_primary_posture_and_agency_records_before_expert_overflow(self):
+        """A crowded expert record cannot displace the actual TRO or permit."""
+        class CrowdedStrategicS3(FakeS3):
+            pages = [
+                {"filename": "Plaintiff Expert Affidavit.pdf", "page_number": page,
+                 "text": "Licensed professional engineer gives an expert opinion about access."}
+                for page in range(1, 31)
+            ] + [
+                {"filename": "Order to Show Cause.pdf", "page_number": 2,
+                 "text": "ORDER TO SHOW CAUSE: temporary restraining order pending determination of preliminary injunction."},
+                {"filename": "Exhibit S 27.pdf", "page_number": 6,
+                 "text": "NEW YORK STATE DEPARTMENT OF ENVIRONMENTAL CONSERVATION Facility DECID 1-2824-03170 permit conditions."},
+                {"filename": "Exhibit S 28.pdf", "page_number": 2,
+                 "text": "UNITED STATES ARMY CORPS OF ENGINEERS Regulatory Branch permit NAN-2016-00386 authorization."},
+            ]
+        selected = WORKER.evidence(
+            CrowdedStrategicS3(),
+            "NY-Suffolk-600371-2021-DeSousa-v-Calvagno-II-Karcher",
+            "I need to make a motion. Which motions should I consider?",
+        )
+        filenames = {page["filename"] for page in selected}
+        self.assertIn("Order to Show Cause.pdf", filenames)
+        self.assertIn("Exhibit S 27.pdf", filenames)
+        self.assertIn("Exhibit S 28.pdf", filenames)
+
     def test_expert_document_pages_are_expanded_and_balanced(self):
         class ExpertDocumentsS3(FakeS3):
             pages = [
