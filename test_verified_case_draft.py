@@ -827,6 +827,15 @@ class PendingQueueTests(unittest.TestCase):
             "incomplete_output_counterclaims_and_cross_claims_connector_ended",
         )
 
+        strategic_coverage = WORKER.failure_diagnostics(
+            ValueError("strategic evidence categories not analyzed: expert_opinion"),
+            "model_validation",
+        )
+        self.assertEqual(
+            strategic_coverage["validation_reason"],
+            "strategic_evidence_categories_not_analyzed",
+        )
+
         unknown = WORKER.failure_diagnostics(
             ValueError("private model output"),
             "model_validation",
