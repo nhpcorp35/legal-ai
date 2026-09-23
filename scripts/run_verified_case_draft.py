@@ -214,6 +214,33 @@ STRATEGIC_ADVOCACY_FILENAME_RE = re.compile(
     r"\b(?:affidavit|affirmation|memorandum|memo|brief|report)\b",
     re.IGNORECASE,
 )
+DIRECT_NYSDEC_RECORD_RE = re.compile(
+    r"(?:New\s*York\s*State\s*Department\s*of\s*Environmental\s*Conservation|"
+    r"NYS\s*DEC|DECID\s*(?:No\.?|#)?\s*[0-9-]+)",
+    re.IGNORECASE,
+)
+DIRECT_USACE_RECORD_RE = re.compile(
+    r"(?:United\s*States\s*Army\s*Corps\s*of\s*Engineers|"
+    r"U\.?S\.?\s*Army\s*Corps|NAN-\d{4}-\d+)",
+    re.IGNORECASE,
+)
+
+
+def direct_agency_issuer(page):
+    """Return a directly identified regulatory-record issuer."""
+    filename = str(page.get("filename") or "")
+    text = str(page.get("text") or "")
+    if (
+        STRATEGIC_ADVOCACY_FILENAME_RE.search(filename)
+        or classify_page(page)["source_type"] != "regulatory_record"
+    ):
+        return None
+    if DIRECT_NYSDEC_RECORD_RE.search(text):
+        return "nysdec"
+    if DIRECT_USACE_RECORD_RE.search(text):
+        return "usace"
+    return None
+
 V4_PROCEDURAL_ORDER_TEXT_RE = re.compile(r"\b(?:death|deceased|substitut(?:e|ion)|representative|jurisdiction)\b", re.IGNORECASE)
 PROCEDURAL_POSTURE_QUESTION_RE = re.compile(
     r"\b(?:death|deceased|substitut(?:e|ion)|representative|jurisdiction|"
@@ -354,6 +381,7 @@ MODEL_VALIDATION_REASONS = frozenset({
     "party_positions_placed_in_evidence",
     "expert_agency_account_lacks_source_status_disclosure",
     "strategic_evidence_categories_not_analyzed",
+    "strategic_direct_agency_records_not_analyzed",
     "uncited_output",
     "unverified_authority_citation",
     "unverified_citation",
@@ -804,6 +832,8 @@ def failure_diagnostics(exc, stage):
         validation_reason = str(exc).strip().casefold().replace("-", " ").replace(" ", "_")
         if validation_reason.startswith("strategic_evidence_categories_not_analyzed:"):
             validation_reason = "strategic_evidence_categories_not_analyzed"
+        if validation_reason.startswith("strategic_direct_agency_records_not_analyzed:"):
+            validation_reason = "strategic_direct_agency_records_not_analyzed"
         details["validation_reason"] = (
             validation_reason
             if validation_reason in MODEL_VALIDATION_REASONS
@@ -2227,7 +2257,7 @@ def generate(question, pages, coverage=None, authorities=None):
     elif strategic_question:
         instructions += " For this strategic-analysis question, the following instructions override the earlier compact litigation-map format. Give a direct attorney answer, not a source list. Treat the supplied litigation_reasoning_context as deterministic routing and classification metadata only, never as independent proof. Expert opinion is evidence, not law; distinguish design or technical experience from regulatory experience. Analyze supplied DEC or other regulatory material and supplied drawings, surveys, plans, photographs, and measurements instead of calling them missing. Weigh cases and rules cited in party filings as attributed positions unless independently supplied in legal_authorities. In the Evidence section, describe the source, its methodology or factual content, and its limits only; put both sides' allegations, denials, and advocacy in Competing positions. For each expert account of DEC or other agency material, state whether the underlying agency record itself is cited or whether the point rests only on the expert's description; never describe the latter as an agency finding or adjudication. When no direct agency-record citation supports that expert account, state exactly: 'Underlying agency record is not cited.'"
         if reasoning_mode == "motion_recommendation":
-            instructions += " The attorney asks which motions to consider. Use every section in this exact order: Objective and posture; Candidate motions; Record support; Likely opposition; Gaps and prerequisites; Recommendation. Identify only motions supported by the verified posture and record. For each candidate, state the target, required showing only when verified authority supplies it, record support, strongest opposition, prerequisite proof or procedural step, and comparative reason to prioritize or reject it. When the supplied record includes expert opinion, a direct regulatory record, or drawing/measurement evidence, return three separate Record support findings before Likely opposition: one citing expert evidence, one citing the direct regulatory record, and one citing visual or measurement evidence. Do not combine or omit those categories, and do not put their analysis only in another section. If the exact signed TRO terms, duration, or current status are unresolved, do not recommend filing a TRO-modification motion now; instead identify the order as a prerequisite and limit any recommendation to preserving rights, obtaining the order, or seeking a record-supported conference or hearing. Do not recommend a motion merely because the record mentions its name. Keep each finding below 150 words and end it with a complete sentence; never end a finding with a connector, comma, colon, or semicolon. The summary must directly identify the best-supported motion option or state that the verified record is not yet sufficient to choose one."
+            instructions += " The attorney asks which motions to consider. Use every section in this exact order: Objective and posture; Candidate motions; Record support; Likely opposition; Gaps and prerequisites; Recommendation. Identify only motions supported by the verified posture and record. For each candidate, state the target, required showing only when verified authority supplies it, record support, strongest opposition, prerequisite proof or procedural step, and comparative reason to prioritize or reject it. When the supplied record includes expert opinion, a direct regulatory record, or drawing/measurement evidence, return three separate Record support findings before Likely opposition: one citing expert evidence, one citing the direct regulatory record, and one citing visual or measurement evidence. Do not combine or omit those categories, and do not put their analysis only in another section. When the supplied direct regulatory records identify more than one agency, cite and analyze each agency's record; an expert's account or a subpoena request cannot substitute for the direct record. If the exact signed TRO terms, duration, or current status are unresolved, do not recommend filing a TRO-modification motion now; instead identify the order as a prerequisite and limit any recommendation to preserving rights, obtaining the order, or seeking a record-supported conference or hearing. Do not recommend a motion merely because the record mentions its name. Keep each finding below 150 words and end it with a complete sentence; never end a finding with a connector, comma, colon, or semicolon. The summary must directly identify the best-supported motion option or state that the verified record is not yet sufficient to choose one."
         elif reasoning_mode == "motion_response":
             instructions += " The attorney asks how to answer an opponent's motion. Use every section in this exact order: Motion and burden; Opponent showing; Response grounds; Evidence to submit; Procedural objections; Recommendation. Identify the relief sought and procedural posture, test each asserted ground against the verified record, separate merits responses from procedural objections, identify admissible or first-hand proof to submit, and rank the strongest response. Do not invent a deadline, burden, element, or doctrine not supplied by verified authority."
         else:
@@ -2459,6 +2489,28 @@ def validate(result, pages, authorities=(), question="", coverage=None):
                 "strategic evidence categories not analyzed: "
                 + ", ".join(sorted(missing_evidence_types))
             )
+        if question_mode(question) == "motion_recommendation":
+            required_agencies = {
+                issuer
+                for page in pages
+                if (issuer := direct_agency_issuer(page)) is not None
+            }
+            cited_agencies = {
+                issuer
+                for finding in result["findings"]
+                if finding.get("section") == "Record support"
+                for cite in finding["citations"]
+                for page in pages
+                if (page["source_sha256"], page["filename"], page["page_number"])
+                == (cite.get("source_sha256"), cite.get("filename"), cite.get("page_number"))
+                if (issuer := direct_agency_issuer(page)) is not None
+            }
+            missing_agencies = required_agencies - cited_agencies
+            if missing_agencies:
+                raise ValueError(
+                    "strategic direct agency records not analyzed: "
+                    + ", ".join(sorted(missing_agencies))
+                )
         sections = [item.get("section") for item in result["findings"]]
         expected_sections = (
             MOTION_RECOMMENDATION_SECTIONS
