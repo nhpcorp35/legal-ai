@@ -2481,6 +2481,29 @@ class StrategicAnalysisRetrievalTests(unittest.TestCase):
         self.assertEqual(sections, list(WORKER.MOTION_RESPONSE_SECTIONS))
         self.assertIs(WORKER.validate(generated, [page], question=question), generated)
 
+    def test_motion_response_uses_its_record_analysis_sections_for_evidence_coverage(self):
+        question = "My opponent filed this motion. How should I answer it?"
+        pages = [
+            {"source_sha256": "a" * 64, "filename": "Expert Report.pdf", "page_number": 1, "text": "Expert opinion."},
+            {"source_sha256": "b" * 64, "filename": "DEC Permit File.pdf", "page_number": 2, "text": "DEC permit record."},
+            {"source_sha256": "c" * 64, "filename": "Survey Drawing.pdf", "page_number": 3, "text": "Survey measurements."},
+        ]
+        citations = [{key: page[key] for key in ("source_sha256", "filename", "page_number")} for page in pages]
+        result = {
+            "summary": "The response requires a record-supported analysis.",
+            "findings": [{
+                "section": section,
+                "statement": "The cited record supports this response section.",
+                "citations": [
+                    citations[0 if section == "Opponent showing" else 1 if section == "Response grounds" else 2 if section == "Evidence to submit" else 0]
+                ],
+                "authority_citations": [],
+            } for section in WORKER.MOTION_RESPONSE_SECTIONS],
+            "missing_information": [],
+            "limitations": [],
+        }
+        self.assertIs(WORKER.validate(result, pages, question=question), result)
+
 
 class AttackSurfaceRetrievalTests(unittest.TestCase):
     def test_v4_prompt_requires_named_party_propositions_and_two_sided_citations(self):
