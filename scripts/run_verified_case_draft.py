@@ -2377,7 +2377,7 @@ def validate(result, pages, authorities=(), question="", coverage=None):
         # A strategic answer cannot satisfy the attorney's request by merely
         # naming material record categories.  When the bounded record supplies
         # an expert opinion, an agency/regulatory record, or a drawing/
-        # measurement source, the Evidence section must actually cite each
+        # measurement source, the record-analysis sections must actually cite each
         # supplied category.  This remains record-bound and does not impose a
         # category that the retrieval did not return.
         citation_types = {
@@ -2394,12 +2394,19 @@ def validate(result, pages, authorities=(), question="", coverage=None):
                 "visual_or_measurement_evidence",
             }
         }
+        evidence_sections = (
+            {"Record support"}
+            if question_mode(question) == "motion_recommendation"
+            else {"Opponent showing", "Response grounds", "Evidence to submit"}
+            if question_mode(question) == "motion_response"
+            else {"Evidence"}
+        )
         evidence_types_used = {
             citation_types.get(
                 (cite.get("source_sha256"), cite.get("filename"), cite.get("page_number"))
             )
             for finding in result["findings"]
-            if finding.get("section") == "Evidence"
+            if finding.get("section") in evidence_sections
             for cite in finding["citations"]
         }
         missing_evidence_types = required_evidence_types - evidence_types_used
