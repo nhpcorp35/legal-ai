@@ -2397,6 +2397,10 @@ def run_framework_evidence_check(case_id):
 
 CASE00_ID = "Case-00-Triborough"
 RENNICK_FRAMEWORK_CASE_ID = "NY-Nassau-613561-2026-Desousa-v-Rennick"
+RENNICK_ATTORNEY_REVIEW_PACKET_DRAFT_IDS = (
+    "draft-1790197401-83c56c655ec5",
+    "draft-1790200223-c52acd236d81",
+)
 TOP_ATTACK_SURFACES_QUESTION = (
     "Prepare the v4.0 Top Attack Surfaces Report from the verified record. "
     "Rank the most material source-supported attack surfaces, limited to: "
@@ -4092,6 +4096,13 @@ def attorney_workspace():
                             "url": f"/workspace/matters/{matter_url}/framework-evidence",
                         }
                     )
+                    questions.append(
+                        {
+                            "id": "Attorney review packet",
+                            "label": "Review the finalized motion recommendation and response analyses.",
+                            "url": f"/workspace/matters/{matter_url}/review-packet",
+                        }
+                    )
                 if answered_count:
                     questions.append(
                         {
@@ -4582,6 +4593,43 @@ def workspace_matter_drafts(case_id):
         case_id=case_id,
         answered=answered,
         reviewer=reviewer,
+    )
+
+
+@app.route("/workspace/matters/<path:case_id>/review-packet")
+def workspace_rennick_attorney_review_packet(case_id):
+    """Show the two finalized Rennick analyses in one protected review page."""
+    if basic_review_user() is None:
+        return basic_auth_required_response()
+    if case_id != RENNICK_FRAMEWORK_CASE_ID:
+        abort(404)
+    packet_items = []
+    for request_id in RENNICK_ATTORNEY_REVIEW_PACKET_DRAFT_IDS:
+        item = load_exact_draft_request(case_id, request_id)
+        if (
+            item is None
+            or item.get("status") != "READY"
+            or not isinstance(item.get("question"), str)
+            or not isinstance(item.get("draft"), dict)
+        ):
+            return Response(
+                "The attorney review packet is temporarily unavailable. Please try again shortly.",
+                status=503,
+                mimetype="text/plain",
+                headers={"Cache-Control": "no-store"},
+            )
+        packet_items.append(
+            {
+                "item": item,
+                "finding_sections": group_attorney_findings(
+                    findings_with_verified_authorities(item["draft"].get("findings", []))
+                ),
+            }
+        )
+    return render_template_string(
+        """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Rennick Attorney Review Packet</title><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:960px;margin:0 auto;padding:42px 24px 64px}a{color:#123f63}h1{margin:0 0 8px;font-size:clamp(2rem,5vw,3rem)}h2{margin:30px 0 9px;color:#123f63}h3{margin:24px 0 8px;color:#123f63;font-size:1.2rem}p,li{font-size:1.05rem;line-height:1.55}.meta{color:#52606d}.panel{background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:22px;margin-top:24px;box-shadow:0 2px 8px #0f172a10}.notice{border-left:5px solid #123f63;background:#eef6fc}.source-label{font-size:.9rem;margin:9px 0 0;color:#52606d}.citation-list{list-style:none;margin:7px 0 0;padding:0}.citation-list li{font-size:.9rem;line-height:1.35;margin:4px 0}.citation-list a{overflow-wrap:anywhere}.actions{display:flex;gap:18px;flex-wrap:wrap}.actions a{font-weight:bold}</style></head><body><main><p><a href="/workspace">← Attorney workspace</a></p><h1>Rennick Attorney Review Packet</h1><p class="meta">NY-Nassau-613561-2026-Desousa-v-Rennick</p><section class="panel notice"><p><strong>Attorney review required.</strong> This packet presents the two finalized, source-supported analyses for review. It does not determine disputed facts, legal conclusions, or filing strategy.</p></section>{% for packet in packet_items %}{% set item = packet.item %}<section class="panel"><h2>{{ item.question }}</h2><p><strong>Summary</strong><br>{{ item.draft.summary }}</p><p class="actions"><a href="{{ url_for('workspace_matter_draft_detail', case_id=case_id, request_id=item.request_id) }}">Open full verified analysis →</a><a href="{{ url_for('workspace_matter_draft_audit', case_id=case_id, request_id=item.request_id) }}">View retrieval audit →</a></p>{% for group in packet.finding_sections %}{% if group.name %}<h3>{{ group.name }}</h3>{% endif %}<ul>{% for finding in group.findings %}<li>{{ finding.statement }}{% if finding.citations %}<p class="source-label"><strong>Verified record</strong></p><ul class="citation-list">{% for cite in finding.citations %}<li><a href="{{ url_for('workspace_matter_pdf', case_id=case_id, filename=cite.filename, source_sha256=cite.source_sha256) }}#page={{ cite.page_number }}" target="_blank" rel="noopener">Open verified source — p. {{ cite.page_number }} · {{ cite.filename|truncate(72, True, '…') }}</a></li>{% endfor %}</ul>{% endif %}{% if finding.authorities %}<p class="source-label"><strong>Legal authority</strong></p><ul class="citation-list">{% for authority in finding.authorities %}<li><a href="{{ authority.source_url }}" target="_blank" rel="noopener">{{ authority.title }} — {{ authority.citation }}</a></li>{% endfor %}</ul>{% endif %}</li>{% endfor %}</ul>{% endfor %}{% if item.draft.missing_information %}<h3>Missing information</h3><ul>{% for entry in item.draft.missing_information %}<li>{{ entry }}</li>{% endfor %}</ul>{% endif %}</section>{% endfor %}</main></body></html>""",
+        case_id=case_id,
+        packet_items=packet_items,
     )
 
 
