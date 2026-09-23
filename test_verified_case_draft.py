@@ -2016,15 +2016,19 @@ class StrategicAnalysisRetrievalTests(unittest.TestCase):
                 {"filename": "Exhibit S 28.pdf", "page_number": 2,
                  "text": "UNITED STATES ARMY CORPS OF ENGINEERS Regulatory Branch permit NAN-2016-00386 authorization."},
             ]
-        selected = WORKER.evidence(
-            CrowdedStrategicS3(),
-            "NY-Suffolk-600371-2021-DeSousa-v-Calvagno-II-Karcher",
+        for question in (
             "I need to make a motion. Which motions should I consider?",
-        )
-        filenames = {page["filename"] for page in selected}
-        self.assertIn("Order to Show Cause.pdf", filenames)
-        self.assertIn("Exhibit S 27.pdf", filenames)
-        self.assertIn("Exhibit S 28.pdf", filenames)
+            "My opponent made a motion. How should I answer it?",
+        ):
+            selected = WORKER.evidence(
+                CrowdedStrategicS3(),
+                "NY-Suffolk-600371-2021-DeSousa-v-Calvagno-II-Karcher",
+                question,
+            )
+            filenames = {page["filename"] for page in selected}
+            self.assertIn("Order to Show Cause.pdf", filenames)
+            self.assertIn("Exhibit S 27.pdf", filenames)
+            self.assertIn("Exhibit S 28.pdf", filenames)
 
     def test_expert_document_pages_are_expanded_and_balanced(self):
         class ExpertDocumentsS3(FakeS3):
