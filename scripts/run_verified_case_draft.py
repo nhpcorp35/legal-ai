@@ -199,7 +199,8 @@ STRATEGIC_EXPERT_PAGES_PER_DOCUMENT = 6
 STRATEGIC_PROCEDURAL_PAGE_LIMIT = 5
 STRATEGIC_REGULATORY_PAGE_LIMIT = 4
 STRATEGIC_PROCEDURAL_RECORD_RE = re.compile(
-    r"\b(?:order\s+to\s+show\s+cause|temporary\s+restraining\s+order|"
+    r"\b(?:order[\s_]+to[\s_]+show[\s_]+cause|temporary\s+restraining\s+order|"
+    r"temporarily\s+restrained|restrained\s+and\s+enjoined|"
     r"\bTRO\b|preliminary\s+injunction|notice\s+of\s+motion|"
     r"undertaking|bond)\b",
     re.IGNORECASE,
