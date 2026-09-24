@@ -2034,9 +2034,9 @@ class StrategicAnalysisRetrievalTests(unittest.TestCase):
                  "text": "Licensed professional engineer gives an expert opinion about access."}
                 for page in range(1, 31)
             ] + [
-                {"filename": "ORDER_TO_SHOW_CAUSE_32.pdf", "page_number": 2,
+                {"filename": "613561_2026_MICHAEL_DESOUSA_et_al_v_GEORGE_RENNICK_et_al_ORDER_TO_SHOW_CAUSE_32.pdf", "page_number": 2,
                  "text": "ORDER TO SHOW CAUSE: temporary restraining order pending determination of preliminary injunction."},
-                {"filename": "ORDER_TO_SHOW_CAUSE_32.pdf", "page_number": 3,
+                {"filename": "613561_2026_MICHAEL_DESOUSA_et_al_v_GEORGE_RENNICK_et_al_ORDER_TO_SHOW_CAUSE_32.pdf", "page_number": 3,
                  "text": "Defendants are temporarily restrained and enjoined from mooring or maintaining a vessel that blocks access."},
                 {"filename": "Exhibit S 27.pdf", "page_number": 6,
                  "text": "NEW YORK STATE DEPARTMENT OF ENVIRONMENTAL CONSERVATION Facility DECID 1-2824-03170 permit conditions."},
@@ -2053,9 +2053,9 @@ class StrategicAnalysisRetrievalTests(unittest.TestCase):
                 question,
             )
             filenames = {page["filename"] for page in selected}
-            self.assertIn("ORDER_TO_SHOW_CAUSE_32.pdf", filenames)
+            self.assertIn("613561_2026_MICHAEL_DESOUSA_et_al_v_GEORGE_RENNICK_et_al_ORDER_TO_SHOW_CAUSE_32.pdf", filenames)
             self.assertIn(
-                ("ORDER_TO_SHOW_CAUSE_32.pdf", 3),
+                ("613561_2026_MICHAEL_DESOUSA_et_al_v_GEORGE_RENNICK_et_al_ORDER_TO_SHOW_CAUSE_32.pdf", 3),
                 {(page["filename"], page["page_number"]) for page in selected},
             )
             self.assertIn("Exhibit S 27.pdf", filenames)
