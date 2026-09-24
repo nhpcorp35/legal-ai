@@ -2513,6 +2513,34 @@ class StrategicAnalysisRetrievalTests(unittest.TestCase):
         self.assertEqual(sections, list(WORKER.MOTION_RECOMMENDATION_SECTIONS))
         self.assertIs(WORKER.validate(generated, [page], question=question), generated)
 
+    def test_motion_recommendation_uses_selected_operative_tro_terms(self):
+        question = "I need to make a motion. Which motions should I consider?"
+        page = {
+            "source_sha256": "a" * 64,
+            "filename": "ORDER_TO_SHOW_CAUSE_32.pdf",
+            "page_number": 3,
+            "text": "Defendants are temporarily restrained and enjoined from mooring a vessel that blocks navigational access.",
+        }
+        cite = {key: page[key] for key in ("source_sha256", "filename", "page_number")}
+        result = {
+            "summary": "The operative restraint should guide the immediate recommendation.",
+            "findings": [
+                {"section": section, "statement": "The signed order supplies the cited procedural support.", "citations": [cite], "authority_citations": []}
+                for section in WORKER.MOTION_RECOMMENDATION_SECTIONS
+            ],
+            "missing_information": [],
+            "limitations": [],
+        }
+        response = mock.MagicMock()
+        response.read.return_value = json.dumps({"output": [{"content": [{"text": json.dumps(result)}]}]}).encode()
+        response.__enter__.return_value = response
+        with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}), mock.patch.object(WORKER.urllib.request, "urlopen", return_value=response) as urlopen:
+            WORKER.generate(question, [page])
+        prompt = json.loads(json.loads(urlopen.call_args.args[0].data.decode())["input"])
+        self.assertIn("contains operative signed TRO terms", prompt["instructions"])
+        self.assertIn("do not call the order, its terms, or its duration missing", prompt["instructions"])
+        self.assertNotIn("If the exact signed TRO terms", prompt["instructions"])
+
     def test_motion_response_has_dedicated_contract(self):
         question = "My opponent filed this motion. How should I answer it?"
         page = {
