@@ -2601,29 +2601,40 @@ class StrategicAnalysisRetrievalTests(unittest.TestCase):
             "missing_information": [],
             "limitations": [],
         }
+        strict_result = {
+            "summary": result["summary"],
+            "motion_findings": {
+                "objective_and_posture": result["findings"][0],
+                "candidate_motions": result["findings"][1],
+                "likely_opposition": result["findings"][6],
+                "gaps_and_prerequisites": result["findings"][7],
+                "recommendation": result["findings"][8],
+            },
+            "motion_record_support": {
+                "expert": result["findings"][2],
+                "nysdec": result["findings"][3],
+                "usace": result["findings"][4],
+                "visual_or_measurement": result["findings"][5],
+            },
+            "missing_information": [],
+            "limitations": [],
+        }
         response = mock.MagicMock()
-        response.read.return_value = json.dumps({"output": [{"content": [{"text": json.dumps(result)}]}]}).encode()
+        response.read.return_value = json.dumps({"output": [{"content": [{"text": json.dumps(strict_result)}]}]}).encode()
         response.__enter__.return_value = response
         with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}), mock.patch.object(WORKER.urllib.request, "urlopen", return_value=response) as urlopen:
             generated = WORKER.generate(question, pages)
         payload = json.loads(urlopen.call_args.args[0].data.decode())
         prompt = json.loads(payload["input"])
-        findings_schema = payload["text"]["format"]["schema"]["properties"]["findings"]
-        self.assertEqual(findings_schema["maxItems"], 9)
-        self.assertEqual(findings_schema["minItems"], 9)
+        schema = payload["text"]["format"]["schema"]
+        self.assertNotIn("prefixItems", schema)
         self.assertEqual(
-            [item["properties"]["section"]["const"] for item in findings_schema["prefixItems"]],
-            [
-                "Objective and posture",
-                "Candidate motions",
-                "Record support",
-                "Record support",
-                "Record support",
-                "Record support",
-                "Likely opposition",
-                "Gaps and prerequisites",
-                "Recommendation",
-            ],
+            set(schema["required"]),
+            {"summary", "motion_findings", "motion_record_support", "missing_information", "limitations"},
+        )
+        self.assertEqual(
+            set(schema["properties"]["motion_record_support"]["required"]),
+            {"expert", "nysdec", "usace", "visual_or_measurement"},
         )
         self.assertIn("The JSON schema fixes the nine findings", prompt["instructions"])
         self.assertIs(WORKER.validate(generated, pages, question=question), generated)

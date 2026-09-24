@@ -2328,36 +2328,40 @@ def finding_schema(page_citation_properties, *, attorney_sections=False, litigat
         "items": finding_item,
     }
     if fixed_motion_record_support:
-        # The dual-agency contract needs exactly five motion sections and four
-        # independently cited record-support slots.  Fixed schema positions
-        # make that requirement machine-enforced instead of prompt-only.
-        fixed_sections = (
-            "Objective and posture",
-            "Candidate motions",
-            "Record support",
-            "Record support",
-            "Record support",
-            "Record support",
-            "Likely opposition",
-            "Gaps and prerequisites",
-            "Recommendation",
-        )
+        # OpenAI's strict schema subset rejects JSON Schema tuple arrays
+        # (prefixItems).  Use required object properties instead: they give the
+        # same one-slot-per-record guarantee with supported strict-schema keys.
         def fixed_item(section):
             properties = dict(finding_properties)
             properties["section"] = {"type": "string", "const": section}
-            return {
-                "type": "object",
-                "additionalProperties": False,
-                "required": finding_required,
-                "properties": properties,
-            }
-        findings_schema = {
-            "type": "array",
-            "minItems": len(fixed_sections),
-            "maxItems": len(fixed_sections),
-            "prefixItems": [fixed_item(section) for section in fixed_sections],
-            "items": False,
-        }
+            return {"type": "object", "additionalProperties": False,
+                    "required": finding_required, "properties": properties}
+        motion_sections = (
+            ("objective_and_posture", "Objective and posture"),
+            ("candidate_motions", "Candidate motions"),
+            ("likely_opposition", "Likely opposition"),
+            ("gaps_and_prerequisites", "Gaps and prerequisites"),
+            ("recommendation", "Recommendation"),
+        )
+        record_support = (
+            ("expert", "expert evidence"),
+            ("nysdec", "the nysdec record"),
+            ("usace", "the usace record"),
+            ("visual_or_measurement", "visual or measurement evidence"),
+        )
+        return {"type":"object","additionalProperties":False,
+                "required":["summary","motion_findings","motion_record_support","missing_information","limitations"],
+                "properties":{
+                    "summary":{"type":"string","maxLength":800},
+                    "motion_findings":{"type":"object","additionalProperties":False,
+                        "required":[key for key, _ in motion_sections],
+                        "properties":{key:fixed_item(section) for key, section in motion_sections}},
+                    "motion_record_support":{"type":"object","additionalProperties":False,
+                        "required":[key for key, _ in record_support],
+                        "properties":{key:fixed_item("Record support") for key, _ in record_support}},
+                    "missing_information":{"type":"array","maxItems":8,"items":{"type":"string","maxLength":300}},
+                    "limitations":{"type":"array","maxItems":4,"items":{"type":"string","maxLength":300}},
+                }}
     return {"type":"object","additionalProperties":False,"required":["summary","findings","missing_information","limitations"],"properties":{"summary":{"type":"string","maxLength":800},"findings":findings_schema,"missing_information":{"type":"array","maxItems":8,"items":{"type":"string","maxLength":300}},"limitations":{"type":"array","maxItems":4,"items":{"type":"string","maxLength":300}}}}
 
 
@@ -2431,7 +2435,31 @@ def generate(question, pages, coverage=None, authorities=None):
     for text in texts:
         try: result=json.loads(text)
         except json.JSONDecodeError: continue
-        if isinstance(result,dict): return result
+        if isinstance(result,dict):
+            if fixed_motion_record_support:
+                motion = result.get("motion_findings")
+                support = result.get("motion_record_support")
+                if not isinstance(motion, dict) or not isinstance(support, dict):
+                    raise ValueError("model response missing fixed motion sections")
+                result = {
+                    "summary": result.get("summary"),
+                    "findings": [
+                        motion[key] for key in (
+                            "objective_and_posture", "candidate_motions",
+                        )
+                    ] + [
+                        support[key] for key in (
+                            "expert", "nysdec", "usace", "visual_or_measurement",
+                        )
+                    ] + [
+                        motion[key] for key in (
+                            "likely_opposition", "gaps_and_prerequisites", "recommendation",
+                        )
+                    ],
+                    "missing_information": result.get("missing_information"),
+                    "limitations": result.get("limitations"),
+                }
+            return result
     raise ValueError("model response invalid")
 
 def validate(result, pages, authorities=(), question="", coverage=None):
