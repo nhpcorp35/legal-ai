@@ -1785,7 +1785,11 @@ def evidence(s3, case_id, question):
             # Preserve primary posture and agency material before opinions.
             # This ordering keeps the actual TRO and permit conditions in a
             # crowded record rather than relying only on expert descriptions.
-            reserve_strategy(18, limit=STRATEGIC_PROCEDURAL_PAGE_LIMIT, per_document=2)
+            # A signed OSC/TRO commonly places the restraint heading on one
+            # page and the actual prohibited conduct on the next. Preserve a
+            # compact three-page procedural span so a motion answer does not
+            # cite the order while omitting its operative terms.
+            reserve_strategy(18, limit=STRATEGIC_PROCEDURAL_PAGE_LIMIT, per_document=3)
             # Preserve one direct record for each identified agency before
             # general regulatory ranking can fill the bounded packet.
             for agency in ("nysdec", "usace"):
