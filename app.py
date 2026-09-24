@@ -2778,6 +2778,82 @@ def find_draft_review_feedback(reviewer, case_id, request_id):
     return None
 
 
+
+def load_draft_review_feedbacks(reviewer, case_id, request_ids):
+    """Load the current reviewer's exact feedback for a bounded draft set."""
+    wanted = set(request_ids)
+    records = {}
+    feedback_path = _draft_review_feedback_path()
+    try:
+        with open(feedback_path, encoding="utf-8") as stream:
+            for line in stream:
+                try:
+                    record = json.loads(line)
+                except (TypeError, ValueError):
+                    continue
+                request_id = record.get("request_id")
+                if (
+                    record.get("reviewer") == reviewer
+                    and record.get("case_id") == case_id
+                    and request_id in wanted
+                    and request_id not in records
+                ):
+                    records[request_id] = record
+    except FileNotFoundError:
+        pass
+    return records
+
+
+def rennick_evaluation_summary(reviewer):
+    """Return an honest, bounded rollup of the attorney's Rennick reviews."""
+    request_ids = tuple(
+        item["request_id"] for item in RENNICK_EVALUATION_QUESTIONS
+        if item["request_id"]
+    )
+    records = load_draft_review_feedbacks(
+        reviewer, RENNICK_FRAMEWORK_CASE_ID, request_ids
+    )
+    dimension_scores = {key: [] for key, _label, _question in _DRAFT_REVIEW_DIMENSIONS}
+    questions = []
+    for item in RENNICK_EVALUATION_QUESTIONS:
+        request_id = item["request_id"]
+        record = records.get(request_id) if request_id else None
+        dimensions = record.get("evaluation_dimensions", {}) if record else {}
+        if isinstance(dimensions, dict):
+            for key in dimension_scores:
+                score = dimensions.get(key)
+                if isinstance(score, int) and 1 <= score <= 5:
+                    dimension_scores[key].append(score)
+        questions.append(
+            {
+                "question": item["question"],
+                "request_id": request_id,
+                "reviewed": record is not None,
+                "decision": record.get("decision") if record else None,
+                "accuracy": record.get("accuracy_rating") if record else None,
+                "usefulness": record.get("usefulness_rating") if record else None,
+                "awaiting_paid_run": request_id is None,
+            }
+        )
+    dimensions = []
+    for key, label, question in _DRAFT_REVIEW_DIMENSIONS:
+        scores = dimension_scores[key]
+        dimensions.append(
+            {
+                "label": label,
+                "question": question,
+                "average": round(sum(scores) / len(scores), 1) if scores else None,
+                "review_count": len(scores),
+            }
+        )
+    return {
+        "questions": questions,
+        "dimensions": dimensions,
+        "reviewed_count": len(records),
+        "reviewable_count": len(request_ids),
+    }
+
+
 def archive_draft_review_feedback(reviewer, case_id, request_id, decision, accuracy_rating, usefulness_rating, missing_or_overstated, citation_problems, comments, evaluation_dimensions=None):
     """Idempotently archive one bounded review to B2 and the app volume."""
     record = {
@@ -4650,6 +4726,23 @@ def workspace_matter_drafts(case_id):
     )
 
 
+
+@app.route("/workspace/matters/<path:case_id>/review-packet/evaluation")
+def workspace_rennick_attorney_evaluation(case_id):
+    """Show a read-only, no-model rollup of the current attorney's reviews."""
+    reviewer = basic_review_user()
+    if reviewer is None:
+        return basic_auth_required_response()
+    if case_id != RENNICK_FRAMEWORK_CASE_ID:
+        abort(404)
+    summary = rennick_evaluation_summary(reviewer)
+    return render_template_string(
+        """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Rennick Evaluation Summary</title><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:900px;margin:0 auto;padding:42px 24px 64px}a{color:#123f63}h1{margin:0 0 8px;font-size:clamp(2rem,5vw,3rem)}h2{margin:28px 0 10px;color:#123f63}p,li,td,th{font-size:1.05rem;line-height:1.5}.meta{color:#52606d}.panel{background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:22px;margin-top:24px;box-shadow:0 2px 8px #0f172a10}.notice{border-left:5px solid #123f63;background:#eef6fc}table{border-collapse:collapse;width:100%;margin-top:12px}th,td{text-align:left;vertical-align:top;border-bottom:1px solid #cbd5e1;padding:10px 8px}th{color:#123f63}.pending{color:#7c2d12;font-weight:bold}.reviewed{color:#166534;font-weight:bold}</style></head><body><main><p><a href="{{ url_for('workspace_rennick_attorney_review_packet', case_id=case_id) }}">← Rennick attorney review packet</a></p><h1>Rennick Evaluation Summary</h1><p class="meta">This is a read-only rollup of submitted attorney scores. It does not generate or revise a draft.</p><section class="panel notice">{% if summary.reviewed_count %}<p><strong>{{ summary.reviewed_count }} of {{ summary.reviewable_count }} available analyses reviewed.</strong></p>{% else %}<p><strong>No attorney evaluation has been submitted yet.</strong> The score table will populate after a review is saved in the packet.</p>{% endif %}</section><section class="panel"><h2>Question coverage</h2><table><thead><tr><th>Question</th><th>Review status</th><th>Result</th></tr></thead><tbody>{% for item in summary.questions %}<tr><td>{{ item.question }}</td><td>{% if item.awaiting_paid_run %}<span class="pending">Not generated</span>{% elif item.reviewed %}<span class="reviewed">Reviewed</span>{% else %}<span class="pending">Not yet reviewed</span>{% endif %}</td><td>{% if item.awaiting_paid_run %}Separate paid-run approval required.{% elif item.reviewed %}{{ item.decision|replace('_', ' ')|title }} · Accuracy {{ item.accuracy }}/5 · Usefulness {{ item.usefulness }}/5{% else %}—{% endif %}</td></tr>{% endfor %}</tbody></table></section><section class="panel"><h2>Attorney-quality scores</h2><table><thead><tr><th>Dimension</th><th>Average</th><th>Meaning</th></tr></thead><tbody>{% for dimension in summary.dimensions %}<tr><td>{{ dimension.label }}</td><td>{% if dimension.average is not none %}{{ dimension.average }}/5 ({{ dimension.review_count }} review{{ '' if dimension.review_count == 1 else 's' }}){% else %}—{% endif %}</td><td>{{ dimension.question }}</td></tr>{% endfor %}</tbody></table></section></main></body></html>""",
+        case_id=case_id,
+        summary=summary,
+    )
+
+
 @app.route("/workspace/matters/<path:case_id>/review-packet", methods=["GET", "POST"])
 def workspace_rennick_attorney_review_packet(case_id):
     """Show and collect review of the two finalized Rennick analyses."""
@@ -4769,7 +4862,7 @@ def workspace_rennick_attorney_review_packet(case_id):
         )
         packet["evaluation_dimensions"] = _DRAFT_REVIEW_DIMENSIONS
     page = render_template_string(
-        """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Rennick Attorney Review Packet</title><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:960px;margin:0 auto;padding:42px 24px 64px}a{color:#123f63}h1{margin:0 0 8px;font-size:clamp(2rem,5vw,3rem)}h2{margin:30px 0 9px;color:#123f63}h3{margin:24px 0 8px;color:#123f63;font-size:1.2rem}p,li{font-size:1.05rem;line-height:1.55}.meta{color:#52606d}.panel{background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:22px;margin-top:24px;box-shadow:0 2px 8px #0f172a10}.notice{border-left:5px solid #123f63;background:#eef6fc}.source-label{font-size:.9rem;margin:9px 0 0;color:#52606d}.citation-list{list-style:none;margin:7px 0 0;padding:0}.citation-list li{font-size:.9rem;line-height:1.35;margin:4px 0}.citation-list a{overflow-wrap:anywhere}.actions{display:flex;gap:18px;flex-wrap:wrap}.actions a{font-weight:bold}.review-form{border-top:1px solid #cbd5e1;margin-top:28px;padding-top:8px}.review-form fieldset{border:0;padding:0;margin:16px 0}.review-form legend,.review-form label{display:block;font-weight:bold;margin:12px 0 7px}.review-form .choice{display:inline-flex;align-items:center;gap:7px;margin:6px 18px 6px 0;font-weight:normal}.review-form textarea,.review-form select{box-sizing:border-box;width:100%;font:inherit;line-height:1.4;padding:10px;border:1px solid #64748b;border-radius:6px}.review-form button{margin-top:14px;background:#123f63;color:#fff;border:0;border-radius:6px;padding:11px 15px;font:inherit;font-weight:bold;cursor:pointer}.review-success{border-left:5px solid #15803d;background:#f0fdf4;padding:12px 14px}.review-error{border-left:5px solid #b45309;background:#fffbeb;padding:12px 14px}</style></head><body><main><p><a href="/workspace">← Attorney workspace</a></p><h1>Rennick Attorney Review Packet</h1><p class="meta">NY-Nassau-613561-2026-Desousa-v-Rennick</p><section class="panel notice"><p><strong>Attorney review required.</strong> Review each analysis directly below. Each saved review is tied to that exact draft and does not regenerate it.</p></section>{% for packet in packet_items %}{% set item = packet.item %}<section class="panel"><h2>{{ item.question }}</h2><p><strong>Summary</strong><br>{{ item.draft.summary }}</p><p class="actions"><a href="{{ url_for('workspace_matter_draft_detail', case_id=case_id, request_id=item.request_id) }}#attorney-review">Open full analysis →</a><a href="{{ url_for('workspace_matter_draft_audit', case_id=case_id, request_id=item.request_id) }}">View retrieval audit →</a></p>{% for group in packet.finding_sections %}{% if group.name %}<h3>{{ group.name }}</h3>{% endif %}<ul>{% for finding in group.findings %}<li>{{ finding.statement }}{% if finding.citations %}<p class="source-label"><strong>Verified record</strong></p><ul class="citation-list">{% for cite in finding.citations %}<li><a href="{{ url_for('workspace_matter_pdf', case_id=case_id, filename=cite.filename, source_sha256=cite.source_sha256) }}#page={{ cite.page_number }}" target="_blank" rel="noopener">Open verified source — p. {{ cite.page_number }} · {{ cite.filename|truncate(72, True, '…') }}</a></li>{% endfor %}</ul>{% endif %}{% if finding.authorities %}<p class="source-label"><strong>Legal authority</strong></p><ul class="citation-list">{% for authority in finding.authorities %}<li><a href="{{ authority.source_url }}" target="_blank" rel="noopener">{{ authority.title }} — {{ authority.citation }}</a></li>{% endfor %}</ul>{% endif %}</li>{% endfor %}</ul>{% endfor %}{% if item.draft.missing_information %}<h3>Missing information</h3><ul>{% for entry in item.draft.missing_information %}<li>{{ entry }}</li>{% endfor %}</ul>{% endif %}<section class="review-form" id="attorney-review-{{ item.request_id }}"><h3>Attorney review</h3><p>Submit one review of this exact analysis.</p>{% if packet.feedback_saved %}<p class="review-success" role="status"><strong>Review saved.</strong> No draft was regenerated.</p>{% endif %}{% if packet.feedback_error %}<p class="review-error" role="alert">{{ packet.feedback_error }}</p>{% endif %}<form method="post"><input type="hidden" name="request_id" value="{{ item.request_id }}"><input type="hidden" name="feedback_csrf_token" value="{{ packet.feedback_csrf_token }}"><fieldset><legend>Disposition</legend><label class="choice"><input type="radio" name="decision" value="approve" required> Approve</label><label class="choice"><input type="radio" name="decision" value="needs_revision" required> Needs revision</label></fieldset><label for="accuracy-{{ item.request_id }}">Accuracy</label><select id="accuracy-{{ item.request_id }}" name="accuracy_rating" required><option value="">Choose 1–5</option>{% for score in range(1, 6) %}<option value="{{ score }}">{{ score }}{% if score == 1 %} — poor{% elif score == 5 %} — excellent{% endif %}</option>{% endfor %}</select><label for="usefulness-{{ item.request_id }}">Usefulness</label><select id="usefulness-{{ item.request_id }}" name="usefulness_rating" required><option value="">Choose 1–5</option>{% for score in range(1, 6) %}<option value="{{ score }}">{{ score }}{% if score == 1 %} — poor{% elif score == 5 %} — excellent{% endif %}</option>{% endfor %}</select><label for="missing-{{ item.request_id }}">What is missing or overstated?</label><textarea id="missing-{{ item.request_id }}" name="missing_or_overstated" rows="4" maxlength="4000"></textarea><label for="citations-{{ item.request_id }}">Citation or source-link problems</label><textarea id="citations-{{ item.request_id }}" name="citation_problems" rows="4" maxlength="4000"></textarea><label for="comments-{{ item.request_id }}">Other comments</label><textarea id="comments-{{ item.request_id }}" name="comments" rows="4" maxlength="4000"></textarea><button type="submit">Save attorney review</button></form></section></section>{% endfor %}</main></body></html>""",
+        """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Rennick Attorney Review Packet</title><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:960px;margin:0 auto;padding:42px 24px 64px}a{color:#123f63}h1{margin:0 0 8px;font-size:clamp(2rem,5vw,3rem)}h2{margin:30px 0 9px;color:#123f63}h3{margin:24px 0 8px;color:#123f63;font-size:1.2rem}p,li{font-size:1.05rem;line-height:1.55}.meta{color:#52606d}.panel{background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:22px;margin-top:24px;box-shadow:0 2px 8px #0f172a10}.notice{border-left:5px solid #123f63;background:#eef6fc}.source-label{font-size:.9rem;margin:9px 0 0;color:#52606d}.citation-list{list-style:none;margin:7px 0 0;padding:0}.citation-list li{font-size:.9rem;line-height:1.35;margin:4px 0}.citation-list a{overflow-wrap:anywhere}.actions{display:flex;gap:18px;flex-wrap:wrap}.actions a{font-weight:bold}.review-form{border-top:1px solid #cbd5e1;margin-top:28px;padding-top:8px}.review-form fieldset{border:0;padding:0;margin:16px 0}.review-form legend,.review-form label{display:block;font-weight:bold;margin:12px 0 7px}.review-form .choice{display:inline-flex;align-items:center;gap:7px;margin:6px 18px 6px 0;font-weight:normal}.review-form textarea,.review-form select{box-sizing:border-box;width:100%;font:inherit;line-height:1.4;padding:10px;border:1px solid #64748b;border-radius:6px}.review-form button{margin-top:14px;background:#123f63;color:#fff;border:0;border-radius:6px;padding:11px 15px;font:inherit;font-weight:bold;cursor:pointer}.review-success{border-left:5px solid #15803d;background:#f0fdf4;padding:12px 14px}.review-error{border-left:5px solid #b45309;background:#fffbeb;padding:12px 14px}</style></head><body><main><p><a href="/workspace">← Attorney workspace</a></p><h1>Rennick Attorney Review Packet</h1><p class="meta">NY-Nassau-613561-2026-Desousa-v-Rennick</p><section class="panel notice"><p><strong>Attorney review required.</strong> Review each analysis directly below. Each saved review is tied to that exact draft and does not regenerate it.</p><p><a href="{{ url_for('workspace_rennick_attorney_evaluation', case_id=case_id) }}">View evaluation summary →</a></p></section>{% for packet in packet_items %}{% set item = packet.item %}<section class="panel"><h2>{{ item.question }}</h2><p><strong>Summary</strong><br>{{ item.draft.summary }}</p><p class="actions"><a href="{{ url_for('workspace_matter_draft_detail', case_id=case_id, request_id=item.request_id) }}#attorney-review">Open full analysis →</a><a href="{{ url_for('workspace_matter_draft_audit', case_id=case_id, request_id=item.request_id) }}">View retrieval audit →</a></p>{% for group in packet.finding_sections %}{% if group.name %}<h3>{{ group.name }}</h3>{% endif %}<ul>{% for finding in group.findings %}<li>{{ finding.statement }}{% if finding.citations %}<p class="source-label"><strong>Verified record</strong></p><ul class="citation-list">{% for cite in finding.citations %}<li><a href="{{ url_for('workspace_matter_pdf', case_id=case_id, filename=cite.filename, source_sha256=cite.source_sha256) }}#page={{ cite.page_number }}" target="_blank" rel="noopener">Open verified source — p. {{ cite.page_number }} · {{ cite.filename|truncate(72, True, '…') }}</a></li>{% endfor %}</ul>{% endif %}{% if finding.authorities %}<p class="source-label"><strong>Legal authority</strong></p><ul class="citation-list">{% for authority in finding.authorities %}<li><a href="{{ authority.source_url }}" target="_blank" rel="noopener">{{ authority.title }} — {{ authority.citation }}</a></li>{% endfor %}</ul>{% endif %}</li>{% endfor %}</ul>{% endfor %}{% if item.draft.missing_information %}<h3>Missing information</h3><ul>{% for entry in item.draft.missing_information %}<li>{{ entry }}</li>{% endfor %}</ul>{% endif %}<section class="review-form" id="attorney-review-{{ item.request_id }}"><h3>Attorney review</h3><p>Submit one review of this exact analysis.</p>{% if packet.feedback_saved %}<p class="review-success" role="status"><strong>Review saved.</strong> No draft was regenerated.</p>{% endif %}{% if packet.feedback_error %}<p class="review-error" role="alert">{{ packet.feedback_error }}</p>{% endif %}<form method="post"><input type="hidden" name="request_id" value="{{ item.request_id }}"><input type="hidden" name="feedback_csrf_token" value="{{ packet.feedback_csrf_token }}"><fieldset><legend>Disposition</legend><label class="choice"><input type="radio" name="decision" value="approve" required> Approve</label><label class="choice"><input type="radio" name="decision" value="needs_revision" required> Needs revision</label></fieldset><label for="accuracy-{{ item.request_id }}">Accuracy</label><select id="accuracy-{{ item.request_id }}" name="accuracy_rating" required><option value="">Choose 1–5</option>{% for score in range(1, 6) %}<option value="{{ score }}">{{ score }}{% if score == 1 %} — poor{% elif score == 5 %} — excellent{% endif %}</option>{% endfor %}</select><label for="usefulness-{{ item.request_id }}">Usefulness</label><select id="usefulness-{{ item.request_id }}" name="usefulness_rating" required><option value="">Choose 1–5</option>{% for score in range(1, 6) %}<option value="{{ score }}">{{ score }}{% if score == 1 %} — poor{% elif score == 5 %} — excellent{% endif %}</option>{% endfor %}</select><label for="missing-{{ item.request_id }}">What is missing or overstated?</label><textarea id="missing-{{ item.request_id }}" name="missing_or_overstated" rows="4" maxlength="4000"></textarea><label for="citations-{{ item.request_id }}">Citation or source-link problems</label><textarea id="citations-{{ item.request_id }}" name="citation_problems" rows="4" maxlength="4000"></textarea><label for="comments-{{ item.request_id }}">Other comments</label><textarea id="comments-{{ item.request_id }}" name="comments" rows="4" maxlength="4000"></textarea><button type="submit">Save attorney review</button></form></section></section>{% endfor %}</main></body></html>""",
         case_id=case_id,
         packet_items=packet_items,
         evaluation_questions=RENNICK_EVALUATION_QUESTIONS,
