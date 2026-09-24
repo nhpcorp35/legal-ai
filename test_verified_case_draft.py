@@ -2032,7 +2032,7 @@ class StrategicAnalysisRetrievalTests(unittest.TestCase):
             pages = [
                 {"filename": "Plaintiff Expert Affidavit.pdf", "page_number": page,
                  "text": "Licensed professional engineer gives an expert opinion about access."}
-                for page in range(1, 31)
+                for page in range(1, 81)
             ] + [
                 {"filename": "613561_2026_MICHAEL_DESOUSA_et_al_v_GEORGE_RENNICK_et_al_ORDER_TO_SHOW_CAUSE_32.pdf", "page_number": 2,
                  "text": "ORDER TO SHOW CAUSE: temporary restraining order pending determination of preliminary injunction."},
