@@ -32,6 +32,7 @@ CASE_RE = re.compile(r"NY-[A-Za-z]+-[0-9]{6}-[0-9]{4}-[A-Za-z0-9-]{2,80}$")
 CASE00_BENCHMARK_ID = "Case-00-Triborough"
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
 REVIEWED_AUTHORITY_KEY = "derived/reviewed-authorities"
+OCR_PAGE_RECORDS_SUFFIX = "page_records.ocr-v1.jsonl"
 BROAD_RECORD_TERMS = frozenset({"parties", "claims", "causes", "defenses", "relief"})
 PLEADING_FILENAME_RE = re.compile(
     r"\b(?:complaint|answer|reply|cross(?:[ _-]?claim|[ _-]?c\b)|"
@@ -1219,6 +1220,43 @@ def attack_surface_first_hand_page(filename: str, text: str) -> bool:
     )
 
 
+def verified_page_records(s3, case_id, source_sha256):
+    """Read the immutable index plus an optional, additive OCR replacement.
+
+    The OCR object is a derived sidecar, never a replacement for the verified
+    filing or its base index.  When present, it may replace only the matching
+    page text for that same verified source, preserving all other base pages.
+    """
+    prefix = f"cases/{case_id}/intake/source/{source_sha256}/"
+    base_key = prefix + "page_records.jsonl"
+    raw = s3.get_object(Bucket=os.environ["B2_BUCKET"], Key=base_key)["Body"].read()
+    rows = {}
+
+    def absorb(payload):
+        for line in payload.decode().splitlines():
+            item = json.loads(line)
+            text = " ".join(str(item.get("text", "")).split())
+            filename = item.get("filename")
+            page = item.get("page_number")
+            if text and isinstance(filename, str) and isinstance(page, int) and page >= 1:
+                rows[(filename, page)] = text
+
+    absorb(raw)
+    try:
+        absorb(s3.get_object(
+            Bucket=os.environ["B2_BUCKET"], Key=prefix + OCR_PAGE_RECORDS_SUFFIX
+        )["Body"].read())
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") not in {"NoSuchKey", "404", "NotFound"}:
+            raise
+    except KeyError:  # synthetic/local B2 transport: absent OCR sidecar
+        pass
+    return [
+        {"filename": filename, "page_number": page, "text": text}
+        for (filename, page), text in sorted(rows.items(), key=lambda item: (item[0][0].casefold(), item[0][1]))
+    ]
+
+
 def evidence(s3, case_id, question):
     """Select bounded evidence with filing- and section-level pleading coverage."""
     rows=[]; terms=words(question); party_role_candidates=set()
@@ -1262,12 +1300,8 @@ def evidence(s3, case_id, question):
     ) and not third_party_only_question
     documents={}
     for source in verified_sources(s3, case_id):
-        object_key=f"cases/{case_id}/intake/source/{source}/page_records.jsonl"
-        raw=s3.get_object(Bucket=os.environ["B2_BUCKET"],Key=object_key)["Body"].read().decode()
-        for line in raw.splitlines():
-            item=json.loads(line); text=" ".join(str(item.get("text","")).split()); filename=item.get("filename"); page=item.get("page_number")
-            if not text or not isinstance(filename,str) or not isinstance(page,int) or page < 1:
-                continue
+        for item in verified_page_records(s3, case_id, source):
+            text=item["text"]; filename=item["filename"]; page=item["page_number"]
             documents.setdefault((source, filename), []).append((page, text))
     if third_party_only_question:
         selected, action_audit = select_third_party_action_pages(documents)
