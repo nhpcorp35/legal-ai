@@ -50,3 +50,35 @@ class WorkspaceRennickAliasTests(unittest.TestCase):
                 legalai.load_registered_cases(),
                 [{"case_id": CANONICAL_ID, "stage": "Verified source indexed"}],
             )
+
+
+    def test_packet_links_each_analysis_to_its_structured_review_form(self):
+        ready_items = {
+            request_id: {
+                "request_id": request_id,
+                "status": "READY",
+                "question": "Test motion question",
+                "draft": {
+                    "summary": "Test summary",
+                    "findings": [],
+                    "missing_information": [],
+                },
+            }
+            for request_id in legalai.RENNICK_ATTORNEY_REVIEW_PACKET_DRAFT_IDS
+        }
+        with patch.object(legalai, "basic_review_user", return_value="john"), patch.object(
+            legalai,
+            "load_exact_draft_request",
+            side_effect=lambda _case_id, request_id: ready_items[request_id],
+        ):
+            response = legalai.app.test_client().get(
+                f"/workspace/matters/{CANONICAL_ID}/review-packet"
+            )
+        self.assertEqual(response.status_code, 200)
+        page = response.get_data(as_text=True)
+        for request_id in legalai.RENNICK_ATTORNEY_REVIEW_PACKET_DRAFT_IDS:
+            self.assertIn(
+                f"/workspace/matters/{CANONICAL_ID}/drafts/{request_id}#attorney-review",
+                page,
+            )
+        self.assertIn("Open analysis and submit review", page)
