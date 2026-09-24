@@ -476,3 +476,10 @@ Engineering activity alone does not count as progress. The evidence must show an
 - **Goal advanced:** Make the attorney-review workspace accurately communicate how many current answers are available.
 - **How / evidence:** The dashboard and answered page now share one visibility rule; 24 focused UI tests passed, including a superseded layer plus its final consolidated answer.
 - **Remaining gap:** Verify the corrected count in production and obtain attorney scoring on the revised strategic answer.
+
+### 2026-09-24 evaluation-loop alignment checkpoint
+
+- **Movement:** MIXED
+- **Goal advanced:** Measure whether Rennick motion analyses actually identify posture, use decisive record evidence, distinguish law from evidence, address counterarguments, and recommend concrete next steps.
+- **How / evidence:** Added a fixed three-question Rennick evaluation contract, five required attorney-quality scores on each review, canonical schema-v2 feedback records, and 13 focused passing UI/archive tests. No model or paid draft was called.
+- **Remaining gap:** The third outcome-changing-evidence question remains intentionally ungenerated until a separate paid-run approval; attorney scoring is still needed before claiming substantive usefulness.

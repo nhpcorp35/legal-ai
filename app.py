@@ -2647,6 +2647,58 @@ def load_exact_draft_request(case_id, request_id):
 
 _draft_review_feedback_lock = threading.Lock()
 _DRAFT_REVIEW_DECISIONS = {"approve", "needs_revision"}
+_DRAFT_REVIEW_DIMENSIONS = (
+    ("procedural_posture", "Procedural posture", "Did it identify what can realistically be done at this stage?"),
+    ("record_use", "Use of the record", "Did it use the decisive verified facts and documents, rather than summarize them?"),
+    ("law_and_evidence", "Law versus evidence", "Did it distinguish governing law from party positions, expert opinion, and regulatory evidence?"),
+    ("counterarguments", "Counterarguments", "Did it identify and fairly weigh the other side's strongest answer?"),
+    ("next_steps", "Next action", "Did it give a concrete procedural step or evidence need that could change the assessment?"),
+)
+RENNICK_EVALUATION_QUESTIONS = (
+    {
+        "id": "motion_recommendation",
+        "question": "I need to make a motion. Which motions should I consider?",
+        "request_id": "draft-1790275196-5d33f8a041c2",
+    },
+    {
+        "id": "motion_response",
+        "question": "My opponent made a motion. How should I answer it?",
+        "request_id": "draft-1790200223-c52acd236d81",
+    },
+    {
+        "id": "outcome_changer",
+        "question": "What missing evidence or factual dispute could materially change the recommended motion strategy, and why?",
+        "request_id": None,
+    },
+)
+
+
+def draft_review_evaluation_dimensions(payload):
+    """Return the five attorney-evaluation scores, or None when incomplete."""
+    scores = {}
+    for key, _label, _question in _DRAFT_REVIEW_DIMENSIONS:
+        value = clean_text(payload.get(f"{key}_rating", ""))
+        if value not in {"1", "2", "3", "4", "5"}:
+            return None
+        scores[key] = int(value)
+    return scores
+
+
+def draft_review_rubric_html(prefix):
+    """Render the five required attorney-quality scores for one draft form."""
+    return render_template_string(
+        """<fieldset class="evaluation-rubric"><legend>Attorney-quality rubric</legend>{% for key, label, question in dimensions %}<label for="{{ prefix }}-{{ key }}-rating">{{ label }}<span class="meta"> — {{ question }}</span></label><select id="{{ prefix }}-{{ key }}-rating" name="{{ key }}_rating" required><option value="">Choose 1–5</option>{% for score in range(1, 6) %}<option value="{{ score }}">{{ score }}{% if score == 1 %} — poor{% elif score == 5 %} — excellent{% endif %}</option>{% endfor %}</select>{% endfor %}</fieldset>""",
+        dimensions=_DRAFT_REVIEW_DIMENSIONS,
+        prefix=prefix,
+    )
+
+
+def rennick_evaluation_set_html():
+    """Make the narrow attorney test set explicit without creating a draft."""
+    return render_template_string(
+        """<section class="panel evaluation-set"><h2>Attorney evaluation set</h2><p>LegalAI is being judged on three practical questions, not generic summaries.</p><ol>{% for item in questions %}<li><strong>{{ item.question }}</strong>{% if item.request_id %} — ready for review.{% else %} — intentionally not generated; a separate paid-run approval is required.{% endif %}</li>{% endfor %}</ol></section>""",
+        questions=RENNICK_EVALUATION_QUESTIONS,
+    )
 
 
 def draft_review_feedback_csrf_token(reviewer, case_id, request_id):
@@ -2726,10 +2778,10 @@ def find_draft_review_feedback(reviewer, case_id, request_id):
     return None
 
 
-def archive_draft_review_feedback(reviewer, case_id, request_id, decision, accuracy_rating, usefulness_rating, missing_or_overstated, citation_problems, comments):
+def archive_draft_review_feedback(reviewer, case_id, request_id, decision, accuracy_rating, usefulness_rating, missing_or_overstated, citation_problems, comments, evaluation_dimensions=None):
     """Idempotently archive one bounded review to B2 and the app volume."""
     record = {
-        "schema_version": 1,
+        "schema_version": 2 if evaluation_dimensions is not None else 1,
         "submitted_at": int(time.time()),
         "reviewer": reviewer,
         "case_id": case_id,
@@ -2741,6 +2793,8 @@ def archive_draft_review_feedback(reviewer, case_id, request_id, decision, accur
         "citation_problems": citation_problems,
         "comments": comments,
     }
+    if evaluation_dimensions is not None:
+        record["evaluation_dimensions"] = evaluation_dimensions
     with _draft_review_feedback_lock:
         existing = find_draft_review_feedback(reviewer, case_id, request_id)
         if existing is not None:
@@ -4656,9 +4710,11 @@ def workspace_rennick_attorney_review_packet(case_id):
         )
         citation_problems = clean_text(request.form.get("citation_problems", ""))
         comments = clean_text(request.form.get("comments", ""))
+        evaluation_dimensions = draft_review_evaluation_dimensions(request.form)
         ratings_valid = (
             accuracy_raw in {"1", "2", "3", "4", "5"}
             and usefulness_raw in {"1", "2", "3", "4", "5"}
+            and evaluation_dimensions is not None
         )
         notes_valid = all(
             len(value) <= 4000
@@ -4685,6 +4741,7 @@ def workspace_rennick_attorney_review_packet(case_id):
                     missing_or_overstated,
                     citation_problems,
                     comments,
+                    evaluation_dimensions,
                 )
             except OSError:
                 selected_feedback_error = (
@@ -4710,11 +4767,27 @@ def workspace_rennick_attorney_review_packet(case_id):
         packet["feedback_error"] = (
             selected_feedback_error if request_id == selected_request_id else None
         )
-    return render_template_string(
+        packet["evaluation_dimensions"] = _DRAFT_REVIEW_DIMENSIONS
+    page = render_template_string(
         """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Rennick Attorney Review Packet</title><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:960px;margin:0 auto;padding:42px 24px 64px}a{color:#123f63}h1{margin:0 0 8px;font-size:clamp(2rem,5vw,3rem)}h2{margin:30px 0 9px;color:#123f63}h3{margin:24px 0 8px;color:#123f63;font-size:1.2rem}p,li{font-size:1.05rem;line-height:1.55}.meta{color:#52606d}.panel{background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:22px;margin-top:24px;box-shadow:0 2px 8px #0f172a10}.notice{border-left:5px solid #123f63;background:#eef6fc}.source-label{font-size:.9rem;margin:9px 0 0;color:#52606d}.citation-list{list-style:none;margin:7px 0 0;padding:0}.citation-list li{font-size:.9rem;line-height:1.35;margin:4px 0}.citation-list a{overflow-wrap:anywhere}.actions{display:flex;gap:18px;flex-wrap:wrap}.actions a{font-weight:bold}.review-form{border-top:1px solid #cbd5e1;margin-top:28px;padding-top:8px}.review-form fieldset{border:0;padding:0;margin:16px 0}.review-form legend,.review-form label{display:block;font-weight:bold;margin:12px 0 7px}.review-form .choice{display:inline-flex;align-items:center;gap:7px;margin:6px 18px 6px 0;font-weight:normal}.review-form textarea,.review-form select{box-sizing:border-box;width:100%;font:inherit;line-height:1.4;padding:10px;border:1px solid #64748b;border-radius:6px}.review-form button{margin-top:14px;background:#123f63;color:#fff;border:0;border-radius:6px;padding:11px 15px;font:inherit;font-weight:bold;cursor:pointer}.review-success{border-left:5px solid #15803d;background:#f0fdf4;padding:12px 14px}.review-error{border-left:5px solid #b45309;background:#fffbeb;padding:12px 14px}</style></head><body><main><p><a href="/workspace">← Attorney workspace</a></p><h1>Rennick Attorney Review Packet</h1><p class="meta">NY-Nassau-613561-2026-Desousa-v-Rennick</p><section class="panel notice"><p><strong>Attorney review required.</strong> Review each analysis directly below. Each saved review is tied to that exact draft and does not regenerate it.</p></section>{% for packet in packet_items %}{% set item = packet.item %}<section class="panel"><h2>{{ item.question }}</h2><p><strong>Summary</strong><br>{{ item.draft.summary }}</p><p class="actions"><a href="{{ url_for('workspace_matter_draft_detail', case_id=case_id, request_id=item.request_id) }}#attorney-review">Open full analysis →</a><a href="{{ url_for('workspace_matter_draft_audit', case_id=case_id, request_id=item.request_id) }}">View retrieval audit →</a></p>{% for group in packet.finding_sections %}{% if group.name %}<h3>{{ group.name }}</h3>{% endif %}<ul>{% for finding in group.findings %}<li>{{ finding.statement }}{% if finding.citations %}<p class="source-label"><strong>Verified record</strong></p><ul class="citation-list">{% for cite in finding.citations %}<li><a href="{{ url_for('workspace_matter_pdf', case_id=case_id, filename=cite.filename, source_sha256=cite.source_sha256) }}#page={{ cite.page_number }}" target="_blank" rel="noopener">Open verified source — p. {{ cite.page_number }} · {{ cite.filename|truncate(72, True, '…') }}</a></li>{% endfor %}</ul>{% endif %}{% if finding.authorities %}<p class="source-label"><strong>Legal authority</strong></p><ul class="citation-list">{% for authority in finding.authorities %}<li><a href="{{ authority.source_url }}" target="_blank" rel="noopener">{{ authority.title }} — {{ authority.citation }}</a></li>{% endfor %}</ul>{% endif %}</li>{% endfor %}</ul>{% endfor %}{% if item.draft.missing_information %}<h3>Missing information</h3><ul>{% for entry in item.draft.missing_information %}<li>{{ entry }}</li>{% endfor %}</ul>{% endif %}<section class="review-form" id="attorney-review-{{ item.request_id }}"><h3>Attorney review</h3><p>Submit one review of this exact analysis.</p>{% if packet.feedback_saved %}<p class="review-success" role="status"><strong>Review saved.</strong> No draft was regenerated.</p>{% endif %}{% if packet.feedback_error %}<p class="review-error" role="alert">{{ packet.feedback_error }}</p>{% endif %}<form method="post"><input type="hidden" name="request_id" value="{{ item.request_id }}"><input type="hidden" name="feedback_csrf_token" value="{{ packet.feedback_csrf_token }}"><fieldset><legend>Disposition</legend><label class="choice"><input type="radio" name="decision" value="approve" required> Approve</label><label class="choice"><input type="radio" name="decision" value="needs_revision" required> Needs revision</label></fieldset><label for="accuracy-{{ item.request_id }}">Accuracy</label><select id="accuracy-{{ item.request_id }}" name="accuracy_rating" required><option value="">Choose 1–5</option>{% for score in range(1, 6) %}<option value="{{ score }}">{{ score }}{% if score == 1 %} — poor{% elif score == 5 %} — excellent{% endif %}</option>{% endfor %}</select><label for="usefulness-{{ item.request_id }}">Usefulness</label><select id="usefulness-{{ item.request_id }}" name="usefulness_rating" required><option value="">Choose 1–5</option>{% for score in range(1, 6) %}<option value="{{ score }}">{{ score }}{% if score == 1 %} — poor{% elif score == 5 %} — excellent{% endif %}</option>{% endfor %}</select><label for="missing-{{ item.request_id }}">What is missing or overstated?</label><textarea id="missing-{{ item.request_id }}" name="missing_or_overstated" rows="4" maxlength="4000"></textarea><label for="citations-{{ item.request_id }}">Citation or source-link problems</label><textarea id="citations-{{ item.request_id }}" name="citation_problems" rows="4" maxlength="4000"></textarea><label for="comments-{{ item.request_id }}">Other comments</label><textarea id="comments-{{ item.request_id }}" name="comments" rows="4" maxlength="4000"></textarea><button type="submit">Save attorney review</button></form></section></section>{% endfor %}</main></body></html>""",
         case_id=case_id,
         packet_items=packet_items,
+        evaluation_questions=RENNICK_EVALUATION_QUESTIONS,
     )
+    page = page.replace(
+        '<section class="panel notice">',
+        rennick_evaluation_set_html() + '<section class="panel notice">',
+        1,
+    )
+    for packet in packet_items:
+        request_id = packet["item"]["request_id"]
+        page = page.replace(
+            f'<label for="missing-{request_id}">',
+            draft_review_rubric_html(f"packet-{request_id}")
+            + f'<label for="missing-{request_id}">',
+            1,
+        )
+    return page
 
 
 @app.route("/workspace/matters/<case_id>/drafts/<request_id>", methods=["GET", "POST"])
@@ -4748,7 +4821,8 @@ def workspace_matter_draft_detail(case_id, request_id):
         missing_or_overstated = clean_text(request.form.get("missing_or_overstated", ""))
         citation_problems = clean_text(request.form.get("citation_problems", ""))
         comments = clean_text(request.form.get("comments", ""))
-        ratings_valid = accuracy_raw in {"1", "2", "3", "4", "5"} and usefulness_raw in {"1", "2", "3", "4", "5"}
+        evaluation_dimensions = draft_review_evaluation_dimensions(request.form)
+        ratings_valid = accuracy_raw in {"1", "2", "3", "4", "5"} and usefulness_raw in {"1", "2", "3", "4", "5"} and evaluation_dimensions is not None
         notes_valid = all(len(value) <= 4000 for value in (missing_or_overstated, citation_problems, comments))
         if decision not in _DRAFT_REVIEW_DECISIONS or not ratings_valid or not notes_valid:
             feedback_error = "Choose a disposition and both ratings; keep each comment under 4,000 characters."
@@ -4757,7 +4831,7 @@ def workspace_matter_draft_detail(case_id, request_id):
                 archived_review = archive_draft_review_feedback(
                     reviewer, case_id, request_id, decision,
                     int(accuracy_raw), int(usefulness_raw),
-                    missing_or_overstated, citation_problems, comments,
+                    missing_or_overstated, citation_problems, comments, evaluation_dimensions,
                 )
             except OSError:
                 feedback_error = "Your review could not be saved. Nothing was submitted; please try again."
@@ -4783,6 +4857,12 @@ def workspace_matter_draft_detail(case_id, request_id):
         feedback_saved=feedback_saved,
         feedback_error=feedback_error,
         feedback_csrf_token=feedback_csrf_token,
+    )
+    review_panel = review_panel.replace(
+        '<label for="missing-or-overstated">',
+        draft_review_rubric_html("detail")
+        + '<label for="missing-or-overstated">',
+        1,
     )
     return page.replace("</main>", review_panel + "</main>", 1)
 
