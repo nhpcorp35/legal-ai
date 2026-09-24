@@ -2036,6 +2036,8 @@ class StrategicAnalysisRetrievalTests(unittest.TestCase):
             ] + [
                 {"filename": "Order to Show Cause.pdf", "page_number": 2,
                  "text": "ORDER TO SHOW CAUSE: temporary restraining order pending determination of preliminary injunction."},
+                {"filename": "Order to Show Cause.pdf", "page_number": 3,
+                 "text": "Defendants are temporarily restrained and enjoined from mooring or maintaining a vessel that blocks access."},
                 {"filename": "Exhibit S 27.pdf", "page_number": 6,
                  "text": "NEW YORK STATE DEPARTMENT OF ENVIRONMENTAL CONSERVATION Facility DECID 1-2824-03170 permit conditions."},
                 {"filename": "Exhibit S 28.pdf", "page_number": 2,
@@ -2052,6 +2054,10 @@ class StrategicAnalysisRetrievalTests(unittest.TestCase):
             )
             filenames = {page["filename"] for page in selected}
             self.assertIn("Order to Show Cause.pdf", filenames)
+            self.assertIn(
+                ("Order to Show Cause.pdf", 3),
+                {(page["filename"], page["page_number"]) for page in selected},
+            )
             self.assertIn("Exhibit S 27.pdf", filenames)
             self.assertIn("Exhibit S 28.pdf", filenames)
 
