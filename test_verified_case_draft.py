@@ -52,7 +52,32 @@ class MatchingEvidenceS3(FakeS3):
     ]
 
 
+class OcrSidecarS3(FakeS3):
+    pages = [
+        {"filename": "ORDER_TO_SHOW_CAUSE_32.pdf", "page_number": 2, "text": "NYSCEF DOC. NO. 32"},
+        {"filename": "Other.pdf", "page_number": 1, "text": "Separate verified record page."},
+    ]
+
+    def get_object(self, **kwargs):
+        if kwargs["Key"].endswith(WORKER.OCR_PAGE_RECORDS_SUFFIX):
+            return {"Body": io.BytesIO(json.dumps({
+                "filename": "ORDER_TO_SHOW_CAUSE_32.pdf",
+                "page_number": 2,
+                "text": "Defendants are TEMPORARILY RESTRAINED AND ENJOINED from mooring any vessel.",
+            }).encode())}
+        return super().get_object(**kwargs)
+
+
 class EvidenceFailClosedTests(unittest.TestCase):
+    def test_ocr_sidecar_replaces_only_matching_verified_page(self):
+        rows = WORKER.verified_page_records(
+            OcrSidecarS3(), "NY-Nassau-613561-2026-Desousa-v-Rennick", "a" * 64
+        )
+        self.assertEqual(len(rows), 2)
+        page_two = next(row for row in rows if row["page_number"] == 2)
+        self.assertIn("TEMPORARILY RESTRAINED AND ENJOINED", page_two["text"])
+        self.assertTrue(any(row["filename"] == "Other.pdf" for row in rows))
+
     def test_record_only_generation_schema_requires_a_page_citation(self):
         schema = WORKER.finding_schema(
             {
