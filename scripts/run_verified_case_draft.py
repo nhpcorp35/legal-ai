@@ -205,6 +205,10 @@ STRATEGIC_PROCEDURAL_RECORD_RE = re.compile(
     r"undertaking|bond\b)",
     re.IGNORECASE,
 )
+OPERATIVE_TRO_TEXT_RE = re.compile(
+    r"temporarily\s+restrained|restrained\s+and\s+enjoined",
+    re.IGNORECASE,
+)
 DIRECT_REGULATORY_RECORD_RE = re.compile(
     r"\b(?:New\s+York\s+State\s+Department\s+of\s+Environmental\s+Conservation|"
     r"NYSDEC|Department\s+of\s+Environmental\s+Conservation|"
@@ -1851,7 +1855,11 @@ def evidence(s3, case_id, question):
             if row[18]:
                 by_document.setdefault((row[3], row[1]), []).append(row)
         for _identity, document_rows in sorted(
-            by_document.items(), key=lambda item: item[0][1].casefold()
+            by_document.items(),
+            key=lambda item: (
+                not any(OPERATIVE_TRO_TEXT_RE.search(row[4]["text"]) for row in item[1]),
+                item[0][1].casefold(),
+            ),
         ):
             for row in sorted(document_rows, key=lambda item: item[2]):
                 procedural_priority.append(row[4])
