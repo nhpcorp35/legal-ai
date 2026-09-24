@@ -2673,6 +2673,34 @@ RENNICK_EVALUATION_QUESTIONS = (
 )
 
 
+
+def resolved_rennick_evaluation_questions():
+    """Resolve an approved third evaluation draft without publishing its ID."""
+    questions = [dict(item) for item in RENNICK_EVALUATION_QUESTIONS]
+    outcome_changer = questions[-1]
+    try:
+        candidates = load_draft_requests(RENNICK_FRAMEWORK_CASE_ID)
+    except Exception:
+        candidates = []
+    for candidate in candidates or []:
+        if (
+            candidate.get("status") == "READY"
+            and candidate.get("question") == outcome_changer["question"]
+            and isinstance(candidate.get("request_id"), str)
+        ):
+            outcome_changer["request_id"] = candidate["request_id"]
+            break
+    return tuple(questions)
+
+
+def rennick_review_packet_request_ids():
+    """Return fixed analyses plus a completed approved third analysis, if any."""
+    return tuple(
+        item["request_id"] for item in resolved_rennick_evaluation_questions()
+        if item.get("request_id")
+    )
+
+
 def draft_review_evaluation_dimensions(payload):
     """Return the five attorney-evaluation scores, or None when incomplete."""
     scores = {}
@@ -2693,11 +2721,11 @@ def draft_review_rubric_html(prefix):
     )
 
 
-def rennick_evaluation_set_html():
+def rennick_evaluation_set_html(questions=None):
     """Make the narrow attorney test set explicit without creating a draft."""
     return render_template_string(
         """<section class="panel evaluation-set"><h2>Attorney evaluation set</h2><p>LegalAI is being judged on three practical questions, not generic summaries.</p><ol>{% for item in questions %}<li><strong>{{ item.question }}</strong>{% if item.request_id %} — ready for review.{% else %} — intentionally not generated; a separate paid-run approval is required.{% endif %}</li>{% endfor %}</ol></section>""",
-        questions=RENNICK_EVALUATION_QUESTIONS,
+        questions=questions or resolved_rennick_evaluation_questions(),
     )
 
 
@@ -2806,16 +2834,14 @@ def load_draft_review_feedbacks(reviewer, case_id, request_ids):
 
 def rennick_evaluation_summary(reviewer):
     """Return an honest, bounded rollup of the attorney's Rennick reviews."""
-    request_ids = tuple(
-        item["request_id"] for item in RENNICK_EVALUATION_QUESTIONS
-        if item["request_id"]
-    )
+    evaluation_questions = resolved_rennick_evaluation_questions()
+    request_ids = tuple(item["request_id"] for item in evaluation_questions if item["request_id"])
     records = load_draft_review_feedbacks(
         reviewer, RENNICK_FRAMEWORK_CASE_ID, request_ids
     )
     dimension_scores = {key: [] for key, _label, _question in _DRAFT_REVIEW_DIMENSIONS}
     questions = []
-    for item in RENNICK_EVALUATION_QUESTIONS:
+    for item in evaluation_questions:
         request_id = item["request_id"]
         record = records.get(request_id) if request_id else None
         dimensions = record.get("evaluation_dimensions", {}) if record else {}
@@ -4752,7 +4778,8 @@ def workspace_rennick_attorney_review_packet(case_id):
     if case_id != RENNICK_FRAMEWORK_CASE_ID:
         abort(404)
     packet_items = []
-    for request_id in RENNICK_ATTORNEY_REVIEW_PACKET_DRAFT_IDS:
+    evaluation_questions = resolved_rennick_evaluation_questions()
+    for request_id in rennick_review_packet_request_ids():
         item = load_exact_draft_request(case_id, request_id)
         if (
             item is None
@@ -4869,7 +4896,7 @@ def workspace_rennick_attorney_review_packet(case_id):
     )
     page = page.replace(
         '<section class="panel notice">',
-        rennick_evaluation_set_html() + '<section class="panel notice">',
+        rennick_evaluation_set_html(evaluation_questions) + '<section class="panel notice">',
         1,
     )
     for packet in packet_items:
