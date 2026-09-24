@@ -82,3 +82,58 @@ class WorkspaceRennickAliasTests(unittest.TestCase):
                 page,
             )
         self.assertIn("Open analysis and submit review", page)
+
+
+    def test_packet_saves_review_against_the_selected_exact_draft(self):
+        ready_items = {
+            request_id: {
+                "request_id": request_id,
+                "status": "READY",
+                "question": "Test motion question",
+                "draft": {
+                    "summary": "Test summary",
+                    "findings": [],
+                    "missing_information": [],
+                },
+            }
+            for request_id in legalai.RENNICK_ATTORNEY_REVIEW_PACKET_DRAFT_IDS
+        }
+        request_id = legalai.RENNICK_ATTORNEY_REVIEW_PACKET_DRAFT_IDS[0]
+        with patch.object(legalai, "basic_review_user", return_value="john"), patch.object(
+            legalai,
+            "load_exact_draft_request",
+            side_effect=lambda _case_id, selected_id: ready_items[selected_id],
+        ), patch.object(
+            legalai, "draft_review_feedback_csrf_token", return_value="packet-token"
+        ), patch.object(
+            legalai, "archive_draft_review_feedback", return_value={"saved": True}
+        ) as archive, patch.object(
+            legalai, "notify_draft_review_feedback"
+        ) as notify:
+            response = legalai.app.test_client().post(
+                f"/workspace/matters/{CANONICAL_ID}/review-packet",
+                data={
+                    "request_id": request_id,
+                    "feedback_csrf_token": "packet-token",
+                    "decision": "needs_revision",
+                    "accuracy_rating": "2",
+                    "usefulness_rating": "3",
+                    "missing_or_overstated": "Explain the permit conflict.",
+                    "citation_problems": "",
+                    "comments": "Address the counterargument.",
+                },
+            )
+        self.assertEqual(response.status_code, 303)
+        self.assertIn(f"review={request_id}", response.headers["Location"])
+        archive.assert_called_once_with(
+            "john",
+            CANONICAL_ID,
+            request_id,
+            "needs_revision",
+            2,
+            3,
+            "Explain the permit conflict.",
+            "",
+            "Address the counterargument.",
+        )
+        notify.assert_called_once_with({"saved": True})
