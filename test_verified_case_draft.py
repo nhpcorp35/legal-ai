@@ -2608,8 +2608,24 @@ class StrategicAnalysisRetrievalTests(unittest.TestCase):
             generated = WORKER.generate(question, pages)
         payload = json.loads(urlopen.call_args.args[0].data.decode())
         prompt = json.loads(payload["input"])
-        self.assertEqual(payload["text"]["format"]["schema"]["properties"]["findings"]["maxItems"], 9)
-        self.assertIn("four separate Record support findings", prompt["instructions"])
+        findings_schema = payload["text"]["format"]["schema"]["properties"]["findings"]
+        self.assertEqual(findings_schema["maxItems"], 9)
+        self.assertEqual(findings_schema["minItems"], 9)
+        self.assertEqual(
+            [item["properties"]["section"]["const"] for item in findings_schema["prefixItems"]],
+            [
+                "Objective and posture",
+                "Candidate motions",
+                "Record support",
+                "Record support",
+                "Record support",
+                "Record support",
+                "Likely opposition",
+                "Gaps and prerequisites",
+                "Recommendation",
+            ],
+        )
+        self.assertIn("The JSON schema fixes the nine findings", prompt["instructions"])
         self.assertIs(WORKER.validate(generated, pages, question=question), generated)
 
     def test_motion_response_uses_its_record_analysis_sections_for_evidence_coverage(self):
