@@ -2576,6 +2576,42 @@ class StrategicAnalysisRetrievalTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "strategic direct agency records not analyzed: usace"):
             WORKER.validate(result, pages, question=question)
 
+    def test_motion_recommendation_with_two_direct_agencies_has_nine_finding_budget(self):
+        question = "I need to make a motion. Which motions should I consider?"
+        pages = [
+            {"source_sha256": "a" * 64, "filename": "Expert Report.pdf", "page_number": 1, "text": "Expert opinion."},
+            {"source_sha256": "b" * 64, "filename": "DEC Permit.pdf", "page_number": 2, "text": "NYSDEC Facility DECID 1-2824-03170 permit conditions."},
+            {"source_sha256": "c" * 64, "filename": "USACE Permit.pdf", "page_number": 3, "text": "U.S. Army Corps permit NAN-2016-00386."},
+            {"source_sha256": "d" * 64, "filename": "Survey.pdf", "page_number": 4, "text": "Survey measurements."},
+        ]
+        citations = [{key: page[key] for key in ("source_sha256", "filename", "page_number")} for page in pages]
+        result = {
+            "summary": "A record-supported procedural motion should be evaluated first.",
+            "findings": [
+                {"section": "Objective and posture", "statement": "The signed order defines the present procedural posture.", "citations": [citations[0]], "authority_citations": []},
+                {"section": "Candidate motions", "statement": "A verified procedural request is the constrained candidate.", "citations": [citations[0]], "authority_citations": []},
+                {"section": "Record support", "statement": "The expert opinion supplies a limited technical account.", "citations": [citations[0]], "authority_citations": []},
+                {"section": "Record support", "statement": "The NYSDEC permit is direct regulatory evidence.", "citations": [citations[1]], "authority_citations": []},
+                {"section": "Record support", "statement": "The Army Corps permit is separate direct regulatory evidence.", "citations": [citations[2]], "authority_citations": []},
+                {"section": "Record support", "statement": "The survey supplies measurement evidence.", "citations": [citations[3]], "authority_citations": []},
+                {"section": "Likely opposition", "statement": "The opponent can dispute the factual application.", "citations": [citations[0]], "authority_citations": []},
+                {"section": "Gaps and prerequisites", "statement": "The operative status must be confirmed before relief is sought.", "citations": [citations[0]], "authority_citations": []},
+                {"section": "Recommendation", "statement": "Preserve the verified record before seeking further relief.", "citations": [citations[0]], "authority_citations": []},
+            ],
+            "missing_information": [],
+            "limitations": [],
+        }
+        response = mock.MagicMock()
+        response.read.return_value = json.dumps({"output": [{"content": [{"text": json.dumps(result)}]}]}).encode()
+        response.__enter__.return_value = response
+        with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}), mock.patch.object(WORKER.urllib.request, "urlopen", return_value=response) as urlopen:
+            generated = WORKER.generate(question, pages)
+        payload = json.loads(urlopen.call_args.args[0].data.decode())
+        prompt = json.loads(payload["input"])
+        self.assertEqual(payload["text"]["format"]["schema"]["properties"]["findings"]["maxItems"], 9)
+        self.assertIn("four separate Record support findings", prompt["instructions"])
+        self.assertIs(WORKER.validate(generated, pages, question=question), generated)
+
     def test_motion_response_uses_its_record_analysis_sections_for_evidence_coverage(self):
         question = "My opponent filed this motion. How should I answer it?"
         pages = [
