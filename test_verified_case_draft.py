@@ -2034,6 +2034,10 @@ class StrategicAnalysisRetrievalTests(unittest.TestCase):
                  "text": "Licensed professional engineer gives an expert opinion about access."}
                 for page in range(1, 81)
             ] + [
+                {"filename": "000000_2026_ORDER_TO_SHOW_CAUSE_31.pdf", "page_number": page,
+                 "text": "ORDER TO SHOW CAUSE concerning the parties' motion."}
+                for page in range(1, 6)
+            ] + [
                 {"filename": "613561_2026_MICHAEL_DESOUSA_et_al_v_GEORGE_RENNICK_et_al_ORDER_TO_SHOW_CAUSE_32.pdf", "page_number": 2,
                  "text": "ORDER TO SHOW CAUSE: temporary restraining order pending determination of preliminary injunction."},
                 {"filename": "613561_2026_MICHAEL_DESOUSA_et_al_v_GEORGE_RENNICK_et_al_ORDER_TO_SHOW_CAUSE_32.pdf", "page_number": 3,
