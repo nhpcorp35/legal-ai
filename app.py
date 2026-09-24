@@ -2398,7 +2398,7 @@ def run_framework_evidence_check(case_id):
 CASE00_ID = "Case-00-Triborough"
 RENNICK_FRAMEWORK_CASE_ID = "NY-Nassau-613561-2026-Desousa-v-Rennick"
 RENNICK_ATTORNEY_REVIEW_PACKET_DRAFT_IDS = (
-    "draft-1790197401-83c56c655ec5",
+    "draft-1790275196-5d33f8a041c2",
     "draft-1790200223-c52acd236d81",
 )
 TOP_ATTACK_SURFACES_QUESTION = (

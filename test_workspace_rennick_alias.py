@@ -25,6 +25,15 @@ class _Response:
 
 
 class WorkspaceRennickAliasTests(unittest.TestCase):
+    def test_review_packet_uses_corrected_motion_recommendation(self):
+        self.assertEqual(
+            legalai.RENNICK_ATTORNEY_REVIEW_PACKET_DRAFT_IDS,
+            (
+                "draft-1790275196-5d33f8a041c2",
+                "draft-1790200223-c52acd236d81",
+            ),
+        )
+
     def test_legacy_placeholder_becomes_one_canonical_indexed_matter(self):
         payload = {
             "cases": [
@@ -41,4 +50,3 @@ class WorkspaceRennickAliasTests(unittest.TestCase):
                 legalai.load_registered_cases(),
                 [{"case_id": CANONICAL_ID, "stage": "Verified source indexed"}],
             )
-
