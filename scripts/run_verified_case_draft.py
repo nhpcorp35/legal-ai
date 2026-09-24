@@ -1839,7 +1839,27 @@ def evidence(s3, case_id, question):
                     and (row[3], row[1], row[2]) not in procedural_ids
                 )
             ]
-    ordered_items = targeted_pages + [row[4] for row in ordered]
+    # A motion analysis cannot safely cite a signed TRO's heading while
+    # silently dropping its next-page restraint terms just because the general
+    # record budget fills. Reserve a compact procedural document span before
+    # all otherwise-ranked material. This uses only pages already admitted to
+    # the verified index and remains bounded by the existing page budget.
+    procedural_priority = []
+    if strategic_analysis_question:
+        by_document = {}
+        for row in rows:
+            if row[18]:
+                by_document.setdefault((row[3], row[1]), []).append(row)
+        for _identity, document_rows in sorted(
+            by_document.items(), key=lambda item: item[0][1].casefold()
+        ):
+            for row in sorted(document_rows, key=lambda item: item[2]):
+                procedural_priority.append(row[4])
+                if len(procedural_priority) >= STRATEGIC_PROCEDURAL_PAGE_LIMIT:
+                    break
+            if len(procedural_priority) >= STRATEGIC_PROCEDURAL_PAGE_LIMIT:
+                break
+    ordered_items = procedural_priority + targeted_pages + [row[4] for row in ordered]
     for item in ordered_items:
         filename, page, source = item["filename"], item["page_number"], item["source_sha256"]
         item_id = (source, filename, page)
