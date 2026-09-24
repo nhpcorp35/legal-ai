@@ -483,3 +483,11 @@ Engineering activity alone does not count as progress. The evidence must show an
 - **Goal advanced:** Measure whether Rennick motion analyses actually identify posture, use decisive record evidence, distinguish law from evidence, address counterarguments, and recommend concrete next steps.
 - **How / evidence:** Added a fixed three-question Rennick evaluation contract, five required attorney-quality scores on each review, canonical schema-v2 feedback records, and 13 focused passing UI/archive tests. No model or paid draft was called.
 - **Remaining gap:** The third outcome-changing-evidence question remains intentionally ungenerated until a separate paid-run approval; attorney scoring is still needed before claiming substantive usefulness.
+
+
+### 2026-09-24 evaluation-summary alignment checkpoint
+
+- **Movement:** YES
+- **Goal advanced:** Convert direct attorney scoring into a visible, bounded improvement signal instead of an email or memory-based feedback loop.
+- **How / evidence:** Added an authenticated, read-only Rennick evaluation summary that reports submitted coverage and averages each required attorney-quality dimension without generating, revising, or exposing comment text; 15 focused UI/archive tests passed.
+- **Remaining gap:** No attorney score exists yet, and the third outcome-changing-evidence analysis still requires a separately approved paid run.
