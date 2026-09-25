@@ -12,6 +12,7 @@ class ReleaseSmokeTests(unittest.TestCase):
         self.assertTrue(callable(worker.load_reviewed_authorities))
         self.assertEqual(app.app.name, "app")
         self.assertEqual(worker.__name__, "scripts.run_verified_case_draft")
+        self.assertEqual(worker.__package__, "scripts")
 
 
 if __name__ == "__main__":
