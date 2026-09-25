@@ -13,7 +13,8 @@ class ReleaseControllerContractTests(unittest.TestCase):
             / "legalai-release-controller.yml"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("python -m unittest discover -v", workflow)
+        self.assertIn("python -m py_compile app.py scripts/run_verified_case_draft.py", workflow)
+        self.assertIn("python -m unittest -v test_release_controller_contract test_release_smoke", workflow)
         self.assertIn("needs: test", workflow)
         self.assertIn(
             "railway up --ci --project \"$RAILWAY_PROJECT_ID\" --environment production --service legal-ai-executor",
