@@ -3438,7 +3438,7 @@ def notify_draft_review_feedback(record):
         return False
 
 
-def load_draft_input_audit(case_id, request_id):
+def _gateway_load_draft_input_audit(case_id, request_id):
     """Read bounded retrieval-source metadata through the protected gateway."""
     gateway_url = os.environ.get("LEGALAI_REVIEW_GATEWAY_URL", "").rstrip("/")
     secret = os.environ.get("LEGALAI_REVIEW_GATEWAY_SECRET", "")
@@ -3489,6 +3489,53 @@ def load_draft_input_audit(case_id, request_id):
         "coverage": coverage if isinstance(coverage, dict) else {},
     }
 
+
+def _validated_draft_input_audit(audit, requested_by):
+    citations = audit.get("retrieval_citations") if isinstance(audit, dict) else None
+    legal_authorities = audit.get("legal_authorities", []) if isinstance(audit, dict) else None
+    if (
+        not isinstance(citations, list)
+        or not isinstance(legal_authorities, list)
+        or len(legal_authorities) > 12
+    ):
+        return None
+    authority_fields = (
+        "authority_id", "citation", "title", "source_url", "issuing_body",
+        "date", "sha256",
+    )
+    selected_authorities = []
+    for authority in legal_authorities:
+        if not isinstance(authority, dict) or not all(
+            isinstance(authority.get(field), str) for field in authority_fields
+        ):
+            return None
+        selected_authorities.append({
+            field: authority[field] for field in authority_fields
+        })
+    coverage = audit.get("coverage", {})
+    return {
+        "requested_by": requested_by if isinstance(requested_by, str) else None,
+        "citations": citations,
+        "legal_authorities": selected_authorities,
+        "coverage": coverage if isinstance(coverage, dict) else {},
+    }
+
+
+def load_draft_input_audit(case_id, request_id):
+    """Read the immutable retrieval audit from canonical B2 before the gateway."""
+    if not re.fullmatch(r"draft-[0-9]+-[0-9a-f]{12}", str(request_id or "")):
+        return None
+    s3, bucket = _operator_regeneration_b2_client()
+    if not s3 or not bucket:
+        return _gateway_load_draft_input_audit(case_id, request_id)
+    record = _direct_b2_draft_record(s3, bucket, case_id, request_id)
+    audit = _direct_b2_json(
+        s3, bucket,
+        f"cases/{case_id}/derived/internal-drafts/{request_id}/input_audit.json",
+    )
+    if record is None or not isinstance(audit, dict):
+        return None
+    return _validated_draft_input_audit(audit, record.get("requested_by"))
 
 def build_retrieval_visibility(citations, coverage):
     """State selected-record scope without treating non-selection as absence."""
