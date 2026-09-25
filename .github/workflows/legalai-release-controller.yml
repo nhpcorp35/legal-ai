@@ -47,7 +47,7 @@ jobs:
       - name: Install Railway CLI for read-only verified-record preflight
         run: npm install --global @railway/cli@5.62.1
       - run: python -m py_compile app.py scripts/run_verified_case_draft.py
-      - run: python -m unittest -v test_release_controller_contract test_release_smoke
+      - run: python -m unittest -v test_release_controller_contract test_release_smoke test_motion_answer_contract
       - name: Replay Rennick verified-record retrieval without a model
         env:
           CASE_ID: NY-Nassau-613561-2026-Desousa-v-Rennick
