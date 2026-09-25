@@ -2806,7 +2806,7 @@ def _direct_b2_case_source_map(case_id):
             text = item.get("text") if isinstance(item, dict) else None
             if not (
                 isinstance(filename, str)
-                and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._ -]{0,180}\\.pdf", filename)
+                and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._ -]{0,180}\.pdf", filename)
                 and isinstance(page_number, int)
                 and 1 <= page_number <= 100000
                 and isinstance(text, str)
