@@ -10,6 +10,7 @@ import math
 import os
 import csv
 import re
+import secrets
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -3833,6 +3834,102 @@ def discard_temporary_draft_request(case_id, request_id):
     if discarded:
         invalidate_draft_request_cache(case_id)
     return discarded
+
+
+# Direct app-owned queue writes use the same immutable B2 request/status objects
+# the worker already consumes.  Regeneration remains on the legacy gateway
+# until its reviewer-ownership guard moves with it.
+_gateway_create_draft_request = create_draft_request
+_gateway_discard_temporary_draft_request = discard_temporary_draft_request
+
+
+def _put_b2_json(s3, bucket, key_name, value):
+    raw = json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    s3.put_object(
+        Bucket=bucket,
+        Key=key_name,
+        Body=raw,
+        ContentType="application/json",
+        Metadata={"sha256": hashlib.sha256(raw).hexdigest()},
+    )
+
+
+def _direct_b2_create_draft_request(case_id, question, reviewer):
+    s3, bucket = _operator_regeneration_b2_client()
+    if not s3 or not bucket:
+        return None
+    existing = _direct_b2_draft_records(case_id) or []
+    for item in existing:
+        if item.get("question", "").strip().casefold() == question.strip().casefold() and item.get("status") in {"QUEUED", "RUNNING", "READY"}:
+            return {"ok": True, "request_id": item["request_id"], "reused": True}
+    created_at = int(time.time())
+    request_id = f"draft-{created_at}-{secrets.token_hex(6)}"
+    request_key = f"cases/{case_id}/derived/draft-requests/{request_id}.json"
+    status_key = f"cases/{case_id}/derived/internal-drafts/{request_id}/status.json"
+    request_record = {
+        "schema_version": "legalai-draft-request.v1",
+        "case_id": case_id,
+        "request_id": request_id,
+        "question": question,
+        "requested_by": reviewer,
+        "created_at": created_at,
+        "external_communication": False,
+    }
+    status_record = {
+        "schema_version": "legalai-internal-draft-status.v1",
+        "case_id": case_id,
+        "request_id": request_id,
+        "status": "QUEUED",
+        "updated_at": created_at,
+    }
+    try:
+        _put_b2_json(s3, bucket, request_key, request_record)
+        _put_b2_json(s3, bucket, status_key, status_record)
+    except Exception:
+        return None
+    invalidate_draft_request_cache(case_id)
+    return {"ok": True, "request_id": request_id, "reused": False}
+
+
+def create_draft_request(case_id, question, reviewer, regenerate_from=None):
+    if regenerate_from is None:
+        direct = _direct_b2_create_draft_request(case_id, question, reviewer)
+        if direct is not None:
+            return direct
+    return _gateway_create_draft_request(
+        case_id, question, reviewer, regenerate_from=regenerate_from
+    )
+
+
+def discard_temporary_draft_request(case_id, request_id):
+    s3, bucket = _operator_regeneration_b2_client()
+    if s3 and bucket:
+        record = _direct_b2_draft_record(s3, bucket, case_id, request_id)
+        if record is not None:
+            if record.get("question", "").strip().casefold() != "is this a test?":
+                return False
+            if record.get("status") not in {"QUEUED", "RUNNING"}:
+                return False
+            try:
+                _put_b2_json(
+                    s3,
+                    bucket,
+                    f"cases/{case_id}/derived/internal-drafts/{request_id}/status.json",
+                    {
+                        "schema_version": "legalai-internal-draft-status.v1",
+                        "case_id": case_id,
+                        "request_id": request_id,
+                        "status": "CANCELLED",
+                        "failure_code": "temporary_test_discarded",
+                        "updated_at": int(time.time()),
+                    },
+                )
+            except Exception:
+                return False
+            invalidate_draft_request_cache(case_id)
+            return True
+    return _gateway_discard_temporary_draft_request(case_id, request_id)
+
 
 def load_szymczyk_review_packet():
     """Prefer the promoted B2 packet; retain the legacy config packet as fallback.
