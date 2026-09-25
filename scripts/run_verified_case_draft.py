@@ -2205,6 +2205,64 @@ MOTION_RESPONSE_SECTIONS = (
     "Procedural objections",
     "Recommendation",
 )
+
+# Every motion answer exposes the same attorney-facing decision slots even
+# though recommendation and response use different record-analysis headings.
+# The contract is metadata only: it neither creates a draft nor changes facts,
+# citations, or the record selected for analysis.
+MOTION_ANSWER_CONTRACT_SECTIONS = {
+    "motion_recommendation": {
+        "posture": ("Objective and posture",),
+        "relief": ("Candidate motions",),
+        "burden": ("Candidate motions",),
+        "decisive_evidence": ("Record support",),
+        "strongest_opposition": ("Likely opposition",),
+        "action": ("Recommendation",),
+    },
+    "motion_response": {
+        "posture": ("Motion and burden",),
+        "relief": ("Motion and burden",),
+        "burden": ("Motion and burden",),
+        "decisive_evidence": (
+            "Opponent showing",
+            "Response grounds",
+            "Evidence to submit",
+        ),
+        "strongest_opposition": ("Opponent showing",),
+        "action": ("Recommendation",),
+    },
+}
+
+
+def motion_answer_contract(result, question):
+    """Fail closed unless every attorney decision slot has a populated heading."""
+    mode = question_mode(question)
+    slot_sections = MOTION_ANSWER_CONTRACT_SECTIONS.get(mode)
+    if slot_sections is None:
+        return None
+    findings = result.get("findings") if isinstance(result, dict) else None
+    if not isinstance(findings, list):
+        raise ValueError("motion answer contract requires findings")
+    slots = {}
+    for slot, required_sections in slot_sections.items():
+        matched = [
+            finding for finding in findings
+            if isinstance(finding, dict)
+            and finding.get("section") in required_sections
+            and isinstance(finding.get("statement"), str)
+            and finding["statement"].strip()
+        ]
+        if not matched:
+            raise ValueError("motion answer contract missing " + slot)
+        slots[slot] = {
+            "sections": list(required_sections),
+            "finding_count": len(matched),
+        }
+    return {
+        "schema_version": "legalai-motion-answer-contract.v1",
+        "mode": mode,
+        "slots": slots,
+    }
 LITIGATION_MAP_SECTIONS = (
     "Main case",
     "Counterclaims and cross-claims",
@@ -2718,6 +2776,7 @@ def validate(result, pages, authorities=(), question="", coverage=None):
             or section_positions != sorted(section_positions)
         ):
             raise ValueError("invalid strategic-analysis sections")
+        motion_answer_contract(result, question)
     if litigation_map_question(question) and not authorities and not strategic_question and TOP_ATTACK_SURFACES_MARKER not in question.casefold():
         sections = [item.get("section") for item in result["findings"]]
         expected = [section for section in LITIGATION_MAP_SECTIONS if section in sections]
@@ -2782,7 +2841,21 @@ def run_request(s3, case_id, request_id):
         # trail but never publish a cancelled draft as READY.
         if request_status(s3, case_id, request_id) == "CANCELLED":
             return
-        draft={"schema_version":"legalai-internal-draft.v1","case_id":case_id,"request_id":request_id,"question":question,"review_required":True,"external_communication":False,"generated_at":now(),**result}
+        draft={
+            "schema_version": "legalai-internal-draft.v1",
+            "case_id": case_id,
+            "request_id": request_id,
+            "question": question,
+            "review_required": True,
+            "external_communication": False,
+            "generated_at": now(),
+            **result,
+            **(
+                {"motion_answer_contract": motion_answer_contract(result, question)}
+                if question_mode(question) in MOTION_ANSWER_CONTRACT_SECTIONS
+                else {}
+            ),
+        }
         stage = "draft_write"
         put(s3,case_id,request_id,"draft.json",draft)
         stage = "audit_write"
