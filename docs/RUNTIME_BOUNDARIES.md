@@ -11,17 +11,19 @@ The normal path does not require manual Railway SSH, Mission Control copy/paste,
 
 ## Gateway role
 
-The gateway is a compatibility and protection boundary only for functions that still require it:
+The gateway is a compatibility and protection boundary only:
 
-- verified-record delivery/search that has not yet moved to the app's B2 reader;
-- legacy case portals and an outage-only compatibility fallback.
+- legacy case portals; and
+- an outage-only compatibility fallback when the app cannot reach B2.
 
-It is not part of the production release controller and is not the canonical store.
+Verified-record search, source maps, and source-PDF delivery use the app's
+direct B2 reader in normal production operation. The gateway is not part of the
+production release controller and is not the canonical store.
 
 ## Data rules
 
 - B2 holds immutable source ZIPs and authoritative request, status, draft, audit, and review records.
-- The app owns direct B2 draft list/status/detail, retrieval audits, source maps, verified-record search, review reads, authenticated standard requests, temporary-test cancellation, and guarded regeneration; it falls back to the gateway only when the B2 boundary is unavailable.
+- The app owns direct B2 draft list/status/detail, retrieval audits, source maps, verified-record search, source-PDF delivery, review reads, authenticated standard requests, temporary-test cancellation, and guarded regeneration; it falls back to the gateway only when the B2 boundary is unavailable.
 - The worker is the only component that can generate a draft.
 - A model call requires a separately approved request; no read-only path can create one.
 
