@@ -1,0 +1,97 @@
+name: LegalAI Production Release
+run-name: legalai-release-${{ github.sha }}
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - app.py
+      - Procfile
+      - requirements.txt
+      - railway.toml
+      - Dockerfile
+      - scripts/**
+      - static/**
+      - templates/**
+      - test_*.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: legalai-production-release
+  cancel-in-progress: false
+
+env:
+  RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+  RAILWAY_PROJECT_ID: 1af7b0c8-f363-4154-89f2-cd79a6dfaf5c
+  RAILWAY_ENVIRONMENT_ID: eccbb432-342b-415b-88e3-fc083d7cfe59
+
+jobs:
+  test:
+    name: Test verified LegalAI code
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -r requirements.txt
+      - run: python -m unittest discover -v
+
+  deploy:
+    name: Deploy and verify production
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install Railway CLI
+        run: npm install --global @railway/cli@5.62.1
+      - name: Deploy application service
+        run: railway up --ci --project "$RAILWAY_PROJECT_ID" --environment production --service legal-ai-executor
+      - name: Deploy draft worker
+        run: railway up --ci --project "$RAILWAY_PROJECT_ID" --environment production --service internal-draft-worker
+      - name: Verify both services reached a terminal success state
+        run: |
+          for service in legal-ai-executor internal-draft-worker; do
+            railway deployment list --service "$service" --environment production --json --limit 1 > "receipt-${service}.json"
+            python - "receipt-${service}.json" <<'PY'
+          import json
+          import sys
+
+          records = json.load(open(sys.argv[1], encoding="utf-8"))
+          if isinstance(records, dict):
+              records = records.get("deployments", [])
+          if not records or records[0].get("status") != "SUCCESS":
+              raise SystemExit("Latest Railway deployment was not successful: " + json.dumps(records[:1], sort_keys=True))
+          print(json.dumps({"railway_receipt": records[0]}, sort_keys=True))
+          PY
+          done
+
+  notify:
+    name: Send verified release receipt
+    needs: [test, deploy]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Notify Pushover
+        env:
+          PUSHOVER_APP_TOKEN: ${{ secrets.PUSHOVER_APP_TOKEN }}
+          PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
+          RELEASE_RESULT: ${{ needs.deploy.result }}
+        run: |
+          curl --fail-with-body --silent --show-error --retry 2 \
+            --form-string "token=${PUSHOVER_APP_TOKEN}" \
+            --form-string "user=${PUSHOVER_USER_KEY}" \
+            --form-string "title=LegalAI release ${RELEASE_RESULT}" \
+            --form-string "message=Commit ${GITHUB_SHA} · tests=${{ needs.test.result }} · deployment=${RELEASE_RESULT}" \
+            https://api.pushover.net/1/messages.json
