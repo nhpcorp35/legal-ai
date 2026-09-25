@@ -2644,6 +2644,112 @@ def load_exact_draft_request(case_id, request_id):
                 return item
     return result
 
+# Legacy gateway readers are retained as a compatibility fallback.  Canonical B2
+# is preferred for normal draft list/status views so the attorney workspace
+# remains usable if the gateway is unavailable.
+_gateway_load_draft_requests = load_draft_requests
+_gateway_load_exact_draft_request = load_exact_draft_request
+
+
+def _direct_b2_json(s3, bucket, key_name):
+    try:
+        value = json.loads(s3.get_object(Bucket=bucket, Key=key_name)["Body"].read().decode("utf-8"))
+    except Exception:
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _direct_b2_draft_record(s3, bucket, case_id, request_id):
+    if not re.fullmatch(r"draft-[0-9]+-[0-9a-f]{12}", str(request_id or "")):
+        return None
+    request_item = _direct_b2_json(s3, bucket, f"cases/{case_id}/derived/draft-requests/{request_id}.json")
+    status_item = _direct_b2_json(s3, bucket, f"cases/{case_id}/derived/internal-drafts/{request_id}/status.json")
+    if not request_item or not status_item:
+        return None
+    status = status_item.get("status")
+    if (
+        request_item.get("schema_version") != "legalai-draft-request.v1"
+        or request_item.get("case_id") != case_id
+        or request_item.get("external_communication") is not False
+        or status not in {"QUEUED", "RUNNING", "READY", "FAILED", "CANCELLED"}
+        or not isinstance(request_item.get("question"), str)
+        or not isinstance(request_item.get("requested_by"), str)
+        or not isinstance(request_item.get("created_at"), int)
+    ):
+        return None
+    record = {
+        "request_id": request_id,
+        "question": request_item["question"],
+        "requested_by": request_item["requested_by"],
+        "created_at": request_item["created_at"],
+        "status": status,
+        "failure_code": status_item.get("failure_code"),
+    }
+    if status == "READY":
+        draft = _direct_b2_json(s3, bucket, f"cases/{case_id}/derived/internal-drafts/{request_id}/draft.json")
+        if not draft:
+            return None
+        record["draft"] = draft
+    return record
+
+
+def _direct_b2_draft_records(case_id, request_id=None):
+    s3, bucket = _operator_regeneration_b2_client()
+    if not s3 or not bucket:
+        return None
+    if request_id:
+        record = _direct_b2_draft_record(s3, bucket, case_id, request_id)
+        return [record] if record else None
+    try:
+        objects = s3.list_objects_v2(
+            Bucket=bucket,
+            Prefix=f"cases/{case_id}/derived/draft-requests/",
+            MaxKeys=250,
+        ).get("Contents", [])
+    except Exception:
+        return None
+    records = []
+    for item in objects:
+        key_name = item.get("Key", "") if isinstance(item, dict) else ""
+        record = _direct_b2_draft_record(s3, bucket, case_id, key_name.rsplit("/", 1)[-1].removesuffix(".json"))
+        if record:
+            records.append(record)
+    return records
+
+
+def _normalise_direct_draft_records(records):
+    now = int(time.time())
+    entries = [
+        reconcile_draft_request_lifecycle(record, now=now)
+        for record in records
+    ]
+    entries.sort(key=lambda item: (item["created_at"], item["request_id"]), reverse=True)
+    return entries
+
+
+def load_draft_requests(case_id, *, force_refresh=False):
+    now = time.monotonic()
+    with _draft_request_cache_lock:
+        cached = _draft_request_cache.get(case_id)
+        if not force_refresh and cached and now - cached["loaded_at"] < DRAFT_REQUEST_CACHE_TTL_SECONDS:
+            return copy.deepcopy(cached["entries"])
+    records = _direct_b2_draft_records(case_id)
+    if records is None:
+        return _gateway_load_draft_requests(case_id, force_refresh=force_refresh)
+    entries = _normalise_direct_draft_records(records)
+    with _draft_request_cache_lock:
+        _draft_request_cache[case_id] = {"loaded_at": time.monotonic(), "entries": copy.deepcopy(entries)}
+    return entries
+
+
+def load_exact_draft_request(case_id, request_id):
+    records = _direct_b2_draft_records(case_id, request_id)
+    if records is None:
+        return _gateway_load_exact_draft_request(case_id, request_id)
+    entries = _normalise_direct_draft_records(records)
+    return entries[0] if entries else None
+
+
 
 _draft_review_feedback_lock = threading.Lock()
 _DRAFT_REVIEW_DECISIONS = {"approve", "needs_revision"}
