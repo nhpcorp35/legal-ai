@@ -56,26 +56,44 @@ jobs:
           node-version: '22'
       - name: Install Railway CLI
         run: npm install --global @railway/cli@5.62.1
-      - name: Deploy application service
-        run: railway up --ci --project "$RAILWAY_PROJECT_ID" --environment production --service legal-ai-executor
-      - name: Deploy draft worker
-        run: railway up --ci --project "$RAILWAY_PROJECT_ID" --environment production --service internal-draft-worker
+      - name: Queue application service deployment
+        run: railway up --detach --project "$RAILWAY_PROJECT_ID" --environment production --service legal-ai-executor
+      - name: Queue draft worker deployment
+        run: railway up --detach --project "$RAILWAY_PROJECT_ID" --environment production --service internal-draft-worker
       - name: Verify both services reached a terminal success state
         run: |
-          for service in legal-ai-executor internal-draft-worker; do
-            railway deployment list --service "$service" --environment production --json --limit 1 > "receipt-${service}.json"
-            python - "receipt-${service}.json" <<'PY'
+          python - <<'PY'
           import json
-          import sys
+          import subprocess
+          import time
 
-          records = json.load(open(sys.argv[1], encoding="utf-8"))
-          if isinstance(records, dict):
-              records = records.get("deployments", [])
-          if not records or records[0].get("status") != "SUCCESS":
-              raise SystemExit("Latest Railway deployment was not successful: " + json.dumps(records[:1], sort_keys=True))
-          print(json.dumps({"railway_receipt": records[0]}, sort_keys=True))
+          services = ("legal-ai-executor", "internal-draft-worker")
+          deadline = time.monotonic() + 600
+          while time.monotonic() < deadline:
+              receipts = {}
+              for service in services:
+                  result = subprocess.run(
+                      ["railway", "deployment", "list", "--service", service, "--environment", "production", "--json", "--limit", "1"],
+                      check=True,
+                      capture_output=True,
+                      text=True,
+                  )
+                  records = json.loads(result.stdout)
+                  if isinstance(records, dict):
+                      records = records.get("deployments", [])
+                  if not records:
+                      raise SystemExit("No Railway deployment receipt for " + service)
+                  receipts[service] = records[0]
+              statuses = {service: receipt.get("status") for service, receipt in receipts.items()}
+              if all(status == "SUCCESS" for status in statuses.values()):
+                  print(json.dumps({"railway_receipts": receipts}, sort_keys=True))
+                  break
+              if any(status in {"FAILED", "CRASHED", "REMOVED"} for status in statuses.values()):
+                  raise SystemExit("Railway deployment failed: " + json.dumps(statuses, sort_keys=True))
+              time.sleep(10)
+          else:
+              raise SystemExit("Timed out waiting for Railway deployment")
           PY
-          done
 
   notify:
     name: Send verified release receipt
