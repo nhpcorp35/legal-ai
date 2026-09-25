@@ -2672,6 +2672,37 @@ RENNICK_EVALUATION_QUESTIONS = (
     },
 )
 
+# A no-answer test plan.  These prompts are deliberately not draft requests:
+# an attorney can judge whether LegalAI reads, meshes, and uses the record
+# before any paid model run is approved.
+RENNICK_ATTORNEY_EVALUATION_FRAMEWORK = (
+    ("record", "Claims", "What claims, defenses, and requested relief are actually pleaded, and what record pages establish each?"),
+    ("record", "Posture", "What is the present procedural posture, including the operative order to show cause and any signed restraint?"),
+    ("record", "Operative terms", "Which exact operative terms control the parties' conduct, and which terms are only requested rather than ordered?"),
+    ("record", "Fact versus opinion", "Separate record facts, expert opinions, party assertions, and legal conclusions. What is each item's source?"),
+    ("record", "Timeline", "Build the material chronology from the verified record. Which date or event is outcome-relevant?"),
+    ("evidence", "DEC evidence", "What does the NYSDEC permit or correspondence prove, and what does it not prove?"),
+    ("evidence", "USACE evidence", "What does the USACE material prove, and what does it not prove?"),
+    ("evidence", "Regulatory fit", "How do the regulatory records mesh with the pleaded claims and requested relief?"),
+    ("evidence", "Measurements", "What do the survey, photographs, or measurements establish, with their limits?"),
+    ("evidence", "Causation", "What admissible evidence links the alleged conduct to the claimed harm, and what link remains unproven?"),
+    ("evidence", "Proof gaps", "Which fact is asserted but presently lacks a verified supporting record or competent witness?"),
+    ("law", "Governing standard", "State the governing legal standard and identify the controlling, reviewed authority for each element."),
+    ("law", "Authority fit", "Which authority is directly on point, which is analogous, and which is only background?"),
+    ("law", "Element mapping", "Map the best verified evidence to each legal element without treating expert opinion as law."),
+    ("law", "Relief fit", "Does the requested relief fit the procedural vehicle and the proof actually available?"),
+    ("strategy", "Best motion", "Which motion or response is most defensible now, and why is it preferable to the realistic alternatives?"),
+    ("strategy", "Strongest opposition", "State the opponent's strongest argument fairly and identify the specific evidence or law that answers it."),
+    ("strategy", "Risk", "What is the most serious weakness in the recommended position and how could it affect the result?"),
+    ("strategy", "Outcome changer", "What missing evidence, factual dispute, or ruling would materially change the assessment?"),
+    ("strategy", "Next proof", "What is the smallest concrete next evidentiary or procedural step that would reduce the key uncertainty?"),
+    ("quality", "Citation discipline", "Can every material factual proposition be traced to a verified record page and every legal proposition to a reviewed authority?"),
+    ("quality", "Uncertainty", "Does the analysis label uncertainty, assumptions, and limits instead of implying proof that is not in the record?"),
+    ("quality", "Decision utility", "Would a lawyer know what to do next, what to oppose, and why after reading the answer?"),
+    ("quality", "Counterfactual", "What reasonable contrary reading of the record could change the recommendation?"),
+    ("quality", "Plain answer", "Does the answer directly answer the question asked before supplying background or generic doctrine?"),
+)
+
 
 
 def resolved_rennick_evaluation_questions():
@@ -2722,10 +2753,11 @@ def draft_review_rubric_html(prefix):
 
 
 def rennick_evaluation_set_html(questions=None):
-    """Make the narrow attorney test set explicit without creating a draft."""
+    """Show the current analyses and the no-answer attorney test framework."""
     return render_template_string(
-        """<section class="panel evaluation-set"><h2>Attorney evaluation set</h2><p>LegalAI is being judged on three practical questions, not generic summaries.</p><ol>{% for item in questions %}<li><strong>{{ item.question }}</strong>{% if item.request_id %} — ready for review.{% else %} — intentionally not generated; a separate paid-run approval is required.{% endif %}</li>{% endfor %}</ol></section>""",
+        """<section class="panel evaluation-set"><h2>Attorney evaluation set</h2><p>Current analyses are reviewed below. The 25-question framework is a no-answer test plan: it creates no draft, calls no model, and requires separate approval before any answer is generated.</p><h3>Current analyses</h3><ol>{% for item in questions %}<li><strong>{{ item.question }}</strong>{% if item.request_id %} — ready for review.{% else %} — intentionally not generated; a separate paid-run approval is required.{% endif %}</li>{% endfor %}</ol><h3>No-answer framework</h3><ol>{% for category, label, question in framework %}<li><strong>{{ label }}</strong> <span class="meta">({{ category }})</span> — {{ question }}</li>{% endfor %}</ol></section>""",
         questions=questions or resolved_rennick_evaluation_questions(),
+        framework=RENNICK_ATTORNEY_EVALUATION_FRAMEWORK,
     )
 
 
