@@ -41,8 +41,63 @@ jobs:
           cache: pip
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -r requirements.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install Railway CLI for read-only verified-record preflight
+        run: npm install --global @railway/cli@5.62.1
       - run: python -m py_compile app.py scripts/run_verified_case_draft.py
       - run: python -m unittest -v test_release_controller_contract test_release_smoke
+      - name: Replay Rennick verified-record retrieval without a model
+        env:
+          CASE_ID: NY-Nassau-613561-2026-Desousa-v-Rennick
+        run: |
+          railway run --no-local --project "$RAILWAY_PROJECT_ID" --environment "$RAILWAY_ENVIRONMENT_ID" --service legal-ai-executor -- python - <<'PY'
+          import json
+
+          from scripts.run_verified_case_draft import (
+              classify_page,
+              client,
+              evidence,
+              load_reviewed_authorities,
+          )
+
+          case_id = __import__("os").environ["CASE_ID"]
+          s3 = client()
+          authorities = load_reviewed_authorities(s3, case_id)
+          assert len(authorities) == 10, {"authority_count": len(authorities)}
+
+          checks = {}
+          for kind, question in {
+              "motion_recommendation": "I need to make a motion. Which motions should I consider?",
+              "motion_response": "My opponent made a motion. How should I answer it?",
+          }.items():
+              pages = list(evidence(s3, case_id, question))
+              filenames = [page["filename"] for page in pages]
+              source_types = sorted({classify_page(page)["source_type"] for page in pages})
+              assert any("ORDER_TO_SHOW_CAUSE_32" in name for name in filenames), filenames
+              assert any("EXHIBIT_S__27" in name for name in filenames), filenames
+              assert {
+                  "expert_opinion",
+                  "regulatory_record",
+                  "visual_or_measurement_evidence",
+              }.issubset(source_types), source_types
+              checks[kind] = {
+                  "selected_page_count": len(pages),
+                  "source_types": source_types,
+                  "doc32_selected": True,
+                  "nysdec_exhibit_selected": True,
+              }
+
+          print(json.dumps({
+              "result": "RENNICK_RETRIEVAL_PREFLIGHT_VERIFIED",
+              "model_called": False,
+              "draft_created": False,
+              "b2_write": False,
+              "authority_count": len(authorities),
+              "checks": checks,
+          }, sort_keys=True))
+          PY
 
   deploy:
     name: Deploy and verify production
