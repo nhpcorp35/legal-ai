@@ -27,6 +27,11 @@ class ReleaseControllerContractTests(unittest.TestCase):
         self.assertIn("group: legalai-production-release", workflow)
         self.assertIn("PUSHOVER_APP_TOKEN: ${{ secrets.PUSHOVER_APP_TOKEN }}", workflow)
         self.assertIn("PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}", workflow)
+        self.assertIn("Replay Rennick verified-record retrieval without a model", workflow)
+        self.assertIn("railway run --no-local --project \"$RAILWAY_PROJECT_ID\" --environment \"$RAILWAY_ENVIRONMENT_ID\" --service legal-ai-executor", workflow)
+        self.assertIn("RENNICK_RETRIEVAL_PREFLIGHT_VERIFIED", workflow)
+        self.assertIn('"model_called": False', workflow)
+        self.assertIn('"b2_write": False', workflow)
 
 
 if __name__ == "__main__":
