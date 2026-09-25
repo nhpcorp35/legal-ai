@@ -491,3 +491,11 @@ Engineering activity alone does not count as progress. The evidence must show an
 - **Goal advanced:** Convert direct attorney scoring into a visible, bounded improvement signal instead of an email or memory-based feedback loop.
 - **How / evidence:** Added an authenticated, read-only Rennick evaluation summary that reports submitted coverage and averages each required attorney-quality dimension without generating, revising, or exposing comment text; 15 focused UI/archive tests passed.
 - **Remaining gap:** No attorney score exists yet, and the third outcome-changing-evidence analysis still requires a separately approved paid run.
+
+
+### 2026-09-25 runtime-simplification alignment checkpoint
+
+- **Movement:** YES
+- **Goal advanced:** Keep attorney-facing draft review available from canonical verified records even when the legacy gateway is unavailable.
+- **How / evidence:** The app now prefers direct, read-only B2 draft list/status/detail reads with a compatibility fallback; focused deterministic tests verify the direct path does not call the gateway.
+- **Remaining gap:** Move review/packet reads, then authenticated request creation/cancellation, behind the same app-plus-canonical-store boundary before retiring remaining gateway endpoints.
