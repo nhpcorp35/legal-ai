@@ -17,11 +17,11 @@ class ReleaseControllerContractTests(unittest.TestCase):
         self.assertIn("python -m unittest -v test_release_controller_contract test_release_smoke", workflow)
         self.assertIn("needs: test", workflow)
         self.assertIn(
-            "railway up --ci --project \"$RAILWAY_PROJECT_ID\" --environment production --service legal-ai-executor",
+            "railway up --detach --project \"$RAILWAY_PROJECT_ID\" --environment production --service legal-ai-executor",
             workflow,
         )
         self.assertIn(
-            "railway up --ci --project \"$RAILWAY_PROJECT_ID\" --environment production --service internal-draft-worker",
+            "railway up --detach --project \"$RAILWAY_PROJECT_ID\" --environment production --service internal-draft-worker",
             workflow,
         )
         self.assertIn("group: legalai-production-release", workflow)
