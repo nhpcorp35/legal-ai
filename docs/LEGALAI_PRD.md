@@ -499,3 +499,11 @@ Engineering activity alone does not count as progress. The evidence must show an
 - **Goal advanced:** Keep attorney-facing draft review available from canonical verified records even when the legacy gateway is unavailable.
 - **How / evidence:** The app now prefers direct, read-only B2 draft list/status/detail reads with a compatibility fallback; focused deterministic tests verify the direct path does not call the gateway.
 - **Remaining gap:** Move review/packet reads, then authenticated request creation/cancellation, behind the same app-plus-canonical-store boundary before retiring remaining gateway endpoints.
+
+
+### 2026-09-25 direct-review-read alignment checkpoint
+
+- **Movement:** YES
+- **Goal advanced:** Preserve attorney feedback and evaluation continuity through the canonical record, rather than a service-local file.
+- **How / evidence:** Review lookups now prefer B2 feedback archives; a focused test proves the direct path does not consult the volume fallback.
+- **Remaining gap:** Move authenticated draft request creation and cancellation to the app-owned queue boundary before gateway retirement.
