@@ -3344,7 +3344,7 @@ def build_retrieval_visibility(citations, coverage):
         "verified_pleadings_not_selected_count": len(verified_pleadings),
         "absence_boundary": (
             "This answer did not select a document" if inventory_available
-            else "This archived audit does not include a record-wide pleading inventory"
+            else "This archived audit does not include a record-wide pleading inventory and cannot establish document absence"
         ),
     }
 
