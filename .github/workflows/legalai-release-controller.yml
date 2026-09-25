@@ -47,7 +47,7 @@ jobs:
       - name: Install Railway CLI for read-only verified-record preflight
         run: npm install --global @railway/cli@5.62.1
       - run: python -m py_compile app.py scripts/run_verified_case_draft.py
-      - run: python -m unittest -v test_release_controller_contract test_release_smoke test_motion_answer_contract test_retrieval_audit_visibility
+      - run: python -m unittest -v test_release_controller_contract test_release_smoke test_motion_answer_contract test_retrieval_audit_visibility test_pre_generation_gate
       - name: Replay Rennick verified-record retrieval without a model
         env:
           CASE_ID: NY-Nassau-613561-2026-Desousa-v-Rennick
@@ -60,6 +60,7 @@ jobs:
               client,
               evidence,
               load_reviewed_authorities,
+              pre_generation_checks,
           )
 
           case_id = __import__("os").environ["CASE_ID"]
@@ -72,7 +73,13 @@ jobs:
               "motion_recommendation": "I need to make a motion. Which motions should I consider?",
               "motion_response": "My opponent made a motion. How should I answer it?",
           }.items():
-              pages = list(evidence(s3, case_id, question))
+              selection = evidence(s3, case_id, question)
+              pages = list(selection)
+              preflight = pre_generation_checks(
+                  pages, authorities, question, getattr(selection, "coverage", {})
+              )
+              assert preflight["citation_integrity"] == "verified", preflight
+              assert preflight["duplicate_selected_citation_count"] == 0, preflight
               filenames = [page["filename"] for page in pages]
               source_types = sorted({classify_page(page)["source_type"] for page in pages})
               assert any("ORDER_TO_SHOW_CAUSE_32" in name for name in filenames), filenames
