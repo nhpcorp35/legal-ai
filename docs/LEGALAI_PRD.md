@@ -539,3 +539,11 @@ Engineering activity alone does not count as progress. The evidence must show an
 - **Goal advanced:** Keep the attorney workspace’s verified-document map available from canonical evidence, so an attorney can see what record exists and why citations are traceable without a gateway dependency.
 - **How / evidence:** The source-map reader now derives document/page counts directly from verified B2 identity, source-set, and immutable page-index records; it validates every source hash, filename, page number, and indexed text before display. A deterministic no-gateway test covers the path.
 - **Remaining gap:** Verified-record search and PDF delivery still require migration before the gateway can be retired.
+
+
+### 2026-09-25 direct-verified-search alignment checkpoint
+
+- **Movement:** YES
+- **Goal advanced:** Let an attorney search the verified record directly, rather than depend on a relay that can make available evidence appear unavailable.
+- **How / evidence:** Search now evaluates bounded, immutable B2 page-index records, requires every submitted term to occur in the verified page text, and returns only hash-scoped source excerpts. A deterministic no-gateway test covers the path.
+- **Remaining gap:** Source-PDF delivery is the final attorney-facing verified-record route still using the gateway.

@@ -2828,6 +2828,77 @@ def load_case_source_map(case_id):
     return _gateway_load_case_source_map(case_id) if direct is None else direct
 
 
+# Direct canonical verified-page search; the gateway remains an outage fallback.
+_gateway_search_indexed_case = search_indexed_case
+
+
+def _direct_b2_search_indexed_case(case_id, query):
+    s3, bucket = _operator_regeneration_b2_client()
+    if not s3 or not bucket:
+        return None
+    terms = re.findall(r"[a-z0-9]{2,}", normalize_for_search(query))[:8]
+    if not terms:
+        return []
+    identity = _direct_b2_json(s3, bucket, f"cases/{case_id}/intake/case_identity.json")
+    original = identity.get("source_sha256") if isinstance(identity, dict) else None
+    if not isinstance(original, str) or not re.fullmatch(r"[0-9a-f]{64}", original):
+        return []
+    source_set = _direct_b2_json(s3, bucket, f"cases/{case_id}/intake/source_set.json")
+    sources = [original]
+    if isinstance(source_set, dict) and source_set.get("case_id") == case_id:
+        candidate = source_set.get("sources")
+        digests = [item.get("source_sha256") for item in candidate if isinstance(item, dict)] if isinstance(candidate, list) else []
+        if digests and all(isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest) for digest in digests) and len(set(digests)) == len(digests) and original in digests:
+            sources = digests
+        elif candidate is not None:
+            return []
+    results = []
+    for source_sha256 in sources:
+        try:
+            raw = s3.get_object(
+                Bucket=bucket,
+                Key=f"cases/{case_id}/intake/source/{source_sha256}/page_records.jsonl",
+            )["Body"].read()
+            rows = raw.decode("utf-8").splitlines()
+        except Exception:
+            return []
+        for row in rows:
+            try:
+                item = json.loads(row)
+            except (TypeError, ValueError):
+                return []
+            filename = item.get("filename") if isinstance(item, dict) else None
+            page_number = item.get("page_number") if isinstance(item, dict) else None
+            text = item.get("text") if isinstance(item, dict) else None
+            if not (
+                isinstance(filename, str)
+                and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._ -]{0,180}\.pdf", filename)
+                and isinstance(page_number, int) and 1 <= page_number <= 100000
+                and isinstance(text, str) and text.strip()
+            ):
+                return []
+            normalized = normalize_for_search(text)
+            matched = sum(1 for term in terms if term in normalized)
+            if matched != len(terms):
+                continue
+            first = min(normalized.find(term) for term in terms)
+            start = max(0, first - 300)
+            snippet = " ".join(text[start:start + 1200].split())
+            results.append((matched, filename.casefold(), page_number, {
+                "source_sha256": source_sha256,
+                "filename": filename,
+                "page_number": page_number,
+                "snippet": snippet,
+            }))
+    return [item[3] for item in sorted(results, key=lambda item: (-item[0], item[1], item[2]))[:25]]
+
+
+def search_indexed_case(case_id, query):
+    """Search canonical verified page records directly from B2 before gateway."""
+    direct = _direct_b2_search_indexed_case(case_id, query)
+    return _gateway_search_indexed_case(case_id, query) if direct is None else direct
+
+
 _draft_review_feedback_lock = threading.Lock()
 _DRAFT_REVIEW_DECISIONS = {"approve", "needs_revision"}
 _DRAFT_REVIEW_DIMENSIONS = (
