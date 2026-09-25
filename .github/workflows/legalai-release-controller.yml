@@ -73,9 +73,10 @@ jobs:
               "motion_recommendation": "I need to make a motion. Which motions should I consider?",
               "motion_response": "My opponent made a motion. How should I answer it?",
           }.items():
-              pages = list(evidence(s3, case_id, question))
+              selection = evidence(s3, case_id, question)
+              pages = list(selection)
               preflight = pre_generation_checks(
-                  pages, authorities, question, getattr(pages, "coverage", {})
+                  pages, authorities, question, getattr(selection, "coverage", {})
               )
               assert preflight["citation_integrity"] == "verified", preflight
               assert preflight["duplicate_selected_citation_count"] == 0, preflight
