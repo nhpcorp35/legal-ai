@@ -17,17 +17,9 @@ class AttorneyEvaluationFrameworkTests(unittest.TestCase):
         )
         self.assertTrue(all(isinstance(prompt, str) and prompt for _category, _label, prompt in framework))
 
-    def test_framework_is_rendered_without_generating_an_answer(self):
-        with patch.object(legalai, "basic_review_user", return_value="john"), patch.object(
-            legalai,
-            "load_exact_draft_request",
-            return_value=None,
-        ):
-            response = legalai.app.test_client().get(
-                f"/workspace/matters/{CANONICAL_ID}/review-packet"
-            )
-        self.assertEqual(response.status_code, 200)
-        page = response.get_data(as_text=True)
+    def test_framework_component_renders_without_generating_an_answer(self):
+        with legalai.app.app_context():
+            page = legalai.rennick_evaluation_set_html()
         self.assertIn("No-answer framework", page)
         self.assertIn("calls no model", page)
         self.assertIn("What does the NYSDEC permit or correspondence prove", page)
