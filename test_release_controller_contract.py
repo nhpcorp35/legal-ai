@@ -13,8 +13,8 @@ class ReleaseControllerContractTests(unittest.TestCase):
             / "legalai-release-controller.yml"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("python -m py_compile app.py scripts/run_verified_case_draft.py", workflow)
-        self.assertIn("python -m unittest -v test_release_controller_contract test_release_smoke test_motion_answer_contract test_retrieval_audit_visibility test_pre_generation_gate", workflow)
+        self.assertIn("python -m py_compile app.py scripts/run_verified_case_draft.py scripts/run_cross_case_retrieval_regression.py", workflow)
+        self.assertIn("python -m unittest -v test_release_controller_contract test_release_smoke test_motion_answer_contract test_retrieval_audit_visibility test_pre_generation_gate test_cross_case_retrieval_regression", workflow)
         self.assertIn("needs: test", workflow)
         self.assertIn(
             "railway up --detach --project \"$RAILWAY_PROJECT_ID\" --environment production --service legal-ai-executor",
@@ -30,6 +30,7 @@ class ReleaseControllerContractTests(unittest.TestCase):
         self.assertIn("Replay Rennick verified-record retrieval without a model", workflow)
         self.assertIn("railway run --no-local --project \"$RAILWAY_PROJECT_ID\" --environment \"$RAILWAY_ENVIRONMENT_ID\" --service legal-ai-executor", workflow)
         self.assertIn("RENNICK_RETRIEVAL_PREFLIGHT_VERIFIED", workflow)
+        self.assertIn("run_cross_case_retrieval_regression.py", workflow)
         self.assertIn('"model_called": False', workflow)
         self.assertIn('"b2_write": False', workflow)
 
