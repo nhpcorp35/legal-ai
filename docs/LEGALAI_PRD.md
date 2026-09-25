@@ -523,3 +523,11 @@ Engineering activity alone does not count as progress. The evidence must show an
 - **Goal advanced:** Preserve an attorney-controlled route to refresh an internal answer without weakening reviewer isolation or creating duplicate paid work.
 - **How / evidence:** Regeneration is now app-owned: the canonical completed request sets the replacement question and reviewer; a replacement records immutable linkage; repeats reuse that same replacement; and the workspace requires an explicit paid-run confirmation. Deterministic tests cover ownership, linkage, idempotency, and no-gateway behavior.
 - **Remaining gap:** Obtain attorney scoring on the two completed evaluation questions; the outcome-changing-evidence question remains intentionally ungenerated until separately approved.
+
+
+### 2026-09-25 direct-audit-read alignment checkpoint
+
+- **Movement:** YES
+- **Goal advanced:** Let an attorney inspect the source-selection audit behind an internal answer from the canonical verified record without relying on the gateway.
+- **How / evidence:** The workspace now reads the bounded input-audit object directly from B2, validates its authority and citation shape, and fails closed when the canonical audit is absent or invalid. A deterministic no-gateway test covers the path.
+- **Remaining gap:** Remaining verified-record search, source-map, and PDF delivery routes still require migration before the gateway can be retired.

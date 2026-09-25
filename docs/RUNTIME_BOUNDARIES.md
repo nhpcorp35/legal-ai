@@ -21,7 +21,7 @@ It is not part of the production release controller and is not the canonical sto
 ## Data rules
 
 - B2 holds immutable source ZIPs and authoritative request, status, draft, audit, and review records.
-- The app owns direct B2 draft list/status/detail, review reads, authenticated standard requests, temporary-test cancellation, and guarded regeneration; it falls back to the gateway only when the B2 boundary is unavailable.
+- The app owns direct B2 draft list/status/detail, retrieval audits, review reads, authenticated standard requests, temporary-test cancellation, and guarded regeneration; it falls back to the gateway only when the B2 boundary is unavailable.
 - The worker is the only component that can generate a draft.
 - A model call requires a separately approved request; no read-only path can create one.
 
