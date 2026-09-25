@@ -531,3 +531,11 @@ Engineering activity alone does not count as progress. The evidence must show an
 - **Goal advanced:** Let an attorney inspect the source-selection audit behind an internal answer from the canonical verified record without relying on the gateway.
 - **How / evidence:** The workspace now reads the bounded input-audit object directly from B2, validates its authority and citation shape, and fails closed when the canonical audit is absent or invalid. A deterministic no-gateway test covers the path.
 - **Remaining gap:** Remaining verified-record search, source-map, and PDF delivery routes still require migration before the gateway can be retired.
+
+
+### 2026-09-25 direct-source-map alignment checkpoint
+
+- **Movement:** YES
+- **Goal advanced:** Keep the attorney workspace’s verified-document map available from canonical evidence, so an attorney can see what record exists and why citations are traceable without a gateway dependency.
+- **How / evidence:** The source-map reader now derives document/page counts directly from verified B2 identity, source-set, and immutable page-index records; it validates every source hash, filename, page number, and indexed text before display. A deterministic no-gateway test covers the path.
+- **Remaining gap:** Verified-record search and PDF delivery still require migration before the gateway can be retired.
