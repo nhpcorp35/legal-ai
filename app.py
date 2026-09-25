@@ -2970,6 +2970,56 @@ def load_draft_review_feedbacks(reviewer, case_id, request_ids):
     return records
 
 
+# Canonical B2 is authoritative for attorney review feedback.  The volume is
+# retained only for compatibility with records created before B2 archival.
+_volume_find_draft_review_feedback = find_draft_review_feedback
+_volume_load_draft_review_feedbacks = load_draft_review_feedbacks
+
+
+def _direct_b2_review_feedbacks(reviewer, case_id, request_ids):
+    s3, bucket = _operator_regeneration_b2_client()
+    if not s3 or not bucket:
+        return None
+    records = {}
+    for request_id in set(request_ids):
+        if not re.fullmatch(r"draft-[0-9]+-[0-9a-f]{12}", str(request_id or "")):
+            continue
+        try:
+            objects = s3.list_objects_v2(
+                Bucket=bucket,
+                Prefix=f"cases/{case_id}/derived/attorney-feedback/{request_id}/",
+                MaxKeys=100,
+            ).get("Contents", [])
+        except Exception:
+            return None
+        for item in objects:
+            key_name = item.get("Key", "") if isinstance(item, dict) else ""
+            record = _direct_b2_json(s3, bucket, key_name)
+            if (
+                isinstance(record, dict)
+                and record.get("reviewer") == reviewer
+                and record.get("case_id") == case_id
+                and record.get("request_id") == request_id
+                and request_id not in records
+            ):
+                records[request_id] = record
+    return records
+
+
+def find_draft_review_feedback(reviewer, case_id, request_id):
+    records = _direct_b2_review_feedbacks(reviewer, case_id, (request_id,))
+    if records is None:
+        return _volume_find_draft_review_feedback(reviewer, case_id, request_id)
+    return records.get(request_id)
+
+
+def load_draft_review_feedbacks(reviewer, case_id, request_ids):
+    records = _direct_b2_review_feedbacks(reviewer, case_id, request_ids)
+    if records is None:
+        return _volume_load_draft_review_feedbacks(reviewer, case_id, request_ids)
+    return records
+
+
 def rennick_evaluation_summary(reviewer):
     """Return an honest, bounded rollup of the attorney's Rennick reviews."""
     evaluation_questions = resolved_rennick_evaluation_questions()
