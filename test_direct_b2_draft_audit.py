@@ -31,6 +31,7 @@ class DirectB2DraftAuditTests(unittest.TestCase):
                 "created_at": 1790275196,
             },
             f"{prefix}/internal-drafts/{REQUEST_ID}/status.json": {"status": "READY"},
+            f"{prefix}/internal-drafts/{REQUEST_ID}/draft.json": {"summary": "Ready"},
             f"{prefix}/internal-drafts/{REQUEST_ID}/input_audit.json": {
                 "retrieval_citations": [{"filename": "verified.pdf", "page_number": 3}],
                 "legal_authorities": [{
