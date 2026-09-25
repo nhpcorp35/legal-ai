@@ -1,11 +1,27 @@
 # LegalAI PRD (Living)
 
 **Status:** Active  
-**Last updated:** 2026-09-20
+**Last updated:** 2026-09-25
 **Authority:** Canonical product requirements and milestone register for LegalAI.  
 **Related (unchanged scopes):** `docs/HAL_CONTROL_ROOM.md` (orchestration contract); `docs/MISSION_CONTROL_OPTIMIZATION_AUTHORITY.md` (Mission Control cost/reliability register).
 
 ---
+
+### 2026-09-25 — Direct canonical source-PDF delivery
+
+- Replaced the normal protected-gateway source-PDF read with direct service-side
+  B2 retrieval for both Case-00 originals and generic verified matters.
+- Generic matter reads require the immutable case identity/source set,
+  `contents_manifest.json`, `source_descriptor.json`, archive SHA-256 metadata,
+  one unambiguous manifest/archive member, PDF header, and any available
+  per-file SHA-256 before returning bytes. ZIP archives are read through bounded
+  one-MiB B2 ranges; the browser never receives B2 credentials.
+- Case-00 reads use the fixed canonical B2 originals prefix and verify the
+  cited PDF's exact SHA-256. The legacy gateway is retained only when B2 is not
+  configured in an older environment; it is not the normal production path.
+- **Verification:** five deterministic boundary tests passed before release;
+  Railway executor deployment `fdfc5a0c-82ca-46d6-8230-ac99c509921a` succeeded.
+  No case/source B2 object was changed and no model generation was invoked.
 
 ### 2026-09-20 — Reviewer-agnostic operator regeneration
 
