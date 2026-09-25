@@ -21,7 +21,7 @@ permissions:
 
 concurrency:
   group: legalai-production-release
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
   RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
