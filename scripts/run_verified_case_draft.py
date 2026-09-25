@@ -2084,6 +2084,78 @@ def retrieval_evidence(s3, case_id, question):
     return evidence(s3, case_id, question)
 
 
+def pre_generation_checks(pages, authorities, question, coverage=None):
+    """Fail before a model call when the selected verified input is unsafe."""
+    page_ids = []
+    for page in pages:
+        if not isinstance(page, dict):
+            raise PreGenerationGateError("invalid_selected_citation")
+        source_sha256 = page.get("source_sha256")
+        filename = page.get("filename")
+        page_number = page.get("page_number")
+        if (
+            not isinstance(source_sha256, str)
+            or not SHA256_RE.fullmatch(source_sha256)
+            or not isinstance(filename, str)
+            or not filename.strip()
+            or not isinstance(page_number, int)
+            or page_number < 1
+        ):
+            raise PreGenerationGateError("invalid_selected_citation")
+        page_ids.append((source_sha256, filename, page_number))
+    duplicate_count = len(page_ids) - len(set(page_ids))
+    if duplicate_count:
+        raise PreGenerationGateError(
+            "duplicate_selected_citation",
+            metrics={"duplicate_selected_citation_count": duplicate_count},
+        )
+
+    authority_ids = [authority.authority_id for authority in authorities]
+    if len(authority_ids) != len(set(authority_ids)):
+        raise PreGenerationGateError("duplicate_reviewed_authority")
+
+    coverage = coverage if isinstance(coverage, dict) else {}
+    operatives = coverage.get("pleading_operatives", {})
+    inventory = coverage.get("verified_pleading_inventory", [])
+    inventory_present = isinstance(inventory, list) and bool(inventory)
+    claim_count = (
+        operatives.get("claim_page_count", 0)
+        if isinstance(operatives, dict)
+        else 0
+    )
+    relief_count = (
+        operatives.get("relief_page_count", 0)
+        if isinstance(operatives, dict)
+        else 0
+    )
+    if litigation_map_question(question) and inventory_present:
+        if re.search(r"\b(?:claim|claims|cause|causes)\b", question, re.IGNORECASE) and not claim_count:
+            raise PreGenerationGateError(
+                "missing_claim_coverage",
+                metrics={"claim_page_count": 0},
+            )
+        if re.search(r"\brelief\b", question, re.IGNORECASE) and not relief_count:
+            raise PreGenerationGateError(
+                "missing_relief_coverage",
+                metrics={"relief_page_count": 0},
+            )
+
+    return {
+        "status": "PASSED",
+        "model_called": False,
+        "b2_write": False,
+        "selected_page_count": len(page_ids),
+        "duplicate_selected_citation_count": 0,
+        "citation_integrity": "verified",
+        "reviewed_authority_count": len(authority_ids),
+        "coverage": {
+            "claim_page_count": claim_count if isinstance(claim_count, int) else 0,
+            "relief_page_count": relief_count if isinstance(relief_count, int) else 0,
+            "verified_pleading_inventory_present": inventory_present,
+        },
+    }
+
+
 def validate_retrieval(s3, case_id, question):
     """Run the production evidence gate without a model call or B2 write."""
     try:
@@ -2833,6 +2905,8 @@ def run_request(s3, case_id, request_id):
             stage = "authority_selection"
             authorities=load_reviewed_authorities(s3, case_id)
             coverage=getattr(pages,"coverage",None)
+            stage = "pre_generation_check"
+            pre_generation_checks(pages, authorities, question, coverage)
             stage = "model_request"
             generated=generate(question,pages,coverage,authorities)
             stage = "model_validation"
