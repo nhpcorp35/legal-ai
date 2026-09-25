@@ -507,3 +507,11 @@ Engineering activity alone does not count as progress. The evidence must show an
 - **Goal advanced:** Preserve attorney feedback and evaluation continuity through the canonical record, rather than a service-local file.
 - **How / evidence:** Review lookups now prefer B2 feedback archives; a focused test proves the direct path does not consult the volume fallback.
 - **Remaining gap:** Move authenticated draft request creation and cancellation to the app-owned queue boundary before gateway retirement.
+
+
+### 2026-09-25 app-owned-queue alignment checkpoint
+
+- **Movement:** YES
+- **Goal advanced:** Keep ordinary attorney questions on a verified, auditable queue without requiring a separate gateway service.
+- **How / evidence:** Standard draft requests now write immutable B2 request/status objects consumed by the existing worker; temporary-test cancellation writes a CANCELLED status; deterministic tests prove neither direct path calls the gateway.
+- **Remaining gap:** Regeneration remains gateway-backed because its reviewer-ownership guard has not yet been migrated; move that guard only with equivalent access and idempotency tests.
