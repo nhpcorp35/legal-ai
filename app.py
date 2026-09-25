@@ -3287,10 +3287,65 @@ def load_draft_input_audit(case_id, request_id):
             field: authority[field]
             for field in authority_fields
         })
+    coverage = result.get("coverage", {}) if isinstance(result, dict) and result.get("ok") else {}
     return {
         "requested_by": requested_by if isinstance(requested_by, str) else None,
         "citations": citations,
         "legal_authorities": selected_authorities,
+        "coverage": coverage if isinstance(coverage, dict) else {},
+    }
+
+
+def build_retrieval_visibility(citations, coverage):
+    """State selected-record scope without treating non-selection as absence."""
+    selected_documents = {
+        (str(citation.get("source_sha256", "")), str(citation.get("filename", "")))
+        for citation in citations
+        if isinstance(citation, dict)
+        and isinstance(citation.get("filename"), str)
+    }
+    inventory = (
+        coverage.get("verified_pleading_inventory", [])
+        if isinstance(coverage, dict)
+        else []
+    )
+    verified_pleadings = []
+    for item in inventory if isinstance(inventory, list) else []:
+        if not isinstance(item, dict):
+            continue
+        source_sha256 = item.get("source_sha256")
+        filename = item.get("filename")
+        if not isinstance(source_sha256, str) or not isinstance(filename, str):
+            continue
+        if (source_sha256, filename) in selected_documents:
+            continue
+        verified_pleadings.append({
+            "filename": filename,
+            "filing_kind": str(item.get("filing_kind", "pleading")),
+            "page_count": item.get("page_count")
+            if isinstance(item.get("page_count"), int)
+            else None,
+        })
+    verified_pleadings.sort(key=lambda item: (item["filename"].casefold(), item["filing_kind"]))
+    inventory_available = bool(
+        isinstance(inventory, list)
+        and any(
+            isinstance(item, dict)
+            and isinstance(item.get("source_sha256"), str)
+            and isinstance(item.get("filename"), str)
+            for item in inventory
+        )
+    )
+    return {
+        "selected_page_count": len(citations),
+        "selected_document_count": len(selected_documents),
+        "verified_pleading_inventory_available": inventory_available,
+        "verified_pleadings_not_selected": verified_pleadings[:50],
+        "verified_pleadings_not_selected_count": len(verified_pleadings),
+        "absence_boundary": (
+            "This answer did not select a document" if inventory_available
+            else "This archived audit does not include a record-wide pleading inventory"
+        ),
     }
 
 
@@ -4417,12 +4472,14 @@ def workspace_matter_draft_audit(case_id, request_id):
         abort(502)
     citations = audit["citations"]
     legal_authorities = audit.get("legal_authorities", [])
+    visibility = build_retrieval_visibility(citations, audit.get("coverage", {}))
     return render_template_string(
-        """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Retrieval Audit</title><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:900px;margin:0 auto;padding:42px 24px 64px}a{color:#123f63}p,li{font-size:1.05rem;line-height:1.55}.meta{color:#52606d}.panel{background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:22px;margin-top:26px}</style></head><body><main><p><a href="{{ url_for('workspace_matter_drafts', case_id=case_id) }}">← Answered questions</a></p><h1>Retrieval audit</h1><p class="meta">Bounded source metadata supplied to the internal draft model. No source text is shown.</p><section class="panel"><h2>Verified record</h2><p><strong>{{ citations|length }} verified pages</strong></p><ul>{% for cite in citations %}<li>{{ cite.filename }} — p. {{ cite.page_number }}</li>{% endfor %}</ul></section>{% if legal_authorities %}<section class="panel"><h2>Legal authorities</h2><p><strong>{{ legal_authorities|length }} selected authorit{{ "y" if legal_authorities|length == 1 else "ies" }}</strong></p><ul>{% for authority in legal_authorities %}<li>{{ authority.title }} — {{ authority.citation }}<br><span class="meta">{{ authority.issuing_body }} · {{ authority.date }}</span></li>{% endfor %}</ul></section>{% endif %}</main></body></html>""",
+        """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Retrieval Audit</title><style>:root{font-family:Georgia,serif;color:#172331;background:#f6f8fb}body{margin:0}main{max-width:900px;margin:0 auto;padding:42px 24px 64px}a{color:#123f63}p,li{font-size:1.05rem;line-height:1.55}.meta{color:#52606d}.panel{background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:22px;margin-top:26px}</style></head><body><main><p><a href="{{ url_for('workspace_matter_drafts', case_id=case_id) }}">← Answered questions</a></p><h1>Retrieval audit</h1><p class="meta">Bounded source metadata supplied to the internal draft model. No source text is shown.</p><section class="panel"><h2>Verified record</h2><p><strong>{{ citations|length }} verified pages</strong></p><ul>{% for cite in citations %}<li>{{ cite.filename }} — p. {{ cite.page_number }}</li>{% endfor %}</ul></section><section class="panel"><h2>Retrieval boundary</h2><p><strong>{{ visibility.selected_document_count }} verified document{{ "" if visibility.selected_document_count == 1 else "s" }} selected for this answer.</strong> A document omitted from the selected pages is not thereby absent from the verified record.</p>{% if visibility.verified_pleading_inventory_available %}<p><strong>{{ visibility.verified_pleadings_not_selected_count }} verified pleading{{ "" if visibility.verified_pleadings_not_selected_count == 1 else "s" }} present but not selected.</strong> These were confirmed in the record-wide pleading inventory; they were outside this answer’s bounded retrieval set.</p>{% if visibility.verified_pleadings_not_selected %}<ul>{% for item in visibility.verified_pleadings_not_selected %}<li>{{ item.filename }} — verified {{ item.filing_kind }}{% if item.page_count %} · {{ item.page_count }} pages{% endif %}.</li>{% endfor %}</ul>{% endif %}{% else %}<p><strong>Record-wide presence is not available for this archived audit.</strong> This audit proves only which pages were selected; it cannot establish that an unlisted document is absent.</p>{% endif %}</section>{% if legal_authorities %}<section class="panel"><h2>Legal authorities</h2><p><strong>{{ legal_authorities|length }} selected authorit{{ "y" if legal_authorities|length == 1 else "ies" }}</strong></p><ul>{% for authority in legal_authorities %}<li>{{ authority.title }} — {{ authority.citation }}<br><span class="meta">{{ authority.issuing_body }} · {{ authority.date }}</span></li>{% endfor %}</ul></section>{% endif %}</main></body></html>""",
         case_id=case_id,
         request_id=request_id,
         citations=citations,
         legal_authorities=legal_authorities,
+        visibility=visibility,
     )
 
 
