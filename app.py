@@ -22,6 +22,7 @@ from types import SimpleNamespace
 
 from matter_builder import get_matter
 from engines.verified_authority_registry import VERIFIED_NY_RESCISSION_AUTHORITIES
+from verified_source_pdf import open_hash_verified_pdf_object, open_verified_source_pdf
 
 app = Flask(__name__)
 
@@ -2419,6 +2420,8 @@ CASE00_PAGE_RECORDS_PATH = os.path.join(
 CASE00_SOURCE_DIRECTORY = os.path.join(
     CASE00_DATA_ROOT, "source-pdfs", "original:", "Tribrough Full Docket"
 )
+CASE00_B2_SOURCE_PREFIX = "Benchmarks/Case-00-Triborough/original/Tribrough Full Docket/"
+CASE00_B2_SOURCE_MAX_BYTES = 32 * 1024 * 1024
 
 
 def load_case00_verified_pages():
@@ -2486,9 +2489,21 @@ def open_case00_source_pdf(filename):
     path = os.path.join(CASE00_SOURCE_DIRECTORY, filename)
     if os.path.isfile(path):
         return path
-    # Canonical Case-00 originals live in B2.  Retrieve one explicitly cited
-    # PDF through the existing authenticated portal boundary; never copy the
-    # corpus or expose B2 credentials to the browser.
+    # Read the single cited canonical original directly from B2 and verify its
+    # exact SHA-256 before returning it. Gateway remains a compatibility
+    # fallback only if this service lacks B2 credentials.
+    client, bucket = _operator_regeneration_b2_client()
+    if client is not None:
+        try:
+            return open_hash_verified_pdf_object(
+                client,
+                bucket,
+                CASE00_B2_SOURCE_PREFIX + filename,
+                source["source_sha256"],
+                CASE00_B2_SOURCE_MAX_BYTES,
+            )
+        except Exception:
+            return None
     return open_indexed_case_pdf(CASE00_ID, source["source_sha256"], filename)
 
 
@@ -3836,12 +3851,22 @@ def group_attorney_findings(findings):
 
 
 def open_indexed_case_pdf(case_id, source_sha256, filename):
-    """Retrieve one source-cited verified PDF through the protected gateway."""
+    """Open one cited verified source PDF, directly from canonical B2 by default."""
+    if not re.fullmatch(r"[0-9a-f]{64}", str(source_sha256 or "")):
+        return None
+    client, bucket = _operator_regeneration_b2_client()
+    if client is not None:
+        try:
+            return open_verified_source_pdf(
+                client, bucket, case_id, source_sha256, filename
+            )
+        except Exception:
+            return None
+    # Compatibility only: normal production reads use direct B2 above.  This
+    # fallback lets older environments continue serving already verified links.
     gateway_url = os.environ.get("LEGALAI_REVIEW_GATEWAY_URL", "").rstrip("/")
     secret = os.environ.get("LEGALAI_REVIEW_GATEWAY_SECRET", "")
     if not gateway_url or not secret:
-        return None
-    if not re.fullmatch(r"[0-9a-f]{64}", str(source_sha256 or "")):
         return None
     payload = json.dumps(
         {"source_sha256": source_sha256, "document_name": filename}
