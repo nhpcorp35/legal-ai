@@ -137,3 +137,26 @@ class WorkspaceRennickAliasTests(unittest.TestCase):
             "Address the counterargument.",
         )
         notify.assert_called_once_with({"saved": True})
+
+
+    def test_no_answer_evaluation_framework_has_twenty_five_record_centered_questions(self):
+        framework = legalai.RENNICK_ATTORNEY_EVALUATION_FRAMEWORK
+        self.assertEqual(len(framework), 25)
+        self.assertEqual(
+            {category for category, _label, _question in framework},
+            {"record", "evidence", "law", "strategy", "quality"},
+        )
+        self.assertTrue(all(question.endswith("?") for _category, _label, question in framework))
+        with patch.object(legalai, "basic_review_user", return_value="john"), patch.object(
+            legalai,
+            "load_exact_draft_request",
+            return_value=None,
+        ):
+            response = legalai.app.test_client().get(
+                f"/workspace/matters/{CANONICAL_ID}/review-packet"
+            )
+        self.assertEqual(response.status_code, 200)
+        page = response.get_data(as_text=True)
+        self.assertIn("No-answer framework", page)
+        self.assertIn("calls no model", page)
+        self.assertIn("What does the NYSDEC permit or correspondence prove", page)
