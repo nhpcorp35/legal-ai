@@ -515,3 +515,11 @@ Engineering activity alone does not count as progress. The evidence must show an
 - **Goal advanced:** Keep ordinary attorney questions on a verified, auditable queue without requiring a separate gateway service.
 - **How / evidence:** Standard draft requests now write immutable B2 request/status objects consumed by the existing worker; temporary-test cancellation writes a CANCELLED status; deterministic tests prove neither direct path calls the gateway.
 - **Remaining gap:** Regeneration remains gateway-backed because its reviewer-ownership guard has not yet been migrated; move that guard only with equivalent access and idempotency tests.
+
+
+### 2026-09-25 guarded-regeneration alignment checkpoint
+
+- **Movement:** YES
+- **Goal advanced:** Preserve an attorney-controlled route to refresh an internal answer without weakening reviewer isolation or creating duplicate paid work.
+- **How / evidence:** Regeneration is now app-owned: the canonical completed request sets the replacement question and reviewer; a replacement records immutable linkage; repeats reuse that same replacement; and the workspace requires an explicit paid-run confirmation. Deterministic tests cover ownership, linkage, idempotency, and no-gateway behavior.
+- **Remaining gap:** Obtain attorney scoring on the two completed evaluation questions; the outcome-changing-evidence question remains intentionally ungenerated until separately approved.
