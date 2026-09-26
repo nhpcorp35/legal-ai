@@ -5864,8 +5864,5 @@ def case_detail(case_id):
 # RUN
 # =========================
 
-from production_pdf_probe import emit_configured_probe
-emit_configured_probe(app)
-
 if __name__ == "__main__":
     app.run(debug=True, port=5001)
