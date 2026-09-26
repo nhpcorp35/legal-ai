@@ -5,8 +5,8 @@ import hashlib
 import json
 import os
 import re
+import sys
 import urllib.parse
-import urllib.request
 
 import boto3
 
@@ -18,8 +18,8 @@ MAX_PDF_BYTES = 80 * 1048576
 PROBE_NAME = "AUTHENTICATED_CITED_PDF_B2_SHA256"
 
 
-def run_probe(config, environ=None):
-    """Request the live workspace URL and compare bytes to the B2 manifest."""
+def run_probe(config, app, environ=None):
+    """Exercise the authenticated production route and compare to B2."""
     env = os.environ if environ is None else environ
     case_id = config.get("case_id", "")
     filename = config.get("filename", "")
@@ -35,18 +35,17 @@ def run_probe(config, environ=None):
     password = env["LEGALAI_REVIEW_ALLEN_PASSWORD"]
     if not username or not password:
         raise ValueError("review credentials are missing")
-    url = (
-        "https://legal-ai-executor-production.up.railway.app/workspace/matters/"
+    path = (
+        "/workspace/matters/"
         + urllib.parse.quote(case_id, safe="")
         + "/pdf/" + urllib.parse.quote(filename, safe="")
         + "?source_sha256=" + source_sha256
     )
     credentials = base64.b64encode(f"{username}:{password}".encode()).decode("ascii")
-    request = urllib.request.Request(url, headers={"Authorization": "Basic " + credentials})
-    with urllib.request.urlopen(request, timeout=90) as response:
-        status = response.status
-        content_type = response.headers.get_content_type()
-        pdf = response.read(MAX_PDF_BYTES + 1)
+    response = app.test_client().get(path, headers={"Authorization": "Basic " + credentials})
+    status = response.status_code
+    content_type = response.mimetype
+    pdf = response.get_data()
 
     s3 = boto3.client(
         "s3",
@@ -85,13 +84,14 @@ def run_probe(config, environ=None):
     }
 
 
-def emit_configured_probe():
+def emit_configured_probe(app):
     """Log one bounded result at startup; never log credentials or PDF text."""
     raw_config = os.environ.get("LEGALAI_READONLY_PDF_PROBE_JSON", "")
     if not raw_config:
         return
     try:
-        result = run_probe(json.loads(raw_config))
+        result = run_probe(json.loads(raw_config), app)
     except Exception as exc:
         result = {"probe": PROBE_NAME, "ok": False, "error_type": type(exc).__name__}
-    print(json.dumps(result, sort_keys=True), flush=True)
+    sys.stderr.write("LEGALAI_PDF_PROBE " + json.dumps(result, sort_keys=True) + "\n")
+    sys.stderr.flush()

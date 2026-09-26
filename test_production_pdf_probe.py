@@ -24,21 +24,10 @@ ENV = {
 
 
 class Response:
-    status = 200
+    status_code = 200
+    mimetype = "application/pdf"
 
-    class Headers:
-        def get_content_type(self):
-            return "application/pdf"
-
-    headers = Headers()
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_):
-        pass
-
-    def read(self, size):
+    def get_data(self):
         return PDF
 
 
@@ -47,24 +36,28 @@ class ProbeTests(unittest.TestCase):
         manifest = {"files": [{"filename": "docket/" + NAME, "sha256": hashlib.sha256(PDF).hexdigest()}]}
         b2 = unittest.mock.Mock()
         b2.get_object.return_value = {"Body": io.BytesIO(json.dumps(manifest).encode())}
-        with patch("production_pdf_probe.urllib.request.urlopen", return_value=Response()) as http, patch(
+        app = unittest.mock.Mock()
+        app.test_client.return_value.get.return_value = Response()
+        with patch(
             "production_pdf_probe.boto3.client", return_value=b2
         ):
-            result = run_probe(CONFIG, ENV)
+            result = run_probe(CONFIG, app, ENV)
         self.assertTrue(result["manifest_match"])
         self.assertEqual(result["http_status"], 200)
         self.assertNotIn(ENV["LEGALAI_REVIEW_ALLEN_PASSWORD"], json.dumps(result))
-        self.assertTrue(http.call_args.args[0].get_header("Authorization").startswith("Basic "))
+        self.assertTrue(app.test_client.return_value.get.call_args.kwargs["headers"]["Authorization"].startswith("Basic "))
 
     def test_mismatched_pdf_fails_closed(self):
         manifest = {"files": [{"filename": NAME, "sha256": "0" * 64}]}
         b2 = unittest.mock.Mock()
         b2.get_object.return_value = {"Body": io.BytesIO(json.dumps(manifest).encode())}
-        with patch("production_pdf_probe.urllib.request.urlopen", return_value=Response()), patch(
+        app = unittest.mock.Mock()
+        app.test_client.return_value.get.return_value = Response()
+        with patch(
             "production_pdf_probe.boto3.client", return_value=b2
         ):
             with self.assertRaisesRegex(ValueError, "did not match"):
-                run_probe(CONFIG, ENV)
+                run_probe(CONFIG, app, ENV)
 
 
 if __name__ == "__main__":
