@@ -9,8 +9,10 @@ import json
 import math
 import os
 import csv
+from contextlib import closing
 import re
 import secrets
+import sqlite3
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -4460,11 +4462,37 @@ def notify_operator_attention(kind, message):
         return False
 
 
-_draft_alerted: set[tuple[str, str, str]] = set()
+def _claim_new_draft_alerts(markers):
+    """Persist terminal-state alert claims across workers and deployments.
+
+    The first complete scan records existing drafts without replaying historical
+    notifications. Later scans atomically claim only newly observed states.
+    """
+    base = os.environ.get("LEGALAI_REVIEW_DATA_DIR", "/app/data")
+    os.makedirs(base, exist_ok=True)
+    with closing(sqlite3.connect(os.path.join(base, "draft-alerts.sqlite3"), timeout=10)) as db, db:
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS draft_alert_state ("
+            "case_id TEXT NOT NULL, request_id TEXT NOT NULL, status TEXT NOT NULL, "
+            "PRIMARY KEY (case_id, request_id, status))"
+        )
+        db.execute("CREATE TABLE IF NOT EXISTS draft_alert_meta (key TEXT PRIMARY KEY)")
+        db.execute("BEGIN IMMEDIATE")
+        initial = db.execute("SELECT 1 FROM draft_alert_meta WHERE key = 'seeded'").fetchone() is None
+        new_markers = []
+        for marker in markers:
+            cursor = db.execute(
+                "INSERT OR IGNORE INTO draft_alert_state VALUES (?, ?, ?)", marker
+            )
+            if cursor.rowcount and not initial:
+                new_markers.append(marker)
+        if initial:
+            db.execute("INSERT INTO draft_alert_meta (key) VALUES ('seeded')")
+    return set(new_markers)
 
 
 def _monitor_verified_draft_statuses():
-    """Alert once per process for terminal internal-draft state; no source text.
+    """Alert once per persisted terminal internal-draft state; no source text.
 
     ``load_draft_requests`` already reconciles stale QUEUED into retryable
     FAILED, so stalled queue rows surface here without uncontrolled redispatch.
@@ -4473,23 +4501,30 @@ def _monitor_verified_draft_statuses():
         try:
             matters = load_registered_cases()
         except GatewayUnavailableError:
-            matters = []
+            return
+        if not matters:
+            return
+        observed = {}
         for matter in matters:
             case_id = matter.get("case_id")
             if not isinstance(case_id, str):
                 continue
-            for job in load_draft_requests(case_id) or []:
+            jobs = load_draft_requests(case_id)
+            if jobs is None:
+                return
+            for job in jobs:
                 status = job.get("status")
                 request_id = job.get("request_id")
                 if status not in {"READY", "FAILED"} or not isinstance(request_id, str):
                     continue
                 marker = (case_id, request_id, status)
-                if marker in _draft_alerted:
-                    continue
-                _draft_alerted.add(marker)
-                failure_code = job.get("failure_code")
-                suffix = f" ({failure_code})" if isinstance(failure_code, str) else ""
-                notify_operator_attention("decision", f"Internal draft {status.lower()}{suffix}: {case_id} / {request_id}")
+                observed[marker] = job
+        for marker in _claim_new_draft_alerts(observed):
+            case_id, request_id, status = marker
+            job = observed[marker]
+            failure_code = job.get("failure_code")
+            suffix = f" ({failure_code})" if isinstance(failure_code, str) else ""
+            notify_operator_attention("decision", f"Internal draft {status.lower()}{suffix}: {case_id} / {request_id}")
     finally:
         timer = threading.Timer(120.0, _monitor_verified_draft_statuses)
         timer.daemon = True
@@ -4744,10 +4779,10 @@ def visible_answered_drafts(draft_requests):
 @app.route("/workspace")
 def attorney_workspace():
     """Protected entry point for prepared attorney-review matters."""
-    _ensure_monitor_started()
     reviewer = basic_review_user()
     if reviewer is None:
         return basic_auth_required_response()
+    _ensure_monitor_started()
     gateway_error = None
     try:
         case00_answered = available_case00_review_questions()

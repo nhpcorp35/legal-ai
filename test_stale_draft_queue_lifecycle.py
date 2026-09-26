@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import os
 import unittest
 from unittest.mock import Mock, patch
@@ -115,8 +116,19 @@ class StaleQueuedLoadAndMonitorTests(unittest.TestCase):
         )
         self.env.start()
         self.addCleanup(self.env.stop)
-        legalai._draft_alerted.clear()
-        self.addCleanup(legalai._draft_alerted.clear)
+        self.alert_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.alert_dir.cleanup)
+        self.alert_env = patch.dict(
+            os.environ, {"LEGALAI_REVIEW_DATA_DIR": self.alert_dir.name}
+        )
+        self.alert_env.start()
+        self.addCleanup(self.alert_env.stop)
+
+    def test_unauthenticated_workspace_does_not_start_alert_monitor(self):
+        with patch.object(legalai, "_ensure_monitor_started") as start:
+            response = legalai.app.test_client().get("/workspace")
+        self.assertEqual(response.status_code, 401)
+        start.assert_not_called()
 
     def test_load_draft_requests_reconciles_stale_queued_only(self):
         now = 10_000
@@ -193,7 +205,7 @@ class StaleQueuedLoadAndMonitorTests(unittest.TestCase):
             ["draft-3-cccccccccccc", "draft-2-bbbbbbbbbbbb", "draft-1-aaaaaaaaaaaa"],
         )
 
-    def test_monitor_alerts_reconciled_stale_queued_without_redispatch(self):
+    def test_monitor_seeds_existing_drafts_then_alerts_only_new_terminal_states(self):
         case_id = "NY-Nassau-608412-2024-Szymczyk-v-Szymczyk"
         stale = _draft(
             request_id="draft-1-aaaaaaaaaaaa",
@@ -206,6 +218,7 @@ class StaleQueuedLoadAndMonitorTests(unittest.TestCase):
         def _fake_timer(_delay, _fn):
             return Mock(start=lambda: None)
 
+        jobs = [stale]
         with patch.object(
             legalai,
             "load_registered_cases",
@@ -213,12 +226,16 @@ class StaleQueuedLoadAndMonitorTests(unittest.TestCase):
         ), patch.object(
             legalai,
             "load_draft_requests",
-            return_value=[stale],
+            side_effect=lambda _case_id: jobs,
         ), patch.object(
             legalai,
             "notify_operator_attention",
             side_effect=lambda kind, message: alerts.append((kind, message)) or True,
         ), patch.object(legalai.threading, "Timer", side_effect=_fake_timer):
+            legalai._monitor_verified_draft_statuses()
+            self.assertEqual(alerts, [])
+            jobs = [stale, _draft(request_id="draft-2-bbbbbbbbbbbb", status="FAILED", failure_code=legalai.STALE_QUEUED_FAILURE_CODE, question="new")]
+            legalai._monitor_verified_draft_statuses()
             legalai._monitor_verified_draft_statuses()
 
         self.assertEqual(len(alerts), 1)
@@ -226,7 +243,7 @@ class StaleQueuedLoadAndMonitorTests(unittest.TestCase):
         self.assertIn("failed", alerts[0][1])
         self.assertIn(legalai.STALE_QUEUED_FAILURE_CODE, alerts[0][1])
         self.assertIn(case_id, alerts[0][1])
-        self.assertIn("draft-1-aaaaaaaaaaaa", alerts[0][1])
+        self.assertIn("draft-2-bbbbbbbbbbbb", alerts[0][1])
 
 
 if __name__ == "__main__":
