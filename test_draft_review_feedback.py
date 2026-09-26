@@ -73,6 +73,11 @@ class DraftReviewFeedbackTests(unittest.TestCase):
                     "decision": "needs_revision",
                     "accuracy_rating": "4",
                     "usefulness_rating": "5",
+                    "procedural_posture_rating": "4",
+                    "record_use_rating": "5",
+                    "law_and_evidence_rating": "3",
+                    "counterarguments_rating": "4",
+                    "next_steps_rating": "5",
                     "missing_or_overstated": "Missing chronology.",
                     "citation_problems": "None.",
                     "comments": "Useful draft.",
@@ -88,6 +93,79 @@ class DraftReviewFeedbackTests(unittest.TestCase):
         self.assertEqual(saved["decision"], "needs_revision")
         self.assertEqual(saved["accuracy_rating"], 4)
         notify.assert_called_once()
+
+    def test_john_rennick_packet_review_round_trip_without_live_write(self):
+        case_id = legalai.RENNICK_FRAMEWORK_CASE_ID
+        request_ids = legalai.RENNICK_ATTORNEY_REVIEW_PACKET_DRAFT_IDS
+        stored = {}
+
+        def archive(record):
+            stored[record["request_id"]] = record
+            return True
+
+        def read_reviews(reviewer, selected_case, selected_ids):
+            return {
+                request_id: record for request_id, record in stored.items()
+                if request_id in selected_ids
+                and record["reviewer"] == reviewer
+                and record["case_id"] == selected_case
+            }
+
+        def item(_case_id, request_id):
+            return {
+                "request_id": request_id,
+                "status": "READY",
+                "question": "Motion analysis",
+                "requested_by": "allen@nhpcorp.com",
+                "draft": {"summary": "Review me.", "findings": []},
+            }
+
+        url = f"/workspace/matters/{case_id}/review-packet"
+        with patch.object(legalai, "load_exact_draft_request", side_effect=item), patch.object(
+            legalai, "load_draft_requests", return_value=[]
+        ), patch.object(
+            legalai, "archive_draft_review_feedback_to_b2", side_effect=archive
+        ), patch.object(
+            legalai, "_direct_b2_review_feedbacks", side_effect=read_reviews
+        ), patch.object(
+            legalai, "notify_draft_review_feedback", return_value=True
+        ) as notify, patch.object(legalai, "create_draft_request") as create_draft:
+            page = self.client.get(url, headers=auth_headers())
+            self.assertEqual(page.status_code, 200)
+            self.assertEqual(page.get_data(as_text=True).count("Save attorney review"), 2)
+            token = legalai.draft_review_feedback_csrf_token(
+                "johncuomo@gmail.com", case_id, request_ids[0]
+            )
+            response = self.client.post(
+                url,
+                headers=auth_headers(),
+                data={
+                    "request_id": request_ids[0],
+                    "feedback_csrf_token": token,
+                    "decision": "needs_revision",
+                    "accuracy_rating": "3",
+                    "usefulness_rating": "4",
+                    "procedural_posture_rating": "3",
+                    "record_use_rating": "4",
+                    "law_and_evidence_rating": "2",
+                    "counterarguments_rating": "3",
+                    "next_steps_rating": "4",
+                    "missing_or_overstated": "Test observation.",
+                },
+            )
+            self.assertEqual(response.status_code, 303)
+            saved = self.client.get(response.headers["Location"], headers=auth_headers())
+            summary = self.client.get(
+                f"{url}/evaluation", headers=auth_headers()
+            )
+            create_draft.assert_not_called()
+            notify.assert_called_once()
+
+        self.assertIn("Review saved.", saved.get_data(as_text=True))
+        self.assertIn("1 of 2 available analyses reviewed", summary.get_data(as_text=True))
+        self.assertEqual(stored[request_ids[0]]["reviewer"], "johncuomo@gmail.com")
+        self.assertEqual(stored[request_ids[0]]["evaluation_dimensions"]["record_use"], 4)
+        self.assertNotIn(request_ids[1], stored)
 
     def test_b2_archive_uses_deterministic_bounded_object(self):
         record = {

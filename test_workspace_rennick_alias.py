@@ -81,7 +81,7 @@ class WorkspaceRennickAliasTests(unittest.TestCase):
                 f"/workspace/matters/{CANONICAL_ID}/drafts/{request_id}#attorney-review",
                 page,
             )
-        self.assertIn("Open analysis and submit review", page)
+        self.assertIn("Save attorney review", page)
 
 
     def test_packet_saves_review_against_the_selected_exact_draft(self):
@@ -118,6 +118,11 @@ class WorkspaceRennickAliasTests(unittest.TestCase):
                     "decision": "needs_revision",
                     "accuracy_rating": "2",
                     "usefulness_rating": "3",
+                    "procedural_posture_rating": "2",
+                    "record_use_rating": "3",
+                    "law_and_evidence_rating": "4",
+                    "counterarguments_rating": "2",
+                    "next_steps_rating": "3",
                     "missing_or_overstated": "Explain the permit conflict.",
                     "citation_problems": "",
                     "comments": "Address the counterargument.",
@@ -135,5 +140,12 @@ class WorkspaceRennickAliasTests(unittest.TestCase):
             "Explain the permit conflict.",
             "",
             "Address the counterargument.",
+            {
+                "procedural_posture": 2,
+                "record_use": 3,
+                "law_and_evidence": 4,
+                "counterarguments": 2,
+                "next_steps": 3,
+            },
         )
         notify.assert_called_once_with({"saved": True})
