@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import importlib.util
-import importlib
 from pathlib import Path
 import subprocess
 import sys
@@ -35,11 +34,21 @@ def main() -> int:
         cwd=REPOSITORY_ROOT,
         check=True,
     )
-    # The running interpreter may have cached a failed lookup before pip
-    # created the package directories. Refresh import discovery before the
-    # post-install verification in this same process.
-    importlib.invalidate_caches()
-    still_missing = missing_imports()
+    # A running interpreter may not have the newly created user site directory
+    # on sys.path. Verify with a fresh interpreter, as the later tests will run.
+    verification = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import importlib.util, sys; print(','.join(name for name in sys.argv[1:] if importlib.util.find_spec(name) is None))",
+            *REQUIRED_IMPORTS,
+        ],
+        cwd=REPOSITORY_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    still_missing = verification.stdout.strip().split(",") if verification.stdout.strip() else []
     if still_missing:
         print(
             "Dependency bootstrap incomplete: " + ", ".join(still_missing),
