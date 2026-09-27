@@ -83,6 +83,40 @@ class WorkspaceRennickAliasTests(unittest.TestCase):
             )
         self.assertIn("Save attorney review", page)
 
+    def test_archived_response_shows_signed_tro_correction_and_verified_pdf_link(self):
+        recommendation_id, response_id = legalai.RENNICK_ATTORNEY_REVIEW_PACKET_DRAFT_IDS
+        ready_items = {
+            request_id: {
+                "request_id": request_id,
+                "status": "READY",
+                "question": "Test motion question",
+                "draft": {
+                    "summary": "Original archived summary",
+                    "findings": [],
+                    "missing_information": ["The exact signed TRO terms remain unresolved."],
+                },
+            }
+            for request_id in (recommendation_id, response_id)
+        }
+        with patch.object(legalai, "basic_review_user", return_value="john"), patch.object(
+            legalai, "load_exact_draft_request",
+            side_effect=lambda _case_id, request_id: ready_items[request_id],
+        ):
+            client = legalai.app.test_client()
+            packet = client.get(f"/workspace/matters/{CANONICAL_ID}/review-packet")
+            response = client.get(f"/workspace/matters/{CANONICAL_ID}/drafts/{response_id}")
+            recommendation = client.get(f"/workspace/matters/{CANONICAL_ID}/drafts/{recommendation_id}")
+
+        self.assertEqual((packet.status_code, response.status_code, recommendation.status_code), (200, 200, 200))
+        for page in (packet.get_data(as_text=True), response.get_data(as_text=True)):
+            self.assertEqual(page.count("Verified record correction to this archived draft."), 1)
+            self.assertIn("ORDER_TO_SHOW_CAUSE_32.pdf", page)
+            self.assertIn(legalai.RENNICK_RESPONSE_TRO_CORRECTION["source_sha256"], page)
+            self.assertIn("#page=2", page)
+            self.assertIn("The exact signed TRO terms remain unresolved.", page)
+        self.assertNotIn("Verified record correction", recommendation.get_data(as_text=True))
+        self.assertEqual(ready_items[response_id]["draft"]["summary"], "Original archived summary")
+
 
     def test_packet_saves_review_against_the_selected_exact_draft(self):
         ready_items = {
