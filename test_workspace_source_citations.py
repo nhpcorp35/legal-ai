@@ -148,3 +148,38 @@ class WorkspaceSourceCitationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(seen, {"case_id": CASE_ID, "source_sha256": SOURCE_SHA256, "filename": "Record.pdf"})
         self.assertEqual(missing.status_code, 404)
+
+    def test_kuzmicki_research_is_separate_and_requires_complete_verified_source(self):
+        case = legalai.KUZMICKI_RESEARCH_CASE_ID
+        route = f"/workspace/matters/{CASE_ID}/cited-case/kuzmicki"
+        client = legalai.app.test_client()
+        self.assertEqual(client.get(route).status_code, 401)
+        registered = [{"case_id": case, "stage": "Verified source indexed"}]
+        first = next(iter(legalai.KUZMICKI_RESEARCH_DOCUMENTS))
+        with patch.object(legalai, "load_registered_cases", return_value=registered), patch.object(
+            legalai, "load_case_source_map", return_value=[{"source_sha256": legalai.KUZMICKI_RESEARCH_SOURCE_SHA256, "filename": first, "pages": 1}]
+        ):
+            self.assertEqual(client.get(route, headers=_auth_headers()).status_code, 503)
+
+    def test_kuzmicki_research_links_all_six_pdfs_with_separate_case_identity(self):
+        case = legalai.KUZMICKI_RESEARCH_CASE_ID
+        research_sha = legalai.KUZMICKI_RESEARCH_SOURCE_SHA256
+        documents = [
+            {"source_sha256": research_sha, "filename": "Kuzmicki_" + suffix, "pages": 3}
+            for suffix in legalai.KUZMICKI_RESEARCH_DOCUMENTS
+        ]
+        with patch.object(legalai, "load_registered_cases", return_value=[
+            {"case_id": case, "stage": "Verified source indexed"}
+        ]), patch.object(legalai, "load_case_source_map", return_value=documents) as source_map:
+            response = legalai.app.test_client().get(
+                f"/workspace/matters/{CASE_ID}/cited-case/kuzmicki", headers=_auth_headers()
+            )
+        self.assertEqual(response.status_code, 200)
+        source_map.assert_called_once_with(case)
+        page = response.get_data(as_text=True)
+        for document in documents:
+            self.assertIn(document["filename"], page)
+        self.assertEqual(page.count(f"source_sha256={research_sha}"), 6)
+        self.assertIn("ORDER_TO_SHOW_CAUSE_27.pdf?source_sha256=" + research_sha + "#page=2", page)
+        self.assertIn("automatic text extraction misses the annotation", page)
+        self.assertIn("These filings do not change the existing Rennick drafts.", page)
