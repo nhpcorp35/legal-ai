@@ -260,6 +260,8 @@ PROCEDURAL_POSTURE_QUESTION_RE = re.compile(
     re.IGNORECASE,
 )
 RETRIEVAL_VALIDATION_PROFILES = {
+    "motion-recommendation": "I need to make a motion. Which motions should I consider?",
+    "motion-response": "My opponent made a motion. How should I answer it?",
     "main-action": (
         "Identify the plaintiffs claims in the main action against the defendants "
         "including defenses requested relief death substitution jurisdiction and "
