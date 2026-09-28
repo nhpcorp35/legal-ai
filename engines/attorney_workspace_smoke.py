@@ -32,7 +32,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def run_check(username, password, *, opener=None, timeout=20):
+def run_check(username, password, *, opener=None, timeout=20, workspace_timeout=45):
     """Return statuses and marker names only; never return HTML or credentials."""
     if not username or not password:
         return {"ok": False, "error": "review_account_unavailable", "checks": []}
@@ -49,7 +49,9 @@ def run_check(username, password, *, opener=None, timeout=20):
             method="GET",
         )
         try:
-            with opener.open(request, timeout=timeout) as response:
+            with opener.open(
+                request, timeout=workspace_timeout if name == "workspace" else timeout
+            ) as response:
                 status = response.status
                 mime = response.headers.get_content_type()
                 body = response.read(MAX_HTML_BYTES + 1)
