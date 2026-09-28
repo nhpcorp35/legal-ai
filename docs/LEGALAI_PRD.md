@@ -587,3 +587,11 @@ Engineering activity alone does not count as progress. The evidence must show an
 - **Goal advanced:** None yet; the live diagnostic is a maintenance check.
 - **How / evidence:** Attempt 1 reached the review packet and cited-case pages with authenticated HTTP 200 and expected markers. The top-level `/workspace` GET timed out at 12 seconds; Railway HTTP logged 499 after 12,007 ms. A narrow change raises only that URL's bound to 45 seconds and the two other URL bounds to 20 seconds. Focused tests cover the different limits.
 - **Remaining gap:** Deploy and make one corrected live check. If the workspace still times out at 45 seconds, report measured latency as a blocker rather than retry again. This check does not establish attorney usefulness or John-specific access.
+
+
+### 2026-09-28 protected workspace verification checkpoint
+
+- **Movement:** YES
+- **Goal advanced:** Confirm that the protected attorney workflow is reachable on the production site.
+- **How / evidence:** A bounded authenticated check returned HTTP 200 and expected markers for the workspace, review packet, and separate cited-case research page after a 12-second timeout was corrected. The temporary check credential was disabled after the run.
+- **Remaining gap:** This checks access and page presence only. Attorney assessment of the analysis and cited propositions remains pending.
