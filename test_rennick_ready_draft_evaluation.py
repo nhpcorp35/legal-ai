@@ -1,6 +1,5 @@
 """Behavioral checks for read-only evaluation of archived motion answers."""
 
-import copy
 import unittest
 
 from scripts.evaluate_rennick_ready_drafts import (
@@ -16,6 +15,20 @@ def sample(request_id):
         }], "authority_citations": ["ny-cplr-6301"]}
         for section in SECTIONS[request_id]
     ]
+    if request_id == RECOMMENDATION_ID:
+        support = [f for f in findings if f["section"] == "Record support"][0]
+        support["citations"].extend([
+            {"filename": "613561_2026_EXHIBIT_S__27.pdf", "page_number": 1,
+             "source_sha256": "a" * 64},
+            {"filename": "613561_2026_EXHIBIT_S__28.pdf", "page_number": 1,
+             "source_sha256": "b" * 64},
+            {"filename": "613561_2026_AFFIDAVIT_OR_AFFIRM_37 (2).pdf", "page_number": 1,
+             "source_sha256": "c" * 64},
+        ])
+        findings.insert(3, {"section": "Record support", "statement": "Separate source analysis.",
+                            "citations": support["citations"][:1], "authority_citations": []})
+        findings.insert(4, {"section": "Record support", "statement": "Separate source analysis.",
+                            "citations": support["citations"][:1], "authority_citations": []})
     return {"case_id": CASE_ID, "request_id": request_id, "status": "READY", "draft": {
         "request_id": request_id, "summary": "Consider the signed order and evidence.",
         "findings": findings, "missing_information": [],
@@ -62,6 +75,13 @@ class RennickReadyDraftEvaluationTests(unittest.TestCase):
         item = sample(RESPONSE_ID)
         item["draft"]["findings"] = list(reversed(item["draft"]["findings"]))
         self.assertIn("decision_sequence_missing_or_out_of_order", evaluate(item)["defects"])
+
+    def test_expert_account_does_not_replace_direct_agency_record(self):
+        item = sample(RECOMMENDATION_ID)
+        for finding in item["draft"]["findings"]:
+            finding["citations"] = [c for c in finding["citations"]
+                                    if not c["filename"].endswith("EXHIBIT_S__28.pdf")]
+        self.assertIn("direct_usace_record_missing_from_support", evaluate(item)["defects"])
 
 
 if __name__ == "__main__":
