@@ -1,4 +1,4 @@
-from flask import Flask, request, render_template, abort, send_from_directory, Response, send_file, render_template_string, redirect, url_for
+from flask import Flask, request, render_template, abort, send_from_directory, Response, send_file, render_template_string, redirect, url_for, jsonify
 from markupsafe import Markup, escape
 import base64
 import copy
@@ -5133,6 +5133,57 @@ def workspace_matter_pdf(case_id, filename):
         as_attachment=False,
         download_name=document_name,
     )
+
+
+@app.route("/internal/kuzmicki-pdf-link-check", methods=["POST"])
+def kuzmicki_pdf_link_check():
+    """One temporary, scoped check of the six real authenticated workspace URLs."""
+    token = os.environ.get("KUZMICKI_PDF_VERIFY_TOKEN", "")
+    if not token or not hmac.compare_digest(request.headers.get("X-Kuzmicki-Verify-Token", ""), token):
+        abort(401)
+    username = os.environ.get("LEGALAI_REVIEW_ALLEN_USERNAME", "")
+    password = os.environ.get("LEGALAI_REVIEW_ALLEN_PASSWORD", "")
+    if not username or not password:
+        return jsonify({"ok": False, "error": "review_account_unavailable"}), 503
+    case_id = "NY-Richmond-151944-2017-Kuzmicki-v-Bentley-Yacht-Club"
+    source_sha256 = "8ec1f4970135c895028b25d6f2356d69548c3cb74f2794de33a06be46e41ff55"
+    prefix = "151944_2017_Angela_Kuzmicki_v_Bentley_Yacht_Club_et_al_"
+    expected = {
+        "AFFIDAVIT_15.pdf": (197057, "3b7ef8ed533696340bce512c91a359608f6e3c0f88471e9857f9ec3747d13a7e"),
+        "AFFIDAVIT_OR_AFFIRM_24.pdf": (346704, "8f7573348260c1e09eb3078eca6f5dfb51f6b7b67db851f237c634f079275286"),
+        "ORDER_TO_SHOW_CAUSE_27.pdf": (68529, "e44ce576e943e17275c24e2db641aa9e7f733d79afe6846339bbcb4e1d3e9ea0"),
+        "AFFIDAVIT_OR_AFFIRM_48.pdf": (228963, "4d2d67eeaef3f8dd1459eae8cbb5552c9bbb0afe2ed6acc58dd7dd95c74efea2"),
+        "AFFIDAVIT_OR_AFFIRM_49.pdf": (380855, "ea645f8018aed818d82827915d43244c42a8046428a7a9ce963a2e95103397a6"),
+        "EXHIBIT_S__53.pdf": (3210289, "e3b4ab5461834f491156584f7bd23c075d16fd3d2ef7da029c9fe5e7692dcb7c"),
+    }
+
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+
+    opener = urllib.request.build_opener(NoRedirect)
+    authorization = base64.b64encode(f"{username}:{password}".encode()).decode("ascii")
+    results = []
+    for suffix, (size, digest) in expected.items():
+        filename = prefix + suffix
+        url = (
+            f"https://www.serverdeath.com/workspace/matters/{case_id}/pdf/"
+            f"{urllib.parse.quote(filename, safe='')}?source_sha256={source_sha256}"
+        )
+        req = urllib.request.Request(url, headers={"Authorization": "Basic " + authorization})
+        try:
+            with opener.open(req, timeout=90) as response:
+                pdf = response.read(size + 1)
+                status = response.status
+                content_type = response.headers.get_content_type()
+            valid = (status == 200 and content_type == "application/pdf" and len(pdf) == size
+                     and pdf.startswith(b"%PDF-") and hashlib.sha256(pdf).hexdigest() == digest)
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, ValueError):
+            valid = False
+        results.append({"nyscef_doc": int(suffix.rsplit("_", 1)[-1].removesuffix(".pdf")),
+                        "filename": filename, "verified": valid, "expected_sha256": digest})
+    ok = all(item["verified"] for item in results)
+    return jsonify({"ok": ok, "case_id": case_id, "source_sha256": source_sha256, "results": results}), 200 if ok else 502
 
 
 

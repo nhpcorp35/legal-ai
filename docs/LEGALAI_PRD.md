@@ -563,3 +563,11 @@ Engineering activity alone does not count as progress. The evidence must show an
 - **Goal advanced:** Let an attorney search the verified record directly, rather than depend on a relay that can make available evidence appear unavailable.
 - **How / evidence:** Search now evaluates bounded, immutable B2 page-index records, requires every submitted term to occur in the verified page text, and returns only hash-scoped source excerpts. A deterministic no-gateway test covers the path.
 - **Remaining gap:** Source-PDF delivery is the final attorney-facing verified-record route still using the gateway.
+
+
+### 2026-09-28 separate cited-case intake alignment checkpoint
+
+- **Movement:** MIXED
+- **Goal advanced:** Give attorney review a distinct, traceable cited-case record without mixing it into the active matter's evidence or drafts.
+- **How / evidence:** The six-file Kuzmicki bundle passed its exact ZIP and per-file SHA-256 checks; a separate Richmond County case intake returned six verified, indexed PDFs under source SHA-256 `8ec1f4970135c895028b25d6f2356d69548c3cb74f2794de33a06be46e41ff55`. The scoped upload credential was disabled after intake.
+- **Remaining gap:** Authenticated live PDF links still need production verification before the separate research view in PR #308 can be merged or deployed. PR #309 prepares that check and remains unmerged.
