@@ -45,10 +45,10 @@ class AttorneyWorkspaceSmokeTests(unittest.TestCase):
         result = run_check("reviewer@example.com", "secret", opener=opener)
         self.assertTrue(result["ok"])
         self.assertEqual(len(opener.requests), 3)
-        for request, timeout in opener.requests:
+        for index, (request, timeout) in enumerate(opener.requests):
             self.assertEqual(request.get_method(), "GET")
             self.assertTrue(request.full_url.startswith("https://www.serverdeath.com/workspace"))
-            self.assertEqual(timeout, 20)
+            self.assertEqual(timeout, 45 if index == 0 else 20)
         self.assertNotIn("secret", str(result))
         self.assertNotIn("reviewer@example.com", str(result))
         self.assertNotIn("<html", str(result))
@@ -101,7 +101,9 @@ class AttorneyWorkspaceSmokeTests(unittest.TestCase):
                 headers={"X-Workspace-Smoke-Token": "check-token"},
             )
             self.assertEqual(finished.json["status"], "DONE")
-            checker.assert_called_once_with("reviewer@example.com", "secret", timeout=12)
+            checker.assert_called_once_with(
+                "reviewer@example.com", "secret", timeout=20, workspace_timeout=45
+            )
             self.assertNotIn("secret", finished.get_data(as_text=True))
 
 

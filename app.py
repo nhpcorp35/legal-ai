@@ -5160,7 +5160,9 @@ _workspace_smoke_state = None
 def _run_workspace_smoke(run_id, username, password):
     global _workspace_smoke_state
     try:
-        result = run_attorney_workspace_smoke(username, password, timeout=12)
+        result = run_attorney_workspace_smoke(
+            username, password, timeout=20, workspace_timeout=45
+        )
     except Exception:
         # Do not expose exception text: network libraries can include URLs and headers.
         result = {"ok": False, "error": "check_failed", "checks": []}

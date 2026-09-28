@@ -35,8 +35,9 @@ The check uses that service's existing `LEGALAI_REVIEW_ALLEN_USERNAME` and
 `LEGALAI_REVIEW_ALLEN_PASSWORD` internally. It requests three fixed HTTPS GET
 paths on `www.serverdeath.com`: the workspace, Rennick attorney review packet,
 and Kuzmicki cited-case research. It rejects redirects; confirms HTTP 200,
-HTML MIME, and stable page markers; caps the read at 2 MB and each request at
-12 seconds. Output contains only check names, status codes, marker names, and
+HTML MIME, and stable page markers; caps the read at 2 MB. The workspace GET
+has a 45-second timeout, and the two matter GETs have 20 seconds each (at most
+85 seconds of request time in one run). Output contains only check names, status codes, marker names, and
 failure codes. It creates no draft, review, source, or B2 write. It runs in a
 background thread so the site's single web worker remains free to answer the
 public URLs. A process restart loses the in-memory run result; a multi-worker
