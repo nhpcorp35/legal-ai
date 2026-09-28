@@ -196,6 +196,11 @@ STRATEGIC_MERITS_PAGE_LIMIT = 10
 STRATEGIC_CATEGORY_PAGE_LIMIT = 4
 STRATEGIC_EXPERT_PAGE_LIMIT = 12
 STRATEGIC_EXPERT_PAGES_PER_DOCUMENT = 6
+STRATEGIC_REBUTTAL_PAGES_PER_DOCUMENT = 2
+STRATEGIC_REBUTTAL_TEXT_RE = re.compile(
+    r"\b(?:rebuttal|response)\s+to\s+(?:the\s+)?(?:affirmation|report|opinion)\b",
+    re.IGNORECASE,
+)
 STRATEGIC_PROCEDURAL_PAGE_LIMIT = 5
 STRATEGIC_REGULATORY_PAGE_LIMIT = 4
 STRATEGIC_PROCEDURAL_RECORD_RE = re.compile(
@@ -255,6 +260,8 @@ PROCEDURAL_POSTURE_QUESTION_RE = re.compile(
     re.IGNORECASE,
 )
 RETRIEVAL_VALIDATION_PROFILES = {
+    "motion-recommendation": "I need to make a motion. Which motions should I consider?",
+    "motion-response": "My opponent made a motion. How should I answer it?",
     "main-action": (
         "Identify the plaintiffs claims in the main action against the defendants "
         "including defenses requested relief death substitution jurisdiction and "
@@ -1644,6 +1651,7 @@ def evidence(s3, case_id, question):
     selected=[]; selected_ids=set(); total=0
     ranked = sorted(rows,key=lambda x:(-x[0],x[1].casefold(),x[2]))
     ordered = ranked
+    rebuttal_documents = set()
     if filing_led_question:
         merits=[]; merit_ids=set(); per_section={}
         merits_limit = (
@@ -1808,6 +1816,22 @@ def evidence(s3, case_id, question):
                         strategic_ids.add(identity)
                         break
             reserve_strategy(17, limit=STRATEGIC_REGULATORY_PAGE_LIMIT, per_document=2)
+            # Keep a bounded reply to an opposing expert alongside the
+            # initial expert account. Generic motion wording has no expert
+            # names, so ordinary term ranking can otherwise omit the reply.
+            for row in remaining:
+                identity = (row[3], row[1])
+                if STRATEGIC_REBUTTAL_TEXT_RE.search(row[4]["text"][:900]):
+                    rebuttal_documents.add(identity)
+            for document in sorted(rebuttal_documents, key=lambda item: item[1].casefold())[:2]:
+                candidates = [row for row in remaining if (row[3], row[1]) == document]
+                for row in sorted(candidates, key=lambda item: (-item[0], item[2]))[
+                    :STRATEGIC_REBUTTAL_PAGES_PER_DOCUMENT
+                ]:
+                    identity = (row[3], row[1], row[2])
+                    if identity not in strategic_ids:
+                        strategic_rows.append(row)
+                        strategic_ids.add(identity)
             # Preserve category diversity before general relevance ranking.
             reserve_strategy(
                 13,
@@ -1920,6 +1944,11 @@ def evidence(s3, case_id, question):
         if merits_pleading and relief_pleading
     }.intersection(selected_ids)
     coverage = {
+        "competing_expert_rebuttal_selected": bool(
+            rebuttal_documents.intersection(
+                {(page["source_sha256"], page["filename"]) for page in selected}
+            )
+        ),
         "party_role_evidence": {"candidate_count": len(party_role_candidates), "retrieved_count": len(selected_party_role_ids), "outside_initial_slice": bool(outside_party_role_ids), "outside_initial_slice_citations": [{"source_sha256": source, "filename": filename, "page_number": page} for source, filename, page in sorted(outside_party_role_ids, key=lambda item: (item[1].casefold(), item[2], item[0]))[:12]]},
         "pleading_operatives": {
             "claim_page_count": len(selected_claim_ids),
@@ -2214,6 +2243,9 @@ def validate_retrieval(s3, case_id, question):
             )
         },
         "coverage": {
+            "competing_expert_rebuttal_selected": bool(
+                coverage.get("competing_expert_rebuttal_selected", False)
+            ),
             "party_role_candidate_count": party_roles.get("candidate_count", 0),
             "party_role_retrieved_count": party_roles.get("retrieved_count", 0),
             "party_role_outside_initial_slice": bool(

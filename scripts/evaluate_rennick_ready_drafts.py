@@ -16,6 +16,7 @@ CASE_ID = "NY-Nassau-613561-2026-Desousa-v-Rennick"
 RECOMMENDATION_ID = "draft-1790275196-5d33f8a041c2"
 RESPONSE_ID = "draft-1790200223-c52acd236d81"
 SIGNED_TRO_SHA256 = "c3ebfd9a47a673932b40f470ff02072e4902acbda49412a938596b110f29a1fc"
+COMPETING_REBUTTAL_SUFFIX = "EXHIBIT_S__48.pdf"
 SECTIONS = {
     RECOMMENDATION_ID: (
         "Objective and posture", "Candidate motions", "Record support",
@@ -57,6 +58,7 @@ def evaluate(item):
         defects.append("missing_direct_answer")
 
     cited_signed_tro = False
+    cited_competing_rebuttal = False
     for finding in findings:
         if not str(finding.get("statement") or "").strip():
             defects.append("empty_finding")
@@ -74,10 +76,14 @@ def evaluate(item):
                 defects.append("cited_case_used_as_rennick_record")
             if sha == SIGNED_TRO_SHA256 and "ORDER_TO_SHOW_CAUSE_32.pdf" in filename:
                 cited_signed_tro = True
+            if filename.endswith(COMPETING_REBUTTAL_SUFFIX):
+                cited_competing_rebuttal = True
         if any(not isinstance(a, str) or not a.strip() for a in authorities):
             defects.append("invalid_authority_reference")
     if request_id == RECOMMENDATION_ID and not cited_signed_tro:
         defects.append("signed_tro_not_cited_for_motion_posture")
+    if not cited_competing_rebuttal:
+        defects.append("competing_expert_rebuttal_not_cited")
     if request_id == RECOMMENDATION_ID:
         support = [f for f in findings if f.get("section") == "Record support"]
         # The two agency exhibits are distinct direct records. An expert's

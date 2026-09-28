@@ -32,6 +32,7 @@ REGRESSION_TARGETS = (
             "regulatory_record",
             "visual_or_measurement_evidence",
         ),
+        "required_filename_suffixes": ("EXHIBIT_S__48.pdf",),
     },
     {
         "name": "rennick_motion_response",
@@ -43,6 +44,7 @@ REGRESSION_TARGETS = (
             "regulatory_record",
             "visual_or_measurement_evidence",
         ),
+        "required_filename_suffixes": ("EXHIBIT_S__48.pdf",),
     },
     {
         "name": "szymczyk_main_action",
@@ -68,6 +70,16 @@ def evaluate_target(target, pages, authorities, coverage):
     if missing_types:
         raise AssertionError(
             target["name"] + " missing required source types: " + ", ".join(missing_types)
+        )
+    filenames = {page["filename"] for page in pages}
+    missing_documents = [
+        suffix for suffix in target.get("required_filename_suffixes", ())
+        if not any(filename.endswith(suffix) for filename in filenames)
+    ]
+    if missing_documents:
+        raise AssertionError(
+            target["name"] + " missing competing expert record: "
+            + ", ".join(missing_documents)
         )
     if len(authorities) < target["minimum_authority_count"]:
         raise AssertionError(

@@ -29,6 +29,10 @@ def sample(request_id):
                             "citations": support["citations"][:1], "authority_citations": []})
         findings.insert(4, {"section": "Record support", "statement": "Separate source analysis.",
                             "citations": support["citations"][:1], "authority_citations": []})
+    findings[-2]["citations"].append({
+        "filename": "613561_2026_EXHIBIT_S__48.pdf", "page_number": 3,
+        "source_sha256": "d" * 64,
+    })
     return {"case_id": CASE_ID, "request_id": request_id, "status": "READY", "draft": {
         "request_id": request_id, "summary": "Consider the signed order and evidence.",
         "findings": findings, "missing_information": [],
@@ -48,6 +52,13 @@ class RennickReadyDraftEvaluationTests(unittest.TestCase):
             "The operative signed TRO’s exact restrictions remain unresolved in the selected excerpts."
         ]
         self.assertIn("archived_response_obsolete_tro_gap", evaluate(item)["defects"])
+
+    def test_missing_competing_expert_rebuttal_is_visible(self):
+        item = sample(RESPONSE_ID)
+        for finding in item["draft"]["findings"]:
+            finding["citations"] = [c for c in finding["citations"]
+                                    if not c["filename"].endswith("EXHIBIT_S__48.pdf")]
+        self.assertIn("competing_expert_rebuttal_not_cited", evaluate(item)["defects"])
 
     def test_wrong_case_and_uncited_decision_cannot_pass(self):
         item = sample(RECOMMENDATION_ID)
