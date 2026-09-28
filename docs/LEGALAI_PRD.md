@@ -567,7 +567,7 @@ Engineering activity alone does not count as progress. The evidence must show an
 
 ### 2026-09-28 separate cited-case intake alignment checkpoint
 
-- **Movement:** MIXED
+- **Movement:** YES
 - **Goal advanced:** Give attorney review a distinct, traceable cited-case record without mixing it into the active matter's evidence or drafts.
-- **How / evidence:** The six-file Kuzmicki bundle passed its exact ZIP and per-file SHA-256 checks; a separate Richmond County case intake returned six verified, indexed PDFs under source SHA-256 `8ec1f4970135c895028b25d6f2356d69548c3cb74f2794de33a06be46e41ff55`. The scoped upload credential was disabled after intake.
-- **Remaining gap:** Authenticated live PDF links still need production verification before the separate research view in PR #308 can be merged or deployed. PR #309 prepares that check and remains unmerged.
+- **How / evidence:** The exact six-file Kuzmicki bundle was ingested as a separate Richmond County case with six verified, indexed PDFs under source SHA-256 `8ec1f4970135c895028b25d6f2356d69548c3cb74f2794de33a06be46e41ff55`. The actual attorney site returned authenticated HTTP 200 PDFs for NYSCEF 15, 24, 27, 48, 49, and 53, each with matching bytes and SHA-256, before and after PR #308 deployed as `323bd274`. Temporary intake and verifier tokens were disabled.
+- **Remaining gap:** Attorney assessment of the cited-case research and any new feedback on the two READY Rennick drafts remain pending; no paid draft or attorney contact was made.
