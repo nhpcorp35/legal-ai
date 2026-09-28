@@ -5171,17 +5171,32 @@ def kuzmicki_pdf_link_check():
             f"{urllib.parse.quote(filename, safe='')}?source_sha256={source_sha256}"
         )
         req = urllib.request.Request(url, headers={"Authorization": "Basic " + authorization})
+        status = None
+        failure = None
         try:
             with opener.open(req, timeout=90) as response:
                 pdf = response.read(size + 1)
                 status = response.status
                 content_type = response.headers.get_content_type()
-            valid = (status == 200 and content_type == "application/pdf" and len(pdf) == size
-                     and pdf.startswith(b"%PDF-") and hashlib.sha256(pdf).hexdigest() == digest)
-        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, ValueError):
-            valid = False
+            if status != 200:
+                failure = "http_status"
+            elif content_type != "application/pdf":
+                failure = "content_type"
+            elif len(pdf) != size:
+                failure = "size"
+            elif not pdf.startswith(b"%PDF-"):
+                failure = "pdf_signature"
+            elif hashlib.sha256(pdf).hexdigest() != digest:
+                failure = "sha256"
+        except urllib.error.HTTPError as exc:
+            status = exc.code
+            failure = "http_status"
+        except (urllib.error.URLError, TimeoutError, ValueError) as exc:
+            failure = type(exc).__name__
+        valid = failure is None
         results.append({"nyscef_doc": int(suffix.rsplit("_", 1)[-1].removesuffix(".pdf")),
-                        "filename": filename, "verified": valid, "expected_sha256": digest})
+                        "filename": filename, "verified": valid, "expected_sha256": digest,
+                        "http_status": status, "failure": failure})
     ok = all(item["verified"] for item in results)
     return jsonify({"ok": ok, "case_id": case_id, "source_sha256": source_sha256, "results": results}), 200 if ok else 502
 
