@@ -78,6 +78,24 @@ def evaluate(item):
             defects.append("invalid_authority_reference")
     if request_id == RECOMMENDATION_ID and not cited_signed_tro:
         defects.append("signed_tro_not_cited_for_motion_posture")
+    if request_id == RECOMMENDATION_ID:
+        support = [f for f in findings if f.get("section") == "Record support"]
+        # The two agency exhibits are distinct direct records. An expert's
+        # description of a permit is not a substitute for either exhibit.
+        support_sources = [
+            {c.get("filename", "") for c in f.get("citations") or []}
+            for f in support
+        ]
+        for suffix, label in (("EXHIBIT_S__27.pdf", "nysdec"),
+                              ("EXHIBIT_S__28.pdf", "usace")):
+            if not any(any(name.endswith(suffix) for name in sources)
+                       for sources in support_sources):
+                defects.append(f"direct_{label}_record_missing_from_support")
+        if not any(any("AFFIDAVIT_OR_AFFIRM_37" in name for name in sources)
+                   for sources in support_sources):
+            defects.append("expert_support_missing")
+        if len(support) < 3:
+            defects.append("distinct_record_support_missing")
     if request_id == RESPONSE_ID:
         missing = " ".join(str(s) for s in draft.get("missing_information") or [])
         # The archived response predates the separately displayed signed-TRO
