@@ -89,6 +89,7 @@ class CrossCaseRetrievalRegressionTests(unittest.TestCase):
                 "My opponent made a motion. How should I answer it?",
             ):
                 selected = worker.evidence(None, "synthetic-case", question)
+                self.assertTrue(selected.coverage["competing_expert_rebuttal_selected"])
                 self.assertTrue(any(page["filename"].endswith("EXHIBIT_S__48.pdf")
                                     for page in selected))
                 self.assertLessEqual(len(selected), worker.MAX_PAGES)
