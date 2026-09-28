@@ -1649,6 +1649,7 @@ def evidence(s3, case_id, question):
     selected=[]; selected_ids=set(); total=0
     ranked = sorted(rows,key=lambda x:(-x[0],x[1].casefold(),x[2]))
     ordered = ranked
+    rebuttal_documents = set()
     if filing_led_question:
         merits=[]; merit_ids=set(); per_section={}
         merits_limit = (
@@ -1816,7 +1817,6 @@ def evidence(s3, case_id, question):
             # Keep a bounded reply to an opposing expert alongside the
             # initial expert account. Generic motion wording has no expert
             # names, so ordinary term ranking can otherwise omit the reply.
-            rebuttal_documents = set()
             for row in remaining:
                 identity = (row[3], row[1])
                 if STRATEGIC_REBUTTAL_TEXT_RE.search(row[4]["text"][:900]):
@@ -1942,6 +1942,11 @@ def evidence(s3, case_id, question):
         if merits_pleading and relief_pleading
     }.intersection(selected_ids)
     coverage = {
+        "competing_expert_rebuttal_selected": bool(
+            rebuttal_documents.intersection(
+                {(page["source_sha256"], page["filename"]) for page in selected}
+            )
+        ),
         "party_role_evidence": {"candidate_count": len(party_role_candidates), "retrieved_count": len(selected_party_role_ids), "outside_initial_slice": bool(outside_party_role_ids), "outside_initial_slice_citations": [{"source_sha256": source, "filename": filename, "page_number": page} for source, filename, page in sorted(outside_party_role_ids, key=lambda item: (item[1].casefold(), item[2], item[0]))[:12]]},
         "pleading_operatives": {
             "claim_page_count": len(selected_claim_ids),
@@ -2236,6 +2241,9 @@ def validate_retrieval(s3, case_id, question):
             )
         },
         "coverage": {
+            "competing_expert_rebuttal_selected": bool(
+                coverage.get("competing_expert_rebuttal_selected", False)
+            ),
             "party_role_candidate_count": party_roles.get("candidate_count", 0),
             "party_role_retrieved_count": party_roles.get("retrieved_count", 0),
             "party_role_outside_initial_slice": bool(
