@@ -571,3 +571,10 @@ Engineering activity alone does not count as progress. The evidence must show an
 - **Goal advanced:** Give attorney review a distinct, traceable cited-case record without mixing it into the active matter's evidence or drafts.
 - **How / evidence:** The exact six-file Kuzmicki bundle was ingested as a separate Richmond County case with six verified, indexed PDFs under source SHA-256 `8ec1f4970135c895028b25d6f2356d69548c3cb74f2794de33a06be46e41ff55`. The actual attorney site returned authenticated HTTP 200 PDFs for NYSCEF 15, 24, 27, 48, 49, and 53, each with matching bytes and SHA-256, before and after PR #308 deployed as `323bd274`. Temporary intake and verifier tokens were disabled.
 - **Remaining gap:** Attorney assessment of the cited-case research and any new feedback on the two READY Rennick drafts remain pending; no paid draft or attorney contact was made.
+
+### 2026-09-28 existing-motion-answer evaluation alignment checkpoint
+
+- **Movement:** MIXED
+- **Goal advanced:** Expose a specific procedural gap in an archived answer before treating its motion advice as current, while keeping cited-case records separate from Rennick evidence.
+- **How / evidence:** Read-only Gateway v8 retrieval of the two exact READY motion answers and a non-model local evaluator found no mechanical defects in the corrected recommendation, but flagged the archived response's claim that signed TRO terms were unresolved. The attorney workspace displays a separate signed-TRO correction; no archived draft was changed. Six focused evaluator tests passed.
+- **Remaining gap:** Page-level proposition fidelity, authority fit, and whether either answer actually weighs opposing evidence well require record and attorney review. A mechanical pass is not a legal-quality endorsement; no paid draft or attorney contact occurred.
