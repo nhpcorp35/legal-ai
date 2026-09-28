@@ -94,6 +94,16 @@ class CrossCaseRetrievalRegressionTests(unittest.TestCase):
                                     for page in selected))
                 self.assertLessEqual(len(selected), worker.MAX_PAGES)
 
+    def test_named_profiles_keep_exact_motion_questions(self):
+        self.assertEqual(
+            worker.RETRIEVAL_VALIDATION_PROFILES["motion-recommendation"],
+            "I need to make a motion. Which motions should I consider?",
+        )
+        self.assertEqual(
+            worker.RETRIEVAL_VALIDATION_PROFILES["motion-response"],
+            "My opponent made a motion. How should I answer it?",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
