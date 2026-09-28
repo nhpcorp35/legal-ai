@@ -580,6 +580,14 @@ Engineering activity alone does not count as progress. The evidence must show an
 - **How / evidence:** Railway's service and domain inventory identifies `www.serverdeath.com` on Legal-AI's Legal Case Search service, separate from the Infrastructure executor. A read-only, externally authenticated workspace smoke check and focused tests are prepared on an isolated branch; see `docs/PRODUCTION_RAILWAY_MAP.md`.
 - **Remaining gap:** Review, merge, deploy, and run the check on the attorney-site service before claiming a verified production result. Attorney feedback and quality assessment remain outstanding.
 
+
+### 2026-09-28 production smoke-check timeout alignment checkpoint
+
+- **Movement:** NO
+- **Goal advanced:** None yet; the live diagnostic is a maintenance check.
+- **How / evidence:** Attempt 1 reached the review packet and cited-case pages with authenticated HTTP 200 and expected markers. The top-level `/workspace` GET timed out at 12 seconds; Railway HTTP logged 499 after 12,007 ms. A narrow change raises only that URL's bound to 45 seconds and the two other URL bounds to 20 seconds. Focused tests cover the different limits.
+- **Remaining gap:** Deploy and make one corrected live check. If the workspace still times out at 45 seconds, report measured latency as a blocker rather than retry again. This check does not establish attorney usefulness or John-specific access.
+
 ### 2026-09-28 existing-motion-answer evaluation alignment checkpoint
 
 - **Movement:** MIXED
