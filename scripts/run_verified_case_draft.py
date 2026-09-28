@@ -196,6 +196,11 @@ STRATEGIC_MERITS_PAGE_LIMIT = 10
 STRATEGIC_CATEGORY_PAGE_LIMIT = 4
 STRATEGIC_EXPERT_PAGE_LIMIT = 12
 STRATEGIC_EXPERT_PAGES_PER_DOCUMENT = 6
+STRATEGIC_REBUTTAL_PAGES_PER_DOCUMENT = 2
+STRATEGIC_REBUTTAL_TEXT_RE = re.compile(
+    r"\b(?:rebuttal|response)\s+to\s+(?:the\s+)?(?:affirmation|report|opinion)\b",
+    re.IGNORECASE,
+)
 STRATEGIC_PROCEDURAL_PAGE_LIMIT = 5
 STRATEGIC_REGULATORY_PAGE_LIMIT = 4
 STRATEGIC_PROCEDURAL_RECORD_RE = re.compile(
@@ -1808,6 +1813,23 @@ def evidence(s3, case_id, question):
                         strategic_ids.add(identity)
                         break
             reserve_strategy(17, limit=STRATEGIC_REGULATORY_PAGE_LIMIT, per_document=2)
+            # Keep a bounded reply to an opposing expert alongside the
+            # initial expert account. Generic motion wording has no expert
+            # names, so ordinary term ranking can otherwise omit the reply.
+            rebuttal_documents = set()
+            for row in remaining:
+                identity = (row[3], row[1])
+                if STRATEGIC_REBUTTAL_TEXT_RE.search(row[4]["text"][:900]):
+                    rebuttal_documents.add(identity)
+            for document in sorted(rebuttal_documents, key=lambda item: item[1].casefold())[:2]:
+                candidates = [row for row in remaining if (row[3], row[1]) == document]
+                for row in sorted(candidates, key=lambda item: (-item[0], item[2]))[
+                    :STRATEGIC_REBUTTAL_PAGES_PER_DOCUMENT
+                ]:
+                    identity = (row[3], row[1], row[2])
+                    if identity not in strategic_ids:
+                        strategic_rows.append(row)
+                        strategic_ids.add(identity)
             # Preserve category diversity before general relevance ranking.
             reserve_strategy(
                 13,
