@@ -576,5 +576,5 @@ Engineering activity alone does not count as progress. The evidence must show an
 
 - **Movement:** MIXED
 - **Goal advanced:** Expose a specific procedural gap in an archived answer before treating its motion advice as current, while keeping cited-case records separate from Rennick evidence.
-- **How / evidence:** Read-only Gateway v8 retrieval of the two exact READY motion answers and a non-model local evaluator found no mechanical defects in the corrected recommendation, but flagged the archived response's claim that signed TRO terms were unresolved. The attorney workspace displays a separate signed-TRO correction; no archived draft was changed. Six focused evaluator tests passed.
+- **How / evidence:** Read-only Gateway v8 retrieval of the two exact READY motion answers and a non-model local evaluator found no mechanical defects in the corrected recommendation, but flagged the archived response's claim that signed TRO terms were unresolved. The attorney workspace displays a separate signed-TRO correction; no archived draft was changed. Seven focused evaluator tests passed.
 - **Remaining gap:** Page-level proposition fidelity, authority fit, and whether either answer actually weighs opposing evidence well require record and attorney review. A mechanical pass is not a legal-quality endorsement; no paid draft or attorney contact occurred.
