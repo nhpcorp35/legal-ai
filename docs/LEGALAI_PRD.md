@@ -571,3 +571,11 @@ Engineering activity alone does not count as progress. The evidence must show an
 - **Goal advanced:** Give attorney review a distinct, traceable cited-case record without mixing it into the active matter's evidence or drafts.
 - **How / evidence:** The exact six-file Kuzmicki bundle was ingested as a separate Richmond County case with six verified, indexed PDFs under source SHA-256 `8ec1f4970135c895028b25d6f2356d69548c3cb74f2794de33a06be46e41ff55`. The actual attorney site returned authenticated HTTP 200 PDFs for NYSCEF 15, 24, 27, 48, 49, and 53, each with matching bytes and SHA-256, before and after PR #308 deployed as `323bd274`. Temporary intake and verifier tokens were disabled.
 - **Remaining gap:** Attorney assessment of the cited-case research and any new feedback on the two READY Rennick drafts remain pending; no paid draft or attorney contact was made.
+
+
+### 2026-09-28 Railway targeting and smoke-check alignment checkpoint
+
+- **Movement:** NO
+- **Goal advanced:** None yet; this is a production-verification safeguard.
+- **How / evidence:** Railway's service and domain inventory identifies `www.serverdeath.com` on Legal-AI's Legal Case Search service, separate from the Infrastructure executor. A read-only, externally authenticated workspace smoke check and focused tests are prepared on an isolated branch; see `docs/PRODUCTION_RAILWAY_MAP.md`.
+- **Remaining gap:** Review, merge, deploy, and run the check on the attorney-site service before claiming a verified production result. Attorney feedback and quality assessment remain outstanding.

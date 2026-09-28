@@ -24,6 +24,7 @@ from types import SimpleNamespace
 
 from matter_builder import get_matter
 from engines.verified_authority_registry import VERIFIED_NY_RESCISSION_AUTHORITIES
+from engines.attorney_workspace_smoke import run_check as run_attorney_workspace_smoke
 from verified_source_pdf import open_hash_verified_pdf_object, open_verified_source_pdf
 
 app = Flask(__name__)
@@ -5150,6 +5151,60 @@ def workspace_matter_pdf(case_id, filename):
         as_attachment=False,
         download_name=document_name,
     )
+
+
+_workspace_smoke_lock = threading.Lock()
+_workspace_smoke_state = None
+
+
+def _run_workspace_smoke(run_id, username, password):
+    global _workspace_smoke_state
+    try:
+        result = run_attorney_workspace_smoke(username, password, timeout=12)
+    except Exception:
+        # Do not expose exception text: network libraries can include URLs and headers.
+        result = {"ok": False, "error": "check_failed", "checks": []}
+    with _workspace_smoke_lock:
+        if _workspace_smoke_state and _workspace_smoke_state["run_id"] == run_id:
+            _workspace_smoke_state = {
+                "run_id": run_id,
+                "status": "DONE" if result["ok"] else "BLOCKED",
+                "result": result,
+            }
+
+
+@app.route("/internal/attorney-workspace-smoke", methods=["POST", "GET"])
+def attorney_workspace_smoke():
+    """Read-only production URL check, launched off the single web worker."""
+    global _workspace_smoke_state
+    token = os.environ.get("LEGALAI_WORKSPACE_SMOKE_TOKEN", "")
+    supplied = request.headers.get("X-Workspace-Smoke-Token", "")
+    if not token or not hmac.compare_digest(supplied, token):
+        abort(401)
+    if request.method == "GET":
+        run_id = request.args.get("run_id", "")
+        with _workspace_smoke_lock:
+            state = dict(_workspace_smoke_state) if _workspace_smoke_state else None
+        if not state or not run_id or not hmac.compare_digest(run_id, state["run_id"]):
+            abort(404)
+        return jsonify(state), 200
+
+    username = os.environ.get("LEGALAI_REVIEW_ALLEN_USERNAME", "")
+    password = os.environ.get("LEGALAI_REVIEW_ALLEN_PASSWORD", "")
+    if not username or not password:
+        return jsonify({"status": "BLOCKED", "error": "review_account_unavailable"}), 503
+    with _workspace_smoke_lock:
+        if _workspace_smoke_state and _workspace_smoke_state["status"] == "RUNNING":
+            return jsonify({"status": "RUNNING", "run_id": _workspace_smoke_state["run_id"]}), 202
+        run_id = secrets.token_hex(12)
+        _workspace_smoke_state = {"run_id": run_id, "status": "RUNNING"}
+        threading.Thread(
+            target=_run_workspace_smoke,
+            args=(run_id, username, password),
+            daemon=True,
+            name="workspace-smoke-check",
+        ).start()
+    return jsonify({"status": "RUNNING", "run_id": run_id}), 202
 
 
 @app.route("/internal/kuzmicki-pdf-link-check", methods=["POST"])
