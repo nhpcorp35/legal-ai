@@ -1,5 +1,6 @@
 import email.message
 import os
+import urllib.error
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -8,6 +9,23 @@ import app as legalai
 
 
 class KuzmickiPdfLinkCheckTest(unittest.TestCase):
+    def test_reports_only_http_status_for_failed_links(self):
+        class Opener:
+            def open(self, req, timeout):
+                raise urllib.error.HTTPError(req.full_url, 404, "missing", {}, None)
+
+        with patch.dict(os.environ, {"KUZMICKI_PDF_VERIFY_TOKEN": "test-token",
+                                  "LEGALAI_REVIEW_ALLEN_USERNAME": "reviewer@example.com",
+                                  "LEGALAI_REVIEW_ALLEN_PASSWORD": "test-password"}):
+            with patch("app.urllib.request.build_opener", return_value=Opener()):
+                response = legalai.app.test_client().post(
+                    "/internal/kuzmicki-pdf-link-check",
+                    headers={"X-Kuzmicki-Verify-Token": "test-token"})
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(len(response.json["results"]), 6)
+        self.assertTrue(all(item["http_status"] == 404 and item["failure"] == "http_status"
+                            for item in response.json["results"]))
+
     def test_requires_scoped_token(self):
         with patch.dict(os.environ, {"KUZMICKI_PDF_VERIFY_TOKEN": "test-token"}):
             self.assertEqual(legalai.app.test_client().post("/internal/kuzmicki-pdf-link-check").status_code, 401)
