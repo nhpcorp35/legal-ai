@@ -594,3 +594,10 @@ Engineering activity alone does not count as progress. The evidence must show an
 - **Goal advanced:** Expose a specific procedural gap in an archived answer before treating its motion advice as current, while keeping cited-case records separate from Rennick evidence.
 - **How / evidence:** Read-only Gateway v8 retrieval of the two exact READY motion answers and a non-model local evaluator found no mechanical defects in the corrected recommendation, but flagged the archived response's claim that signed TRO terms were unresolved. The attorney workspace displays a separate signed-TRO correction; no archived draft was changed. Seven focused evaluator tests passed.
 - **Remaining gap:** Page-level proposition fidelity, authority fit, and whether either answer actually weighs opposing evidence well require record and attorney review. A mechanical pass is not a legal-quality endorsement; no paid draft or attorney contact occurred.
+
+### 2026-09-28 protected workspace verification checkpoint
+
+- **Movement:** YES
+- **Goal advanced:** Confirm that the protected attorney workflow is reachable on the production site.
+- **How / evidence:** A bounded authenticated check returned HTTP 200 and expected markers for the workspace, review packet, and separate cited-case research page after a 12-second timeout was corrected. The temporary check credential was disabled after the run.
+- **Remaining gap:** This checks access and page presence only. Attorney assessment of the analysis and cited propositions remains pending.
