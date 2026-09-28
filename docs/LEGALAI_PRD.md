@@ -587,3 +587,10 @@ Engineering activity alone does not count as progress. The evidence must show an
 - **Goal advanced:** None yet; the live diagnostic is a maintenance check.
 - **How / evidence:** Attempt 1 reached the review packet and cited-case pages with authenticated HTTP 200 and expected markers. The top-level `/workspace` GET timed out at 12 seconds; Railway HTTP logged 499 after 12,007 ms. A narrow change raises only that URL's bound to 45 seconds and the two other URL bounds to 20 seconds. Focused tests cover the different limits.
 - **Remaining gap:** Deploy and make one corrected live check. If the workspace still times out at 45 seconds, report measured latency as a blocker rather than retry again. This check does not establish attorney usefulness or John-specific access.
+
+### 2026-09-28 existing-motion-answer evaluation alignment checkpoint
+
+- **Movement:** MIXED
+- **Goal advanced:** Expose a specific procedural gap in an archived answer before treating its motion advice as current, while keeping cited-case records separate from Rennick evidence.
+- **How / evidence:** Read-only Gateway v8 retrieval of the two exact READY motion answers and a non-model local evaluator found no mechanical defects in the corrected recommendation, but flagged the archived response's claim that signed TRO terms were unresolved. The attorney workspace displays a separate signed-TRO correction; no archived draft was changed. Seven focused evaluator tests passed.
+- **Remaining gap:** Page-level proposition fidelity, authority fit, and whether either answer actually weighs opposing evidence well require record and attorney review. A mechanical pass is not a legal-quality endorsement; no paid draft or attorney contact occurred.
