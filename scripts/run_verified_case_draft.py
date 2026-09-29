@@ -1337,6 +1337,28 @@ def evidence(s3, case_id, question):
             documents.setdefault((source, filename), []).append((page, text))
     if third_party_only_question:
         selected, action_audit = select_third_party_action_pages(documents)
+        diagnostic_openings = []
+        for (_, filename), document_pages in documents.items():
+            if (
+                "answer with cross" not in normalized_filename(filename)
+                or len(diagnostic_openings) >= 8
+            ):
+                continue
+            opening = min(document_pages)[1]
+            diagnostic_openings.append({
+                "filename": filename,
+                "opening_length": len(opening),
+                "answer_in_first_1600": bool(re.search(r"\banswer\b", opening[:1600], re.I)),
+                "successive_defendant_in_first_1600": bool(re.search(
+                    r"\b(?:second|third|fourth)[ /-]+third[ -]?party\s+defendants?\b",
+                    opening[:1600], re.I,
+                )),
+                "answer_in_first_4000": bool(re.search(r"\banswer\b", opening[:4000], re.I)),
+                "successive_defendant_in_first_4000": bool(re.search(
+                    r"\b(?:second|third|fourth)[ /-]+third[ -]?party\s+defendants?\b",
+                    opening[:4000], re.I,
+                )),
+            })
         coverage = {
             "party_role_evidence": {
                 "candidate_count": 0, "retrieved_count": 0,
@@ -1354,6 +1376,7 @@ def evidence(s3, case_id, question):
             },
             "verified_pleading_inventory": verified_pleading_inventory(documents),
             "third_party_actions": action_audit,
+            "diagnostic_openings": diagnostic_openings,
         }
         return EvidenceSelection(selected, coverage)
     cross_claim_party_match = (
@@ -2241,29 +2264,6 @@ def validate_retrieval(s3, case_id, question):
     party_roles = coverage.get("party_role_evidence", {})
     operatives = coverage.get("pleading_operatives", {})
     third_party_actions = coverage.get("third_party_actions", [])
-    diagnostic_openings = []
-    if question == RETRIEVAL_VALIDATION_PROFILES["third-party"]:
-        for source in verified_sources(s3, case_id):
-            for page in verified_page_records(s3, case_id, source):
-                if (
-                    page["page_number"] == 1
-                    and "answer with cross" in normalized_filename(page["filename"])
-                    and len(diagnostic_openings) < 8
-                ):
-                    diagnostic_openings.append({
-                        "filename": page["filename"],
-                        "opening_length": len(page["text"]),
-                        "answer_in_first_1600": bool(re.search(r"\banswer\b", page["text"][:1600], re.I)),
-                        "successive_defendant_in_first_1600": bool(re.search(
-                            r"\b(?:second|third|fourth)[ /-]+third[ -]?party\s+defendants?\b",
-                            page["text"][:1600], re.I,
-                        )),
-                        "answer_in_first_4000": bool(re.search(r"\banswer\b", page["text"][:4000], re.I)),
-                        "successive_defendant_in_first_4000": bool(re.search(
-                            r"\b(?:second|third|fourth)[ /-]+third[ -]?party\s+defendants?\b",
-                            page["text"][:4000], re.I,
-                        )),
-                    })
     return {
         "case_id": case_id,
         "status": "PASSED",
@@ -2309,7 +2309,7 @@ def validate_retrieval(s3, case_id, question):
                 for action in third_party_actions
             ),
         },
-        "diagnostic_openings": diagnostic_openings,
+        "diagnostic_openings": coverage.get("diagnostic_openings", []),
     }
 
 def authority_prompt(authorities):
