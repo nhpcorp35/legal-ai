@@ -1638,7 +1638,7 @@ class SzymczykFilenameCoverageTests(unittest.TestCase):
                 (1, "Fourth third-party summons and complaint. Electric against Security.")
             ],
             ("e" * 64, "ANSWER_WITH_CROSS_C_35.pdf"): [
-                (1, "Verified answer with cross-claims. Quality Services answers Owner."),
+                (1, "Verified answer with cross-claims."),
                 (2, "FIRST AFFIRMATIVE DEFENSE: culpable conduct."),
                 (7, "WHEREFORE, the answering Third/Third-Party Defendant Quality Services seeks dismissal."),
             ],

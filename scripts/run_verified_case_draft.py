@@ -493,6 +493,7 @@ def third_party_action_slices(documents):
             "pages": sorted(document_pages),
             "kind": "answer" if is_answer else "complaint",
             "ordinal": answer_ordinal if is_answer and answer_ordinal else third_party_action_ordinal(filename, document_pages),
+            "self_designated_ordinal": bool(is_answer and answer_ordinal),
             "caption_tokens": third_party_caption_tokens(filename, document_pages),
             "action_summons": bool(re.search(r"\bthird party summons\b", normalized)),
         })
@@ -676,7 +677,9 @@ def third_party_action_slices(documents):
                 # Synthetic or expressly numbered paired filings may share a
                 # sequence. Otherwise the most recent preceding summons is
                 # the operative chronological identity.
-                if ordinal_sequences and answer_sequence == max(ordinal_sequences):
+                if answer["self_designated_ordinal"]:
+                    candidates = all_ordinal_candidates
+                elif ordinal_sequences and answer_sequence == max(ordinal_sequences):
                     candidates = all_ordinal_candidates
                 elif ordinal_action is not sequence_action:
                     ordinal_overlap = len(
