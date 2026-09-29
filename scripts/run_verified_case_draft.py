@@ -2185,7 +2185,7 @@ def pre_generation_checks(pages, authorities, question, coverage=None):
     }
 
 
-def validate_retrieval(s3, case_id, question):
+def validate_retrieval(s3, case_id, question, required_filename_suffix=None):
     """Run the production evidence gate without a model call or B2 write."""
     try:
         pages = retrieval_evidence(s3, case_id, question)
@@ -2217,6 +2217,10 @@ def validate_retrieval(s3, case_id, question):
             }
         raise
     coverage = getattr(pages, "coverage", {}) or {}
+    if required_filename_suffix and not any(
+        page["filename"].endswith(required_filename_suffix) for page in pages
+    ):
+        raise ValueError("retrieval missing required document: " + required_filename_suffix)
     filings = pleading_map(pages)
     party_roles = coverage.get("party_role_evidence", {})
     operatives = coverage.get("pleading_operatives", {})
@@ -3008,7 +3012,15 @@ def main():
             else args.question.strip()
         )
         print(json.dumps(
-            validate_retrieval(client(), args.case_id, question),
+            validate_retrieval(
+                client(), args.case_id, question,
+                required_filename_suffix=(
+                    "EXHIBIT_S__48.pdf"
+                    if args.case_id == "NY-Nassau-613561-2026-Desousa-v-Rennick"
+                    and args.profile in ("motion-recommendation", "motion-response")
+                    else None
+                ),
+            ),
             sort_keys=True,
             separators=(",", ":"),
         ))

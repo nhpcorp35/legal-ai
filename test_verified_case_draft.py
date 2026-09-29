@@ -147,7 +147,8 @@ class EvidenceFailClosedTests(unittest.TestCase):
     def test_retrieval_validation_profiles_cover_each_supported_layer(self):
         self.assertEqual(
             set(WORKER.RETRIEVAL_VALIDATION_PROFILES),
-            {"main-action", "counter-cross", "third-party", "consolidated"},
+            {"motion-recommendation", "motion-response", "main-action",
+             "counter-cross", "third-party", "consolidated"},
         )
         self.assertTrue(WORKER.MAIN_ACTION_ONLY_QUESTION_RE.search(
             WORKER.RETRIEVAL_VALIDATION_PROFILES["main-action"]
@@ -186,6 +187,7 @@ class EvidenceFailClosedTests(unittest.TestCase):
         self.assertEqual(
             set(report["coverage"]),
             {
+                "competing_expert_rebuttal_selected",
                 "party_role_candidate_count",
                 "party_role_retrieved_count",
                 "party_role_outside_initial_slice",
@@ -201,6 +203,22 @@ class EvidenceFailClosedTests(unittest.TestCase):
             report["pleading_signal_counts"]["causes of action or relief"],
             1,
         )
+
+    def test_retrieval_validation_requires_named_document_when_requested(self):
+        class OneDocumentS3(FakeS3):
+            pages = [{
+                "filename": "Complaint.pdf", "page_number": 1,
+                "text": "FIRST CAUSE OF ACTION: breach of contract.",
+            }]
+
+        args = (OneDocumentS3(),
+                "NY-Suffolk-600371-2021-DeSousa-v-Calvagno-II-Karcher",
+                "What breach of contract claims appear in the complaint?")
+        with self.assertRaisesRegex(ValueError, "missing required document"):
+            WORKER.validate_retrieval(*args, required_filename_suffix="EXHIBIT_S__48.pdf")
+        report = WORKER.validate_retrieval(*args, required_filename_suffix="Complaint.pdf")
+        self.assertEqual(report["status"], "PASSED")
+        self.assertFalse(report["model_called"])
 
     def test_third_party_validation_reports_absent_layer_without_model(self):
         class NoThirdPartyS3(FakeS3):
