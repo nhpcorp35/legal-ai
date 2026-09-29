@@ -432,6 +432,19 @@ def third_party_caption_tokens(filename, document_pages):
     }
 
 
+def answering_third_party_ordinal(document_pages):
+    """Recognize a party's own answer designation beyond its opening page."""
+    for _, text in sorted(document_pages):
+        match = re.search(
+            r"\banswering\s+(first|second|third|fourth)[ /-]+third[ -]?party\s+defendants?\b",
+            text,
+            re.IGNORECASE,
+        )
+        if match:
+            return match.group(1).casefold()
+    return None
+
+
 def third_party_action_slices(documents):
     """Group operative complaints and answers into successive actions."""
     filings = []
@@ -466,8 +479,9 @@ def third_party_action_slices(documents):
             r"\b(?:complaint|summons)\b",
             opening_text,
         ))
+        answer_ordinal = answering_third_party_ordinal(document_pages)
         is_answer = "answer" in normalized and (
-            filename_is_third_party or opening_is_third_party_answer
+            filename_is_third_party or opening_is_third_party_answer or answer_ordinal
         )
         is_complaint = not is_answer and bool(
             re.search(r"\b(?:complaint|summons)\b", normalized)
@@ -478,7 +492,7 @@ def third_party_action_slices(documents):
             "source": source, "filename": filename,
             "pages": sorted(document_pages),
             "kind": "answer" if is_answer else "complaint",
-            "ordinal": third_party_action_ordinal(filename, document_pages),
+            "ordinal": answer_ordinal if is_answer and answer_ordinal else third_party_action_ordinal(filename, document_pages),
             "caption_tokens": third_party_caption_tokens(filename, document_pages),
             "action_summons": bool(re.search(r"\bthird party summons\b", normalized)),
         })
