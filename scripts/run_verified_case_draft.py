@@ -136,7 +136,7 @@ TARGETED_THIRD_PARTY_COMPLAINT_PAGE_LIMIT = 16
 THIRD_PARTY_ACTION_PAGE_LIMIT = 11
 THIRD_PARTY_ORDINALS = ("first", "second", "third", "fourth")
 THIRD_PARTY_ORDINAL_RE = re.compile(
-    r"\b(first|second|third|fourth)\s+third[ -]?party\b", re.IGNORECASE
+    r"\b(first|second|third|fourth)[ /-]+third[ -]?party\b", re.IGNORECASE
 )
 THIRD_PARTY_CAPTION_STOPWORDS = frozenset({
     "against", "answer", "complaint", "corp", "corporation", "defendant",
@@ -432,6 +432,19 @@ def third_party_caption_tokens(filename, document_pages):
     }
 
 
+def answering_third_party_ordinal(document_pages):
+    """Recognize a party's own answer designation beyond its opening page."""
+    for _, text in sorted(document_pages):
+        match = re.search(
+            r"\banswering\s+(first|second|third|fourth)[ /-]+third[ -]?party\s+defendants?\b",
+            text,
+            re.IGNORECASE,
+        )
+        if match:
+            return match.group(1).casefold()
+    return None
+
+
 def third_party_action_slices(documents):
     """Group operative complaints and answers into successive actions."""
     filings = []
@@ -454,13 +467,21 @@ def third_party_action_slices(documents):
             r"\bthird[ -]?party\s+defendants?\b.*\banswer\b",
             opening_text,
         ))
+        # Some operative answers are filed as "answer with cross-claims".
+        # The filename alone does not identify the action, but the opening
+        # caption can expressly name the successive third-party defendant.
+        opening_is_third_party_answer |= bool(
+            re.search(r"\b(?:second|third|fourth)[ /-]+third[ -]?party\s+defendants?\b", opening_text)
+            and re.search(r"\banswer\b", opening_text)
+        )
         opening_is_third_party_complaint = bool(re.search(
             r"\b(?:first|second|third|fourth)?\s*third[ -]?party\b.*"
             r"\b(?:complaint|summons)\b",
             opening_text,
         ))
+        answer_ordinal = answering_third_party_ordinal(document_pages)
         is_answer = "answer" in normalized and (
-            filename_is_third_party or opening_is_third_party_answer
+            filename_is_third_party or opening_is_third_party_answer or answer_ordinal
         )
         is_complaint = not is_answer and bool(
             re.search(r"\b(?:complaint|summons)\b", normalized)
@@ -471,7 +492,8 @@ def third_party_action_slices(documents):
             "source": source, "filename": filename,
             "pages": sorted(document_pages),
             "kind": "answer" if is_answer else "complaint",
-            "ordinal": third_party_action_ordinal(filename, document_pages),
+            "ordinal": answer_ordinal if is_answer and answer_ordinal else third_party_action_ordinal(filename, document_pages),
+            "self_designated_ordinal": bool(is_answer and answer_ordinal),
             "caption_tokens": third_party_caption_tokens(filename, document_pages),
             "action_summons": bool(re.search(r"\bthird party summons\b", normalized)),
         })
@@ -645,17 +667,32 @@ def third_party_action_slices(documents):
                 if action["ordinal"] == answer["ordinal"]
             ]
             if sequence_action is not None and all_ordinal_candidates:
+                ordinal_action = all_ordinal_candidates[0]
                 ordinal_sequences = [
                     filing_sequence(complaint)
-                    for complaint in all_ordinal_candidates[0]["complaints"]
+                    for complaint in ordinal_action["complaints"]
                     if complaint.get("action_summons")
                 ]
                 ordinal_sequences = [value for value in ordinal_sequences if value is not None]
                 # Synthetic or expressly numbered paired filings may share a
                 # sequence. Otherwise the most recent preceding summons is
                 # the operative chronological identity.
-                if ordinal_sequences and answer_sequence == max(ordinal_sequences):
+                if answer["self_designated_ordinal"]:
                     candidates = all_ordinal_candidates
+                elif ordinal_sequences and answer_sequence == max(ordinal_sequences):
+                    candidates = all_ordinal_candidates
+                elif ordinal_action is not sequence_action:
+                    ordinal_overlap = len(
+                        answer["caption_tokens"] & ordinal_action["caption_tokens"]
+                    )
+                    sequence_overlap = len(
+                        answer["caption_tokens"] & sequence_action["caption_tokens"]
+                    )
+                    # A later-filed answer may belong to an earlier action.
+                    # Require an express ordinal and a stronger caption match
+                    # before overriding the chronological default.
+                    if ordinal_overlap >= 2 and ordinal_overlap > sequence_overlap:
+                        candidates = [ordinal_action]
             elif ordinal_candidates or answer_sequence is None:
                 candidates = ordinal_candidates
         if not candidates:
