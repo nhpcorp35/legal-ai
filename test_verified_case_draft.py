@@ -1623,6 +1623,46 @@ class SzymczykFilenameCoverageTests(unittest.TestCase):
             [["ANSWER_10.pdf"], ["ANSWER_19.pdf"], [], ["ANSWER_86.pdf"]],
         )
 
+    def test_later_answer_with_crossclaims_follows_express_action_caption(self):
+        documents = {
+            ("a" * 64, "THIRD_PARTY_SUMMONS_5.pdf"): [
+                (1, "Third-party summons and complaint. Owner against Heating.")
+            ],
+            ("b" * 64, "THIRD_PARTY_SUMMONS_13.pdf"): [
+                (1, "Second third-party summons and complaint. Builder against Plumbing.")
+            ],
+            ("c" * 64, "THIRD_PARTY_SUMMONS_20.pdf"): [
+                (1, "Third third-party summons and complaint. Owner against Quality Services.")
+            ],
+            ("d" * 64, "THIRD_PARTY_SUMMONS_30.pdf"): [
+                (1, "Fourth third-party summons and complaint. Electric against Security.")
+            ],
+            ("e" * 64, "ANSWER_WITH_CROSS_C_35.pdf"): [
+                (1, "Verified answer with cross-claims. Quality Services, third/third-party defendant, answers Owner."),
+                (2, "FIRST AFFIRMATIVE DEFENSE: culpable conduct."),
+            ],
+        }
+        actions = WORKER.third_party_action_slices(documents)
+        self.assertEqual(
+            [[answer["filename"] for answer in action["answers"]] for action in actions],
+            [[], [], ["ANSWER_WITH_CROSS_C_35.pdf"], []],
+        )
+        _, audit = WORKER.select_third_party_action_pages(documents)
+        self.assertTrue(audit[2]["answer_present"])
+        self.assertFalse(audit[3]["answer_present"])
+
+    def test_unlabeled_crossclaim_answer_does_not_become_third_party_answer(self):
+        documents = {
+            ("a" * 64, "THIRD_PARTY_SUMMONS_10.pdf"): [
+                (1, "Third-party summons and complaint. Owner against Heating.")
+            ],
+            ("b" * 64, "ANSWER_WITH_CROSS_C_15.pdf"): [
+                (1, "Answer with cross-claims. Defendant answers plaintiff in main action.")
+            ],
+        }
+        actions = WORKER.third_party_action_slices(documents)
+        self.assertEqual(actions[0]["answers"], [])
+
     def test_third_party_mentions_do_not_promote_nonpleadings(self):
         documents = {
             ("a" * 64, "THIRD_PARTY_SUMMONS_5.pdf"): [
