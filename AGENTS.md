@@ -1,5 +1,22 @@
 # LegalAI Agent Instructions
 
+## Case-00 Source Authority
+
+For Case-00-Triborough, Backblaze B2 is the canonical source for the private
+corpus, attorney-feedback packet, acceptance contracts, and durable candidate
+artifacts. GitHub contains code only; local checkouts, scratch paths, cached
+Markdown, and prior run output are non-canonical working copies.
+
+Before legal analysis, use the canonical B2 object identified by
+`data/case-00-triborough/ATTORNEY_FEEDBACK_EVAL.md` and verify its documented
+integrity pins. Do not substitute repository search or a local copy for a
+canonical B2 retrieval. Use only allowlisted authenticated B2/Bridge access;
+never broaden an object key or emit private source material into logs.
+
+Private B2 retrieval is not authorization to transmit evidence to a model
+provider, create a paid run, deploy, or write B2. Obtain the applicable
+authorization separately and keep runs idempotent.
+
 ## Cost-Aware Model Routing
 
 Use GPT-5.6 Luna for low-risk, routine delegated work: repository inspection, status monitoring, formatting, deterministic transformations, boilerplate, focused tests, and clearly scoped fixes.
